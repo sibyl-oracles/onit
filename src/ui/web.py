@@ -255,12 +255,14 @@ class WebChatUI:
         allowed_emails: Optional[list[str]] = None,
         session_path: Optional[str] = None,
         title: str = "OnIt Chat",
+        verbose: bool = False,
     ) -> None:
         self.title = title
         self.agent_cursor = agent_cursor
         self.data_path = os.path.expanduser(data_path)
         self.session_path = session_path
         self.show_logs = show_logs
+        self.verbose = verbose
         self.server_port = server_port
         self.share = share
         self.console = NullConsole()
@@ -305,6 +307,23 @@ class WebChatUI:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._processing: bool = False
         self._spinner_shown: bool = False
+        self._spinner_step: int = 0
+        self._spinner_tick: int = 0
+        self._spinner_ticks_per_message: int = 6  # change message every ~3s (6 × 0.5s poll)
+        self._spinner_messages: list[str] = [
+            "Analyzing your request...",
+            "Thinking...",
+            "Planning...",
+            "Reasoning...",
+            "Searching for answers...",
+            "Connecting the dots...",
+            "Analyzing the details...",
+            "Crunching the numbers...",
+            "Almost there...",
+            "Piecing it together...",
+            "Diving deeper...",
+            "Finalizing...",
+        ]
         self.safety_queue = None  # set by OnIt.run() when available
 
         # Store authenticated sessions with cookies
@@ -319,18 +338,54 @@ class WebChatUI:
     # ------------------------------------------------------------------
 
     def _extract_file_paths(self, text: str) -> tuple[str, list[str]]:
-        """Extract data_path file paths from text; replace with download links."""
-        pattern = re.escape(self.data_path) + r'/[\w\-\.]+(?:\.\w+)'
-        found = re.findall(pattern, text)
-        # First strip data_path file paths to just basenames
-        cleaned = re.sub(pattern, lambda m: os.path.basename(m.group(0)), text)
+        """Extract file paths from text; replace with safe download links.
+
+        Handles three cases:
+        1. Absolute paths under data_path (local MCP tools)
+        2. HTTP URLs containing /uploads/ (remote MCP callback uploads)
+        3. Bare filenames that exist in data_path (model just mentions the name)
+        """
+        found_files: list[str] = []  # absolute paths in data_path
+        cleaned = text
+
+        # 1. Match absolute paths under data_path
+        local_pattern = re.escape(self.data_path) + r'/[\w\-\.]+(?:\.\w+)'
+        for match in re.findall(local_pattern, cleaned):
+            fname = os.path.basename(match)
+            fpath = os.path.join(self.data_path, fname)
+            if fpath not in found_files:
+                found_files.append(fpath)
+        # Replace full paths with just basenames
+        cleaned = re.sub(local_pattern, lambda m: os.path.basename(m.group(0)), cleaned)
+
+        # 2. Match http(s) URLs pointing to /uploads/<filename>
+        url_pattern = r'https?://[^/\s]+/uploads/([\w\-\.]+(?:\.\w+))'
+        for match in re.finditer(url_pattern, cleaned):
+            fname = match.group(1)
+            fpath = os.path.join(self.data_path, fname)
+            if fpath not in found_files:
+                found_files.append(fpath)
+        # Replace full URLs with just the filename
+        cleaned = re.sub(url_pattern, r'\1', cleaned)
+
         # Strip any other absolute file paths, keeping only the basename
         cleaned = re.sub(r'(?<![:\w])/(?:[\w\.\-]+/)+(?=[\w\.\-]+)', '', cleaned)
-        # Now turn found basenames into download links
-        for fpath in found:
+
+        # 3. Check for bare filenames that exist in data_path
+        if os.path.isdir(self.data_path):
+            existing = set(os.listdir(self.data_path))
+            for fname in existing:
+                if fname in cleaned:
+                    fpath = os.path.join(self.data_path, fname)
+                    if fpath not in found_files:
+                        found_files.append(fpath)
+
+        # Turn found basenames into markdown download links
+        for fpath in found_files:
             fname = os.path.basename(fpath)
             cleaned = cleaned.replace(fname, f'[{fname}](/uploads/{fname})', 1)
-        return cleaned, found
+
+        return cleaned, found_files
 
     def add_message(
         self,
@@ -521,6 +576,14 @@ class WebChatUI:
 
                 upload_indicator = gr.Markdown("", visible=False)
 
+                with gr.Accordion(
+                    "Execution Logs", open=False, visible=self.verbose
+                ) as logs_accordion:
+                    logs_display = gr.Markdown(
+                        value="*No execution logs yet.*",
+                        elem_id="execution-logs",
+                    )
+
                 gr.Markdown(
                     "<p style='text-align: center; color: #999; font-size: 0.8em; margin-top: 4px;'>"
                     "OnIt may produce inaccurate information. Verify important details independently.<br/>"
@@ -605,23 +668,39 @@ class WebChatUI:
                     if history:
                         history = history[:-1]
                     self._spinner_shown = False
+                    if not self._processing:
+                        self._spinner_step = 0
+                        self._spinner_tick = 0
 
                 while self._pending_responses:
                     resp = self._pending_responses.pop(0)
                     history = history + [resp]
 
-                # Add spinner once if processing and not already shown
-                if self._processing and not self._spinner_shown:
-                    history = history + [
-                        gr.ChatMessage(
-                            role="assistant",
-                            content="...",
-                            metadata={"title": "_thinking_"},
-                        )
+                # Add or update spinner while processing
+                if self._processing:
+                    status_msg = self._spinner_messages[
+                        self._spinner_step % len(self._spinner_messages)
                     ]
-                    self._spinner_shown = True
+                    self._spinner_tick += 1
+                    if self._spinner_tick >= self._spinner_ticks_per_message:
+                        self._spinner_tick = 0
+                        self._spinner_step += 1
+                    spinner_msg = gr.ChatMessage(
+                        role="assistant",
+                        content=f"### {status_msg}",
+                        metadata={"title": "_On it_"},
+                    )
+                    if self._spinner_shown:
+                        # Replace existing spinner with updated message
+                        history = history[:-1] + [spinner_msg]
+                    else:
+                        history = history + [spinner_msg]
+                        self._spinner_shown = True
 
-                return history, gr.update(visible=self._processing)
+                # Update execution logs display
+                logs_md = self._format_logs() if self.execution_logs else "*No execution logs yet.*"
+
+                return history, gr.update(visible=self._processing), logs_md
 
             # wire events
             upload_btn.upload(handle_upload, [upload_btn], [uploaded_file_state, upload_indicator])
@@ -640,7 +719,7 @@ class WebChatUI:
 
             # poll for assistant responses every 0.5s
             timer = gr.Timer(value=0.5)
-            timer.tick(poll_response, [chatbot], [chatbot, stop_btn])
+            timer.tick(poll_response, [chatbot], [chatbot, stop_btn, logs_display])
 
             # Restore chat history and check auth on page load
             def restore_chat():

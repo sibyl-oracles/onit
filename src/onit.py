@@ -208,6 +208,7 @@ class OnIt(BaseModel):
                     allowed_emails=self.web_allowed_emails,
                     session_path=self.session_path,
                     title=self.web_title,
+                    verbose=self.verbose,
                 )
             else:
                 banner = "OnIt Agent to Agent Server" if self.a2a else "OnIt Chat Interface"
