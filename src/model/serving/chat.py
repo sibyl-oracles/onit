@@ -111,16 +111,20 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 with open(image_path, 'rb') as image_file:
                     images_bytes.append(base64.b64encode(image_file.read()).decode('utf-8'))
             else:
-                if chat_ui and verbose:
+                if chat_ui:
                     chat_ui.add_log(f"Image file {image_path} not found, proceeding without this image.", level="warning")
+                elif verbose:
+                    print(f"Image file {image_path} not found, proceeding without this image.")
     elif isinstance(images, str):
         image_path = images
         if os.path.exists(image_path):
             with open(image_path, 'rb') as image_file:
                 images_bytes = [base64.b64encode(image_file.read()).decode('utf-8')]
         else:
-            if chat_ui and verbose:
+            if chat_ui:
                 chat_ui.add_log(f"Image file {image_path} not found, proceeding without this image.", level="warning")
+            elif verbose:
+                print(f"Image file {image_path} not found, proceeding without this image.")
 
     session_history = kwargs.get('session_history', None)
 
@@ -174,10 +178,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 model=model,
                 messages=messages,
                 stream=stream,
-                timeout=60,
+                timeout=timeout,
             )
             if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
                 completion_kwargs["tools"] = tools
+                
             chat_completion = await client.chat.completions.create(**completion_kwargs)
 
             await asyncio.sleep(0.1)
@@ -185,25 +190,25 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 return None
         except APITimeoutError as e:
             error_message = f"Request to {host} timed out after {timeout} seconds."
-            if chat_ui and verbose:
+            if chat_ui:
                 chat_ui.add_log(error_message, level="error")
             elif verbose:
                 print(error_message)
-            return None
+            return error_message
         except OpenAIError as e:
             error_message = f"Error communicating with {host}: {e}."
-            if chat_ui and verbose:
+            if chat_ui:
                 chat_ui.add_log(error_message, level="warning")
             elif verbose:
                 print(error_message)
-            return None
+            return error_message
         except Exception as e:
             error_message = f"Unexpected error: {e}"
-            if chat_ui and verbose:
+            if chat_ui:
                 chat_ui.add_log(error_message, level="error")
             elif verbose:
                 print(error_message)
-            return None
+            return error_message
             
         tool_calls = chat_completion.choices[0].message.tool_calls
         if tool_calls is None or len(tool_calls) == 0:
@@ -217,7 +222,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if chat_ui:
                     chat_ui.add_log(f"Calling: {function_name} (parsed from content)", level="info")
                     chat_ui.render()
-                else:
+                elif verbose:
                     print(f"{function_name}({function_arguments})")
                 messages.append({"role": "assistant", "content": last_response})
                 for tool_name in tool_registry.tools:
@@ -233,18 +238,28 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                 tool_response = f"- tool call timed out after {timeout} seconds. Tool might have succeeded but no response was received. Check expected output."
                                 if chat_ui:
                                     chat_ui.add_log(f"{function_name} timed out after {timeout}s", level="warning")
+                                elif verbose:
+                                    print(f"{function_name} timed out after {timeout}s")
                             tool_response = "" if tool_response is None else str(tool_response)
                             tool_message = {'role': 'tool', 'content': tool_response, 'name': function_name, 'parameters': function_arguments, "tool_call_id": synthetic_id}
                             messages.append(tool_message)
                             truncated = tool_response[:200] + "..." if len(tool_response) > 200 else tool_response
                             if chat_ui:
                                 chat_ui.add_log(f"{function_name} returned: {truncated}", level="debug")
+                            elif verbose:
+                                print(f"{function_name} returned: {truncated}")
                         except Exception as e:
-                            if chat_ui and verbose:
+                            if chat_ui:
                                 chat_ui.add_log(f"{function_name} error: {e}", level="error")
                             elif verbose:
                                 print(f"{function_name} encountered an error: {e}")
+                            tool_message = {'role': 'tool', 'content': f'Error: {e}', 'name': function_name, 'parameters': function_arguments, "tool_call_id": synthetic_id}
+                            messages.append(tool_message)
                         break
+                else:
+                    # Tool not found in registry
+                    tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found', 'name': function_name, 'parameters': function_arguments, "tool_call_id": synthetic_id}
+                    messages.append(tool_message)
                 continue  # loop back for the model to generate the final response
 
             if "</think>" in last_response:
@@ -255,13 +270,15 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         for tool in tool_calls:
             await asyncio.sleep(0.1)
             if not safety_queue.empty():
+                if verbose:
+                    print("Safety queue triggered, exiting chat loop.")
                 return None
             function_name = tool.function.name
             function_arguments = json.loads(tool.function.arguments)
             if chat_ui:
                 chat_ui.add_log(f"Calling: {function_name}", level="info")
                 chat_ui.render()
-            else:
+            elif verbose:
                 print(f"{function_name}({function_arguments})")
             # Ensure the function is available, and then call it
             # FIXME: Possible that 2 or more tools have the same name?
@@ -287,9 +304,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         if chat_ui:
                             chat_ui.add_log(f"{function_name} returned: {truncated_response}", level="debug")
                     except Exception as e:
-                        if chat_ui and verbose:
+                        if chat_ui:
                             chat_ui.add_log(f"{tool_name} error: {e}", level="error")
                         elif verbose:
                             print(f"{tool_name} encountered an error: {e}")
-                        continue
+                        tool_message = {'role': 'tool', 'content': f'Error: {e}', 'name': tool.function.name, 'parameters': function_arguments, "tool_call_id": tool.id}
+                        messages.append(tool_message)
                     break
+            else:
+                # Tool not found in registry
+                tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found', 'name': function_name, 'parameters': function_arguments, "tool_call_id": tool.id}
+                messages.append(tool_message)

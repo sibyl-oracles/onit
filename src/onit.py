@@ -101,6 +101,13 @@ class ClientDisconnectMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Skip disconnect detection for file upload/download routes;
+        # these are normal HTTP transfers, not client task cancellations.
+        path = scope.get("path", "")
+        if path.startswith("/uploads"):
+            await self.app(scope, receive, send)
+            return
+
         # Read the full request body upfront
         body = b""
         while True:

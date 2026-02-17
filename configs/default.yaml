@@ -20,7 +20,7 @@ session_path: "~/.onit/sessions"
 template_path:
 
 # number of seconds before a request times out; -1 for no timeout
-timeout: 60
+timeout: 600
 
 # Web UI settings
 web_title: "OnIt Chat"
