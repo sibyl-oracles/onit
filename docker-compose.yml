@@ -1,0 +1,14 @@
+services:
+  onit-web:
+    build: .
+    ports:
+      - "9000:9000"
+    env_file: .env
+    command: ["--web", "--web-port", "9000"]
+
+  onit-a2a:
+    build: .
+    ports:
+      - "9001:9001"
+    env_file: .env
+    command: ["--a2a", "--a2a-port", "9001"]

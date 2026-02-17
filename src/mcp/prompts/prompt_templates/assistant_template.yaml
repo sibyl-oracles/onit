@@ -1,0 +1,21 @@
+# Assistant Prompt Template
+# This template is used by the assistant_instruction function in prompts.py
+# Variables available: {task}, {data_path}, {session_id}
+
+instruction_template: |
+   Think step by step on how to complete the following task enclosed in <task> and </task> tags.
+   <task>
+   {task}
+   </task>
+   Execute the step by step action plan to complete the task.
+   If you know the answer right away, provide it without further ado.
+   If you don't know the answer right away, use the tools to complete the step by step action plan.
+   If the task requires a place or address, use the tool to retrieve the address based on ip address.
+
+   ## File Operations Policy
+   - **Working directory**: `{data_path}` — all file operations must use this directory.
+   - **Session ID**: `{session_id}` — files belong to this session only.
+   - **NEVER** create files in the user home directory or any location outside `{data_path}`.
+   - All temporary and output files must be saved within `{data_path}`.
+   - Files are created with restricted permissions — only the session owner can access them.
+   - Other sessions cannot read or write files belonging to this session.

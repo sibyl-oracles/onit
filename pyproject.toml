@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onit"
+version = "0.1.0"
+description = "An intelligent agent for task automation and assistance"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "Rowel Atienza"},
+]
+keywords = ["agent", "llm", "mcp", "a2a", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "rich",
+    "requests",
+    "pyyaml",
+    "pydantic",
+    "fastmcp",
+    "fastapi",
+    "openai",
+    "a2a-sdk[all]",
+]
+
+[project.optional-dependencies]
+web = [
+    "gradio",
+    "google-auth",
+]
+mcp-servers = [
+    "beautifulsoup4",
+    "python-dateutil",
+    "geopy",
+    "python-pptx",
+    "ddgs",
+]
+google = [
+    "google-api-python-client",
+    "google-auth-oauthlib",
+]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+all = [
+    "onit[web]",
+    "onit[mcp-servers]",
+    "onit[google]",
+    "onit[test]",
+]
+
+[project.scripts]
+onit = "src.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/sibyl-oracles/onit"
+Repository = "https://github.com/sibyl-oracles/onit"
+Issues = "https://github.com/sibyl-oracles/onit/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["src/test"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"src" = [
+    "mcp/prompts/prompt_templates/*.yaml",
+    "mcp/servers/configs/*.yaml",
+]

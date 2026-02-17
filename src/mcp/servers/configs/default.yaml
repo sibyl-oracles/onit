@@ -1,0 +1,47 @@
+servers:
+  - name: PromptsMCPServer
+    module: src.mcp.prompts.prompts
+    description: "MCP server for prompt templates and instruction generation"
+    enabled: true
+    host : 0.0.0.0
+    port : 9002
+    path : /prompts
+    transport : 'streamable-http'
+
+  - name: WebSearchMCPServer
+    module: tasks.web.search
+    description: "MCP server for general web search tasks"
+    enabled: true
+    host : 0.0.0.0
+    port : 9003
+    path : /search
+    transport : 'streamable-http'
+
+  - name: BashMCPServer
+    module: tasks.os.bash
+    description: "MCP server for bash commands and document search"
+    enabled: true
+    host : 0.0.0.0
+    port : 9004
+    path : /bash
+    transport : 'streamable-http'
+
+  - name: OfficeMCPServer
+    module: tasks.office.microsoft
+    description: "MCP server for creating Microsoft Office documents such as Word, Excel, and PowerPoint"
+    enabled: true
+    host : 0.0.0.0
+    port : 9005
+    path : /office
+    transport : 'streamable-http'
+
+  - name: GoogleWorkspaceMCPServer
+    module: tasks.office.google
+    description: "MCP server for creating Google Workspace documents such as Google Docs, Sheets, and Slides"
+    enabled: true
+    host : 0.0.0.0
+    port : 9006
+    path : /workspace
+    transport : 'streamable-http'
+    # Service account JSON for non-interactive auth (download from Google Cloud Console)
+    #credentials_file: ~/.config/gcloud/credentials.json

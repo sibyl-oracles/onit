@@ -1,0 +1,11 @@
+rich
+requests
+pyyaml
+fastmcp
+fastapi
+openai
+gradio
+google-auth
+a2a-sdk[all]
+python-pptx
+ddgs
