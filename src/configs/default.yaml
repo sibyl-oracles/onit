@@ -1,0 +1,84 @@
+serving:
+  # Set via env var ONIT_HOST or --host CLI flag
+  # host: http://localhost:8000/v1
+  # host_key: EMPTY  # API key. For OpenRouter set here or via OPENROUTER_API_KEY env var
+  model: Qwen/Qwen3-30B-A3B-Instruct-2507
+  think: true
+  max_tokens: 262144
+
+messages:
+  safety_warning:  "Press 'Enter' key to stop all tasks."
+
+verbose: false
+show_logs: false
+
+theme: dark
+persona: "assistant"
+session_path: "~/.onit/sessions"
+
+# see template examples in the `src/mcp/prompts/prompt_templates` folder
+template_path:
+
+# number of seconds before a request times out; -1 for no timeout
+timeout: 600
+
+# Web UI settings
+web_title: "OnIt Chat"
+web: false
+web_port: 9000
+web_share: false
+
+# Google OAuth2 Authentication (Full Redirect Flow)
+# To set up Google OAuth2, follow these steps:
+# 1. Go to https://console.cloud.google.com/
+# 2. Create a new project or select an existing one
+# 3. Enable the Google+ API
+# 4. Go to "Credentials" and create an OAuth 2.0 Client ID
+# 5. Set the application type to "Web application"
+# 6. Add authorized redirect URIs:
+#    - http://localhost:9000/auth/callback
+#    - http://YOUR_SERVER_IP:9000/auth/callback
+# 7. Copy BOTH the Client ID and Client Secret
+#
+# NOTE: Keep your credentials secure and do not commit them to version control!
+web_google_client_id:
+web_google_client_secret:
+
+# Optional: Restrict access to specific email addresses or domains
+# If not specified, any verified Google account can access the web UI
+# Supports:
+#   - Exact emails: "user1@allusers.com" allows specific email addresses
+#   - Domain wildcards: "*@example.com" allows any email from example.com domain
+# web_allowed_emails:
+#     - "*@example.com"
+#     - "user1@allusers.com"
+
+mcp:
+  # Override the host/IP in all MCP server URLs.
+  # Set via --mcp-host CLI flag or here. E.g. mcp_host: 192.168.1.100
+  # mcp_host:
+  servers:
+    - name: PromptsMCPServer
+      description: Provides prompt templates for instruction generation
+      url: http://127.0.0.1:18200/prompts
+      enabled: true
+
+    - name: WebSearchHandler
+      description: Handles web, news and weather search queries
+      url: http://127.0.0.1:18201/search
+      enabled: true
+
+    - name: BashMCPServer
+      description: Executes bash commands and searches documents on the server
+      url: http://127.0.0.1:18202/bash
+      enabled: true
+
+    - name: OfficeMCPServer
+      description: Creates Microsoft Office documents such as Word, Excel, and PowerPoint
+      url: http://127.0.0.1:18203/office
+      enabled: true
+
+    - name: GoogleWorkspaceMCPServer
+      description: Creates Google Workspace documents such as Google Docs, Sheets, and Slides
+      url: http://127.0.0.1:18204/workspace
+      enabled: true

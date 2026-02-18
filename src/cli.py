@@ -184,6 +184,8 @@ def _find_default_config() -> str:
         "configs/default.yaml",
         os.path.join(os.path.dirname(__file__), "..", "configs", "default.yaml"),
         os.path.expanduser("~/.onit/config.yaml"),
+        # Bundled config inside the installed package (pip install)
+        os.path.join(os.path.dirname(__file__), "configs", "default.yaml"),
     ]
     for path in candidates:
         if os.path.isfile(path):
