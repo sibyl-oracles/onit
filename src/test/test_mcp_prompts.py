@@ -9,12 +9,13 @@ import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# The @mcp_prompts.prompt() decorator wraps the function into a FunctionPrompt.
-# Import the underlying function via the module and call .fn directly.
+# Import the module and get the assistant_instruction function.
+# Depending on the fastmcp version, the @prompt() decorator may return
+# the original function directly or wrap it in a FunctionPrompt with .fn.
 import src.mcp.prompts.prompts as prompts_mod
 
-# Get the raw async function from the decorated FunctionPrompt
-_assistant_fn = prompts_mod.assistant_instruction.fn
+_decorated = prompts_mod.assistant_instruction
+_assistant_fn = getattr(_decorated, "fn", _decorated)
 
 
 class TestAssistantInstruction:
