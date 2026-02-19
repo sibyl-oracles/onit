@@ -9,3 +9,4 @@ google-auth
 a2a-sdk[all]
 python-pptx
 ddgs
+beautifulsoup4
