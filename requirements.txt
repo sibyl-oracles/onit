@@ -9,6 +9,11 @@ google-auth
 a2a-sdk[all]
 python-pptx
 ddgs
+ollama
 beautifulsoup4
 geopy
 pypdf
+pydantic
+python-dateutil
+urllib3
+PyMuPDF
