@@ -97,15 +97,8 @@ pip install -e ".[all]"
 ### From pip
 
 ```bash
-pip install onit
+pip install onit==0.1.1a
 ```
-
-or install everything
-
-```bash
-pip install onit[all]
-```
-
 
 ## Docker
 
