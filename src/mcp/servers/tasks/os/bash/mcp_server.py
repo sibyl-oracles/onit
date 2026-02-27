@@ -60,6 +60,12 @@ MAX_OUTPUT_SIZE = 100000  # 100KB max output
 # All file writes are confined to this directory. Never use home folder.
 DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
 
+# Optional read-only documents directory (set via options or env var in run())
+DOCUMENTS_PATH = None
+
+# Cached sandbox environment for subprocess calls (reset when globals change)
+_SANDBOX_ENV = None
+
 # Binary file extensions (return description only, not content)
 BINARY_EXTENSIONS = {
     # Images
@@ -104,14 +110,137 @@ def _validate_required(**kwargs) -> str:
 
 def _validate_write_path(file_path: str) -> str:
     """Validate that the write path is within DATA_PATH. Returns absolute path."""
-    abs_path = os.path.abspath(os.path.expanduser(file_path))
-    abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
             f"Write path must be within the designated data directory: {abs_data}. "
             f"Got: {abs_path}"
         )
     return abs_path
+
+
+def _validate_read_path(file_path: str) -> str:
+    """Validate that the read path is within DATA_PATH or DOCUMENTS_PATH.
+    Returns the resolved absolute path. Raises ValueError if outside allowed directories."""
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+
+    if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
+        return abs_path
+
+    if DOCUMENTS_PATH:
+        abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
+        if abs_path.startswith(abs_docs + os.sep) or abs_path == abs_docs:
+            return abs_path
+
+    allowed = abs_data
+    if DOCUMENTS_PATH:
+        allowed += f" or {os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))}"
+    raise ValueError(
+        f"Read access denied. Path must be within: {allowed}. Got: {abs_path}"
+    )
+
+
+def _validate_dir_path(dir_path: str) -> str:
+    """Validate a directory path is within allowed directories. Returns resolved absolute path."""
+    abs_path = os.path.realpath(os.path.expanduser(dir_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+
+    if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
+        return abs_path
+
+    if DOCUMENTS_PATH:
+        abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
+        if abs_path.startswith(abs_docs + os.sep) or abs_path == abs_docs:
+            return abs_path
+
+    allowed = abs_data
+    if DOCUMENTS_PATH:
+        allowed += f" or {os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))}"
+    raise ValueError(
+        f"Directory access denied. Path must be within: {allowed}. Got: {abs_path}"
+    )
+
+
+def _get_sandbox_env() -> dict:
+    """Build a minimal environment dict for sandboxed shell execution.
+    Strips all inherited env vars to prevent leaking secrets, API keys, etc."""
+    global _SANDBOX_ENV
+    if _SANDBOX_ENV is not None:
+        return dict(_SANDBOX_ENV)
+
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    tmp_dir = os.path.join(abs_data, "tmp")
+    _secure_makedirs(tmp_dir)
+
+    env = {
+        "TERM": "dumb",
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+        "HOME": abs_data,
+        "TMPDIR": tmp_dir,
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "DATA_PATH": abs_data,
+    }
+    if DOCUMENTS_PATH:
+        env["DOCUMENTS_PATH"] = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
+
+    _SANDBOX_ENV = env
+    return dict(env)
+
+
+# Blocked command patterns for the bash tool
+_BLOCKED_PATTERNS = [
+    # Environment variable access
+    (r'\benv\b', "env command"),
+    (r'\bprintenv\b', "printenv command"),
+    (r'\bexport\s', "export command"),
+    (r'/proc/self/environ', "/proc/self/environ"),
+    # Process listings
+    (r'\bps\b', "ps command"),
+    (r'\btop\b', "top command"),
+    (r'\bhtop\b', "htop command"),
+    (r'/proc/\d+', "/proc access"),
+    (r'/proc/self\b', "/proc/self access"),
+    # Sensitive system files
+    (r'/etc/passwd', "/etc/passwd"),
+    (r'/etc/shadow', "/etc/shadow"),
+    (r'/etc/sudoers', "/etc/sudoers"),
+]
+
+
+def _validate_bash_command(command: str) -> str | None:
+    """Check command for blocked patterns and path references outside allowed dirs.
+    Returns error message or None if command is allowed."""
+    # Check blocked command patterns
+    for pattern, description in _BLOCKED_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return f"Command blocked: {description} is not allowed."
+
+    # Check for absolute path references outside allowed directories
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH)) if DOCUMENTS_PATH else None
+
+    # Match only absolute paths (preceded by whitespace, start of string, or shell operators)
+    for match in re.finditer(r'(?:^|(?<=\s)|(?<=[;|&><]))(/[^\s;|&><"\'`\)]+)', command):
+        path = os.path.normpath(match.group(1))
+        # Allow paths within DATA_PATH or DOCUMENTS_PATH
+        if path.startswith(abs_data):
+            continue
+        if abs_docs and path.startswith(abs_docs):
+            continue
+        # Allow standard tool/device paths
+        if path.startswith(('/usr/bin/', '/usr/local/bin/', '/bin/',
+                            '/dev/null', '/dev/stdout', '/dev/stderr',
+                            '/dev/stdin', '/dev/fd/')):
+            continue
+        return (f"Command blocked: references path '{path}' outside allowed directories. "
+                f"Commands must operate within DATA_PATH ({abs_data})"
+                + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
+                + ".")
+
+    return None
 
 
 # =============================================================================
@@ -137,8 +266,24 @@ def bash(
     if err := _validate_required(command=command):
         return err
     try:
+        # Validate command against blocklist and path restrictions
+        if err_msg := _validate_bash_command(command):
+            return json.dumps({
+                "error": err_msg,
+                "command": command,
+                "status": "blocked"
+            })
+
         # Validate and normalize working directory
         work_dir = os.path.abspath(os.path.expanduser(cwd))
+        try:
+            work_dir = _validate_dir_path(work_dir)
+        except ValueError as e:
+            return json.dumps({
+                "error": str(e),
+                "command": command,
+                "status": "error"
+            })
         if not os.path.isdir(work_dir):
             return json.dumps({
                 "error": f"Working directory does not exist: {work_dir}",
@@ -148,7 +293,7 @@ def bash(
         # Cap timeout at 5 minutes
         timeout = min(timeout, 300)
 
-        # Execute command
+        # Execute command with sandboxed environment
         result = subprocess.run(
             command,
             shell=True,
@@ -156,7 +301,7 @@ def bash(
             text=True,
             cwd=work_dir,
             timeout=timeout,
-            env={**os.environ, "TERM": "dumb"}  # Prevent color codes
+            env=_get_sandbox_env()
         )
 
         stdout = _truncate_output(result.stdout.strip())
@@ -216,6 +361,9 @@ def read_file(
     try:
         # Normalize path
         file_path = os.path.abspath(os.path.expanduser(path))
+
+        # Validate path is within allowed directories
+        file_path = _validate_read_path(file_path)
 
         # Check if file exists
         if not os.path.isfile(file_path):
@@ -491,6 +639,9 @@ def send_file(
     try:
         file_path = os.path.abspath(os.path.expanduser(path))
 
+        # Validate path is within allowed directories
+        file_path = _validate_read_path(file_path)
+
         if not os.path.isfile(file_path):
             return json.dumps({"error": f"File not found: {file_path}", "path": path})
 
@@ -563,7 +714,7 @@ def _run_command(command: str, cwd: str = ".", timeout: int = 60) -> Dict[str, A
             text=True,
             cwd=work_dir,
             timeout=timeout,
-            env={**os.environ, "TERM": "dumb"}
+            env=_get_sandbox_env()
         )
 
         return {
@@ -715,6 +866,9 @@ def search_document(
     try:
         file_path = os.path.abspath(os.path.expanduser(path))
 
+        # Validate path is within allowed directories
+        file_path = _validate_read_path(file_path)
+
         if not os.path.isfile(file_path):
             return json.dumps({
                 "error": f"File not found: {file_path}",
@@ -810,6 +964,9 @@ def search_directory(
     try:
         dir_path = os.path.abspath(os.path.expanduser(directory))
 
+        # Validate directory is within allowed directories
+        dir_path = _validate_dir_path(dir_path)
+
         if not os.path.isdir(dir_path):
             return json.dumps({
                 "error": f"Directory not found: {dir_path}",
@@ -889,6 +1046,9 @@ def extract_tables(
         return err
     try:
         file_path = os.path.abspath(os.path.expanduser(path))
+
+        # Validate path is within allowed directories
+        file_path = _validate_read_path(file_path)
 
         if not os.path.isfile(file_path):
             return json.dumps({
@@ -995,6 +1155,9 @@ def find_files(
     try:
         dir_path = os.path.abspath(os.path.expanduser(directory))
 
+        # Validate directory is within allowed directories
+        dir_path = _validate_dir_path(dir_path)
+
         if not os.path.isdir(dir_path):
             return json.dumps({
                 "error": f"Directory not found: {dir_path}",
@@ -1051,7 +1214,7 @@ def find_files(
 
         cmd = " ".join(cmd_parts) + f" 2>/dev/null | head -n {max_results}"
 
-        result = _run_command(cmd, cwd="/")
+        result = _run_command(cmd, cwd=dir_path)
 
         if result.get("status") == "error":
             return json.dumps(result)
@@ -1126,6 +1289,8 @@ def transform_text(
 
         if is_file:
             file_path = os.path.abspath(os.path.expanduser(input_text))
+            # Validate path is within allowed directories
+            file_path = _validate_read_path(file_path)
             if not os.path.isfile(file_path):
                 return json.dumps({
                     "error": f"File not found: {file_path}",
@@ -1214,6 +1379,9 @@ def get_document_context(
         return err
     try:
         file_path = os.path.abspath(os.path.expanduser(path))
+
+        # Validate path is within allowed directories
+        file_path = _validate_read_path(file_path)
 
         if not os.path.isfile(file_path):
             return json.dumps({
@@ -1332,7 +1500,7 @@ def run(
     options: dict = {}
 ) -> None:
     """Run the MCP server."""
-    global DATA_PATH
+    global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV
 
     if 'verbose' in options:
         logger.setLevel(logging.INFO)
@@ -1342,6 +1510,14 @@ def run(
     if 'data_path' in options:
         DATA_PATH = options['data_path']
     _secure_makedirs(os.path.abspath(os.path.expanduser(DATA_PATH)))
+
+    if 'documents_path' in options:
+        DOCUMENTS_PATH = options['documents_path']
+    elif os.environ.get('ONIT_DOCUMENTS_PATH'):
+        DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
+
+    # Reset sandbox env cache so it picks up new DATA_PATH/DOCUMENTS_PATH
+    _SANDBOX_ENV = None
 
     logger.info(f"Starting Bash MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")

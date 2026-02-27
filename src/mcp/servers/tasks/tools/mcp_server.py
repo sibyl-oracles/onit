@@ -52,6 +52,9 @@ mcp = FastMCP("Tools MCP Server")
 # Data path for file creation (set via options['data_path'] in run())
 DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
 
+# Optional read-only documents directory (set via options or env var in run())
+DOCUMENTS_PATH = None
+
 
 def _secure_makedirs(dir_path: str) -> None:
     """Create directory with owner-only permissions (0o700)."""
@@ -69,12 +72,14 @@ def _validate_required(**kwargs) -> str:
     return ""
 
 
-def _init_submodules(data_path: str, verbose: bool = False):
-    """Initialize DATA_PATH and logging in both sub-modules."""
+def _init_submodules(data_path: str, documents_path: str = None, verbose: bool = False):
+    """Initialize DATA_PATH, DOCUMENTS_PATH, and logging in both sub-modules."""
     import src.mcp.servers.tasks.os.bash.mcp_server as bash_mod
     import src.mcp.servers.tasks.web.search.mcp_server as search_mod
 
     bash_mod.DATA_PATH = data_path
+    bash_mod.DOCUMENTS_PATH = documents_path
+    bash_mod._SANDBOX_ENV = None  # Reset sandbox env cache
     search_mod.DATA_PATH = data_path
     search_mod.DEFAULT_MEDIA_DIR = os.path.join(
         os.path.abspath(os.path.expanduser(data_path)), "media"
@@ -462,7 +467,7 @@ def run(
     options: dict = {}
 ) -> None:
     """Run the consolidated Tools MCP server."""
-    global DATA_PATH
+    global DATA_PATH, DOCUMENTS_PATH
 
     verbose = 'verbose' in options
     if verbose:
@@ -475,8 +480,13 @@ def run(
     abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
     _secure_makedirs(abs_data)
 
-    # Propagate DATA_PATH and log level to sub-modules
-    _init_submodules(DATA_PATH, verbose=verbose)
+    if 'documents_path' in options:
+        DOCUMENTS_PATH = options['documents_path']
+    elif os.environ.get('ONIT_DOCUMENTS_PATH'):
+        DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
+
+    # Propagate DATA_PATH, DOCUMENTS_PATH, and log level to sub-modules
+    _init_submodules(DATA_PATH, documents_path=DOCUMENTS_PATH, verbose=verbose)
 
     logger.info(f"Starting Tools MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")

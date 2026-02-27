@@ -251,6 +251,11 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     """Start MCP servers if they are not already running, then wait for readiness."""
     from urllib.parse import urlparse
 
+    # Propagate documents_path to MCP servers via environment variable
+    docs_path = config_data.get('documents_path', '')
+    if docs_path:
+        os.environ['ONIT_DOCUMENTS_PATH'] = docs_path
+
     # Check if servers are already running by probing the first enabled server port
     servers = config_data.get('mcp', {}).get('servers', [])
     already_running = True

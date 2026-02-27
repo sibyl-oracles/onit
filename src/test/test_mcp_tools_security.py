@@ -8,11 +8,27 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+import src.mcp.servers.tasks.os.bash.mcp_server as bash_mod
 from src.mcp.servers.tasks.os.bash.mcp_server import (
     search_directory,
     find_files,
     transform_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def _set_data_path(tmp_path):
+    """Set DATA_PATH to tmp_path so tools accept test directories."""
+    old_data = bash_mod.DATA_PATH
+    old_docs = bash_mod.DOCUMENTS_PATH
+    old_env = bash_mod._SANDBOX_ENV
+    bash_mod.DATA_PATH = str(tmp_path)
+    bash_mod.DOCUMENTS_PATH = None
+    bash_mod._SANDBOX_ENV = None
+    yield
+    bash_mod.DATA_PATH = old_data
+    bash_mod.DOCUMENTS_PATH = old_docs
+    bash_mod._SANDBOX_ENV = old_env
 
 
 # ── search_directory ───────────────────────────────────────────────────────
