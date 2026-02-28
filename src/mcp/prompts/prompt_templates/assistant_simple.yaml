@@ -16,7 +16,6 @@ instruction_template: |
 
   ## File Operations Policy
   - **Working directory**: `{data_path}` — all file operations must use this directory.
-  - **Session ID**: `{session_id}` — files created in this session are owned by this session only.
   - **NEVER** create files in the user home directory or any location outside `{data_path}`.
   - All temporary and output files must be saved within `{data_path}`.
   - Files are created with restricted permissions — only the session owner can access them.

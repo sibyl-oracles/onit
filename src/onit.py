@@ -120,7 +120,6 @@ class OnItA2AExecutor(AgentExecutor):
             result = await self.onit.process_task(
                 task,
                 images=image_paths if image_paths else None,
-                session_id=session["session_id"],
                 session_path=session["session_path"],
                 data_path=session["data_path"],
                 safety_queue=session["safety_queue"],
@@ -463,7 +462,6 @@ class OnIt(BaseModel):
             self.status = "stopped"
 
     async def process_task(self, task: str, images: list[str] | None = None,
-                           session_id: str | None = None,
                            session_path: str | None = None,
                            data_path: str | None = None,
                            safety_queue: asyncio.Queue | None = None) -> str:
@@ -472,13 +470,11 @@ class OnIt(BaseModel):
         Args:
             task: The user task/message to process.
             images: Optional list of image file paths.
-            session_id: Optional override for session_id (e.g. per-chat in Telegram).
             session_path: Optional override for session history file path.
             data_path: Optional override for data directory path.
             safety_queue: Optional per-session safety queue (e.g. per-tab in web UI).
         """
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
-        effective_session_id = session_id or self.session_id
         effective_session_path = session_path or self.session_path
         effective_data_path = data_path or self.data_path
         effective_safety_queue = safety_queue or self.safety_queue
@@ -490,7 +486,7 @@ class OnIt(BaseModel):
         async with prompt_client:
             instruction = await prompt_client.get_prompt("assistant", {
                 "task": task,
-                "session_id": effective_session_id,
+                "data_path": effective_data_path,
                 "template_path": self.template_path,
                 "file_server_url": self.file_server_url,
                 "documents_path": self.documents_path,
@@ -561,7 +557,7 @@ class OnIt(BaseModel):
                 print(f"--- Iteration {iteration} ---")
                 async with prompt_client:
                     instruction = await prompt_client.get_prompt("assistant", {"task": self.task,
-                                                                                "session_id": self.session_id,
+                                                                                "data_path": self.data_path,
                                                                                 "template_path": self.template_path,
                                                                                 "file_server_url": self.file_server_url,
                                                                                 "documents_path": self.documents_path,
@@ -664,15 +660,22 @@ class OnIt(BaseModel):
         from starlette.responses import FileResponse, Response, JSONResponse
         from starlette.routing import Route
 
-        data_path = self.data_path
+        def _find_session_data_path(session_id: str) -> str | None:
+            """Look up per-context data_path by session_id."""
+            for session in executor._sessions.values():
+                if session["session_id"] == session_id:
+                    return session["data_path"]
+            return None
 
         async def serve_upload(request: Request) -> Response:
+            session_id = request.path_params["session_id"]
+            session_data_path = _find_session_data_path(session_id)
+            if session_data_path is None:
+                return Response(content="Session not found", status_code=404)
             filename = request.path_params["filename"]
             safe_name = os.path.basename(filename)
-            filepath = os.path.join(data_path, safe_name)
+            filepath = os.path.join(session_data_path, safe_name)
             if os.path.isfile(filepath):
-                # Read file content directly to avoid Content-Length mismatch
-                # if the file is still being written concurrently.
                 try:
                     with open(filepath, "rb") as f:
                         content = f.read()
@@ -684,22 +687,26 @@ class OnIt(BaseModel):
             return Response(content="File not found", status_code=404)
 
         async def receive_upload(request: Request) -> Response:
+            session_id = request.path_params["session_id"]
+            session_data_path = _find_session_data_path(session_id)
+            if session_data_path is None:
+                return Response(content="Session not found", status_code=404)
             from starlette.formparsers import MultiPartParser
-            os.makedirs(data_path, exist_ok=True)
+            os.makedirs(session_data_path, exist_ok=True)
             form = await request.form()
             upload = form.get("file")
             if upload is None:
                 return JSONResponse({"error": "No file provided"}, status_code=400)
             safe_name = os.path.basename(upload.filename)
-            filepath = os.path.join(data_path, safe_name)
+            filepath = os.path.join(session_data_path, safe_name)
             content = await upload.read()
             with open(filepath, "wb") as f:
                 f.write(content)
             await form.close()
             return JSONResponse({"filename": safe_name, "status": "ok"})
 
-        starlette_app.routes.insert(0, Route("/uploads/{filename}", serve_upload, methods=["GET"]))
-        starlette_app.routes.insert(0, Route("/uploads/", receive_upload, methods=["POST"]))
+        starlette_app.routes.insert(0, Route("/uploads/{session_id}/{filename}", serve_upload, methods=["GET"]))
+        starlette_app.routes.insert(0, Route("/uploads/{session_id}/", receive_upload, methods=["POST"]))
 
         # Wrap app with disconnect detection middleware
         wrapped_app = ClientDisconnectMiddleware(starlette_app, executor)
@@ -786,7 +793,7 @@ class OnIt(BaseModel):
             # prompt engineering
             async with prompt_client:
                 instruction = await prompt_client.get_prompt("assistant", {"task": task,
-                                                                            "session_id": self.session_id,
+                                                                            "data_path": self.data_path,
                                                                             "template_path": self.template_path,
                                                                             "file_server_url": self.file_server_url,
                                                                             "documents_path": self.documents_path,

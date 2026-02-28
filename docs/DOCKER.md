@@ -3,7 +3,7 @@
 ## Build the image
 
 ```bash
-docker build -t onit .
+docker build --no-cache -t onit .
 ```
 
 ## Run the container
@@ -82,11 +82,12 @@ docker run --rm -it onit --client --a2a-host http://host.docker.internal:9001 --
 ### Gateway mode (Telegram)
 
 ```bash
-docker run --name onit --rm \
+docker run --name onit-telegram --rm \
   -e ONIT_HOST=<HOST> \
   -e TELEGRAM_BOT_TOKEN=<TOKEN> \
-  -e OLLAMA_API_KEY=<TOKEN> \
+  -e OLLAMA_API_KEY=<KEY> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
+  --cap-drop ALL \
   -p 18200-18204:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
@@ -100,13 +101,14 @@ docker run --name onit --rm \
 ### Gateway mode (Viber)
 
 ```bash
-docker run --name onit --rm \
+docker run --name onit-viber --rm \
   -e ONIT_HOST=<HOST> \
   -e VIBER_BOT_TOKEN=<TOKEN> \
   -e VIBER_WEBHOOK_URL=<WEBHOOK_URL> \
-  -e OLLAMA_API_KEY=<TOKEN> \
+  -e OLLAMA_API_KEY=<KEY> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
-  -p 8443:8443 -p 18200-18204:18200-18204 --ipc host \
+  --cap-drop ALL \
+  -p 8443:8443 -p 18210-18214:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
   --documents-path /docs/my_topic \
@@ -117,6 +119,8 @@ docker run --name onit --rm \
 ```
 
 Port 8443 must be exposed for the Viber webhook server.
+
+> **Running both gateways simultaneously:** Each container must use a unique `--name` and non-overlapping host ports. The Telegram container binds MCP ports `18200-18204` while the Viber container maps them to `18210-18214` on the host. Port 8443 is only needed by Viber (for the webhook server), so it is not included in the Telegram command.
 
 ### With a custom config
 

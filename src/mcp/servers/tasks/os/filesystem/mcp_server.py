@@ -83,6 +83,30 @@ def _validate_required(**kwargs) -> str:
     return ""
 
 
+def _validate_read_path(file_path: str) -> str:
+    """Validate that the path is within DATA_PATH. Returns resolved absolute path.
+    Raises ValueError if outside allowed directory."""
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
+        return abs_path
+    raise ValueError(
+        f"Access denied. Path must be within: {abs_data}. Got: {abs_path}"
+    )
+
+
+def _validate_dir_path(dir_path: str) -> str:
+    """Validate a directory path is within DATA_PATH. Returns resolved absolute path.
+    Raises ValueError if outside allowed directory."""
+    abs_path = os.path.realpath(os.path.expanduser(dir_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
+        return abs_path
+    raise ValueError(
+        f"Directory access denied. Path must be within: {abs_data}. Got: {abs_path}"
+    )
+
+
 def _run_command(command: str, cwd: str = ".", timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
     """Execute a shell command and return results."""
     try:
@@ -226,7 +250,7 @@ def _get_file_content(file_path: str) -> tuple[str, str]:
 Uses grep-like regex pattern matching and returns matching lines with surrounding context.
 
 IMPORTANT - Required parameters:
-- path: File path to search (e.g., "~/docs/report.pdf", "README.md")
+- path: File path within data_path folder to search (e.g., "data_path/report.pdf", "data_path/README.md")
 - pattern: Regex search pattern to find in the document (e.g., "error.*timeout", "subjects")
   Do NOT use 'query' - the parameter name is 'pattern'.
 
@@ -237,13 +261,13 @@ Optional parameters:
 - max_matches: Maximum number of matches to return (default: 50).
   Do NOT use 'max_sections' - the parameter name is 'max_matches'.
 
-Example: search_document(path="report.pdf", pattern="conclusion")
+Example: search_document(path="data_path/report.pdf", pattern="conclusion")
 
 Returns JSON: {matches, total_matches, file, format, status}
 Each match includes: {line_number, match, context_before, context_after}"""
 )
 def search_document(
-    path: Annotated[Optional[str], Field(description="File path to search (e.g., '~/docs/report.pdf', 'README.md')")] = None,
+    path: Annotated[Optional[str], Field(description="File path within data_path folder to search")] = None,
     pattern: Annotated[Optional[str], Field(description="Regex search pattern to find in the document (e.g., 'error.*timeout', 'subjects')")] = None,
     case_sensitive: Annotated[bool, Field(description="Whether search is case-sensitive")] = False,
     context_lines: Annotated[int, Field(description="Number of lines of context before/after each match")] = 3,
@@ -252,15 +276,15 @@ def search_document(
     if err := _validate_required(path=path, pattern=pattern):
         return err
     try:
-        file_path = os.path.abspath(os.path.expanduser(path))
-        
+        file_path = _validate_read_path(path)
+
         if not os.path.isfile(file_path):
             return json.dumps({
                 "error": f"File not found: {file_path}",
                 "path": path,
                 "status": "error"
             })
-        
+
         content, file_format = _get_file_content(file_path)
         
         if file_format == "error":
@@ -328,7 +352,7 @@ def search_document(
 Recursively searches text files matching the file pattern.
 
 Args:
-- directory: Directory to search (e.g., "~/projects", ".")
+- directory: Directory within data_path folder to search (e.g., "data_path", "data_path/subdir")
 - pattern: Search pattern (regex with -E flag)
 - file_pattern: File glob pattern (default: "*" for all files)
 - case_sensitive: Case-sensitive search (default: false)
@@ -349,8 +373,8 @@ def search_directory(
     if err := _validate_required(directory=directory, pattern=pattern):
         return err
     try:
-        dir_path = os.path.abspath(os.path.expanduser(directory))
-        
+        dir_path = _validate_dir_path(directory)
+
         if not os.path.isdir(dir_path):
             return json.dumps({
                 "error": f"Directory not found: {dir_path}",
@@ -418,7 +442,7 @@ def search_directory(
 Tables are returned in a structured format with headers and rows.
 
 Args:
-- path: File path (e.g., "report.pdf", "README.md")
+- path: File path within data_path folder (e.g., "data_path/report.pdf", "data_path/README.md")
 - table_index: Specific table index to extract (1-based, default: all)
 - output_format: Output format - "json" or "markdown" (default: "json")
 
@@ -433,8 +457,8 @@ def extract_tables(
     if err := _validate_required(path=path):
         return err
     try:
-        file_path = os.path.abspath(os.path.expanduser(path))
-        
+        file_path = _validate_read_path(path)
+
         if not os.path.isfile(file_path):
             return json.dumps({
                 "error": f"File not found: {file_path}",
@@ -518,10 +542,10 @@ def extract_tables(
 @mcp.tool(
     title="Find Files",
     description="""Find files matching patterns using the find command.
-Searches recursively from the specified directory.
+Searches recursively from the specified directory within data_path folder.
 
 Args:
-- directory: Directory to search (default: ".")
+- directory: Directory within data_path folder to search (default: data_path)
 - name_pattern: File name pattern (glob, e.g., "*.py", "test_*")
 - file_type: Type filter - "f" (file), "d" (directory), or None (all)
 - max_depth: Maximum directory depth (default: unlimited)
@@ -541,15 +565,15 @@ def find_files(
     max_results: int = 100
 ) -> str:
     try:
-        dir_path = os.path.abspath(os.path.expanduser(directory))
-        
+        dir_path = _validate_dir_path(directory)
+
         if not os.path.isdir(dir_path):
             return json.dumps({
                 "error": f"Directory not found: {dir_path}",
                 "directory": directory,
                 "status": "error"
             })
-        
+
         # Validate numeric parameters
         max_results = int(max_results)
         if max_results <= 0:
@@ -675,7 +699,7 @@ def transform_text(
 
         # Get input content
         if is_file:
-            file_path = os.path.abspath(os.path.expanduser(input_text))
+            file_path = _validate_read_path(input_text)
             if not os.path.isfile(file_path):
                 return json.dumps({
                     "error": f"File not found: {file_path}",
@@ -746,7 +770,7 @@ def transform_text(
 Searches for keywords and returns surrounding context that can support answers.
 
 Args:
-- path: Document path (text, PDF, or markdown)
+- path: Document path within data_path folder (text, PDF, or markdown)
 - query: The question or topic to find context for
 - keywords: Additional keywords to search (comma-separated)
 - context_chars: Characters of context around matches (default: 500)
@@ -765,17 +789,17 @@ def get_document_context(
     if err := _validate_required(path=path, query=query):
         return err
     try:
-        file_path = os.path.abspath(os.path.expanduser(path))
-        
+        file_path = _validate_read_path(path)
+
         if not os.path.isfile(file_path):
             return json.dumps({
                 "error": f"File not found: {file_path}",
                 "path": path,
                 "status": "error"
             })
-        
+
         content, file_format = _get_file_content(file_path)
-        
+
         if file_format == "error" or not content:
             return json.dumps({
                 "error": "Failed to read file",

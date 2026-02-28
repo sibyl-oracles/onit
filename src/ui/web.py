@@ -694,7 +694,6 @@ class WebChatUI:
                         try:
                             response = await self._onit.process_task(
                                 task,
-                                session_id=s.session_id,
                                 session_path=s.session_path,
                                 data_path=s.data_path,
                                 safety_queue=s.safety_queue,
@@ -1053,16 +1052,15 @@ class WebChatUI:
         print("✓ OAuth2 routes registered: /auth/login, /auth/callback, /auth/logout, /auth/check")
 
     def _setup_file_routes(self, fastapi_app: FastAPI):
-        """Add routes to serve and receive files from data_path."""
+        """Add routes to serve and receive files scoped per session."""
         @fastapi_app.get("/uploads/{session_id}/{filename}")
         async def serve_upload(session_id: str, filename: str):
             # Use basename to prevent path traversal
             safe_name = os.path.basename(filename)
-            # Look up session's data_path
-            if session_id in self._web_sessions:
-                data_path = self._web_sessions[session_id].data_path
-            else:
-                data_path = self.data_path
+            # Look up session's data_path; reject unknown sessions
+            if session_id not in self._web_sessions:
+                return Response(content="Session not found", status_code=404)
+            data_path = self._web_sessions[session_id].data_path
             filepath = os.path.join(data_path, safe_name)
             if os.path.isfile(filepath):
                 try:
@@ -1075,28 +1073,15 @@ class WebChatUI:
                     return Response(content="File read error", status_code=500)
             return Response(content="File not found", status_code=404)
 
-        # Keep legacy route for backward compatibility
-        @fastapi_app.get("/uploads/{filename}")
-        async def serve_upload_legacy(filename: str):
-            safe_name = os.path.basename(filename)
-            filepath = os.path.join(self.data_path, safe_name)
-            if os.path.isfile(filepath):
-                try:
-                    with open(filepath, "rb") as f:
-                        content = f.read()
-                    import mimetypes
-                    media_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
-                    return Response(content=content, media_type=media_type)
-                except OSError:
-                    return Response(content="File read error", status_code=500)
-            return Response(content="File not found", status_code=404)
-
-        @fastapi_app.post("/uploads/")
-        async def receive_upload(file: UploadFile = File(...)):
-            """Accept file uploads from remote MCP tools."""
-            os.makedirs(self.data_path, exist_ok=True)
+        @fastapi_app.post("/uploads/{session_id}/")
+        async def receive_upload(session_id: str, file: UploadFile = File(...)):
+            """Accept file uploads from remote MCP tools, scoped per session."""
+            if session_id not in self._web_sessions:
+                return Response(content="Session not found", status_code=404)
+            data_path = self._web_sessions[session_id].data_path
+            os.makedirs(data_path, exist_ok=True)
             safe_name = os.path.basename(file.filename)
-            filepath = os.path.join(self.data_path, safe_name)
+            filepath = os.path.join(data_path, safe_name)
             content = await file.read()
             with open(filepath, "wb") as f:
                 f.write(content)
@@ -1116,7 +1101,13 @@ class WebChatUI:
         self._setup_file_routes(fastapi_app)
 
         # Mount Gradio app onto our FastAPI app
-        fastapi_app = gr.mount_gradio_app(fastapi_app, self.app, path="/")
+        # Allow Gradio to serve files from session data directories so
+        # gr.FileData download links render correctly in the chatbot.
+        data_root = str(Path(tempfile.gettempdir()) / "onit" / "data")
+        allowed = [data_root, self.data_path]
+        fastapi_app = gr.mount_gradio_app(
+            fastapi_app, self.app, path="/", allowed_paths=allowed
+        )
 
         print(f"\n{'='*60}")
         print(f"🚀 Launching OnIt Web UI on http://0.0.0.0:{self.server_port}")

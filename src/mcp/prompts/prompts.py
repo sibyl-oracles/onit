@@ -17,7 +17,7 @@
 from fastmcp import FastMCP
 from datetime import datetime
 import yaml
-import uuid
+
 import logging
 from pathlib import Path
 
@@ -28,42 +28,35 @@ mcp_prompts = FastMCP("Prompts MCP")
 
 @mcp_prompts.prompt("assistant")
 async def assistant_instruction(task: str,
-                                session_id: str = None,
+                                data_path: str = None,
                                 template_path: str = None,
                                 file_server_url: str = None,
                                 documents_path: str = None,
                                 topic: str = None) -> str:
-   import tempfile
+   if not data_path:
+      raise ValueError("data_path is required and must be a non-empty string")
 
-   if session_id is None:
-      session_id = str(uuid.uuid4())
-
-   data_path = str(Path(tempfile.gettempdir()) / "onit" / "data" / session_id)
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
 
    default_template = """
-Think step by step on how to complete the following task enclosed in <task> and </task> tags.
+You are an autonomous agent with access to tools and a file system.
 
-<task>
+## Context
+- **Today's date**: {current_date}
+- **Working directory** or **data_path**: {data_path} — all file read/write operations must use this path.
+
+## Constraints
+- NEVER create or modify files outside of `{data_path}`.
+- All tool call arguments for file paths and directories MUST use `{data_path}` as the base folder.
+
+## Task
 {task}
-</task>
-
-Execute the step by step action plan to complete the task.
-If you need additional information, ask for clarification.
-If you know the answer, provide it right away. Else, use the tools to complete the action plan.
-Use date today, `{current_date}`, in reasoning requiring date information.
-
-## File Operations Policy
-- **Working directory**: `{data_path}` — all file operations must use this directory.
-- **Session ID**: `{session_id}` — files created in this session are owned by this session only.
-- **NEVER** create files in the user home directory or any location outside `{data_path}`.
 """
 
    template = default_template
 
    if template_path:
-
       template_file = Path(template_path)
       if template_file.exists() and template_file.suffix in ('.yaml', '.yml'):
          with open(template_file, 'r') as f:
@@ -73,32 +66,45 @@ Use date today, `{current_date}`, in reasoning requiring date information.
    instruction = template.format(
       task=task,
       current_date=current_date,
-      data_path=data_path,
-      session_id=session_id
+      data_path=data_path
    )
 
    if topic and topic != "null":
       instruction += f"""
+## Topic
 Unless specified, assume that the topic is about `{topic}`.
 """
 
    if file_server_url and file_server_url != "null":
+      upload_id = Path(data_path).name
+      upload_prefix = f"{file_server_url}/uploads/{upload_id}"
       instruction += f"""
-Files are served by a remote file server at {file_server_url}/uploads/.
+Files are served by a remote file server at {upload_prefix}/.
 Before reading any file referenced in the task, first download it:
-  curl -s {file_server_url}/uploads/<filename> -o {data_path}/<filename>
+  curl -s {upload_prefix}/<filename> -o {data_path}/<filename>
 After creating or saving any output file, upload it back to the file server:
-  curl -s -X POST -F 'file=@{data_path}/<filename>' {file_server_url}/uploads/
+  curl -s -X POST -F 'file=@{data_path}/<filename>' {upload_prefix}/
 Always download before reading and upload after writing.
-When using create_presentation, create_excel, or create_document tools, always pass callback_url="{file_server_url}" so files are automatically uploaded.
+When using create_presentation, create_excel, or create_document tools, always pass callback_url="{upload_prefix}" so files are automatically uploaded.
 """
 
    if documents_path and documents_path != "null":
       instruction += f"""
+## Background Documents
 Start with documents (PDF, TXT, DOCX, XLSX, PPTX, and Markdown (MD)) in `{documents_path}`.
 Search the web for additional information if needed.
 """
 
+   instruction += f"""
+## Instructions
+1. If the answer is straightforward, respond directly without tool use.
+2. Otherwise, reason step by step, invoke tools as needed, and work toward a final answer.
+3. If critical information is missing and cannot be inferred, ask exactly one clarifying question before proceeding.
+4. If a file was generated, provide a url link.
+5. Conclude with your final answer in this format:
+
+<your answer here>
+"""
    return instruction
 
 

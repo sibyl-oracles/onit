@@ -130,7 +130,7 @@ Args:
 - url: Webpage URL to fetch (e.g., "https://example.com/article")
 - extract_media: Extract image/video URLs (default: True)
 - download_media: Download media files locally (default: False)
-- output_dir: Save location for downloads (default: server data directory/media)
+- output_dir: Save location for downloads within data_path folder (default: data_path/media)
 - media_limit: Max files to download (default: 10)
 
 Returns JSON: {title, url, content, images, videos, downloaded}"""
@@ -174,8 +174,8 @@ def get_weather(place: str = None, forecast: bool = False) -> str:
     description="""Extract all images from a PDF file and save them locally.
 
 Args:
-- pdf_path: Path to PDF file or URL (required)
-- output_dir: Directory to save extracted images (default: server data directory/pdf_images)
+- pdf_path: Path to PDF file within data_path folder or URL (required)
+- output_dir: Directory within data_path folder to save extracted images (default: data_path/pdf_images)
 - min_size: Minimum image dimension in pixels to extract (default: 100)
 
 Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}"""
@@ -207,8 +207,8 @@ from src.mcp.servers.tasks.os.bash.mcp_server import (
     description="""Execute a bash/shell command. Captures stdout, stderr, and return code.
 
 Args:
-- command: Shell command to run (e.g., "ls -la", "git status", "grep -r 'TODO' .")
-- cwd: Working directory (default: current dir)
+- command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
+- cwd: Working directory — must be within data_path (default: data_path)
 - timeout: Max seconds to wait (default: 300)
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}"""
@@ -224,7 +224,7 @@ def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300) -> s
     description="""Read file contents. Supports text files and PDFs. Binary files (images, audio, video) return metadata only.
 
 Args:
-- path: File path (e.g., "~/docs/file.py", "/tmp/report.pdf")
+- path: File path within data_path folder (e.g., "data_path/report.pdf", "data_path/output.txt")
 - encoding: Text encoding (default: utf-8)
 - max_chars: Max characters to read (default: 100000)
 
@@ -239,10 +239,10 @@ def read_file(path: Optional[str] = None, encoding: str = "utf-8", max_chars: in
 @mcp.tool(
     title="Write File",
     description="""Write content to a file. Creates directories if needed.
-Files are created within the server's designated data directory with owner-only access.
+Files are created within data_path folder with owner-only access.
 
 Args:
-- path: File path relative to data directory, or absolute within data directory (required)
+- path: File path within data_path folder, relative or absolute (required)
 - content: Text content to write (required)
 - mode: "write" (overwrite) or "append" (add to end) (default: "write")
 - encoding: Text encoding (default: utf-8)
@@ -263,8 +263,8 @@ If callback_url is provided, uploads the file via HTTP POST and returns the down
 Otherwise, returns the file content as base64-encoded data (max 10MB).
 
 Args:
-- path: Path to the file on this host (required)
-- callback_url: URL to upload the file to (e.g., "http://host:9000"). File is POSTed to {callback_url}/uploads/ (optional)
+- path: Path to the file within data_path folder (required)
+- callback_url: Full upload URL prefix (e.g., "http://host:9000/uploads/session_id"). File is POSTed to {callback_url}/ (optional)
 
 Returns JSON: {filename, size_bytes, download_url, status} or {filename, size_bytes, content_base64, status}"""
 )
@@ -280,7 +280,7 @@ def send_file(path: Optional[str] = None, callback_url: Optional[str] = None) ->
 Uses grep-like regex pattern matching and returns matching lines with surrounding context.
 
 IMPORTANT - Required parameters:
-- path: File path to search (e.g., "~/docs/report.pdf", "README.md")
+- path: File path within data_path folder to search (e.g., "data_path/report.pdf", "data_path/README.md")
 - pattern: Regex search pattern to find in the document (e.g., "error.*timeout", "subjects")
   Do NOT use 'query' - the parameter name is 'pattern'.
 
@@ -291,13 +291,13 @@ Optional parameters:
 - max_matches: Maximum number of matches to return (default: 50).
   Do NOT use 'max_sections' - the parameter name is 'max_matches'.
 
-Example: search_document(path="report.pdf", pattern="conclusion")
+Example: search_document(path="data_path/report.pdf", pattern="conclusion")
 
 Returns JSON: {matches, total_matches, file, format, status}
 Each match includes: {line_number, match, context_before, context_after}"""
 )
 def search_document(
-    path: Annotated[Optional[str], Field(description="File path to search (e.g., '~/docs/report.pdf', 'README.md')")] = None,
+    path: Annotated[Optional[str], Field(description="File path within data_path folder to search")] = None,
     pattern: Annotated[Optional[str], Field(description="Regex search pattern to find in the document (e.g., 'error.*timeout', 'subjects')")] = None,
     case_sensitive: Annotated[bool, Field(description="Whether search is case-sensitive")] = False,
     context_lines: Annotated[int, Field(description="Number of lines of context before/after each match")] = 3,
@@ -317,7 +317,7 @@ def search_document(
 Recursively searches text files matching the file pattern.
 
 Args:
-- directory: Directory to search (e.g., "~/projects", ".")
+- directory: Directory within data_path folder to search (e.g., "data_path", "data_path/subdir")
 - pattern: Search pattern (regex with -E flag)
 - file_pattern: File glob pattern (default: "*" for all files)
 - case_sensitive: Case-sensitive search (default: false)
@@ -350,7 +350,7 @@ def search_directory(
 Tables are returned in a structured format with headers and rows.
 
 Args:
-- path: File path (e.g., "report.pdf", "README.md")
+- path: File path within data_path folder (e.g., "data_path/report.pdf", "data_path/README.md")
 - table_index: Specific table index to extract (1-based, default: all)
 - output_format: Output format - "json" or "markdown" (default: "json")
 
@@ -368,10 +368,10 @@ def extract_tables(
 @mcp.tool(
     title="Find Files",
     description="""Find files matching patterns using the find command.
-Searches recursively from the specified directory.
+Searches recursively from the specified directory within data_path folder.
 
 Args:
-- directory: Directory to search (default: ".")
+- directory: Directory within data_path folder to search (default: data_path)
 - name_pattern: File name pattern (glob, e.g., "*.py", "test_*")
 - file_type: Type filter - "f" (file), "d" (directory), or None (all)
 - max_depth: Maximum directory depth (default: unlimited)
@@ -431,7 +431,7 @@ def transform_text(
 Searches for keywords and returns surrounding context that can support answers.
 
 Args:
-- path: Document path (text, PDF, or markdown)
+- path: Document path within data_path folder (text, PDF, or markdown)
 - query: The question or topic to find context for
 - keywords: Additional keywords to search (comma-separated)
 - context_chars: Characters of context around matches (default: 500)

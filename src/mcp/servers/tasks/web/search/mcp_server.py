@@ -104,6 +104,30 @@ def _validate_required(**kwargs) -> str:
     return ""
 
 
+def _validate_write_path(file_path: str) -> str:
+    """Validate that the write path is within DATA_PATH. Returns absolute path.
+    Raises ValueError if outside allowed directory."""
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
+        raise ValueError(
+            f"Write path must be within: {abs_data}. Got: {abs_path}"
+        )
+    return abs_path
+
+
+def _validate_read_path(file_path: str) -> str:
+    """Validate that the read path is within DATA_PATH. Returns absolute path.
+    Raises ValueError if outside allowed directory."""
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
+        raise ValueError(
+            f"Read access denied. Path must be within: {abs_data}. Got: {abs_path}"
+        )
+    return abs_path
+
+
 def _get_media_dir() -> str:
     """Get the media directory path within DATA_PATH."""
     return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "media")
@@ -359,7 +383,7 @@ Args:
 - url: Webpage URL to fetch (e.g., "https://example.com/article")
 - extract_media: Extract image/video URLs (default: True)
 - download_media: Download media files locally (default: False)
-- output_dir: Save location for downloads (default: server data directory/media)
+- output_dir: Save location for downloads within data_path folder (default: data_path/media)
 - media_limit: Max files to download (default: 10)
 
 Returns JSON: {title, url, content, images, videos, downloaded}"""
@@ -481,7 +505,7 @@ def fetch_content(
 
         # Download media if requested
         if download_media and media["images"]:
-            output_path = os.path.abspath(os.path.expanduser(output_dir)) if output_dir else _get_media_dir()
+            output_path = _validate_write_path(output_dir) if output_dir else _get_media_dir()
             downloaded = []
             for img_url in media["images"][:media_limit]:
                 dl_result = _download_file(img_url, output_path)
@@ -603,8 +627,8 @@ def get_weather(
     description="""Extract all images from a PDF file and save them locally.
 
 Args:
-- pdf_path: Path to PDF file or URL (required)
-- output_dir: Directory to save extracted images (default: server data directory/pdf_images)
+- pdf_path: Path to PDF file within data_path folder or URL (required)
+- output_dir: Directory within data_path folder to save extracted images (default: data_path/pdf_images)
 - min_size: Minimum image dimension in pixels to extract (default: 100)
 
 Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}"""
@@ -627,7 +651,7 @@ def extract_pdf_images(
     try:
         # Normalize output directory (default to DATA_PATH/pdf_images)
         if output_dir:
-            output_path = os.path.abspath(os.path.expanduser(output_dir))
+            output_path = _validate_write_path(output_dir)
         else:
             output_path = os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "pdf_images")
         _secure_makedirs(output_path)
@@ -645,7 +669,7 @@ def extract_pdf_images(
             pdf_name = os.path.basename(urlparse(pdf_path).path) or "document"
         else:
             # Local file
-            local_path = os.path.abspath(os.path.expanduser(pdf_path))
+            local_path = _validate_read_path(pdf_path)
             if not os.path.exists(local_path):
                 return json.dumps({"error": f"PDF not found: {local_path}"})
             doc = fitz.open(local_path)

@@ -205,7 +205,6 @@ class ViberGateway:
         try:
             response = await self.onit.process_task(
                 text,
-                session_id=session["session_id"],
                 session_path=session["session_path"],
                 data_path=session["data_path"],
             )
@@ -263,7 +262,6 @@ class ViberGateway:
             response = await self.onit.process_task(
                 caption,
                 images=[image_path],
-                session_id=session["session_id"],
                 session_path=session["session_path"],
                 data_path=session["data_path"],
             )

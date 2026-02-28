@@ -20,33 +20,40 @@ _assistant_fn = getattr(_decorated, "fn", _decorated)
 
 class TestAssistantInstruction:
     @pytest.mark.asyncio
-    async def test_basic_instruction(self):
-        result = await _assistant_fn(task="What is 2+2?", session_id="test-session")
+    async def test_basic_instruction(self, tmp_path):
+        dp = str(tmp_path / "data")
+        result = await _assistant_fn(task="What is 2+2?", data_path=dp)
         assert "What is 2+2?" in result
-        assert "test-session" in result
+        assert dp in result
 
     @pytest.mark.asyncio
-    async def test_generates_session_id_if_none(self):
-        result = await _assistant_fn(task="test task")
-        assert "test task" in result
-        assert "onit" in result
+    async def test_raises_if_data_path_none(self):
+        with pytest.raises(ValueError, match="data_path is required"):
+            await _assistant_fn(task="test task")
 
     @pytest.mark.asyncio
-    async def test_includes_data_path(self):
-        result = await _assistant_fn(task="test", session_id="sid")
-        assert "data" in result
+    async def test_raises_if_data_path_empty(self):
+        with pytest.raises(ValueError, match="data_path is required"):
+            await _assistant_fn(task="test task", data_path="")
+
+    @pytest.mark.asyncio
+    async def test_includes_data_path(self, tmp_path):
+        dp = str(tmp_path / "data")
+        result = await _assistant_fn(task="test", data_path=dp)
+        assert dp in result
 
     @pytest.mark.asyncio
     async def test_custom_template(self, tmp_path):
         template_content = {
-            "instruction_template": "Custom: {task} in {data_path} for {session_id}"
+            "instruction_template": "Custom: {task} in {data_path}"
         }
         template_file = tmp_path / "custom.yaml"
         template_file.write_text(yaml.dump(template_content))
 
+        dp = str(tmp_path / "data")
         result = await _assistant_fn(
             task="my task",
-            session_id="s1",
+            data_path=dp,
             template_path=str(template_file),
         )
         assert "Custom: my task" in result
@@ -56,40 +63,55 @@ class TestAssistantInstruction:
         template_file = tmp_path / "empty.yaml"
         template_file.write_text(yaml.dump({"other_key": "value"}))
 
+        dp = str(tmp_path / "data")
         result = await _assistant_fn(
             task="fallback test",
-            session_id="s2",
+            data_path=dp,
             template_path=str(template_file),
         )
         assert "fallback test" in result
         assert "step by step" in result
 
     @pytest.mark.asyncio
-    async def test_nonexistent_template_uses_default(self):
+    async def test_nonexistent_template_uses_default(self, tmp_path):
+        dp = str(tmp_path / "data")
         result = await _assistant_fn(
             task="no template",
-            session_id="s3",
+            data_path=dp,
             template_path="/nonexistent/template.yaml",
         )
         assert "no template" in result
         assert "step by step" in result
 
     @pytest.mark.asyncio
-    async def test_file_server_url_appended(self):
+    async def test_file_server_url_appended(self, tmp_path):
+        dp = str(tmp_path / "data")
         result = await _assistant_fn(
             task="create report",
-            session_id="s4",
+            data_path=dp,
             file_server_url="http://192.168.1.100:9000",
         )
-        assert "http://192.168.1.100:9000" in result
-        assert "uploads" in result
+        # Upload URLs should be session-scoped using last path component of data_path
+        assert "http://192.168.1.100:9000/uploads/data/" in result
         assert "callback_url" in result
 
     @pytest.mark.asyncio
-    async def test_no_file_server_url(self):
+    async def test_file_server_url_session_scoped(self, tmp_path):
+        """Verify upload URLs use session-specific path derived from data_path."""
+        dp = str(tmp_path / "abc-123")
+        result = await _assistant_fn(
+            task="test",
+            data_path=dp,
+            file_server_url="http://host:9000",
+        )
+        assert "http://host:9000/uploads/abc-123/" in result
+
+    @pytest.mark.asyncio
+    async def test_no_file_server_url(self, tmp_path):
+        dp = str(tmp_path / "data")
         result = await _assistant_fn(
             task="simple task",
-            session_id="s5",
+            data_path=dp,
             file_server_url=None,
         )
         assert "uploads" not in result

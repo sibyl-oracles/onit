@@ -1,6 +1,6 @@
 # Assistant Prompt Template
 # This template is used by the assistant_instruction function in prompts.py
-# Variables available: {task}, {data_path}, {session_id}
+# Variables available: {task}, {data_path}
 
 instruction_template: |
    Think step by step on how to complete the following task enclosed in <task> and </task> tags.
@@ -14,7 +14,6 @@ instruction_template: |
 
    ## File Operations Policy
    - **Working directory**: `{data_path}` — all file operations must use this directory.
-   - **Session ID**: `{session_id}` — files belong to this session only.
    - **NEVER** create files in the user home directory or any location outside `{data_path}`.
    - All temporary and output files must be saved within `{data_path}`.
    - Files are created with restricted permissions — only the session owner can access them.

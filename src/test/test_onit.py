@@ -313,7 +313,6 @@ class TestOnItA2AExecutor:
         call_kwargs = mock_onit.process_task.call_args
         assert call_kwargs[0][0] == "test task"
         assert call_kwargs[1]["images"] is None
-        assert "session_id" in call_kwargs[1]
         assert "session_path" in call_kwargs[1]
         assert "data_path" in call_kwargs[1]
         assert "safety_queue" in call_kwargs[1]
