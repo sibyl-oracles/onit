@@ -44,7 +44,7 @@ You are an autonomous agent with access to tools and a file system.
 
 ## Context
 - **Today's date**: {current_date}
-- **Working directory**: {data_path} — use this directory for all file read and write operations.
+- **Working directory**: {data_path} — sandbox folder for reading and writing files. 
 
 ## Constraints
 - NEVER create or modify files outside of `{data_path}`.
@@ -90,8 +90,8 @@ When using create_presentation, create_excel, or create_document tools, always p
    if documents_path and documents_path != "null":
       instruction += f"""
 ## Relevant Information
-Start with documents (PDF, TXT, DOCX, XLSX, PPTX, and Markdown (MD)) in `{documents_path}`.
-Search the web for additional information if needed.
+Search and read related documents (PDF, TXT, DOCX, XLSX, PPTX, and Markdown (MD)) in `{documents_path}`.
+Search the web for additional information **if and only if** above documents are insufficient to complete the task.
 """
 
    instruction += f"""
