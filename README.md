@@ -9,7 +9,7 @@ OnIt is an intelligent agent framework for task automation and assistance. It is
 ### 1. Install
 
 ```bash
-pip install onit==0.1.3c
+pip install onit==0.1.4a
 ```
 
 Or from source:

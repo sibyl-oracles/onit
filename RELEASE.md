@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.1.4a
+
+### New Features
+
+- **Streaming Output** — Chat responses now stream token-by-token in the terminal UI, web UI, and A2A client for a more responsive experience.
+- **Tokens/sec Indicator** — Real-time tok/s display during streaming output in both terminal and web interfaces.
+- **Auto Model Detection** — The model is now auto-detected from the LLM endpoint, removing the need to set it explicitly for vLLM hosts. OpenRouter users can still override with `--model`.
+- **VLM Web Image Fetch** — New MCP server (`VlmWebMCPServer`) for fetching and processing images from web URLs in vision-language model workflows.
+- **Web UI Tool Calls** — Tool call details are now shown inline during the spinner/thinking phase in the web UI.
+- **Windows Support** — OnIt now works on Windows with platform-specific fixes for signal handling and terminal UI.
+
+### Improvements
+
+- **Show Logs for Web & A2A** — The `--show-logs` flag now applies to web UI and A2A server modes, not just terminal and gateway.
+- **3 Default MCP Servers** — Added a third default MCP server for VLM web image URL fetching alongside the existing Prompts and Tools servers.
+- **Prompt Engineering** — Improved prompt templates for better instruction generation.
+
 ## v0.1.3c
 
 ### New Features

@@ -630,6 +630,7 @@ class OnIt(BaseModel):
                            data_path: str | None = None,
                            safety_queue: asyncio.Queue | None = None,
                            stream_callback=None,
+                           stream_complete_callback=None,
                            stream_throttle: int = 0,
                            stats: dict | None = None,
                            tool_status_callback=None) -> str:
@@ -644,6 +645,8 @@ class OnIt(BaseModel):
             stream_callback: Optional callback ``(token, full_content) -> None``
                 called for each streamed token so callers can deliver incremental
                 updates to their clients (web UI, A2A, etc.).
+            stream_complete_callback: Optional callback ``(content, tok_s) -> None``
+                called when a streaming phase ends (before tool calls begin).
             stream_throttle: When > 0, only invoke ``stream_callback`` every N
                 tokens to avoid flooding (useful for A2A SSE).
             tool_status_callback: Optional callback ``(status_text) -> None``
@@ -671,9 +674,10 @@ class OnIt(BaseModel):
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
         _adapter = None
-        if (stream_callback and self.stream) or tool_status_callback:
+        if stream_callback and self.stream:
             _adapter = StreamingAdapter(
-                on_token=stream_callback if self.stream else None,
+                on_token=stream_callback,
+                on_complete=stream_complete_callback,
                 show_logs=self.show_logs,
                 throttle_tokens=stream_throttle,
                 on_tool_status=tool_status_callback,

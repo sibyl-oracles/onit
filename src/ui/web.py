@@ -264,7 +264,7 @@ class WebSession:
     created: datetime = field(default_factory=datetime.now)
     streaming_content: str = ""
     streaming_active: bool = False
-    tool_status: str = ""  # current tool activity description (e.g. "Searching the web...")
+    streaming_committed: bool = False  # True once streamed partial has been saved as a permanent message
 
 
 class WebChatUI:
@@ -787,10 +787,8 @@ class WebChatUI:
                                 s.streaming_content = full_content
                                 s.streaming_active = True
 
-                            def _on_tool_status(status_text):
-                                s.tool_status = status_text
-                                if status_text:
-                                    s.streaming_active = False
+                            def _on_stream_complete(_content, _tok_s):
+                                s.streaming_active = False
 
                             _stats = {}
                             _task_start = time.monotonic()
@@ -800,13 +798,12 @@ class WebChatUI:
                                 data_path=s.data_path,
                                 safety_queue=s.safety_queue,
                                 stream_callback=_on_stream_token,
+                                stream_complete_callback=_on_stream_complete,
                                 stats=_stats,
-                                tool_status_callback=_on_tool_status,
                             )
                             _task_elapsed = time.monotonic() - _task_start
                             s.streaming_active = False
                             s.streaming_content = ""
-                            s.tool_status = ""
                             tok_s = _stats.get("tokens_per_second", 0)
                             if response:
                                 display, file_paths = self._extract_file_paths(
@@ -842,7 +839,6 @@ class WebChatUI:
                         finally:
                             s.streaming_active = False
                             s.streaming_content = ""
-                            s.tool_status = ""
                             s.processing = False
 
                     asyncio.run_coroutine_threadsafe(_run_task(), self._loop)
@@ -869,15 +865,21 @@ class WebChatUI:
                 was_spinner_shown = session.spinner_shown
                 chatbot_changed = False
 
-                # Remove spinner/streaming placeholder before appending real responses or when done
+                # Remove spinner placeholder before appending real responses or when done
                 if session.spinner_shown and (session.pending_responses or not session.processing):
                     if history:
-                        history = history[:-1]
+                        history = history[:-1]  # remove spinner
                     session.spinner_shown = False
                     chatbot_changed = True
+                    # Also remove the committed partial — the final response
+                    # contains the complete text so the partial is redundant.
+                    if session.streaming_committed and history:
+                        history = history[:-1]  # remove committed partial
+                        session.streaming_committed = False
                     if not session.processing:
                         session.spinner_step = 0
                         session.spinner_tick = 0
+                        session.streaming_committed = False
 
                 while session.pending_responses:
                     resp = session.pending_responses.pop(0)
@@ -887,7 +889,8 @@ class WebChatUI:
                 # Show streaming content or spinner while processing
                 if session.processing:
                     if session.streaming_active and session.streaming_content:
-                        # Show live streaming content
+                        # Show live streaming content (replaces spinner)
+                        session.streaming_committed = False
                         stream_msg = gr.ChatMessage(
                             role="assistant",
                             content=session.streaming_content,
@@ -899,22 +902,32 @@ class WebChatUI:
                             session.spinner_shown = True
                         chatbot_changed = True
                     else:
-                        # Fall back to spinner while waiting (e.g. tool calls)
+                        # Streaming stopped but still processing (tool call phase).
+                        # Commit the streamed partial as a permanent message so it
+                        # stays visible, then show the spinner *below* it.
+                        if not session.streaming_committed and session.streaming_content:
+                            # Replace the live-stream placeholder with a permanent message
+                            if session.spinner_shown and history:
+                                history = history[:-1]
+                                session.spinner_shown = False
+                            committed_msg = gr.ChatMessage(
+                                role="assistant",
+                                content=session.streaming_content,
+                            )
+                            history = history + [committed_msg]
+                            session.streaming_committed = True
+                            session.streaming_content = ""
+                            chatbot_changed = True
+
+                        # Show spinner (below the committed message if any)
                         session.spinner_tick += 1
                         spinner_text_changed = session.spinner_tick >= self._spinner_ticks_per_message
                         if spinner_text_changed:
                             session.spinner_tick = 0
                             session.spinner_step += 1
-                        # Use tool status if available, otherwise fall back to generic spinner
-                        if session.tool_status:
-                            status_msg = session.tool_status
-                            # Always update when tool status is active (it may change rapidly)
-                            spinner_text_changed = True
-                        else:
-                            status_msg = self._spinner_messages[
-                                session.spinner_step % len(self._spinner_messages)
-                            ]
-                        # Only update chatbot when spinner first appears or text changes
+                        status_msg = self._spinner_messages[
+                            session.spinner_step % len(self._spinner_messages)
+                        ]
                         if not session.spinner_shown or spinner_text_changed:
                             spinner_msg = gr.ChatMessage(
                                 role="assistant",
