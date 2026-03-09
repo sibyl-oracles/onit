@@ -23,6 +23,7 @@ If not, it will fall back to standard print statements.
 import asyncio
 import json
 import sys
+import time
 import threading
 
 if sys.platform != "win32":
@@ -138,6 +139,8 @@ class ChatUI:
         self._tag_buf = ""  # buffer for partial tag detection across tokens
         self._trail_buf = ""  # buffer whitespace-only tokens to suppress trailing blank lines
         self._stream_cursor_shown = False  # blinking block cursor during streaming
+        self._stream_token_count = 0  # token counter for tok/s calculation
+        self._stream_start_time = 0.0  # monotonic time when streaming started
         self.initialize()
         
     def set_theme(self, theme: str) -> None:
@@ -628,6 +631,8 @@ class ChatUI:
         self._stream_pending = ""
         self._stream_think_started = False
         self._tag_buf = ""
+        self._stream_token_count = 0
+        self._stream_start_time = time.monotonic()
 
     def stream_think_token(self, token: str) -> None:
         """Print a reasoning/thinking token in dim italic, opening a think block if needed."""
@@ -649,6 +654,7 @@ class ChatUI:
     def stream_token(self, token: str) -> None:
         """Stream an answer token. Auto-closes any open think block on first call."""
         self._streaming_content += token
+        self._stream_token_count += 1
         if self._stream_think_started:
             self.stream_think_end()  # reasoning just finished, close think block
         display = self._filter_display_token(token)
@@ -707,6 +713,11 @@ class ChatUI:
         footer = "└" + "─" * 40
         if elapsed:
             footer += f"  {elapsed}"
+        # Append average tokens/sec if we tracked any tokens
+        stream_elapsed = time.monotonic() - self._stream_start_time if self._stream_start_time else 0
+        if stream_elapsed > 0 and self._stream_token_count > 0:
+            tok_s = self._stream_token_count / stream_elapsed
+            footer += f"  ({tok_s:.1f} tok/s)"
         self.console.print(footer, style=self.theme.styles.get("assistant", "magenta"))
         # Save to history so intermediate AI turns appear in the chat panel.
         # Strip all XML-style tags (same as remove_tags) so the final turn's

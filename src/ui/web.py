@@ -785,19 +785,24 @@ class WebChatUI:
                                 s.streaming_content = full_content
                                 s.streaming_active = True
 
+                            _stats = {}
                             response = await self._onit.process_task(
                                 task,
                                 session_path=s.session_path,
                                 data_path=s.data_path,
                                 safety_queue=s.safety_queue,
                                 stream_callback=_on_stream_token,
+                                stats=_stats,
                             )
                             s.streaming_active = False
                             s.streaming_content = ""
+                            tok_s = _stats.get("tokens_per_second", 0)
                             if response:
                                 display, file_paths = self._extract_file_paths(
                                     response, data_path=s.data_path, session_id=s.session_id
                                 )
+                                if tok_s > 0:
+                                    display += f"\n\n---\n*{tok_s:.1f} tok/s*"
                                 s.pending_responses.append(
                                     gr.ChatMessage(role="assistant", content=display)
                                 )

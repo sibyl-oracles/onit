@@ -19,6 +19,7 @@ OnIt: An intelligent agent framework for task automation and assistance.
 
 import asyncio
 import os
+import time
 import tempfile
 import yaml
 import json
@@ -71,6 +72,8 @@ class StreamingAdapter:
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
+        self._total_tokens = 0
+        self._start_time = 0.0
         self._pending: list[asyncio.Task] = []
         self.messages = []
 
@@ -79,6 +82,8 @@ class StreamingAdapter:
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
+        self._total_tokens = 0
+        self._start_time = time.monotonic()
 
     def stream_token(self, token):
         # Strip <answer></answer> wrapper tags
@@ -91,6 +96,7 @@ class StreamingAdapter:
             self._tag_buf = ""
             token = buf
         self._content += token
+        self._total_tokens += 1
         if not (self.on_token and token):
             return
         self._token_count += 1
@@ -107,9 +113,17 @@ class StreamingAdapter:
     def stream_think_token(self, token):
         pass  # skip think tokens for external clients
 
+    @property
+    def tokens_per_second(self) -> float:
+        """Return average tokens/sec for the current or last stream."""
+        elapsed = time.monotonic() - self._start_time if self._start_time else 0
+        if elapsed > 0 and self._total_tokens > 0:
+            return self._total_tokens / elapsed
+        return 0.0
+
     def stream_end(self, elapsed=""):
         if self.on_complete:
-            self.on_complete(self._content)
+            self.on_complete(self._content, self.tokens_per_second)
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
@@ -244,6 +258,7 @@ class OnItA2AExecutor(AgentExecutor):
                 pass  # best-effort streaming
 
         try:
+            _stats = {}
             result = await self.onit.process_task(
                 task,
                 images=image_paths if image_paths else None,
@@ -252,6 +267,7 @@ class OnItA2AExecutor(AgentExecutor):
                 safety_queue=session["safety_queue"],
                 stream_callback=_a2a_stream_callback,
                 stream_throttle=10,
+                stats=_stats,
             )
         except asyncio.CancelledError:
             session["safety_queue"].put_nowait(STOP_TAG)
@@ -259,6 +275,10 @@ class OnItA2AExecutor(AgentExecutor):
         finally:
             self._active_safety_queues.pop(current_task_id, None)
 
+        # Append tokens/sec to the final response text
+        tok_s = _stats.get("tokens_per_second", 0)
+        if tok_s > 0:
+            result = f"{result}\n\n({tok_s:.1f} tok/s)"
         await event_queue.enqueue_event(new_agent_text_message(result))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -598,7 +618,8 @@ class OnIt(BaseModel):
                            data_path: str | None = None,
                            safety_queue: asyncio.Queue | None = None,
                            stream_callback=None,
-                           stream_throttle: int = 0) -> str:
+                           stream_throttle: int = 0,
+                           stats: dict | None = None) -> str:
         """Process a single task and return the response string.
 
         Args:
@@ -673,6 +694,8 @@ class OnIt(BaseModel):
         # final completed message.
         if _adapter:
             await _adapter.flush()
+            if stats is not None:
+                stats["tokens_per_second"] = _adapter.tokens_per_second
 
         if last_response is None:
             logger.error("chat() returned None — likely a safety queue trigger or unhandled error. "
@@ -1025,7 +1048,14 @@ class OnIt(BaseModel):
 
                 # success
                 elapsed_time = loop.time() - start_time
-                elapsed_time = f"{elapsed_time:.2f} secs"
+                # Compute tokens/sec from the text UI's stream counters
+                _tok_s = ""
+                if hasattr(self.chat_ui, '_stream_token_count') and hasattr(self.chat_ui, '_stream_start_time'):
+                    _st = self.chat_ui._stream_start_time
+                    _tc = self.chat_ui._stream_token_count
+                    if _st > 0 and _tc > 0:
+                        _tok_s = f" ({_tc / (time.monotonic() - _st):.1f} tok/s)"
+                elapsed_time = f"{elapsed_time:.2f} secs{_tok_s}"
                 response = remove_tags(response).strip()
                 # Skip empty responses — model returned nothing useful.
                 if not response:
