@@ -18,7 +18,7 @@ Minimal:
 docker run --name onit --rm \
   -e ONIT_HOST=<HOST> \
   -it onit \
-  --model <MODEL>
+
 ```
 
 With documents, MCP tools, and a custom prompt:

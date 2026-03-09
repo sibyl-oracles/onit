@@ -51,6 +51,20 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     return host_key
 
 
+async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
+    """Fetch the first available model ID from the endpoint.
+
+    vLLM typically serves a single model, so models.data[0].id is used.
+    For OpenRouter, the caller should always supply the model name explicitly.
+    """
+    models = await client.models.list()
+    if not models.data:
+        raise ValueError(f"No models available at {host}")
+    model_id = models.data[0].id
+    logger.info("Auto-detected model: %s from %s", model_id, host)
+    return model_id
+
+
 def _parse_tool_call_from_content(content: str, tool_registry) -> Optional[dict]:
     """Detect a raw JSON tool call in message content.
 
@@ -257,7 +271,6 @@ def _strip_old_images(messages: list) -> None:
 
 async def chat(host: str = "http://127.0.0.1:8001/v1",
          host_key: str = "EMPTY",
-         model: str = "Qwen/Qwen3-8B",
          instruction: str = "Tell me more about yourself.",
          images: List[str]|str = None,
          tool_registry: Optional[Any] = None,
@@ -340,7 +353,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     api_key = _resolve_api_key(host, host_key)
     client = AsyncOpenAI(base_url=host, api_key=api_key)
 
+    model = await _resolve_model_id(client, host)
+
     if chat_ui:
+        chat_ui.model_name = model
         chat_ui.add_log(f"Starting chat with model: {model}", level="info")
     elif verbose:
         print(f"Starting chat with model: {model}")

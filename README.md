@@ -73,7 +73,8 @@ Example config (`configs/default.yaml`):
 serving:
   host: https://openrouter.ai/api/v1
   host_key: sk-or-v1-your-key-here   # or set OPENROUTER_API_KEY env var
-  model: google/gemini-2.5-pro
+  # model: auto-detected from endpoint. Set explicitly for OpenRouter:
+  # model: google/gemini-2.5-pro
   think: true
   max_tokens: 262144
 
@@ -104,7 +105,6 @@ The LLM provider is auto-detected from the host URL. If it contains `openrouter.
 |------|-------------|---------|
 | `--config` | Path to YAML configuration file | `configs/default.yaml` |
 | `--host` | LLM serving host URL (overrides config and `ONIT_HOST` env var) | — |
-| `--model` | Model name (overrides `serving.model` in config) | — |
 | `--verbose` | Enable verbose logging | `false` |
 | `--timeout` | Request timeout in seconds (`-1` = none) | `600` |
 | `--template-path` | Path to custom prompt template YAML file | — |

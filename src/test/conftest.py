@@ -23,7 +23,6 @@ def sample_config_dict(tmp_path):
     return {
         "serving": {
             "host": "http://localhost:8000/v1",
-            "model": "test-model",
             "think": False,
             "max_tokens": 1024,
         },

@@ -22,7 +22,6 @@ def _make_config(tmp_path, overrides=None):
     cfg = {
         "serving": {
             "host": "http://localhost:8000/v1",
-            "model": "test-model",
             "think": False,
             "max_tokens": 1024,
         },

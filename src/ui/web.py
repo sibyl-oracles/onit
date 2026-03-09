@@ -28,6 +28,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import time
 import threading
 import urllib.parse
 import uuid
@@ -786,6 +787,7 @@ class WebChatUI:
                                 s.streaming_active = True
 
                             _stats = {}
+                            _task_start = time.monotonic()
                             response = await self._onit.process_task(
                                 task,
                                 session_path=s.session_path,
@@ -794,6 +796,7 @@ class WebChatUI:
                                 stream_callback=_on_stream_token,
                                 stats=_stats,
                             )
+                            _task_elapsed = time.monotonic() - _task_start
                             s.streaming_active = False
                             s.streaming_content = ""
                             tok_s = _stats.get("tokens_per_second", 0)
@@ -801,8 +804,13 @@ class WebChatUI:
                                 display, file_paths = self._extract_file_paths(
                                     response, data_path=s.data_path, session_id=s.session_id
                                 )
+                                _footer_parts = []
+                                if _task_elapsed > 0:
+                                    _footer_parts.append(f"{_task_elapsed:.2f}s")
                                 if tok_s > 0:
-                                    display += f"\n\n---\n*{tok_s:.1f} tok/s*"
+                                    _footer_parts.append(f"{tok_s:.1f} tok/s")
+                                if _footer_parts:
+                                    display += f"\n\n---\n*{' · '.join(_footer_parts)}*"
                                 s.pending_responses.append(
                                     gr.ChatMessage(role="assistant", content=display)
                                 )

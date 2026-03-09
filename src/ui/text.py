@@ -133,6 +133,7 @@ class ChatUI:
         self._spinner_timer: Optional[threading.Timer] = None
         self._thinking_stop_event: Optional[threading.Event] = None
         self._thinking_thread: Optional[threading.Thread] = None
+        self.model_name = ""  # auto-detected model name, set by chat()
         self._stream_header_printed = False  # lazy: header deferred until first visible token
         self._stream_pending = ""  # buffer tokens until first non-whitespace
         self._stream_think_started = False  # True while a think block is open
@@ -451,7 +452,8 @@ class ChatUI:
             msg_time: The message timestamp
             msg_elapsed: The elapsed time string (optional)
         """
-        content.append(f"┌─ 🤖 AI ", style=self.theme.styles.get("assistant", "bold magenta"))
+        _ai_label = f"┌─ 🤖 AI ({self.model_name}) " if self.model_name else "┌─ 🤖 AI "
+        content.append(_ai_label, style=self.theme.styles.get("assistant", "bold magenta"))
         content.append(f"[{msg_time}]", style=self.theme.styles.get("timestamp", "dim magenta"))
         if msg_elapsed:
             content.append(f" - {msg_elapsed}", style=self.theme.styles.get("warning", "dim magenta"))
@@ -667,7 +669,7 @@ class ChatUI:
                 # First real answer content — print header then flush buffer
                 self._stream_header_printed = True
                 self.console.print(
-                    f"┌─ 🤖 AI [{self.format_timestamp()}]",
+                    f"┌─ 🤖 AI ({self.model_name}) [{self.format_timestamp()}]" if self.model_name else f"┌─ 🤖 AI [{self.format_timestamp()}]",
                     style=self.theme.styles.get("assistant", "bold magenta"),
                 )
                 print(self._stream_pending.lstrip(), end="", flush=True)

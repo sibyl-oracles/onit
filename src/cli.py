@@ -443,8 +443,6 @@ def main():
                         help='Path to the configuration YAML file.')
     parser.add_argument('--host', type=str, default=None,
                         help='LLM serving host URL (e.g. http://localhost:8000/v1). Overrides config and ONIT_HOST env var.')
-    parser.add_argument('--model', type=str, default=None,
-                        help='Model name (e.g. google/gemini-2.5-pro). Overrides serving.model in config.')
     parser.add_argument('--verbose', action='store_true', default=None,
                         help='Enable verbose logging.')
     parser.add_argument('--timeout', type=int, default=None,
@@ -584,10 +582,6 @@ def main():
     # --host overrides serving.host in config
     if args.host:
         config_data.setdefault('serving', {})['host'] = args.host
-
-    # --model overrides serving.model in config
-    if args.model:
-        config_data.setdefault('serving', {})['model'] = args.model
 
     # --mcp-host overrides mcp.mcp_host in config
     if args.mcp_host:

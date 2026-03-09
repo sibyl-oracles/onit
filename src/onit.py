@@ -259,6 +259,7 @@ class OnItA2AExecutor(AgentExecutor):
 
         try:
             _stats = {}
+            _task_start = time.monotonic()
             result = await self.onit.process_task(
                 task,
                 images=image_paths if image_paths else None,
@@ -269,16 +270,22 @@ class OnItA2AExecutor(AgentExecutor):
                 stream_throttle=10,
                 stats=_stats,
             )
+            _task_elapsed = time.monotonic() - _task_start
         except asyncio.CancelledError:
             session["safety_queue"].put_nowait(STOP_TAG)
             raise
         finally:
             self._active_safety_queues.pop(current_task_id, None)
 
-        # Append tokens/sec to the final response text
+        # Append elapsed time and tokens/sec to the final response text
         tok_s = _stats.get("tokens_per_second", 0)
+        _footer_parts = []
+        if _task_elapsed > 0:
+            _footer_parts.append(f"{_task_elapsed:.2f}s")
         if tok_s > 0:
-            result = f"{result}\n\n({tok_s:.1f} tok/s)"
+            _footer_parts.append(f"{tok_s:.1f} tok/s")
+        if _footer_parts:
+            result = f"{result}\n\n({' · '.join(_footer_parts)})"
         await event_queue.enqueue_event(new_agent_text_message(result))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -679,7 +686,7 @@ class OnIt(BaseModel):
         last_response = await chat(
             host=self.model_serving["host"],
             host_key=self.model_serving.get("host_key", "EMPTY"),
-            model=self.model_serving["model"],
+
             instruction=instruction,
             images=images,
             tool_registry=self.tool_registry,
@@ -699,7 +706,7 @@ class OnIt(BaseModel):
 
         if last_response is None:
             logger.error("chat() returned None — likely a safety queue trigger or unhandled error. "
-                         "Host: %s, Model: %s", self.model_serving["host"], self.model_serving["model"])
+                         "Host: %s, Model: auto-detected", self.model_serving["host"])
             return "I am sorry \U0001f614. Could you please rephrase your question?"
 
         response = remove_tags(last_response)
@@ -756,7 +763,7 @@ class OnIt(BaseModel):
                           'session_history': self.load_session_history()}
                 last_response = await chat(host=self.model_serving["host"],
                                             host_key=self.model_serving.get("host_key", "EMPTY"),
-                                            model=self.model_serving["model"],
+                                
                                             instruction=instruction,
                                             tool_registry=self.tool_registry,
                                             safety_queue=self.safety_queue,
@@ -1118,7 +1125,7 @@ class OnIt(BaseModel):
                     kwargs['prompt_intro'] = self.prompt_intro
                 last_response = await chat(host=self.model_serving["host"],
                                             host_key=self.model_serving.get("host_key", "EMPTY"),
-                                            model=self.model_serving["model"],
+                                
                                             instruction=instruction,
                                             tool_registry=self.tool_registry,
                                             safety_queue=self.safety_queue,
