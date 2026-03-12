@@ -379,26 +379,9 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     return None
 
 
-async def chat(host: str = "http://127.0.0.1:8001/v1",
-         host_key: str = "EMPTY",
-         instruction: str = "Tell me more about yourself.",
-         images: List[str]|str = None,
-         tool_registry: Optional[Any] = None,
-         timeout: int = None,
-         stream: bool = False,
-         think: bool = False,
-         safety_queue: Optional[asyncio.Queue] = None,
-         **kwargs) -> Optional[str]:
-
-    tools = tool_registry.get_tool_items() if tool_registry else []
-    chat_ui = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
-    verbose = kwargs['verbose'] if 'verbose' in kwargs else False
-    data_path = kwargs.get('data_path', '')
-    max_tokens = kwargs.get('max_tokens', 8192)
-    memories = kwargs.get('memories', None)
-    prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
-
-    images_bytes = []
+def _load_images(images: List[str] | str | None, chat_ui, verbose: bool) -> list[str]:
+    """Read image files from disk and return their base64-encoded bytes."""
+    images_bytes: list[str] = []
     if isinstance(images, list):
         for image_path in images:
             if os.path.exists(image_path):
@@ -419,9 +402,19 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 chat_ui.add_log(f"Image file {image_path} not found, proceeding without this image.", level="warning")
             elif verbose:
                 print(f"Image file {image_path} not found, proceeding without this image.")
+    return images_bytes
 
+
+def _build_messages(instruction: str, images_bytes: list[str],
+                    prompt_intro: str, session_history: list | None,
+                    memories: Any) -> list[dict]:
+    """Assemble the initial message list for the API call.
+
+    Includes the system message, session history, the current user instruction,
+    and the empty tool sentinel when appropriate.
+    """
     if images_bytes:
-        messages = [{
+        messages: list[dict] = [{
             "role": "system",
             "content": (
                 f"{prompt_intro} "
@@ -438,7 +431,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # Inject session history BEFORE the current instruction so the model
     # sees prior context first and treats the latest user message as the
     # one to respond to.
-    session_history = kwargs.get('session_history', None)
     if session_history:
         for entry in session_history:
             messages.append({"role": "user", "content": entry["task"]})
@@ -454,11 +446,250 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             ]
         })
     else:
-        messages.append({"role": "user", "content": instruction})   
-        
+        messages.append({"role": "user", "content": instruction})
+
     if not memories and not session_history:
         message = {'role': 'tool', 'content': '', 'name': '', 'parameters': {}, "tool_call_id": ''}
         messages.append(message)
+
+    return messages
+
+
+async def _process_streaming_response(
+    chat_completion, safety_queue: asyncio.Queue,
+    chat_ui, think: bool,
+) -> tuple[str, str, dict, bool] | None:
+    """Consume a streaming chat completion and return accumulated results.
+
+    Returns (full_content, full_reasoning, full_tool_calls_dict, ui_was_streaming)
+    or None if the safety queue fired mid-stream.
+    """
+    full_content = ""
+    full_reasoning = ""
+    full_tool_calls: dict = {}  # index -> {id, name, arguments}
+    ui_streaming = False
+    in_think = think  # True if we expect <think>...</think> in delta.content
+
+    async for chunk in chat_completion:
+        if not safety_queue.empty():
+            if ui_streaming and chat_ui:
+                chat_ui.stream_end()
+            return None
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+
+        # Accumulate structured tool-call deltas
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                idx = tc.index
+                if idx not in full_tool_calls:
+                    full_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc.id:
+                    full_tool_calls[idx]["id"] = tc.id
+                if tc.function:
+                    if tc.function.name:
+                        full_tool_calls[idx]["name"] += tc.function.name
+                    if tc.function.arguments:
+                        full_tool_calls[idx]["arguments"] += tc.function.arguments
+
+        # vLLM/OpenAI reasoning_content: thinking tokens in a dedicated field
+        reasoning_tok = getattr(delta, 'reasoning_content', None)
+        if reasoning_tok and not full_tool_calls:
+            full_reasoning += reasoning_tok
+            if chat_ui:
+                if not ui_streaming:
+                    chat_ui.stream_start()
+                    ui_streaming = True
+                chat_ui.stream_think_token(reasoning_tok)
+
+        # Stream content (answer) tokens to UI
+        if delta.content:
+            token = delta.content
+            full_content += token
+            if chat_ui and not full_tool_calls:
+                if in_think:
+                    # Three cases:
+                    # 1. vLLM sends thinking via reasoning_content -> no <think> in content
+                    # 2. Model chose not to think -> no <think> in content
+                    # 3. Model embeds <think>...</think> inside content
+                    if "<think>" not in full_content:
+                        # Cases 1 & 2 -- stream answer directly
+                        in_think = False
+                        if not ui_streaming:
+                            chat_ui.stream_start()
+                            ui_streaming = True
+                        chat_ui.stream_token(token)
+                    elif "</think>" in full_content:
+                        # Case 3 end: think block closed, stream the answer part
+                        in_think = False
+                        post_think = full_content.split("</think>", 1)[1]
+                        if post_think:
+                            if not ui_streaming:
+                                chat_ui.stream_start()
+                                ui_streaming = True
+                            chat_ui.stream_token(post_think)
+                    else:
+                        # Case 3 mid: inside inline <think> block
+                        if not ui_streaming:
+                            chat_ui.stream_start()
+                            ui_streaming = True
+                        chat_ui.stream_think_token(token.replace("<think>", ""))
+                else:
+                    if not ui_streaming:
+                        chat_ui.stream_start()
+                        ui_streaming = True
+                    chat_ui.stream_token(token)
+
+    if ui_streaming and chat_ui:
+        chat_ui.stream_end()
+
+    return full_content, full_reasoning, full_tool_calls, ui_streaming
+
+
+def _unify_streaming_result(
+    full_content: str, full_tool_calls: dict,
+) -> tuple[str | None, list | None, dict]:
+    """Convert accumulated streaming data into unified content/tool_calls/history variables."""
+    if full_tool_calls:
+        tool_call_objs = [
+            types.SimpleNamespace(
+                id=v["id"],
+                function=types.SimpleNamespace(name=v["name"], arguments=v["arguments"])
+            )
+            for v in full_tool_calls.values()
+        ]
+        message_for_history = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": v["id"], "type": "function",
+                 "function": {"name": v["name"], "arguments": v["arguments"]}}
+                for v in full_tool_calls.values()
+            ]
+        }
+        return None, tool_call_objs, message_for_history
+    return full_content, None, {"role": "assistant", "content": full_content}
+
+
+def _extract_final_response(content: str, full_reasoning: str, full_content: str) -> str:
+    """Clean up the final text response, stripping think tags and applying fallbacks."""
+    last_response = content
+    if "</think>" in last_response:
+        last_response = last_response.split("</think>")[1]
+    # Fallback: if delta.content was empty but reasoning_content had the answer,
+    # surface the reasoning so the user gets a non-empty reply.
+    if not last_response or not last_response.strip():
+        if full_reasoning and full_reasoning.strip():
+            last_response = full_reasoning.strip()
+        elif full_content and "<think>" in full_content:
+            # Model put entire answer inside inline <think> tags
+            think_body = full_content.split("<think>", 1)[1].split("</think>", 1)[0].strip()
+            if think_body:
+                last_response = think_body
+    return last_response
+
+
+async def _handle_raw_tool_call(
+    last_response: str, tool_registry, timeout, data_path,
+    chat_ui, verbose: bool, messages: list,
+    tool_call_history: list, max_repeated: int,
+) -> tuple[bool, str | None]:
+    """Handle a raw JSON tool call embedded in model content.
+
+    Returns (should_continue, bail_message).
+    If should_continue is True, the caller should loop back for another iteration.
+    If bail_message is not None, the caller should return it immediately.
+    """
+    raw_tool = _parse_tool_call_from_content(last_response, tool_registry)
+    if raw_tool:
+        function_name = raw_tool["name"]
+        function_arguments = raw_tool["arguments"]
+        synthetic_id = f"call_{uuid.uuid4().hex[:24]}"
+        messages.append({"role": "assistant", "content": last_response})
+        bail = await _execute_tool(
+            function_name, function_arguments, synthetic_id,
+            tool_registry, timeout, data_path, chat_ui, verbose,
+            messages, tool_call_history, max_repeated,
+            is_structured=False,
+        )
+        if bail:
+            return False, bail
+        return True, None  # loop back for the model to generate the final response
+
+    # Guard against returning raw tool-call JSON to the user.
+    # If the content looks like a tool call but couldn't be parsed,
+    # ask the model to retry without tools.
+    if _looks_like_raw_tool_call(last_response):
+        if chat_ui:
+            chat_ui.add_log("Model returned unparseable raw tool-call JSON, retrying without tools.", level="warning")
+        elif verbose:
+            print("Model returned unparseable raw tool-call JSON, retrying without tools.")
+        messages.append({"role": "assistant", "content": last_response})
+        messages.append({"role": "user", "content": "Please provide your answer as plain text, not as a JSON tool call."})
+        return True, None
+
+    return False, None
+
+
+_SAFETY_ABORT = object()  # sentinel distinct from None
+
+
+async def _handle_structured_tool_calls(
+    tool_calls: list, message_for_history, tool_registry,
+    timeout, data_path, chat_ui, verbose: bool,
+    messages: list, tool_call_history: list,
+    max_repeated: int, safety_queue: asyncio.Queue,
+) -> str | object | None:
+    """Execute structured tool calls and append results to messages.
+
+    Returns:
+      - A bail-out message string if a repeated-call limit is hit.
+      - _SAFETY_ABORT sentinel if the safety queue fired.
+      - None when all tools completed normally.
+    """
+    messages.append(message_for_history)
+    for tool in tool_calls:
+        await asyncio.sleep(0.1)
+        if not safety_queue.empty():
+            if verbose:
+                print("Safety queue triggered, exiting chat loop.")
+            return _SAFETY_ABORT
+        function_name = tool.function.name
+        function_arguments = json.loads(tool.function.arguments)
+        bail = await _execute_tool(
+            function_name, function_arguments, tool.id,
+            tool_registry, timeout, data_path, chat_ui, verbose,
+            messages, tool_call_history, max_repeated,
+            is_structured=True,
+        )
+        if bail:
+            return bail
+    return None
+
+
+async def chat(host: str = "http://127.0.0.1:8001/v1",
+         host_key: str = "EMPTY",
+         instruction: str = "Tell me more about yourself.",
+         images: List[str]|str = None,
+         tool_registry: Optional[Any] = None,
+         timeout: int = None,
+         stream: bool = False,
+         think: bool = False,
+         safety_queue: Optional[asyncio.Queue] = None,
+         **kwargs) -> Optional[str]:
+
+    tools = tool_registry.get_tool_items() if tool_registry else []
+    chat_ui = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
+    verbose = kwargs['verbose'] if 'verbose' in kwargs else False
+    data_path = kwargs.get('data_path', '')
+    max_tokens = kwargs.get('max_tokens', 8192)
+    memories = kwargs.get('memories', None)
+    prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
+
+    images_bytes = _load_images(images, chat_ui, verbose)
+    messages = _build_messages(instruction, images_bytes, prompt_intro,
+                               kwargs.get('session_history', None), memories)
 
     api_key = _resolve_api_key(host, host_key)
     client = AsyncOpenAI(base_url=host, api_key=api_key)
@@ -474,7 +705,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_CHAT_ITERATIONS = 100
     MAX_REPEATED_TOOL_CALLS = 30
     iteration_count = 0
-    tool_call_history = []  # list of (name, args_json) tuples
+    tool_call_history: list = []  # list of (name, args_json) tuples
 
     while True:
         iteration_count += 1
@@ -487,6 +718,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             return msg
 
         _strip_old_images(messages)
+
+        # Track streaming state across the try block for the final-response path
+        _full_content = ""
+        _full_reasoning = ""
 
         try:
             if not safety_queue.empty():
@@ -509,115 +744,20 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             )
             if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
                 completion_kwargs["tools"] = tools
-                
+
             chat_completion = await client.chat.completions.create(**completion_kwargs)
 
             # Streaming path: iterate chunks, populate shared variables
             if stream:
-                _full_content = ""
-                _full_reasoning = ""
-                _full_tool_calls: dict = {}  # index -> {id, name, arguments}
-                _ui_streaming = False
-                _in_think = think  # True if we expect <think>...</think> in delta.content
-
-                async for chunk in chat_completion:
-                    if not safety_queue.empty():
-                        if _ui_streaming and chat_ui:
-                            chat_ui.stream_end()
-                        return None
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-
-                    # Accumulate structured tool-call deltas
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in _full_tool_calls:
-                                _full_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
-                            if tc.id:
-                                _full_tool_calls[idx]["id"] = tc.id
-                            if tc.function:
-                                if tc.function.name:
-                                    _full_tool_calls[idx]["name"] += tc.function.name
-                                if tc.function.arguments:
-                                    _full_tool_calls[idx]["arguments"] += tc.function.arguments
-
-                    # vLLM/OpenAI reasoning_content: thinking tokens in a dedicated field
-                    reasoning_tok = getattr(delta, 'reasoning_content', None)
-                    if reasoning_tok and not _full_tool_calls:
-                        _full_reasoning += reasoning_tok
-                        if chat_ui:
-                            if not _ui_streaming:
-                                chat_ui.stream_start()
-                                _ui_streaming = True
-                            chat_ui.stream_think_token(reasoning_tok)
-
-                    # Stream content (answer) tokens to UI
-                    if delta.content:
-                        token = delta.content
-                        _full_content += token
-                        if chat_ui and not _full_tool_calls:
-                            if _in_think:
-                                # Three cases:
-                                # 1. vLLM sends thinking via reasoning_content → no <think> in content
-                                # 2. Model chose not to think → no <think> in content
-                                # 3. Model embeds <think>...</think> inside content
-                                if "<think>" not in _full_content:
-                                    # Cases 1 & 2 — stream answer directly
-                                    _in_think = False
-                                    if not _ui_streaming:
-                                        chat_ui.stream_start()
-                                        _ui_streaming = True
-                                    chat_ui.stream_token(token)
-                                elif "</think>" in _full_content:
-                                    # Case 3 end: think block closed, stream the answer part
-                                    _in_think = False
-                                    post_think = _full_content.split("</think>", 1)[1]
-                                    if post_think:
-                                        if not _ui_streaming:
-                                            chat_ui.stream_start()
-                                            _ui_streaming = True
-                                        chat_ui.stream_token(post_think)
-                                else:
-                                    # Case 3 mid: inside inline <think> block
-                                    if not _ui_streaming:
-                                        chat_ui.stream_start()
-                                        _ui_streaming = True
-                                    chat_ui.stream_think_token(token.replace("<think>", ""))
-                            else:
-                                if not _ui_streaming:
-                                    chat_ui.stream_start()
-                                    _ui_streaming = True
-                                chat_ui.stream_token(token)
-
-                if _ui_streaming and chat_ui:
-                    chat_ui.stream_end()
-
-                # Reconstruct into unified variables
-                if _full_tool_calls:
-                    _tool_call_objs = [
-                        types.SimpleNamespace(
-                            id=v["id"],
-                            function=types.SimpleNamespace(name=v["name"], arguments=v["arguments"])
-                        )
-                        for v in _full_tool_calls.values()
-                    ]
-                    _content = None
-                    _tool_calls = _tool_call_objs
-                    _message_for_history = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {"id": v["id"], "type": "function",
-                             "function": {"name": v["name"], "arguments": v["arguments"]}}
-                            for v in _full_tool_calls.values()
-                        ]
-                    }
-                else:
-                    _content = _full_content
-                    _tool_calls = None
-                    _message_for_history = {"role": "assistant", "content": _full_content}
+                stream_result = await _process_streaming_response(
+                    chat_completion, safety_queue, chat_ui, think,
+                )
+                if stream_result is None:
+                    return None
+                _full_content, _full_reasoning, _full_tool_calls, _ = stream_result
+                _content, _tool_calls, _message_for_history = _unify_streaming_result(
+                    _full_content, _full_tool_calls,
+                )
 
             await asyncio.sleep(0.1)
             if not safety_queue.empty():
@@ -657,64 +797,27 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:
-            last_response = _content
-            # Check if the model returned a tool call as raw JSON in the content
-            raw_tool = _parse_tool_call_from_content(last_response, tool_registry)
-            if raw_tool:
-                function_name = raw_tool["name"]
-                function_arguments = raw_tool["arguments"]
-                synthetic_id = f"call_{uuid.uuid4().hex[:24]}"
-                messages.append({"role": "assistant", "content": last_response})
-                bail = await _execute_tool(
-                    function_name, function_arguments, synthetic_id,
-                    tool_registry, timeout, data_path, chat_ui, verbose,
-                    messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
-                    is_structured=False,
-                )
-                if bail:
-                    return bail
-                continue  # loop back for the model to generate the final response
-
-            # Guard against returning raw tool-call JSON to the user.
-            # If the content looks like a tool call but couldn't be parsed,
-            # ask the model to retry without tools.
-            if _looks_like_raw_tool_call(last_response):
-                if chat_ui:
-                    chat_ui.add_log("Model returned unparseable raw tool-call JSON, retrying without tools.", level="warning")
-                elif verbose:
-                    print("Model returned unparseable raw tool-call JSON, retrying without tools.")
-                messages.append({"role": "assistant", "content": last_response})
-                messages.append({"role": "user", "content": "Please provide your answer as plain text, not as a JSON tool call."})
-                continue
-
-            if "</think>" in last_response:
-                last_response = last_response.split("</think>")[1]
-            # Fallback: if delta.content was empty but reasoning_content had the answer,
-            # surface the reasoning so the user gets a non-empty reply.
-            if not last_response or not last_response.strip():
-                if _full_reasoning and _full_reasoning.strip():
-                    last_response = _full_reasoning.strip()
-                elif _full_content and "<think>" in _full_content:
-                    # Model put entire answer inside inline <think> tags
-                    think_body = _full_content.split("<think>", 1)[1].split("</think>", 1)[0].strip()
-                    if think_body:
-                        last_response = think_body
-            return last_response
-
-        messages.append(_message_for_history)
-        for tool in tool_calls:
-            await asyncio.sleep(0.1)
-            if not safety_queue.empty():
-                if verbose:
-                    print("Safety queue triggered, exiting chat loop.")
-                return None
-            function_name = tool.function.name
-            function_arguments = json.loads(tool.function.arguments)
-            bail = await _execute_tool(
-                function_name, function_arguments, tool.id,
-                tool_registry, timeout, data_path, chat_ui, verbose,
-                messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
-                is_structured=True,
+            # No structured tool calls -- check for raw JSON tool calls in content
+            should_continue, bail = await _handle_raw_tool_call(
+                _content, tool_registry, timeout, data_path,
+                chat_ui, verbose, messages, tool_call_history,
+                MAX_REPEATED_TOOL_CALLS,
             )
             if bail:
                 return bail
+            if should_continue:
+                continue
+
+            return _extract_final_response(_content, _full_reasoning, _full_content)
+
+        # Structured tool calls: execute them and loop back
+        bail = await _handle_structured_tool_calls(
+            tool_calls, _message_for_history, tool_registry,
+            timeout, data_path, chat_ui, verbose,
+            messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
+            safety_queue,
+        )
+        if bail is _SAFETY_ABORT:
+            return None
+        if bail:
+            return bail
