@@ -847,6 +847,121 @@ class ChatUI:
             return self._input_with_history_windows(prompt)
         return self._input_with_history_unix(prompt)
 
+    @staticmethod
+    def _redraw_line(prompt: str, current_input: list[str]) -> None:
+        """Clear the current line and redraw the prompt with the given input."""
+        sys.stdout.write('\r' + ' ' * (len(prompt) + len(current_input) + 5) + '\r')
+        sys.stdout.write(f"\033[1;32m{prompt}\033[0m")
+        sys.stdout.write(''.join(current_input))
+        sys.stdout.flush()
+
+    def _handle_arrow_keys(
+        self,
+        code: str,
+        prompt: str,
+        current_input: list[str],
+        cursor_pos: int,
+        temp_history_index: int,
+        saved_input: str,
+    ) -> tuple[list[str], int, int, str]:
+        """Handle up/down/left/right arrow key navigation.
+
+        Returns:
+            Updated (current_input, cursor_pos, temp_history_index, saved_input).
+        """
+        if code == 'A':  # Up arrow
+            if self.input_history:
+                if temp_history_index == -1:
+                    saved_input = ''.join(current_input)
+                    temp_history_index = len(self.input_history) - 1
+                elif temp_history_index > 0:
+                    temp_history_index -= 1
+
+                if temp_history_index >= 0:
+                    current_input = list(self.input_history[temp_history_index])
+                    cursor_pos = len(current_input)
+                    self._redraw_line(prompt, current_input)
+
+        elif code == 'B':  # Down arrow
+            if temp_history_index != -1:
+                temp_history_index += 1
+                if temp_history_index >= len(self.input_history):
+                    temp_history_index = -1
+                    current_input = list(saved_input)
+                else:
+                    current_input = list(self.input_history[temp_history_index])
+                cursor_pos = len(current_input)
+                self._redraw_line(prompt, current_input)
+
+        elif code == 'C':  # Right arrow
+            if cursor_pos < len(current_input):
+                cursor_pos += 1
+                sys.stdout.write('\033[C')
+                sys.stdout.flush()
+
+        elif code == 'D':  # Left arrow
+            if cursor_pos > 0:
+                cursor_pos -= 1
+                sys.stdout.write('\033[D')
+                sys.stdout.flush()
+
+        return current_input, cursor_pos, temp_history_index, saved_input
+
+    @staticmethod
+    def _handle_delete_key(
+        current_input: list[str],
+        cursor_pos: int,
+    ) -> tuple[list[str], int]:
+        """Handle the Delete key (ESC [ 3 ~), removing the char at cursor_pos.
+
+        Returns:
+            Updated (current_input, cursor_pos).
+        """
+        next3 = sys.stdin.read(1)
+        if next3 == '~' and cursor_pos < len(current_input):
+            del current_input[cursor_pos]
+            sys.stdout.write(''.join(current_input[cursor_pos:]) + ' ')
+            sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
+            sys.stdout.flush()
+        return current_input, cursor_pos
+
+    @staticmethod
+    def _handle_backspace(
+        current_input: list[str],
+        cursor_pos: int,
+    ) -> tuple[list[str], int]:
+        """Handle the Backspace key, removing the char before cursor_pos.
+
+        Returns:
+            Updated (current_input, cursor_pos).
+        """
+        if cursor_pos > 0:
+            cursor_pos -= 1
+            del current_input[cursor_pos]
+            sys.stdout.write('\b' + ''.join(current_input[cursor_pos:]) + ' ')
+            sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
+            sys.stdout.flush()
+        return current_input, cursor_pos
+
+    @staticmethod
+    def _handle_printable(
+        char: str,
+        current_input: list[str],
+        cursor_pos: int,
+    ) -> tuple[list[str], int]:
+        """Insert a printable character at cursor_pos and update the display.
+
+        Returns:
+            Updated (current_input, cursor_pos).
+        """
+        current_input.insert(cursor_pos, char)
+        cursor_pos += 1
+        sys.stdout.write(char + ''.join(current_input[cursor_pos:]))
+        if cursor_pos < len(current_input):
+            sys.stdout.write('\033[' + str(len(current_input) - cursor_pos) + 'D')
+        sys.stdout.flush()
+        return current_input, cursor_pos
+
     def _input_with_history_unix(self, prompt: str = "➤ ") -> str:
         """
         Get user input with history navigation using up/down arrow keys.
@@ -858,7 +973,6 @@ class ChatUI:
         Returns:
             The user's input string
         """
-        # Print prompt
         # Show blinking bar cursor + bold green prompt
         sys.stdout.write(f"\033[?25h\033[5 q\033[1;32m{prompt}\033[0m")
         sys.stdout.flush()
@@ -869,19 +983,18 @@ class ChatUI:
         try:
             tty.setraw(fd)  # type: ignore[name-defined]
 
-            current_input = []
+            current_input: list[str] = []
             cursor_pos = 0
             temp_history_index = -1
-            saved_input = ""  # Save current input when browsing history
+            saved_input = ""
 
             while True:
                 char = sys.stdin.read(1)
 
-                if char == '\r' or char == '\n':  # Enter key
+                if char in ('\r', '\n'):  # Enter key
                     sys.stdout.write('\r\n')
                     sys.stdout.flush()
                     result = ''.join(current_input)
-                    # Add to history if non-empty and different from last entry
                     if result.strip() and (not self.input_history or self.input_history[-1] != result):
                         self.input_history.append(result)
                     self.history_index = -1
@@ -897,90 +1010,31 @@ class ChatUI:
                     sys.stdout.flush()
                     raise EOFError
 
-                elif char == '\x1b':  # Escape sequence (arrow keys)
+                elif char == '\x1b':  # Escape sequence
                     next1 = sys.stdin.read(1)
                     if next1 == '[':
                         next2 = sys.stdin.read(1)
+                        if next2 == '3':  # Delete key
+                            current_input, cursor_pos = self._handle_delete_key(
+                                current_input, cursor_pos,
+                            )
+                        else:  # Arrow keys (A/B/C/D)
+                            current_input, cursor_pos, temp_history_index, saved_input = (
+                                self._handle_arrow_keys(
+                                    next2, prompt, current_input, cursor_pos,
+                                    temp_history_index, saved_input,
+                                )
+                            )
 
-                        if next2 == 'A':  # Up arrow
-                            if self.input_history:
-                                if temp_history_index == -1:
-                                    # Save current input before browsing
-                                    saved_input = ''.join(current_input)
-                                    temp_history_index = len(self.input_history) - 1
-                                elif temp_history_index > 0:
-                                    temp_history_index -= 1
+                elif char in ('\x7f', '\b'):  # Backspace
+                    current_input, cursor_pos = self._handle_backspace(
+                        current_input, cursor_pos,
+                    )
 
-                                if temp_history_index >= 0:
-                                    # Clear current line
-                                    sys.stdout.write('\r' + ' ' * (len(prompt) + len(current_input) + 5) + '\r')
-                                    sys.stdout.write(f"\033[1;32m{prompt}\033[0m")
-                                    # Show history item
-                                    current_input = list(self.input_history[temp_history_index])
-                                    cursor_pos = len(current_input)
-                                    sys.stdout.write(''.join(current_input))
-                                    sys.stdout.flush()
-
-                        elif next2 == 'B':  # Down arrow
-                            if temp_history_index != -1:
-                                temp_history_index += 1
-                                # Clear current line
-                                sys.stdout.write('\r' + ' ' * (len(prompt) + len(current_input) + 5) + '\r')
-                                sys.stdout.write(f"\033[1;32m{prompt}\033[0m")
-
-                                if temp_history_index >= len(self.input_history):
-                                    # Restore saved input
-                                    temp_history_index = -1
-                                    current_input = list(saved_input)
-                                else:
-                                    current_input = list(self.input_history[temp_history_index])
-
-                                cursor_pos = len(current_input)
-                                sys.stdout.write(''.join(current_input))
-                                sys.stdout.flush()
-
-                        elif next2 == 'C':  # Right arrow
-                            if cursor_pos < len(current_input):
-                                cursor_pos += 1
-                                sys.stdout.write('\033[C')
-                                sys.stdout.flush()
-
-                        elif next2 == 'D':  # Left arrow
-                            if cursor_pos > 0:
-                                cursor_pos -= 1
-                                sys.stdout.write('\033[D')
-                                sys.stdout.flush()
-
-                        elif next2 == '3':  # Delete key (might have another char)
-                            next3 = sys.stdin.read(1)
-                            if next3 == '~' and cursor_pos < len(current_input):
-                                # Delete character at cursor
-                                del current_input[cursor_pos]
-                                # Rewrite line from cursor
-                                sys.stdout.write(''.join(current_input[cursor_pos:]) + ' ')
-                                # Move cursor back
-                                sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
-                                sys.stdout.flush()
-
-                elif char == '\x7f' or char == '\b':  # Backspace
-                    if cursor_pos > 0:
-                        cursor_pos -= 1
-                        del current_input[cursor_pos]
-                        # Move cursor back, rewrite rest of line, add space to clear last char
-                        sys.stdout.write('\b' + ''.join(current_input[cursor_pos:]) + ' ')
-                        # Move cursor back to position
-                        sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
-                        sys.stdout.flush()
-
-                elif char >= ' ' and char <= '~':  # Printable characters
-                    current_input.insert(cursor_pos, char)
-                    cursor_pos += 1
-                    # Write char and rest of line
-                    sys.stdout.write(char + ''.join(current_input[cursor_pos:]))
-                    # Move cursor back if not at end
-                    if cursor_pos < len(current_input):
-                        sys.stdout.write('\033[' + str(len(current_input) - cursor_pos) + 'D')
-                    sys.stdout.flush()
+                elif ' ' <= char <= '~':  # Printable characters
+                    current_input, cursor_pos = self._handle_printable(
+                        char, current_input, cursor_pos,
+                    )
 
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)  # type: ignore[name-defined]
