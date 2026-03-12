@@ -137,6 +137,121 @@ def _extract_a2a_text(result: dict) -> str | None:
     return text
 
 
+class _StreamState:
+    """Mutable state shared between SSE streaming helpers."""
+
+    def __init__(self, stop_timer: threading.Event, timer_thread: threading.Thread):
+        self.stop_timer = stop_timer
+        self.timer_thread = timer_thread
+        self.printed_len: int = 0
+        self.final_text: str | None = None
+        self.raw_result: dict = {}
+        self.spinner_cleared: bool = False
+        self.cursor_shown: bool = False
+
+    def erase_cursor(self) -> None:
+        """Remove the blinking block cursor and restore the terminal cursor."""
+        if self.cursor_shown:
+            sys.stdout.write("\b \b")
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+            self.cursor_shown = False
+
+    def show_cursor(self) -> None:
+        """Hide terminal cursor and show a blinking white block instead."""
+        if not self.cursor_shown:
+            sys.stdout.write("\033[?25l")
+            sys.stdout.write("\033[5m\u2588\033[0m")
+            sys.stdout.flush()
+            self.cursor_shown = True
+
+    def clear_spinner(self) -> None:
+        """Stop the elapsed-time spinner and clear its line."""
+        if not self.spinner_cleared:
+            self.stop_timer.set()
+            self.timer_thread.join()
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+            self.spinner_cleared = True
+
+
+def _handle_sse_events(resp: requests.Response, state: _StreamState) -> None:
+    """Process SSE event lines from a streaming A2A response.
+
+    Updates *state* in place with streamed text deltas, the final text,
+    and the raw result dict.
+    """
+    for line in resp.iter_lines(decode_unicode=True):
+        if line is None:
+            continue
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        result = event.get("result", {})
+        status = result.get("status", {})
+        event_state = status.get("state", "")
+
+        if event_state == "working":
+            msg = status.get("message", {})
+            for part in msg.get("parts", []):
+                if part.get("kind") == "text":
+                    full = part["text"]
+                    if len(full) > state.printed_len:
+                        state.clear_spinner()
+                        state.erase_cursor()
+                        sys.stdout.write(full[state.printed_len:])
+                        sys.stdout.flush()
+                        state.printed_len = len(full)
+                        state.show_cursor()
+                    break
+
+        elif event_state == "completed":
+            state.raw_result = result
+            state.final_text = _extract_a2a_text(result)
+            if not state.final_text:
+                msg = status.get("message", {})
+                for part in msg.get("parts", []):
+                    if part.get("kind") == "text":
+                        state.final_text = part["text"]
+                        break
+
+        elif "parts" in result:
+            state.raw_result = result
+            state.final_text = _extract_a2a_text(result)
+
+
+def _format_output(state: _StreamState, url: str) -> str:
+    """Produce the final return value after streaming/response is complete.
+
+    Handles the JSON-dump fallback, trailing-text flush for streamed
+    responses, and file downloads.
+    """
+    if state.final_text is None:
+        return json.dumps(state.raw_result, indent=2)
+
+    if state.printed_len > 0:
+        remaining = state.final_text[state.printed_len:]
+        if remaining:
+            sys.stdout.write(remaining)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    if "/uploads/" in state.final_text:
+        state.final_text = _download_files(state.final_text, url)
+
+    if state.printed_len > 0:
+        return ""
+
+    return state.final_text
+
+
 def _send_task(url: str, task: str, file: str = None, image: str = None) -> str:
     """Send a task to an OnIt A2A server using SSE streaming.
 
@@ -183,38 +298,7 @@ def _send_task(url: str, task: str, file: str = None, image: str = None) -> str:
     timer_thread = threading.Thread(target=_show_elapsed, daemon=True)
     timer_thread.start()
 
-    printed_len = 0       # how much of the streamed text we already printed
-    final_text = None      # set when the completed task arrives
-    raw_result = {}        # raw result dict for fallback JSON dump
-    spinner_cleared = False
-    cursor_shown = False   # whether a blinking cursor char is on screen
-
-    def _erase_cursor():
-        """Remove the blinking block cursor and restore the terminal cursor."""
-        nonlocal cursor_shown
-        if cursor_shown:
-            sys.stdout.write("\b \b")   # erase the block char
-            sys.stdout.write("\033[?25h")  # restore terminal cursor
-            sys.stdout.flush()
-            cursor_shown = False
-
-    def _show_cursor():
-        """Hide terminal cursor and show a blinking white block instead."""
-        nonlocal cursor_shown
-        if not cursor_shown:
-            sys.stdout.write("\033[?25l")  # hide terminal cursor
-            sys.stdout.write("\033[5m\u2588\033[0m")  # blinking white block
-            sys.stdout.flush()
-            cursor_shown = True
-
-    def _clear_spinner():
-        nonlocal spinner_cleared
-        if not spinner_cleared:
-            stop_timer.set()
-            timer_thread.join()
-            sys.stderr.write("\r\033[K")
-            sys.stderr.flush()
-            spinner_cleared = True
+    state = _StreamState(stop_timer, timer_thread)
 
     try:
         resp = requests.post(
@@ -229,70 +313,20 @@ def _send_task(url: str, task: str, file: str = None, image: str = None) -> str:
         content_type = resp.headers.get("content-type", "")
 
         if "text/event-stream" in content_type:
-            # ── SSE streaming path ──────────────────────────────────
-            for line in resp.iter_lines(decode_unicode=True):
-                if line is None:
-                    continue
-                # SSE events look like:  data: {"jsonrpc":"2.0",...}
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw:
-                    continue
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-
-                result = event.get("result", {})
-                status = result.get("status", {})
-                state = status.get("state", "")
-
-                # Intermediate "working" event → print the new delta
-                if state == "working":
-                    msg = status.get("message", {})
-                    for part in msg.get("parts", []):
-                        if part.get("kind") == "text":
-                            full = part["text"]
-                            if len(full) > printed_len:
-                                _clear_spinner()
-                                _erase_cursor()
-                                sys.stdout.write(full[printed_len:])
-                                sys.stdout.flush()
-                                printed_len = len(full)
-                                _show_cursor()
-                            break
-
-                # Completed event → extract final answer
-                elif state == "completed":
-                    raw_result = result
-                    final_text = _extract_a2a_text(result)
-                    # Also check status.message for the final text
-                    if not final_text:
-                        msg = status.get("message", {})
-                        for part in msg.get("parts", []):
-                            if part.get("kind") == "text":
-                                final_text = part["text"]
-                                break
-
-                # Non-status event (direct Message) → might be final
-                elif "parts" in result:
-                    raw_result = result
-                    final_text = _extract_a2a_text(result)
-
+            _handle_sse_events(resp, state)
         else:
-            # ── Non-streaming JSON response (fallback) ──────────────
+            # Non-streaming JSON response (fallback)
             data = resp.json()
             error = data.get("error")
             if error:
-                _clear_spinner()
+                state.clear_spinner()
                 return f"Error: {error}"
-            raw_result = data.get("result", {})
-            final_text = _extract_a2a_text(raw_result)
+            state.raw_result = data.get("result", {})
+            state.final_text = _extract_a2a_text(state.raw_result)
 
     except requests.RequestException:
         # SSE failed — fall back to non-streaming message/send
-        _clear_spinner()
+        state.clear_spinner()
         payload["method"] = "message/send"
         resp = requests.post(url.rstrip("/"), json=payload, timeout=None)
         resp.raise_for_status()
@@ -300,34 +334,13 @@ def _send_task(url: str, task: str, file: str = None, image: str = None) -> str:
         error = data.get("error")
         if error:
             return f"Error: {error}"
-        raw_result = data.get("result", {})
-        final_text = _extract_a2a_text(raw_result)
+        state.raw_result = data.get("result", {})
+        state.final_text = _extract_a2a_text(state.raw_result)
     finally:
-        _erase_cursor()
-        _clear_spinner()
+        state.erase_cursor()
+        state.clear_spinner()
 
-    if final_text is None:
-        return json.dumps(raw_result, indent=2)
-
-    # If we already streamed everything, just print the trailing
-    # newline; otherwise print any remaining text the stream missed.
-    if printed_len > 0:
-        remaining = final_text[printed_len:]
-        if remaining:
-            sys.stdout.write(remaining)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-    # Download any files referenced in the response
-    if "/uploads/" in final_text:
-        final_text = _download_files(final_text, url)
-
-    # If we already printed via streaming, return empty to avoid
-    # double-printing in the caller.
-    if printed_len > 0:
-        return ""
-
-    return final_text
+    return _format_output(state, url)
 
 
 def _find_default_config() -> str:
@@ -451,7 +464,8 @@ def _merge_base(override: dict, base: dict):
             base[key] = value
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
+    """Create and configure the CLI argument parser."""
     parser = argparse.ArgumentParser(
         prog="onit",
         description="OnIt — an intelligent agent for task automation and assistance.",
@@ -537,39 +551,15 @@ def main():
     parser.add_argument('--mcp-sse', type=str, action='append', default=None,
                         help='URL of an external MCP tools server using SSE transport (can be repeated). '
                              'Example: --mcp-sse http://localhost:8080/sse')
-    args = parser.parse_args()
 
-    # Setup wizard
-    if args.command == "setup":
-        from .setup import run_setup
-        run_setup(show_only=args.show)
-        return
+    return parser
 
-    # Client mode: send task to remote A2A server and exit
-    if args.a2a_client:
-        if not args.a2a_task:
-            print("Error: --client requires --a2a-task", file=sys.stderr)
-            sys.exit(1)
-        # Validate image file if provided
-        if args.a2a_image:
-            valid_image_ext = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
-            image_path = os.path.abspath(os.path.expanduser(args.a2a_image))
-            if not os.path.isfile(image_path):
-                print(f"Error: Image file not found: {image_path}", file=sys.stderr)
-                sys.exit(1)
-            ext = os.path.splitext(image_path)[1].lower()
-            if ext not in valid_image_ext:
-                print(f"Error: Invalid image file. Supported formats: {', '.join(sorted(valid_image_ext))}", file=sys.stderr)
-                sys.exit(1)
-            args.a2a_image = image_path
-        try:
-            answer = _send_task(args.a2a_host, args.a2a_task, file=args.a2a_file, image=args.a2a_image)
-            print(answer)
-        except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        return
 
+def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
+    """Load the config file, merge setup defaults, and apply CLI overrides.
+
+    Returns the fully-resolved config dict ready for use.
+    """
     # resolve config file
     config_path = args.config or _find_default_config()
     if os.path.isfile(config_path):
@@ -733,7 +723,11 @@ def main():
 
         config_data['gateway'] = gateway_type
 
-    # Auto-start MCP servers if not already running
+    return config_data
+
+
+def _setup_servers(config_data: dict) -> None:
+    """Start MCP servers and print tool-availability warnings."""
     _ensure_mcp_servers(
         config_data,
         log_level='DEBUG' if config_data.get('verbose') else 'ERROR',
@@ -753,11 +747,54 @@ def main():
         print("  Set via env var, --ollama-api-key, or run: onit setup\n",
               file=sys.stderr)
 
+
+def _dispatch_mode(config_data: dict) -> None:
+    """Instantiate OnIt and launch the appropriate run mode."""
     onit = OnIt(config=config_data)
     if config_data.get('gateway'):
         onit.run_gateway_sync()
     else:
         asyncio.run(onit.run())
+
+
+def main():
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    # Setup wizard
+    if args.command == "setup":
+        from .setup import run_setup
+        run_setup(show_only=args.show)
+        return
+
+    # Client mode: send task to remote A2A server and exit
+    if args.a2a_client:
+        if not args.a2a_task:
+            print("Error: --client requires --a2a-task", file=sys.stderr)
+            sys.exit(1)
+        # Validate image file if provided
+        if args.a2a_image:
+            valid_image_ext = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
+            image_path = os.path.abspath(os.path.expanduser(args.a2a_image))
+            if not os.path.isfile(image_path):
+                print(f"Error: Image file not found: {image_path}", file=sys.stderr)
+                sys.exit(1)
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext not in valid_image_ext:
+                print(f"Error: Invalid image file. Supported formats: {', '.join(sorted(valid_image_ext))}", file=sys.stderr)
+                sys.exit(1)
+            args.a2a_image = image_path
+        try:
+            answer = _send_task(args.a2a_host, args.a2a_task, file=args.a2a_file, image=args.a2a_image)
+            print(answer)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    config_data = _parse_and_resolve_config(args)
+    _setup_servers(config_data)
+    _dispatch_mode(config_data)
 
 
 if __name__ == "__main__":
