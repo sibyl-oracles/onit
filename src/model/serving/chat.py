@@ -294,12 +294,18 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                         chat_ui, verbose, messages: list,
                         tool_call_history: list,
                         max_repeated: int,
-                        is_structured: bool = False) -> Optional[str]:
+                        is_structured: bool = False,
+                        session_id: str = "") -> Optional[str]:
     """Execute a single tool call and append the result to messages.
 
     Returns a bail-out message string if repeated-call limit is hit,
     otherwise returns None (caller should continue).
     """
+    # Inject session_id into sandbox tool calls so the external sandbox
+    # MCP server reuses the same container across calls.
+    if session_id and hasattr(tool_registry, '_SANDBOX_SESSION_TOOLS') and \
+            function_name in tool_registry._SANDBOX_SESSION_TOOLS:
+        function_arguments.setdefault("session_id", session_id)
     if chat_ui:
         chat_ui.add_tool_call(function_name, function_arguments)
         chat_ui.show_tool_start(function_name, function_arguments)
@@ -594,6 +600,7 @@ async def _handle_raw_tool_call(
     last_response: str, tool_registry, timeout, data_path,
     chat_ui, verbose: bool, messages: list,
     tool_call_history: list, max_repeated: int,
+    session_id: str = "",
 ) -> tuple[bool, str | None]:
     """Handle a raw JSON tool call embedded in model content.
 
@@ -611,7 +618,7 @@ async def _handle_raw_tool_call(
             function_name, function_arguments, synthetic_id,
             tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated,
-            is_structured=False,
+            is_structured=False, session_id=session_id,
         )
         if bail:
             return False, bail
@@ -640,6 +647,7 @@ async def _handle_structured_tool_calls(
     timeout, data_path, chat_ui, verbose: bool,
     messages: list, tool_call_history: list,
     max_repeated: int, safety_queue: asyncio.Queue,
+    session_id: str = "",
 ) -> str | object | None:
     """Execute structured tool calls and append results to messages.
 
@@ -661,7 +669,7 @@ async def _handle_structured_tool_calls(
             function_name, function_arguments, tool.id,
             tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated,
-            is_structured=True,
+            is_structured=True, session_id=session_id,
         )
         if bail:
             return bail
@@ -683,6 +691,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     chat_ui = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
+    session_id = kwargs.get('session_id', '')
     max_tokens = kwargs.get('max_tokens', 8192)
     memories = kwargs.get('memories', None)
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
@@ -801,7 +810,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             should_continue, bail = await _handle_raw_tool_call(
                 _content, tool_registry, timeout, data_path,
                 chat_ui, verbose, messages, tool_call_history,
-                MAX_REPEATED_TOOL_CALLS,
+                MAX_REPEATED_TOOL_CALLS, session_id=session_id,
             )
             if bail:
                 return bail
@@ -815,7 +824,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             tool_calls, _message_for_history, tool_registry,
             timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
-            safety_queue,
+            safety_queue, session_id=session_id,
         )
         if bail is _SAFETY_ABORT:
             return None

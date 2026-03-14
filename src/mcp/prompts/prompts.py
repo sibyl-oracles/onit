@@ -32,7 +32,8 @@ async def assistant_instruction(task: str,
                                 template_path: str = None,
                                 file_server_url: str = None,
                                 documents_path: str = None,
-                                topic: str = None) -> str:
+                                topic: str = None,
+                                sandbox_available: str | bool = False) -> str:
    if not data_path:
       raise ValueError("data_path is required and must be a non-empty string")
 
@@ -94,6 +95,26 @@ When using create_presentation, create_excel, or create_document tools, always p
 ## Relevant Information
 Search and read related documents (PDF, TXT, DOCX, XLSX, PPTX, and Markdown (MD)) in `{documents_path}`.
 Search the web for additional information **if and only if** above documents are insufficient to complete the task.
+"""
+
+   # Add sandbox routing instructions when sandbox tools are available
+   if sandbox_available and str(sandbox_available).lower() not in ("false", "null", "none", "0", ""):
+      instruction += f"""
+## Code Execution (IMPORTANT)
+Sandbox tools (`install_packages` and `run_code`) are available for running code and installing packages.
+When the task requires writing and running code (scripts, simulations, data analysis, software projects):
+1. Write code files using `write_file` to `{data_path}/`.
+2. Install any needed Python packages using `install_packages(packages="numpy matplotlib")`.
+3. Run code using `run_code(command="python main.py")`.
+4. Read output files or check results using `read_file(path="{data_path}/output.txt")`.
+5. **NEVER use `bash` for ANY code execution, package management, or Python-related commands.** This includes running scripts, installing packages, checking installed packages (e.g. `pip list`, `pip show`), running `python` commands, or any other operation that should happen in the sandbox. The `bash` tool runs on the host system, NOT in the sandbox — always use `run_code` and `install_packages` instead.
+
+**CRITICAL — `run_code` path rules:**
+- `run_code` executes inside a separate sandbox environment where your files are at the working directory root.
+- Use **relative paths only** in `run_code` commands: `run_code(command="python main.py")`, NOT `run_code(command="python {data_path}/main.py")`.
+- NEVER pass `{data_path}/...` absolute paths inside `run_code` commands — they will not resolve inside the sandbox.
+- Files created by `write_file(path="{data_path}/main.py")` are automatically available as `main.py` inside `run_code`.
+- Output files from `run_code` (e.g., `results.csv`) are available at `{data_path}/results.csv` via `read_file`.
 """
 
    instruction += f"""

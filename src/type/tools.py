@@ -260,6 +260,15 @@ class ToolRegistry:
         return None
 
 
+    # Sandbox tool names that indicate code execution sandbox is available
+    _SANDBOX_TOOL_NAMES = {"run_code", "install_packages"}
+    # All sandbox-related tools that need a session_id injected
+    _SANDBOX_SESSION_TOOLS = {"run_code", "install_packages", "sandbox_status"}
+
+    def has_sandbox_tools(self) -> bool:
+        """Check if sandbox code execution tools are registered."""
+        return self._SANDBOX_TOOL_NAMES.issubset(self.tools)
+
     def __getitem__(self, tool_name: str) -> ToolHandler | None:
         if tool_name not in self.tools:
             return None

@@ -18,6 +18,7 @@ OnIt: An intelligent agent framework for task automation and assistance.
 """
 
 import asyncio
+import base64
 import os
 import time
 import tempfile
@@ -42,12 +43,13 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from .lib.tools import discover_tools
 from .lib.text import remove_tags
+from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
 from .model.serving.chat import chat
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.types import FilePart, FileWithBytes, TaskState, TaskStatus, TaskStatusUpdateEvent
+from a2a.types import FilePart, FileWithBytes, Part, TaskState, TaskStatus, TaskStatusUpdateEvent
 from a2a.utils import new_agent_text_message
 
 AGENT_CURSOR = "OnIt"
@@ -274,6 +276,7 @@ class OnItA2AExecutor(AgentExecutor):
                 stream_callback=_a2a_stream_callback,
                 stream_throttle=10,
                 stats=_stats,
+                session_id=session["session_id"],
             )
             _task_elapsed = time.monotonic() - _task_start
         except asyncio.CancelledError:
@@ -291,7 +294,24 @@ class OnItA2AExecutor(AgentExecutor):
             _footer_parts.append(f"{tok_s:.1f} tok/s")
         if _footer_parts:
             result = f"{result}\n\n({' · '.join(_footer_parts)})"
-        await event_queue.enqueue_event(new_agent_text_message(result))
+
+        message = new_agent_text_message(result)
+
+        # Attach codebase zip when code files were generated
+        zip_path = zip_code_files(session["data_path"])
+        if zip_path:
+            with open(zip_path, "rb") as zf:
+                zip_b64 = base64.b64encode(zf.read()).decode("utf-8")
+            zip_name = os.path.basename(zip_path)
+            message.parts.append(Part(root=FilePart(
+                file=FileWithBytes(
+                    bytes=zip_b64,
+                    mimeType="application/zip",
+                    name=zip_name,
+                )
+            )))
+
+        await event_queue.enqueue_event(message)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         session = self._get_session(context)
@@ -403,6 +423,11 @@ class OnIt(BaseModel):
     prompt_url: str | None = Field(default=None, exclude=True)
     file_server_url: str | None = Field(default=None, exclude=True)
     chat_ui: Any | None = Field(default=None, exclude=True)
+
+    @property
+    def sandbox_available(self) -> bool:
+        """Check if sandbox code execution tools are registered."""
+        return self.tool_registry.has_sandbox_tools() if self.tool_registry else False
 
     def __init__(self, config: Union[str, os.PathLike[str], dict[str, Any], None] = None) -> None :
         super().__init__()
@@ -656,7 +681,8 @@ class OnIt(BaseModel):
                            stream_complete_callback=None,
                            stream_throttle: int = 0,
                            stats: dict | None = None,
-                           tool_status_callback=None) -> str:
+                           tool_status_callback=None,
+                           session_id: str | None = None) -> str:
         """Process a single task and return the response string.
 
         Args:
@@ -692,6 +718,7 @@ class OnIt(BaseModel):
                 "file_server_url": self.file_server_url,
                 "documents_path": self.documents_path,
                 "topic": self.topic,
+                "sandbox_available": self.sandbox_available,
             })
             instruction = instruction.messages[0].content.text
 
@@ -706,12 +733,14 @@ class OnIt(BaseModel):
                 on_tool_status=tool_status_callback,
             )
 
+        effective_session_id = session_id or self.session_id
         kwargs = {
             'console': None,
             'chat_ui': _adapter,
             'cursor': AGENT_CURSOR, 'memories': None,
             'verbose': self.verbose or self.show_logs,
             'data_path': effective_data_path,
+            'session_id': effective_session_id,
             'max_tokens': self.model_serving.get('max_tokens', 262144),
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
@@ -783,7 +812,8 @@ class OnIt(BaseModel):
                                                                                 "template_path": self.template_path,
                                                                                 "file_server_url": self.file_server_url,
                                                                                 "documents_path": self.documents_path,
-                                                                                "topic": self.topic})
+                                                                                "topic": self.topic,
+                                                                                "sandbox_available": self.sandbox_available})
                     instruction = instruction.messages[0]
                     instruction = instruction.content.text
 
@@ -794,11 +824,12 @@ class OnIt(BaseModel):
                           'memories': None,
                           'verbose': self.verbose,
                           'data_path': self.data_path,
+                          'session_id': self.session_id,
                           'max_tokens': self.model_serving.get('max_tokens', 262144),
                           'session_history': self.load_session_history()}
                 last_response = await chat(host=self.model_serving["host"],
                                             host_key=self.model_serving.get("host_key", "EMPTY"),
-                                
+
                                             instruction=instruction,
                                             tool_registry=self.tool_registry,
                                             safety_queue=self.safety_queue,
@@ -995,7 +1026,8 @@ class OnIt(BaseModel):
                                                                         "template_path": self.template_path,
                                                                         "file_server_url": self.file_server_url,
                                                                         "documents_path": self.documents_path,
-                                                                        "topic": self.topic})
+                                                                        "topic": self.topic,
+                                                                        "sandbox_available": self.sandbox_available})
             instruction = instruction.messages[0]
             instruction = instruction.content.text
         return instruction
@@ -1068,6 +1100,9 @@ class OnIt(BaseModel):
             )
         else:
             self.chat_ui.add_message("assistant", response, elapsed=elapsed_time)
+        # Show local codebase path when sandbox generated code files
+        if has_code_files(self.data_path):
+            self.chat_ui.add_message("system", f"Codebase saved to: {self.data_path}")
         try:
             with open(self.session_path, "a", encoding="utf-8") as f:
                 session_data = {
@@ -1181,6 +1216,7 @@ class OnIt(BaseModel):
                           'memories': None,
                           'verbose': self.verbose,
                           'data_path': self.data_path,
+                          'session_id': self.session_id,
                           'max_tokens': self.model_serving.get('max_tokens', 262144),
                           'session_history': self.load_session_history(),
                           'stream': self.stream}

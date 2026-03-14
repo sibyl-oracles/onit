@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Optional
+from src.lib.files import zip_code_files
 
 logger = logging.getLogger(__name__)
 
@@ -819,6 +820,7 @@ class WebChatUI:
                             stream_callback=_on_stream_token,
                             stream_complete_callback=_on_stream_complete,
                             stats=_stats,
+                            session_id=s.session_id,
                         )
                         _task_elapsed = time.monotonic() - _task_start
                         s.streaming_active = False
@@ -846,6 +848,18 @@ class WebChatUI:
                                             content=gr.FileData(path=fpath, mime_type=None),
                                         )
                                     )
+                            # Offer codebase zip download when code files were generated
+                            zip_path = zip_code_files(s.data_path)
+                            if zip_path:
+                                s.pending_responses.append(
+                                    gr.ChatMessage(
+                                        role="assistant",
+                                        content=gr.FileData(
+                                            path=zip_path,
+                                            mime_type="application/zip",
+                                        ),
+                                    )
+                                )
                         else:
                             s.pending_responses.append(
                                 gr.ChatMessage(role="assistant", content="I'm sorry, I couldn't process your request. Please try again.")
