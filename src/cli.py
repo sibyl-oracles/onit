@@ -436,20 +436,23 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     # Check if locally-managed servers are already running (skip external ones)
     servers = config_data.get('mcp', {}).get('servers', [])
     local_servers = [s for s in servers if not _is_external_server(s)]
-    already_running = True
+    all_running = True
     for s in local_servers:
         if s.get('enabled', True) and s.get('url'):
             parsed = urlparse(s['url'])
             host = parsed.hostname or '127.0.0.1'
             port = parsed.port or 80
             if not _is_port_open(host, port, timeout=0.3):
-                already_running = False
+                all_running = False
                 break
 
-    if already_running and local_servers:
+    if all_running and local_servers:
         return
 
-    # Start MCP servers in a daemon thread
+    # Start MCP servers in a daemon thread.
+    # Individual servers will skip starting if their port is already bound
+    # by another onit instance, so this is safe to call even when some
+    # servers are already running.
     mcp_thread = threading.Thread(
         target=_start_mcp_servers_background,
         args=(log_level,),

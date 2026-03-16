@@ -22,16 +22,27 @@ logger.setLevel(logging.ERROR)
 
 
 #def run_server(name, transport, host, port, path, module, model=None, model_url=None):
-def run_server(name:str, 
-               transport:str, 
-               host:str, 
-               port:int, 
-               path:str, 
-               module:str, 
+def _is_port_in_use(host: str, port: int, timeout: float = 0.5) -> bool:
+    """Check if a TCP port is already accepting connections."""
+    import socket
+    try:
+        sock = socket.create_connection((host if host != '0.0.0.0' else '127.0.0.1', port), timeout=timeout)
+        sock.close()
+        return True
+    except (ConnectionRefusedError, OSError):
+        return False
+
+
+def run_server(name:str,
+               transport:str,
+               host:str,
+               port:int,
+               path:str,
+               module:str,
                options: dict={}) -> bool:
     """
     Start a server with the provided configuration.
-    
+
     Args:
         name (str): Server name for identification
         transport (str): Transport protocol (e.g., 'sse')
@@ -41,11 +52,16 @@ def run_server(name:str,
         module (str): Python module path to import and run
         model (str, optional): Model name if applicable
         model_url (str, optional): URL to download model if applicable
-        
+
     Returns:
         bool: True if server started successfully, False otherwise
     """
     try:
+        # If port is already in use (another onit instance started this server),
+        # skip starting and treat as success.
+        if 'stdio' not in transport and _is_port_in_use(host, port):
+            logger.info(f"Server {name} port {port} already in use, skipping (shared with another instance)")
+            return True
         # Suppress noisy uvicorn logs in child processes unless verbose.
         # Override LOGGING_CONFIG *before* uvicorn is imported so that
         # dictConfig() never resets the access logger back to INFO.
