@@ -1240,7 +1240,13 @@ class OnIt(BaseModel):
                 if response is None:
                     # API error — ask user whether to retry
                     self._cleanup_enter_key_listener(loop)
-                    self.chat_ui.add_message("system", "Unable to get a response from the model. Would you like to retry? (yes/no)")
+                    # Surface the last error log so the user can diagnose the issue
+                    error_detail = ""
+                    if hasattr(self.chat_ui, 'execution_logs') and self.chat_ui.execution_logs:
+                        last_log = self.chat_ui.execution_logs[-1]
+                        if last_log.get("level") in ("error", "warning"):
+                            error_detail = f" ({last_log['message']})"
+                    self.chat_ui.add_message("system", f"Unable to get a response from the model{error_detail}. Would you like to retry? (yes/no)")
                     retry_input = await self._get_user_task(loop)
                     if retry_input.lower().strip() in ('yes', 'y'):
                         self._restore_enter_key_listener(loop, on_enter_cb)

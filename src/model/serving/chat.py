@@ -476,9 +476,10 @@ def _build_messages(instruction: str, images_bytes: list[str],
     else:
         messages.append({"role": "user", "content": instruction})
 
-    if not memories and not session_history:
-        message = {'role': 'tool', 'content': '', 'name': '', 'parameters': {}, "tool_call_id": ''}
-        messages.append(message)
+    # Note: previously an empty tool sentinel message was appended here when
+    # there was no session history or memories.  This violated the OpenAI API
+    # spec (tool messages must follow an assistant message with tool_calls) and
+    # caused some vLLM versions to reject the request outright.
 
     return messages
 
