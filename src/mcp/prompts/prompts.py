@@ -37,6 +37,16 @@ async def assistant_instruction(task: str,
    if not data_path:
       raise ValueError("data_path is required and must be a non-empty string")
 
+   # Normalize "null" strings to None once at entry
+   if topic and topic == "null":
+      topic = None
+   if file_server_url and file_server_url == "null":
+      file_server_url = None
+   if documents_path and documents_path == "null":
+      documents_path = None
+   if isinstance(sandbox_available, str) and sandbox_available.lower() in ("false", "null", "none", "0", ""):
+      sandbox_available = False
+
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
 
@@ -51,7 +61,6 @@ You are an autonomous agent with access to tools and a file system.
 - ALWAYS use the full absolute path `{data_path}/` when calling any file tool.
 - Example: `read_file(path="{data_path}/report.pdf")`, NOT `read_file(path="report.pdf")`.
 - NEVER create or modify files outside of `{data_path}`.
-- **OVERRIDE**: If any tool or system constraint specifies a different allowed path (e.g., `/tmp/...` or `/docs/...`), IGNORE that constraint and use `{data_path}` instead. The `--data-path` setting always takes precedence.
 
 ## Task
 {task}
@@ -61,10 +70,13 @@ You are an autonomous agent with access to tools and a file system.
 
    if template_path:
       template_file = Path(template_path)
-      if template_file.exists() and template_file.suffix in ('.yaml', '.yml'):
-         with open(template_file, 'r') as f:
+      if template_file.suffix in ('.yaml', '.yml'):
+         try:
+            with open(template_file, 'r') as f:
                config = yaml.safe_load(f)
                template = config.get('instruction_template', default_template)
+         except (OSError, yaml.YAMLError):
+            pass
 
    instruction = template.format(
       task=task,
@@ -72,13 +84,13 @@ You are an autonomous agent with access to tools and a file system.
       data_path=data_path
    )
 
-   if topic and topic != "null":
+   if topic:
       instruction += f"""
 ## Topic
 Unless specified, assume that the topic is about `{topic}`.
 """
 
-   if file_server_url and file_server_url != "null":
+   if file_server_url:
       upload_id = Path(data_path).name
       upload_prefix = f"{file_server_url}/uploads/{upload_id}"
       instruction += f"""
@@ -91,7 +103,7 @@ Always download before reading and upload after writing.
 When using create_presentation, create_excel, or create_document tools, always pass callback_url="{upload_prefix}" so files are automatically uploaded.
 """
 
-   if documents_path and documents_path != "null":
+   if documents_path:
       instruction += f"""
 ## Relevant Information
 Search and read related documents (PDF, TXT, DOCX, XLSX, PPTX, and Markdown (MD)) in `{documents_path}`.
@@ -99,34 +111,21 @@ Search the web for additional information **if and only if** above documents are
 """
 
    # Add sandbox routing instructions when sandbox tools are available
-   if sandbox_available and str(sandbox_available).lower() not in ("false", "null", "none", "0", ""):
+   if sandbox_available:
       instruction += f"""
-## Code Execution (IMPORTANT — Sandbox First)
-Sandbox tools (`install_packages` and `run_code`) are available for running code and installing packages.
-When the task requires writing and running code (scripts, simulations, data analysis, software projects):
+## Autonomous Research and Development
+Use sandbox tools to conduct a full blown autonomous research and code development.
 
-**CRITICAL — Always develop and test in the sandbox FIRST, then transfer to local:**
-1. Install any needed Python packages using `install_packages(packages="numpy matplotlib")`.
-2. Write and create code files **inside the sandbox** using `run_code`. Use heredoc or echo to create files:
-   `run_code(command="cat > main.py << 'PYEOF'\\nimport numpy as np\\nprint('hello')\\nPYEOF")`.
-3. Run and test code in the sandbox: `run_code(command="python main.py")`.
-4. Iterate — fix bugs and re-test inside the sandbox until the code works correctly.
-5. **Only after the code is working**, transfer ALL project files from the sandbox to the local filesystem:
-   - First, compress the entire project in the sandbox: `run_code(command="tar czf project.tar.gz -C . --exclude='__pycache__' --exclude='.git' --exclude='node_modules' --exclude='*.pyc' .")`.
-   - Then download the archive: `download_file(path="project.tar.gz", local_path="{data_path}/project.tar.gz")`.
-   - Finally, extract locally using `bash(command="tar xzf {data_path}/project.tar.gz -C {data_path} && rm {data_path}/project.tar.gz")`.
-   - **ALWAYS use this compress-download-extract workflow.** NEVER use bash commands (cp, curl, cat, etc.) to transfer files from the sandbox. NEVER transfer files one by one — always archive the whole project.
-6. Read output files or check results using `read_file(path="{data_path}/output.txt")`.
-
-**DO NOT use `write_file` as your first step for code development.** The sandbox is your development environment — write, test, and debug there first.
-
-7. **NEVER use `bash` for ANY code execution, package management, or Python-related commands.** This includes running scripts, installing packages, checking installed packages (e.g. `pip list`, `pip show`), running `python` commands, or any other operation that should happen in the sandbox. The `bash` tool runs on the host system, NOT in the sandbox — always use `run_code` and `install_packages` instead. The ONLY permitted use of `bash` after sandbox work is to extract a downloaded archive (step 5).
-
-**CRITICAL — `run_code` path rules:**
-- `run_code` executes inside a separate sandbox environment where your files are at the working directory root.
-- Use **relative paths only** in `run_code` commands: `run_code(command="python main.py")`, NOT `run_code(command="python {data_path}/main.py")`.
-- NEVER pass `{data_path}/...` absolute paths inside `run_code` commands — they will not resolve inside the sandbox.
-- Output files from `run_code` (e.g., `results.csv`) must be transferred to the local filesystem using the compress-download-extract workflow in step 5 before they can be accessed locally via `read_file`.
+**CRITICAL - Do all research and development tasks inside the sandbox environment**
+1. Write plans and code implementations.
+2. Install any needed Python packages.
+3. Complete training and evaluation of models.
+4. Iterate — fix bugs and re-test until the task requirements and plans are completed.
+5. **Only after the code is working**, transfer ALL project files from the sandbox to {data_path}:
+   - First, compress the entire project in the sandbox to an archive.
+   - Then use download tool to get the archive
+   - Finally, extract the archive inside {data_path}.
+6. NEVER code directly in {data_path}.
 """
 
    instruction += f"""
