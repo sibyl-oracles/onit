@@ -543,6 +543,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--no-stream', action='store_true', default=None,
                         dest='no_stream',
                         help='Disable streaming of tokens (streaming is enabled by default for text, web and a2a modes).')
+    parser.add_argument('--sandbox', action='store_true', default=None,
+                        help='Enable sandbox mode for code execution in isolated containers.')
 
     # Web UI options
     parser.add_argument('--web', action='store_true', default=None,
@@ -648,6 +650,7 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         'gateway': 'gateway',
         'viber_webhook_url': 'viber_webhook_url',
         'viber_port': 'viber_port',
+        'sandbox': 'sandbox',
     }
     for arg_name, config_key in arg_to_config.items():
         value = getattr(args, arg_name, None)

@@ -392,15 +392,12 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     Returns a bail-out message string if repeated-call limit is hit,
     otherwise returns None (caller should continue).
     """
-    # Inject session_id into sandbox tool calls so the external sandbox
-    # MCP server reuses the same container across calls.
-    if session_id and hasattr(tool_registry, '_SANDBOX_SESSION_TOOLS') and \
-            function_name in tool_registry._SANDBOX_SESSION_TOOLS:
+    # Inject session_id / data_path into tool calls whose schema declares
+    # these parameters, so callers (e.g. sandbox MCP servers) receive them
+    # automatically without hardcoding tool names.
+    if session_id and tool_registry.tool_accepts_param(function_name, "session_id"):
         function_arguments.setdefault("session_id", session_id)
-    # Inject data_path into sandbox tools so the sandbox can mount/access
-    # the agent's data directory for direct file sharing.
-    if data_path and hasattr(tool_registry, '_SANDBOX_DATA_PATH_TOOLS') and \
-            function_name in tool_registry._SANDBOX_DATA_PATH_TOOLS:
+    if data_path and tool_registry.tool_accepts_param(function_name, "data_path"):
         function_arguments.setdefault("data_path", data_path)
     # Intercept sandbox_download_file for /workspace/ paths.  The container
     # volume-mounts data_path as /workspace, so those files already exist on

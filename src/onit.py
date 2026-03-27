@@ -57,6 +57,21 @@ USER_CURSOR = "You"
 STOP_TAG = "<stop></stop>"
 
 
+async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
+    """Call sandbox_stop via the tool registry if sandbox mode is enabled and the tool is available."""
+    if not sandbox or not tool_registry or "sandbox_stop" not in tool_registry.tools:
+        return
+    try:
+        handler = tool_registry["sandbox_stop"]
+        if handler:
+            kwargs = {}
+            if session_id:
+                kwargs["session_id"] = session_id
+            await asyncio.wait_for(handler(**kwargs), timeout=10)
+    except Exception as e:
+        logger.warning("sandbox_stop failed: %s", e)
+
+
 class StreamingAdapter:
     """Minimal chat_ui adapter that forwards streaming tokens to a callback.
 
@@ -344,6 +359,7 @@ class OnItA2AExecutor(AgentExecutor):
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         session = self._get_session(context)
         session["safety_queue"].put_nowait(STOP_TAG)
+        await _call_sandbox_stop(self.onit.tool_registry, session["session_id"], sandbox=self.onit.sandbox)
 
 
 class ClientDisconnectMiddleware:
@@ -448,14 +464,15 @@ class OnIt(BaseModel):
     gateway_token: str | None = Field(default=None, exclude=True)
     viber_webhook_url: str | None = Field(default=None)
     viber_port: int = Field(default=8443)
+    sandbox: bool = Field(default=False)
     prompt_url: str | None = Field(default=None, exclude=True)
     file_server_url: str | None = Field(default=None, exclude=True)
     chat_ui: Any | None = Field(default=None, exclude=True)
 
     @property
     def sandbox_available(self) -> bool:
-        """Check if sandbox code execution tools are registered."""
-        return self.tool_registry.has_sandbox_tools() if self.tool_registry else False
+        """Check if sandbox mode is enabled."""
+        return self.sandbox
 
     def __init__(self, config: Union[str, os.PathLike[str], dict[str, Any], None] = None) -> None :
         super().__init__()
@@ -697,6 +714,7 @@ class OnIt(BaseModel):
         self.gateway_token = self.config_data.get('gateway_token', None)
         self.viber_webhook_url = self.config_data.get('viber_webhook_url', None)
         self.viber_port = self.config_data.get('viber_port', 8443)
+        self.sandbox = self.config_data.get('sandbox', False)
     def load_session_history(self, max_turns: int = 20, session_path: str | None = None) -> list[dict]:
         """Load recent session history from the JSONL session file.
 
@@ -853,6 +871,10 @@ class OnIt(BaseModel):
                 if hasattr(self, 'chat_ui') and self.chat_ui and hasattr(self.chat_ui, 'add_log'):
                     self.chat_ui.add_log(retry_msg, level="warning")
                 await asyncio.sleep(min(2 ** _pt_attempt, 10))
+
+        # If the safety queue fired, stop the sandbox container.
+        if not effective_safety_queue.empty():
+            await _call_sandbox_stop(self.tool_registry, effective_session_id, sandbox=self.sandbox)
 
         # Flush any pending async streaming events (e.g. A2A) before
         # returning, so the client sees all partial updates before the
@@ -1291,6 +1313,7 @@ class OnIt(BaseModel):
 
                 # User-initiated stop
                 if response == STOP_TAG:
+                    await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
                     self.chat_ui.add_message("system", "Task stopped by user.")
                     break
 
@@ -1324,6 +1347,7 @@ class OnIt(BaseModel):
             try:
                 instruction = await self.input_queue.get()
                 if not self.safety_queue.empty():
+                    await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
                     await self.output_queue.put(STOP_TAG)
                     break
                 kwargs = {'console': self.chat_ui.console,
@@ -1373,12 +1397,14 @@ class OnIt(BaseModel):
                     await self.output_queue.put(None)
                     return
                 if not self.safety_queue.empty():
+                    await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
                     await self.output_queue.put(STOP_TAG)
                     break
                 await self.output_queue.put(f"<answer>{last_response}</answer>")
                 return
             except asyncio.CancelledError:
                 logger.warning("Agent session cancelled.")
+                await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
                 await self.output_queue.put(None)
                 return
             except Exception as e:

@@ -260,24 +260,13 @@ class ToolRegistry:
         return None
 
 
-    # Sandbox tool names that indicate code execution sandbox is available
-    _SANDBOX_TOOL_NAMES = {"sandbox_run_code", "sandbox_install_packages"}
-    # All sandbox-related tools that need a session_id injected
-    _SANDBOX_SESSION_TOOLS = {
-        "sandbox_run_code", "sandbox_install_packages", "sandbox_get_status",
-        "sandbox_write_file", "sandbox_read_file", "sandbox_list_files",
-        "sandbox_download_file", "sandbox_upload_file",
-        "sandbox_enable_network", "sandbox_disable_network",
-    }
-    # Sandbox tools that need data_path injected so the sandbox server
-    # can mount the agent's data directory into the container.
-    _SANDBOX_DATA_PATH_TOOLS = {
-        "sandbox_run_code", "sandbox_install_packages", "sandbox_get_status",
-    }
-
-    def has_sandbox_tools(self) -> bool:
-        """Check if sandbox code execution tools are registered."""
-        return self._SANDBOX_TOOL_NAMES.issubset(self.tools)
+    def tool_accepts_param(self, tool_name: str, param_name: str) -> bool:
+        """Check if a registered tool declares a given parameter in its schema."""
+        handler = self[tool_name]
+        if not handler or not handler.tool_item:
+            return False
+        props = handler.tool_item.get('function', {}).get('parameters', {}).get('properties', {})
+        return param_name in props
 
     def __getitem__(self, tool_name: str) -> ToolHandler | None:
         if tool_name not in self.tools:

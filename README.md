@@ -49,6 +49,7 @@ onit --web                          # Web UI on port 9000
 onit --gateway                      # Telegram/Viber bot gateway
 onit --a2a                          # A2A server on port 9001
 onit --client --task "your task"    # Send a task to an A2A server
+onit --sandbox                      # Enable sandbox mode for code execution
 ```
 
 ## Configuration
@@ -84,6 +85,7 @@ serving:
 
 verbose: false
 timeout: 600
+sandbox: false
 
 web: false
 web_port: 9000
@@ -114,6 +116,7 @@ mcp:
 | `--prompt-intro` | Custom system prompt intro | — |
 | `--no-stream` | Disable token streaming | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
+| `--sandbox` | Enable sandbox mode for code execution in isolated containers | `false` |
 
 **Text UI:**
 
@@ -158,7 +161,8 @@ mcp:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--mcp-host` | Override host/IP in all MCP server URLs | — |
-| `--mcp-sse` | URL of an external MCP server (can be repeated) | — |
+| `--mcp-sse` | URL of an external MCP server (SSE transport, can be repeated) | — |
+| `--mcp-server` | URL of an external MCP server (Streamable HTTP transport, can be repeated) | — |
 
 ## Features
 
@@ -175,6 +179,24 @@ onit --web
 ```
 
 Supports optional Google OAuth2 authentication — see [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
+
+### Sandbox Mode
+
+Run code in isolated Docker containers. When enabled, the agent routes all code development and execution to a sandboxed environment, keeping the host system clean.
+
+```bash
+onit --sandbox
+```
+
+Or in `config.yaml`:
+
+```yaml
+sandbox: true
+```
+
+Sandbox mode requires an MCP server that provides sandbox tools (e.g. `sandbox_run_code`, `sandbox_install_packages`, `sandbox_stop`). The agent auto-injects `session_id` and `data_path` into any tool whose schema declares those parameters, so the MCP server can maintain per-session containers and mount the correct data directory.
+
+When the user interrupts a running task (Ctrl+C, Enter, or stop button), the agent automatically calls `sandbox_stop` to clean up the container.
 
 ### MCP Tool Integration
 
@@ -336,6 +358,8 @@ onit/
 │   ├── mcp/
 │   │   ├── prompts/            # Prompt engineering (FastMCP)
 │   │   └── servers/            # MCP servers (tools, web, bash, filesystem)
+│   ├── type/
+│   │   └── tools.py            # Tool registry and schema utilities
 │   ├── model/
 │   │   └── serving/
 │   │       └── chat.py         # LLM interface (vLLM + OpenRouter)
