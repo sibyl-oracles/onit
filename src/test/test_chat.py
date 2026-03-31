@@ -86,6 +86,7 @@ def _mock_completion(content="Hello!", tool_calls=None):
     choice.message = message
     completion = MagicMock()
     completion.choices = [choice]
+    completion.usage.prompt_tokens = 0
     return completion
 
 
