@@ -421,7 +421,10 @@ class ChatUI:
 
     def _render_tool_call_message(self, content: Text, name: str, args_str: str, msg_time: str) -> None:
         content.append(f"┌─ ⚙️  {name} ", style="bold dark_orange3")
-        content.append(f"[{msg_time}]\n", style=self.theme.styles.get("timestamp", "cyan"))
+        content.append(f"[{msg_time}]", style=self.theme.styles.get("timestamp", "cyan"))
+        if self._context_pct > 0:
+            content.append(f"  ctx:{self._context_pct:.0f}%", style="dim cyan")
+        content.append("\n", style="default")
         content.append(f"{args_str}\n", style="dim white")
         content.append("└" + "─" * 40 + "\n", style="dark_orange3")
 
@@ -608,8 +611,12 @@ class ChatUI:
         ts = self.format_timestamp()
         args_str = json.dumps(arguments, ensure_ascii=False)
         t = Text()
+        ctx_suffix = f"  ctx:{self._context_pct:.0f}%" if self._context_pct > 0 else ""
         t.append(f"┌─ ⚙️  {name} ", style="bold dark_orange3")
-        t.append(f"[{ts}]\n", style=self.theme.styles.get("timestamp", "cyan"))
+        t.append(f"[{ts}]", style=self.theme.styles.get("timestamp", "cyan"))
+        if ctx_suffix:
+            t.append(ctx_suffix, style="dim cyan")
+        t.append("\n", style="default")
         t.append(f"{args_str}\n", style="dim white")
         t.append("└" + "─" * 40, style="dark_orange3")
         self.console.print(t)
