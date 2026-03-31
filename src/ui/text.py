@@ -655,7 +655,7 @@ class ChatUI:
         t = Text()
         t.append(f"┌─ ↩  {name} ", style=border_style)
         t.append(f"[{ts}]\n", style=self.theme.styles.get("timestamp", "cyan"))
-        t.append(f"{display}\n", style="dim white")
+        t.append(f"{display}\n", style="bright_white")
         t.append("└" + "─" * 40, style="green" if success else "red")
         self.console.print(t)
 
