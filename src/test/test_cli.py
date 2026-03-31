@@ -3,7 +3,7 @@
 import json
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -197,6 +197,18 @@ class TestIsPortOpen:
 
 # ── _mcp_servers_ready ─────────────────────────────────────────────────────
 
+def _mock_mcp_client(raises=None):
+    """Build a mock fastmcp.Client context manager for readiness probes."""
+    client = AsyncMock()
+    if raises:
+        client.list_tools = AsyncMock(side_effect=raises)
+    else:
+        client.list_tools = AsyncMock(return_value=[MagicMock()])
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
+
+
 class TestMcpServersReady:
     def test_returns_true_when_all_servers_up(self):
         config = {
@@ -207,7 +219,8 @@ class TestMcpServersReady:
                 ]
             }
         }
-        with patch("src.cli._is_port_open", return_value=True):
+        mock = _mock_mcp_client()
+        with patch("src.cli.Client", return_value=mock):
             assert _mcp_servers_ready(config, timeout=1.0) is True
 
     def test_returns_true_when_no_servers(self):
@@ -221,7 +234,8 @@ class TestMcpServersReady:
                 ]
             }
         }
-        with patch("src.cli._is_port_open", return_value=False):
+        mock = _mock_mcp_client(raises=ConnectionError("refused"))
+        with patch("src.cli.Client", return_value=mock):
             assert _mcp_servers_ready(config, timeout=0.5) is False
 
 

@@ -85,18 +85,22 @@ def _build_returns(tool_item: Any) -> dict:
 async def _discover_server_tools(
     server: dict,
     max_retries: int = 5,
-    retry_delay: float = 2.0,
+    base_delay: float = 1.0,
+    max_delay: float = 16.0,
 ) -> list[ToolHandler]:
     """Discover tools from a single MCP server.
 
     Args:
         server: MCP server configuration dict.
         max_retries: Maximum number of connection retry attempts.
-        retry_delay: Seconds to wait between retries.
+        base_delay: Initial delay in seconds (doubles each attempt, capped at max_delay).
+        max_delay: Maximum delay in seconds between retries.
 
     Returns:
         List of ToolHandler instances discovered from this server.
     """
+    import random
+
     name = server.get('name', 'Unknown')
     enabled = server.get('enabled', True)
     if not enabled:
@@ -109,7 +113,6 @@ async def _discover_server_tools(
         return []
 
     logger.info("[discover_tools] Discovering tools from MCP server: %s", url)
-    handlers: list[ToolHandler] = []
 
     last_error: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
@@ -119,6 +122,11 @@ async def _discover_server_tools(
                 resources_list = await client.list_resources()
                 tools_list.extend(resources_list)
 
+                # Retry if server connected but returned no tools — it may still be initializing
+                if not tools_list:
+                    raise ValueError(f"Server {name} returned empty tool list (may still be initializing)")
+
+                handlers: list[ToolHandler] = []
                 for tool_item in tools_list:
                     parameters = _build_parameters(tool_item)
                     returns = _build_returns(tool_item)
@@ -137,20 +145,23 @@ async def _discover_server_tools(
                     logger.info("[discover_tools] %s", tool_entry)
 
                 logger.info("[discover_tools] %s", tools_list)
+                return handlers
 
-            return handlers
         except Exception as exc:
             last_error = exc
             if attempt < max_retries:
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                jitter = random.uniform(0, delay * 0.2)
+                wait = delay + jitter
                 logger.warning(
-                    "[discover_tools] Connection attempt %d/%d failed for %s: %s. "
+                    "[discover_tools] Attempt %d/%d failed for %s: %s. "
                     "Retrying in %.1fs...",
-                    attempt, max_retries, name, exc, retry_delay,
+                    attempt, max_retries, name, exc, wait,
                 )
-                await asyncio.sleep(retry_delay)
+                await asyncio.sleep(wait)
             else:
                 logger.error(
-                    "[discover_tools] All %d connection attempts failed for %s: %s",
+                    "[discover_tools] All %d attempts failed for %s: %s",
                     max_retries, name, last_error,
                 )
 

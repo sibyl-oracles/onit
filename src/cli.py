@@ -25,6 +25,7 @@ from pathlib import Path
 
 import requests
 import yaml
+from fastmcp import Client
 
 from .onit import OnIt
 
@@ -376,37 +377,42 @@ def _is_external_server(server: dict) -> bool:
 
 
 def _mcp_servers_ready(config_data: dict, timeout: float = 15.0) -> bool:
-    """Wait for all locally-managed MCP servers to be reachable.
+    """Wait for all locally-managed MCP servers to be ready to serve MCP requests.
 
-    Parses the agent config's mcp.servers list and checks each URL's port.
+    Probes each server with an actual list_tools() MCP call rather than a raw
+    TCP port check.  A server is considered ready only when it can respond to
+    MCP protocol requests, which happens after the ASGI app is fully initialized
+    — port-open alone is not sufficient.
+
     External servers (added via --mcp-sse/--mcp-server) are excluded since
     they are not managed by this process.
     Returns True if all servers respond within timeout, False otherwise.
     """
-    from urllib.parse import urlparse
-
     servers = config_data.get('mcp', {}).get('servers', [])
-    endpoints = []
-    for s in servers:
-        if _is_external_server(s):
-            continue
-        if s.get('enabled', True) and s.get('url'):
-            parsed = urlparse(s['url'])
-            host = parsed.hostname or '127.0.0.1'
-            port = parsed.port or 80
-            endpoints.append((host, port, s.get('name', 'Unknown')))
+    urls = [
+        s['url']
+        for s in servers
+        if not _is_external_server(s) and s.get('enabled', True) and s.get('url')
+    ]
 
-    if not endpoints:
+    if not urls:
         return True
+
+    async def _probe(url: str) -> bool:
+        try:
+            async with Client(url) as client:
+                await client.list_tools()
+                return True
+        except Exception:
+            return False
+
+    async def _all_ready() -> bool:
+        results = await asyncio.gather(*[_probe(url) for url in urls])
+        return all(results)
 
     start = time.monotonic()
     while time.monotonic() - start < timeout:
-        all_up = True
-        for host, port, _ in endpoints:
-            if not _is_port_open(host, port):
-                all_up = False
-                break
-        if all_up:
+        if asyncio.run(_all_ready()):
             return True
         time.sleep(0.5)
     return False

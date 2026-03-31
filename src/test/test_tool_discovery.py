@@ -61,12 +61,16 @@ class TestDiscoverServerTools:
         assert handlers[0].tool_item["function"]["name"] == "search"
 
     @pytest.mark.asyncio
-    async def test_prompts_not_discovered_as_tools(self):
+    async def test_prompts_only_server_raises_after_retries(self):
+        # A server that returns no tools (e.g. a prompts-only server) will be
+        # retried and ultimately raise.  In practice onit.py filters out
+        # PromptsMCPServer before calling discover_tools, so this path is
+        # defensive.  discover_tools handles the exception gracefully.
         server = {"name": "Prompts", "url": "http://127.0.0.1:18200/sse", "enabled": True}
         mock = _mock_client(prompts=[_fake_prompt("assistant")])
         with patch("lib.tools.Client", return_value=mock):
-            handlers = await _discover_server_tools(server)
-        assert len(handlers) == 0
+            with pytest.raises(ValueError, match="empty tool list"):
+                await _discover_server_tools(server, max_retries=1)
 
     @pytest.mark.asyncio
     async def test_skips_disabled_server(self):
