@@ -426,13 +426,13 @@ class ChatUI:
         if self._context_pct > 0:
             content.append(f"  {self._fmt_ctx_label()}", style="bright_cyan")
         content.append("\n", style="default")
-        content.append(f"{args_str}\n", style="dim white")
+        content.append(f"{args_str}\n", style="bright_white")
         content.append("└" + "─" * 40 + "\n", style="dark_orange3")
 
     def _render_tool_result_message(self, content: Text, name: str, result_str: str, msg_time: str) -> None:
         content.append(f"┌─ ↩  {name} ", style="bold green")
         content.append(f"[{msg_time}]\n", style=self.theme.styles.get("timestamp", "cyan"))
-        content.append(f"{result_str}\n", style="dim white")
+        content.append(f"{result_str}\n", style="bright_white")
         content.append("└" + "─" * 40 + "\n", style="green")
 
     def _render_user_message(self, content: Text, msg_content: str, msg_time: str) -> None:
@@ -595,10 +595,10 @@ class ChatUI:
 
     def _fmt_ctx_label(self) -> str:
         """Return a compact ctx label like 'ctx:42%/128k'."""
-        label = f"ctx:{self._context_pct:.0f}%"
+        label = f"ctx: {self._context_pct:.0f}%"
         if self._context_max_tokens:
-            k = self._context_max_tokens // 1000
-            label += f" of {k}k max tokens"
+            k = f"{self._context_max_tokens // 1000:,}"
+            label += f", max toks: {k}k"
         return label
 
     def set_context_usage(self, pct: float, max_tokens: int = 0) -> None:
@@ -628,7 +628,7 @@ class ChatUI:
         if ctx_suffix:
             t.append(ctx_suffix, style="bright_cyan")
         t.append("\n", style="default")
-        t.append(f"{args_str}\n", style="dim white")
+        t.append(f"{args_str}\n", style="bright_white")
         t.append("└" + "─" * 40, style="dark_orange3")
         self.console.print(t)
 
@@ -640,7 +640,7 @@ class ChatUI:
 
     def tool_log(self, name: str, data: str, level: str = "info") -> None:
         """Display real-time log messages from MCP tools (e.g. sandbox output)."""
-        style = "dim yellow" if level == "warning" else "dim red" if level == "error" else "dim cyan"
+        style = "bright_yellow" if level == "warning" else "bright_red" if level == "error" else "bright_cyan"
         self.console.print(f"  [{name}] {data}", style=style)
 
     def tool_progress(self, name: str, elapsed_seconds: int) -> None:
