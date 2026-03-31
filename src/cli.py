@@ -666,7 +666,15 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             print(f"Error: plan file '{plan_path}' not found.", file=sys.stderr)
             sys.exit(1)
         with open(plan_path, 'r') as _f:
-            config_data['prompt_intro'] = _f.read()
+            plan = _f.read()
+        config_data['prompt_intro'] = f"""You are an autonomous agent.
+Execute this research plan exactly as written, stage by stage.
+Never stop until the goal is completed.
+
+<plan>
+{plan}
+</plan>
+"""
 
     # --no-stream explicitly disables streaming (default is True)
     if args.no_stream:
