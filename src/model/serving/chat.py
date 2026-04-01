@@ -1047,7 +1047,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     max_tokens=max_tokens,             # cap to prevent runaway generation
                     extra_body={
                         "top_k": 20,             # vLLM extension, important for Qwen3
-                        "repetition_penalty": 1.05,  # helps break repetition loops
+                        "repetition_penalty": 1.0 if think else 1.05,  # avoid penalizing <think> tokens
                         "chat_template_kwargs": {"enable_thinking": think},  # if not using CoT
                     },
                 )
