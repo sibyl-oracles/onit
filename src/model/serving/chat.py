@@ -952,6 +952,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     data_path = kwargs.get('data_path', '')
     session_id = kwargs.get('session_id', '')
     max_tokens = kwargs.get('max_tokens', 8192)
+    temperature = kwargs.get('temperature', 0.6)
+    top_p = kwargs.get('top_p', 0.95)
+    top_k = kwargs.get('top_k', 20)
+    min_p = kwargs.get('min_p', 0.0)
+    presence_penalty = kwargs.get('presence_penalty', 0.0)
+    repetition_penalty = kwargs.get('repetition_penalty', 1.0 if think else 1.05)
     memories = kwargs.get('memories', None)
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
     max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
@@ -1042,12 +1048,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     messages=messages,
                     stream=stream,
                     tool_choice="auto",          # never "required"
-                    temperature=0.6,             # official recommendation
-                    top_p=0.9,
+                    temperature=temperature,
+                    top_p=top_p,
                     max_tokens=max_tokens,             # cap to prevent runaway generation
                     extra_body={
-                        "top_k": 20,             # vLLM extension, important for Qwen3
-                        "repetition_penalty": 1.0 if think else 1.05,  # avoid penalizing <think> tokens
+                        "top_k": top_k,          # vLLM extension, important for Qwen3
+                        "min_p": min_p,
+                        "presence_penalty": presence_penalty,
+                        "repetition_penalty": repetition_penalty,
                         "chat_template_kwargs": {"enable_thinking": think},  # if not using CoT
                     },
                 )

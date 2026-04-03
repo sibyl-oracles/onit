@@ -857,6 +857,9 @@ class OnIt(BaseModel):
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
         }
+        for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
+            if _k in self.model_serving:
+                kwargs[_k] = self.model_serving[_k]
         if self.prompt_intro:
             kwargs['prompt_intro'] = self.prompt_intro
         MAX_PROCESS_RETRIES = 3
@@ -968,6 +971,9 @@ class OnIt(BaseModel):
                           'max_tokens': self.model_serving.get('max_tokens', 8192),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history()}
+                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
+                    if _k in self.model_serving:
+                        kwargs[_k] = self.model_serving[_k]
                 last_response = await chat(host=self.model_serving["host"],
                                             host_key=self.model_serving.get("host_key", "EMPTY"),
                                             model=self.model_serving.get("model"),
@@ -1412,6 +1418,9 @@ class OnIt(BaseModel):
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history(),
                           'stream': self.stream}
+                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
+                    if _k in self.model_serving:
+                        kwargs[_k] = self.model_serving[_k]
                 if self.prompt_intro:
                     kwargs['prompt_intro'] = self.prompt_intro
 

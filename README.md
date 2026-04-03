@@ -100,6 +100,36 @@ mcp:
       enabled: true
 ```
 
+### Tip: Qwen3.5 recommended parameters
+
+[Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-27B) works best with mode-specific sampling parameters:
+
+| Mode | Use case | `temperature` | `top_p` | `top_k` | `presence_penalty` |
+|------|----------|:---:|:---:|:---:|:---:|
+| Thinking (`--think`) | General | `1.0` | `0.95` | `20` | `1.5` |
+| Thinking (`--think`) | Precise coding | `0.6` | `0.95` | `20` | `0.0` |
+| Instruct (no think) | General | `0.7` | `0.8` | `20` | `1.5` |
+| Instruct (no think) | Reasoning | `1.0` | `1.0` | `40` | `2.0` |
+
+Set `repetition_penalty: 1.0` in all cases (OnIt handles `think`/non-`think` automatically). Example for thinking + general tasks:
+
+```bash
+onit --think --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+```
+
+Or in `configs/default.yaml`:
+
+```yaml
+serving:
+  host: http://localhost:8000/v1
+  think: true
+  temperature: 1.0
+  top_p: 0.95
+  top_k: 20
+  presence_penalty: 1.5
+  repetition_penalty: 1.0
+```
+
 ## CLI Reference
 
 **General:**
@@ -116,6 +146,12 @@ mcp:
 | `--prompt-intro` | Custom system prompt intro | — |
 | `--no-stream` | Disable token streaming | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
+| `--temperature` | Sampling temperature | `0.6` |
+| `--top-p` | Top-p nucleus sampling | `0.95` |
+| `--top-k` | Top-k sampling | `20` |
+| `--min-p` | Min-p sampling | `0.0` |
+| `--presence-penalty` | Presence penalty | `0.0` |
+| `--repetition-penalty` | Repetition penalty | `1.05` (or `1.0` with `--think`) |
 | `--sandbox` | Enable sandbox mode for code execution in isolated containers | `false` |
 
 **Text UI:**

@@ -548,6 +548,18 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='Show execution logs.')
     parser.add_argument('--think', action='store_true', default=None,
                         help='Enable thinking/reasoning mode (CoT).')
+    parser.add_argument('--temperature', type=float, default=None,
+                        help='Sampling temperature (default: 0.6).')
+    parser.add_argument('--top-p', type=float, default=None, dest='top_p',
+                        help='Top-p nucleus sampling (default: 0.95).')
+    parser.add_argument('--top-k', type=int, default=None, dest='top_k',
+                        help='Top-k sampling (default: 20).')
+    parser.add_argument('--min-p', type=float, default=None, dest='min_p',
+                        help='Min-p sampling (default: 0.0).')
+    parser.add_argument('--presence-penalty', type=float, default=None, dest='presence_penalty',
+                        help='Presence penalty (default: 0.0).')
+    parser.add_argument('--repetition-penalty', type=float, default=None, dest='repetition_penalty',
+                        help='Repetition penalty (default: 1.05, or 1.0 with --think).')
     parser.add_argument('--no-stream', action='store_true', default=None,
                         dest='no_stream',
                         help='Disable streaming of tokens (streaming is enabled by default for text, web and a2a modes).')
@@ -697,6 +709,14 @@ Never stop until the goal is completed.
     # --think overrides serving.think in config
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
+
+    # sampling params override serving config
+    for _arg, _key in [('temperature', 'temperature'), ('top_p', 'top_p'), ('top_k', 'top_k'),
+                        ('min_p', 'min_p'), ('presence_penalty', 'presence_penalty'),
+                        ('repetition_penalty', 'repetition_penalty')]:
+        _val = getattr(args, _arg, None)
+        if _val is not None:
+            config_data.setdefault('serving', {})[_key] = _val
 
     # --mcp-host overrides mcp.mcp_host in config
     if args.mcp_host:
