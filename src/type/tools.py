@@ -136,6 +136,31 @@ class ToolHandler(RequestHandler):
                     return f"Unsupported {media_type} type provided. Please provide a list of base64-encoded {media_types} or file paths."
 
 
+        # Normalize arguments where a string-typed parameter received a dict.
+        # Some models incorrectly nest values, e.g.:
+        #   {"query": {"query": "..."}}  → {"query": "..."}   (same-key wrapping)
+        #   {"query": {"type": "news"}}  → {"query": None}    (unrelated keys; let
+        #                                                       the tool's required
+        #                                                       check return an error)
+        props = (self.tool_item.get('function', {})
+                 .get('parameters', {})
+                 .get('properties', {}))
+        for k in list(kwargs.keys()):
+            v = kwargs[k]
+            if not isinstance(v, dict):
+                continue
+            prop = props.get(k, {})
+            # Determine whether the schema expects a scalar string for this param.
+            prop_type = prop.get('type', '')
+            is_string_param = prop_type == 'string' or any(
+                s.get('type') == 'string' for s in prop.get('anyOf', [])
+            )
+            if not is_string_param:
+                continue
+            # If the dict contains the same key, unwrap it; otherwise set to None
+            # so the tool's own required-argument check returns a clean error.
+            kwargs[k] = v[k] if k in v else None
+
         async with Client(self.url, log_handler=log_handler) as client:
             keys_kwargs = list(kwargs.keys())
             logger.info(f"Calling tool: {self.tool_item['function']['name']} with arguments: {keys_kwargs}")
