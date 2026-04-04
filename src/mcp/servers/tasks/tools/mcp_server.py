@@ -18,21 +18,17 @@ Tools MCP Server - Consolidated Web Search + Bash/Document Operations
 Combines web search, content fetching, weather, bash commands, file I/O,
 and document search into a single MCP server.
 
-14 Core Tools:
+10 Core Tools:
  1. search            - Web/news search via DuckDuckGo
  2. fetch_content     - Extract text, images, videos from URLs
  3. get_weather       - Weather with auto location detection
  4. extract_pdf_images- Extract images from PDF files
  5. bash              - Execute shell commands
  6. read_file         - Read files (text, PDF, binary metadata)
- 7. write_file        - Write/append files
- 8. send_file         - Send files via callback URL or base64
- 9. search_document   - Search patterns in documents
-10. search_directory  - Search patterns across directory files
-11. extract_tables    - Extract tables from PDF/markdown
-12. find_files        - Find files matching patterns
-13. transform_text    - Text transformation (sed/awk/tr)
-14. get_document_context - Extract relevant context from documents
+ 7. send_file         - Send files via callback URL or base64
+ 8. search_document   - Search patterns in documents (incl. PDF)
+ 9. extract_tables    - Extract tables from PDF/markdown
+10. get_document_context - Extract relevant context from documents
 '''
 
 import json
@@ -191,18 +187,14 @@ def extract_pdf_images(pdf_path: Optional[str] = None, output_dir: str = "", min
     return _extract_pdf_images(pdf_path=pdf_path, output_dir=output_dir, min_size=min_size)
 
 
-# -- Bash/Document tools (10) ----------------------------------------------
+# -- Bash/Document tools (6) -----------------------------------------------
 
 from src.mcp.servers.tasks.os.bash.mcp_server import (
     bash as _bash,
     read_file as _read_file,
-    write_file as _write_file,
     send_file as _send_file,
     search_document as _search_document,
-    search_directory as _search_directory,
     extract_tables as _extract_tables,
-    find_files as _find_files,
-    transform_text as _transform_text,
     get_document_context as _get_document_context,
 )
 
@@ -240,24 +232,6 @@ def read_file(path: Optional[str] = None, encoding: str = "utf-8", max_chars: in
         return err
     return _read_file(path=path, encoding=encoding, max_chars=max_chars)
 
-
-@mcp.tool(
-    title="Write File",
-    description="""Write content to a file. Creates directories if needed.
-Files are created within data_path folder with owner-only access.
-
-Args:
-- path: File path within data_path folder, relative or absolute (required)
-- content: Text content to write (required)
-- mode: "write" (overwrite) or "append" (add to end) (default: "write")
-- encoding: Text encoding (default: utf-8)
-
-Returns JSON: {path, size_bytes, mode, status}"""
-)
-def write_file(path: Optional[str] = None, content: Optional[str] = None, mode: str = "write", encoding: str = "utf-8") -> str:
-    if err := _validate_required(path=path, content=content):
-        return err
-    return _write_file(path=path, content=content, mode=mode, encoding=encoding)
 
 
 @mcp.tool(
@@ -316,38 +290,6 @@ def search_document(
     )
 
 
-@mcp.tool(
-    title="Search Directory",
-    description="""Search for patterns across files in a directory using grep.
-Recursively searches text files matching the file pattern.
-
-Args:
-- directory: Directory within data_path folder to search (e.g., "data_path", "data_path/subdir")
-- pattern: Search pattern (regex with -E flag)
-- file_pattern: File glob pattern (default: "*" for all files)
-- case_sensitive: Case-sensitive search (default: false)
-- include_hidden: Include hidden files (default: false)
-- max_results: Maximum results to return (default: 100)
-
-Returns JSON: {results, total_files, total_matches, status}
-Each result includes: {file, line_number, content}"""
-)
-def search_directory(
-    directory: Optional[str] = None,
-    pattern: Optional[str] = None,
-    file_pattern: str = "*",
-    case_sensitive: bool = False,
-    include_hidden: bool = False,
-    max_results: int = 100,
-) -> str:
-    if err := _validate_required(directory=directory, pattern=pattern):
-        return err
-    return _search_directory(
-        directory=directory, pattern=pattern, file_pattern=file_pattern,
-        case_sensitive=case_sensitive, include_hidden=include_hidden,
-        max_results=max_results,
-    )
-
 
 @mcp.tool(
     title="Extract Tables",
@@ -369,65 +311,6 @@ def extract_tables(
         return err
     return _extract_tables(path=path, table_index=table_index, output_format=output_format)
 
-
-@mcp.tool(
-    title="Find Files",
-    description="""Find files matching patterns using the find command.
-Searches recursively from the specified directory within data_path folder.
-
-Args:
-- directory: Directory within data_path folder to search (default: data_path)
-- name_pattern: File name pattern (glob, e.g., "*.py", "test_*")
-- file_type: Type filter - "f" (file), "d" (directory), or None (all)
-- max_depth: Maximum directory depth (default: unlimited)
-- size_filter: Size filter (e.g., "+1M", "-100k", "50k")
-- modified_days: Modified within N days (e.g., 7 for last week)
-- max_results: Maximum results (default: 100)
-
-Returns JSON: {files, total_files, directory, status}"""
-)
-def find_files(
-    directory: str = ".",
-    name_pattern: Optional[str] = None,
-    file_type: Optional[str] = None,
-    max_depth: Optional[int] = None,
-    size_filter: Optional[str] = None,
-    modified_days: Optional[int] = None,
-    max_results: int = 100,
-) -> str:
-    return _find_files(
-        directory=directory, name_pattern=name_pattern, file_type=file_type,
-        max_depth=max_depth, size_filter=size_filter, modified_days=modified_days,
-        max_results=max_results,
-    )
-
-
-@mcp.tool(
-    title="Transform Text",
-    description="""Transform text using sed, awk, or tr commands.
-Useful for extracting, replacing, or reformatting text content.
-
-Args:
-- input_text: Text to transform (or path to file if is_file=true)
-- is_file: If true, input_text is treated as a file path (default: false)
-- operation: Transformation type - "sed", "awk", or "tr"
-- expression: The sed/awk/tr expression to apply
-  - sed: e.g., "s/old/new/g", "/pattern/d"
-  - awk: e.g., "{print $1}", "NR==1", "/pattern/{print}"
-  - tr: e.g., "a-z A-Z" (translate), "-d '\\n'" (delete)
-
-Returns JSON: {output, operation, expression, status}"""
-)
-def transform_text(
-    input_text: Optional[str] = None, operation: Optional[str] = None,
-    expression: Optional[str] = None, is_file: bool = False
-) -> str:
-    if err := _validate_required(input_text=input_text, operation=operation, expression=expression):
-        return err
-    return _transform_text(
-        input_text=input_text, operation=operation,
-        expression=expression, is_file=is_file,
-    )
 
 
 @mcp.tool(
@@ -497,10 +380,9 @@ def run(
 
     logger.info(f"Starting Tools MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
-    logger.info("14 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
-                 "bash, read_file, write_file, send_file, search_document, "
-                 "search_directory, extract_tables, find_files, transform_text, "
-                 "get_document_context")
+    logger.info("10 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
+                 "bash, read_file, send_file, search_document, "
+                 "extract_tables, get_document_context")
 
     if not verbose:
         import uvicorn.config
