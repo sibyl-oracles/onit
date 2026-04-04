@@ -391,12 +391,33 @@ async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
     }
 
 
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc body text from a command string before security checking.
+
+    Heredoc bodies are written to files as data, not executed as shell code.
+    Scanning them for blocked patterns produces false positives (e.g. the word
+    'env' in document content triggering the env-command block).
+
+    Handles all three quoting styles: << 'DELIM', << "DELIM", << DELIM.
+    The delimiter word (without quotes) is used to find the closing marker.
+    """
+    return re.sub(
+        r"""<<-?\s*['""]?(\w+)['""]?\n.*?\n\1\b""",
+        r"<< '\1'",
+        command,
+        flags=re.DOTALL,
+    )
+
+
 def _validate_bash_command(command: str) -> str | None:
     """Check command for blocked patterns and path references outside allowed dirs.
     Returns error message or None if command is allowed."""
+    # Strip heredoc bodies so that document content is not scanned as shell code.
+    check_command = _strip_heredoc_bodies(command)
+
     # Check blocked command patterns
     for pattern, description in _BLOCKED_PATTERNS:
-        if pattern.search(command):
+        if pattern.search(check_command):
             return f"Command blocked: {description} is not allowed."
 
     # Check for absolute path references outside allowed directories
@@ -430,7 +451,7 @@ def _validate_bash_command(command: str) -> str | None:
         return False
 
     # Match Unix-style absolute paths (/...)
-    for match in re.finditer(r'(?:^|(?<=\s)|(?<=[;|&><]))(/[^\s;|&><"\'`\)]+)', command):
+    for match in re.finditer(r'(?:^|(?<=\s)|(?<=[;|&><]))(/[^\s;|&><"\'`\)]+)', check_command):
         if not _is_allowed_path(match.group(1)):
             path = os.path.normpath(match.group(1))
             return (f"Command blocked: references path '{path}' outside allowed directories. "
@@ -440,7 +461,7 @@ def _validate_bash_command(command: str) -> str | None:
 
     # Match Windows-style absolute paths (C:\... or C:/...)
     if IS_WINDOWS:
-        for match in re.finditer(r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', command):
+        for match in re.finditer(r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', check_command):
             if not _is_allowed_path(match.group(1)):
                 path = os.path.normpath(match.group(1))
                 return (f"Command blocked: references path '{path}' outside allowed directories. "
