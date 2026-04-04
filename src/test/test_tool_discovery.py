@@ -55,7 +55,8 @@ class TestDiscoverServerTools:
     async def test_discovers_tools_with_input_schema(self):
         server = {"name": "ToolsMCPServer", "url": "http://127.0.0.1:18201/sse", "enabled": True}
         mock = _mock_client(tools=[_fake_tool("search")])
-        with patch("lib.tools.Client", return_value=mock):
+        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
+             patch("lib.tools.Client", return_value=mock):
             handlers = await _discover_server_tools(server)
         assert len(handlers) == 1
         assert handlers[0].tool_item["function"]["name"] == "search"
@@ -68,7 +69,8 @@ class TestDiscoverServerTools:
         # defensive.  discover_tools handles the exception gracefully.
         server = {"name": "Prompts", "url": "http://127.0.0.1:18200/sse", "enabled": True}
         mock = _mock_client(prompts=[_fake_prompt("assistant")])
-        with patch("lib.tools.Client", return_value=mock):
+        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
+             patch("lib.tools.Client", return_value=mock):
             with pytest.raises(ValueError, match="empty tool list"):
                 await _discover_server_tools(server, max_retries=1)
 
@@ -101,7 +103,8 @@ class TestDiscoverTools:
         def client_factory(url):
             return mock_a if "18200" in url else mock_b
 
-        with patch("lib.tools.Client", side_effect=client_factory):
+        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
+             patch("lib.tools.Client", side_effect=client_factory):
             registry = await discover_tools(servers)
 
         assert len(registry) == 2
@@ -122,7 +125,8 @@ class TestDiscoverTools:
                 raise ConnectionError("Cannot connect")
             return mock_good
 
-        with patch("lib.tools.Client", side_effect=client_factory):
+        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
+             patch("lib.tools.Client", side_effect=client_factory):
             registry = await discover_tools(servers)
 
         # Only the good server's tool should be registered
