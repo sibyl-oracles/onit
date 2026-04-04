@@ -304,6 +304,10 @@ _BLOCKED_PATTERNS = [
     (re.compile(r'\bschtasks\s+/(create|delete)\b', re.IGNORECASE), "scheduled task modification"),
 ]
 
+# Matches a heredoc construct and its body for stripping before security checks.
+# Uses [^\n]*\n per-line matching instead of .*? with DOTALL to avoid ReDoS.
+_HEREDOC_RE = re.compile(r"""<<-?\s*['"]?(\w+)['"]?\n(?:[^\n]*\n)*?\1\b""")
+
 
 def _exec_shell(command: str, cwd: str, timeout: int) -> subprocess.CompletedProcess:
     """Run a command in a sandboxed shell, routing through Git Bash on Windows."""
@@ -401,18 +405,12 @@ def _strip_heredoc_bodies(command: str) -> str:
     Handles all three quoting styles: << 'DELIM', << "DELIM", << DELIM.
     The delimiter word (without quotes) is used to find the closing marker.
     """
-    return re.sub(
-        r"""<<-?\s*['""]?(\w+)['""]?\n.*?\n\1\b""",
-        r"<< '\1'",
-        command,
-        flags=re.DOTALL,
-    )
+    return _HEREDOC_RE.sub(r"<< '\1'", command)
 
 
 def _validate_bash_command(command: str) -> str | None:
     """Check command for blocked patterns and path references outside allowed dirs.
     Returns error message or None if command is allowed."""
-    # Strip heredoc bodies so that document content is not scanned as shell code.
     check_command = _strip_heredoc_bodies(command)
 
     # Check blocked command patterns
