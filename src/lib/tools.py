@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from fastmcp import Client
 from rich.status import Status
@@ -82,6 +83,34 @@ def _build_returns(tool_item: Any) -> dict:
     return {}
 
 
+async def _wait_for_port(host: str, port: int, timeout: float = 30.0, poll_interval: float = 0.5) -> bool:
+    """Poll a TCP port until it accepts connections or the timeout expires.
+
+    Args:
+        host: Hostname or IP address to connect to.
+        port: TCP port number.
+        timeout: Maximum seconds to wait before giving up.
+        poll_interval: Seconds between connection attempts.
+
+    Returns:
+        True if the port became reachable within the timeout, False otherwise.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=1.0,
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+            await asyncio.sleep(poll_interval)
+    return False
+
+
 async def _discover_server_tools(
     server: dict,
     max_retries: int = 5,
@@ -113,6 +142,19 @@ async def _discover_server_tools(
         return []
 
     logger.info("[discover_tools] Discovering tools from MCP server: %s", url)
+
+    # Wait for the server's TCP port to accept connections before attempting
+    # MCP protocol discovery.  This eliminates spurious connection-refused
+    # warnings that occur when discovery races ahead of server startup.
+    parsed = urlparse(url)
+    host = parsed.hostname or '127.0.0.1'
+    port = parsed.port or 80
+    if not await _wait_for_port(host, port):
+        logger.error(
+            "[discover_tools] %s did not become ready at %s:%d within timeout",
+            name, host, port,
+        )
+        return []
 
     last_error: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
