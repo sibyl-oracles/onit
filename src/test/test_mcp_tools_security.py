@@ -295,15 +295,15 @@ class TestValidateBashCommand:
 class TestGetSandboxEnv:
     """Sandbox environment for subprocess execution."""
 
-    def test_returns_minimal_env(self, tmp_path):
+    def test_returns_minimal_env(self):
         bash_mod._SANDBOX_ENV = None  # reset cache
         env = _get_sandbox_env()
         assert "PATH" in env
         assert "LANG" in env
         assert "DATA_PATH" in env
-        # Should NOT leak host env vars
+        # HOME is intentionally set to the real home so credential helpers work
         assert "HOME" in env
-        assert env["HOME"] == os.path.realpath(str(tmp_path))
+        assert env["HOME"] == os.path.expanduser("~")
 
     def test_excludes_host_secrets(self, tmp_path):
         bash_mod._SANDBOX_ENV = None
