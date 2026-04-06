@@ -134,6 +134,7 @@ class ChatUI:
         self._thinking_stop_event: Optional[threading.Event] = None
         self._thinking_thread: Optional[threading.Thread] = None
         self.model_name = ""  # auto-detected model name, set by chat()
+        self.data_path = ""  # set when code files are saved to a data directory
         self._context_pct: float = 0.0  # context window usage 0-100, updated after each LLM call
         self._context_max_tokens: int = 0  # max context window size in tokens
         self._stream_header_printed = False  # lazy: header deferred until first visible token
@@ -380,6 +381,12 @@ class ChatUI:
                 else:
                     self._render_assistant_message(content, msg_content, msg_time, msg_elapsed)
 
+            if self.data_path:
+                subtitle = f"📁 {self.data_path}"
+                subtitle_align = "left"
+            else:
+                subtitle = f"Showing last {len(display_msgs)} of {len(self.messages)} messages"
+                subtitle_align = "right"
             panel = Panel(
                 content,
                 title="[bold white]💬 Chat History[/]",
@@ -387,8 +394,8 @@ class ChatUI:
                 border_style="blue",
                 box=HORIZONTAL_THICK,
                 padding=(1, 0),
-                subtitle=f"Showing last {len(display_msgs)} of {len(self.messages)} messages",
-                subtitle_align="right"
+                subtitle=subtitle,
+                subtitle_align=subtitle_align,
             )
 
             return panel

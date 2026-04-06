@@ -37,6 +37,7 @@ import time
 import hashlib
 import tempfile
 import requests
+from typing import Optional
 from io import BytesIO
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -626,7 +627,7 @@ if not os.environ.get('ONIT_DISABLE_WEATHER'):
 
     Requires: OPENWEATHER_API_KEY environment variable."""
     )
-    def get_weather(place: str = None, forecast: bool = False) -> str:
+    def get_weather(place: Optional[str] = None, forecast: bool = False) -> str:
         return _get_weather_impl(place=place, forecast=forecast)
 else:
     # Provide a plain function alias so imports still work

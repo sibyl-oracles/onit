@@ -20,17 +20,19 @@ Execute shell commands, read/write files, and search documents on the local syst
 Requires:
     pip install fastmcp pypdf pdfplumber
 
-10 Core Tools:
+12 Core Tools:
 1. bash - Execute bash/shell commands with timeout and directory control
 2. read_file - Read files (text, PDF returns content; binary files return metadata only)
 3. write_file - Write content to files (supports write/append modes)
-4. send_file - Send a file to a remote client via callback URL
-5. search_document - Search for patterns in a document (text, PDF, markdown)
-6. search_directory - Search for patterns across files in a directory
-7. extract_tables - Extract tables from documents (PDF, markdown)
-8. find_files - Find files matching patterns
-9. transform_text - Transform text using sed/awk/tr operations
-10. get_document_context - Extract relevant context from a document
+4. edit_file - Edit a file by replacing an exact string (targeted in-place edit)
+5. serve - Launch/stop/monitor background processes (web servers, daemons)
+6. send_file - Send a file to a remote client via callback URL
+7. search_document - Search for patterns in a document (text, PDF, markdown)
+8. search_directory - Search for patterns across files in a directory
+9. extract_tables - Extract tables from documents (PDF, markdown)
+10. find_files - Find files matching patterns
+11. transform_text - Transform text using sed/awk/tr operations
+12. get_document_context - Extract relevant context from a document
 '''
 
 import asyncio
@@ -41,9 +43,12 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import requests
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional, Dict, Any
 from pydantic import Field
@@ -184,7 +189,8 @@ def _validate_dir_path(dir_path: str) -> str:
 
 def _get_sandbox_env() -> dict:
     """Build a minimal environment dict for sandboxed shell execution.
-    Strips all inherited env vars to prevent leaking secrets, API keys, etc."""
+    Strips most inherited env vars but preserves HOME and credential-related
+    variables so that keyring/keychain tools and credential helpers work."""
     global _SANDBOX_ENV
     if _SANDBOX_ENV is not None:
         return dict(_SANDBOX_ENV)
@@ -193,14 +199,25 @@ def _get_sandbox_env() -> dict:
     tmp_dir = os.path.join(abs_data, "tmp")
     _secure_makedirs(tmp_dir)
 
+    # Use the real HOME so credential helpers (osxkeychain, gh, git config) work.
+    real_home = os.path.expanduser("~")
+
     env = {
         "TERM": "dumb",
         "LANG": "en_US.UTF-8",
         "LC_ALL": "en_US.UTF-8",
-        "HOME": abs_data,
+        "HOME": real_home,
         "TMPDIR": tmp_dir,
         "DATA_PATH": abs_data,
     }
+
+    # Pass through credential-related env vars if set in the parent environment.
+    for var in ("GITHUB_TOKEN", "GH_TOKEN", "GH_CONFIG_DIR",
+                "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+                "GIT_ASKPASS", "GIT_CREDENTIAL_HELPER"):
+        val = os.environ.get(var)
+        if val:
+            env[var] = val
 
     if IS_WINDOWS:
         # Build PATH that includes Git Bash Unix tools + essential Windows paths
@@ -226,7 +243,16 @@ def _get_sandbox_env() -> dict:
             "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
         })
     else:
-        env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+        # Include conda and Homebrew paths so that python/pip resolve to the user's conda env.
+        path_parts = [
+            "/opt/miniconda3/bin",
+            "/opt/miniconda3/condabin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        env["PATH"] = ":".join(p for p in path_parts if os.path.isdir(p))
 
     if DOCUMENTS_PATH:
         env["DOCUMENTS_PATH"] = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
@@ -795,16 +821,7 @@ def write_file(
     if err := _validate_required(path=path, content=content):
         return err
     try:
-        # If path is relative or doesn't start with DATA_PATH, place it under DATA_PATH
-        expanded = os.path.expanduser(path)
-        abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
-        if not os.path.isabs(expanded) or not os.path.abspath(expanded).startswith(abs_data):
-            file_path = os.path.join(abs_data, expanded.lstrip(os.sep))
-        else:
-            file_path = os.path.abspath(expanded)
-
-        # Validate path is within DATA_PATH
-        file_path = _validate_write_path(file_path)
+        file_path = _validate_write_path(_normalize_to_data_path(path))
 
         # Create directory with owner-only permissions
         _secure_makedirs(os.path.dirname(file_path))
@@ -833,6 +850,431 @@ def write_file(
             "error": str(e),
             "path": path,
             "status": "failed"
+        })
+
+
+def _normalize_to_data_path(path: str) -> str:
+    """Resolve path into DATA_PATH: relative paths are placed under it; absolute
+    paths outside it are re-rooted under it (strips leading separator)."""
+    expanded = os.path.expanduser(path)
+    abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
+    if not os.path.isabs(expanded) or not os.path.abspath(expanded).startswith(abs_data):
+        return os.path.join(abs_data, expanded.lstrip(os.sep))
+    return os.path.abspath(expanded)
+
+
+def _kill_process(pid: int, grace_timeout: float = 3.0) -> None:
+    """Send SIGTERM to the process group, wait up to grace_timeout seconds, then SIGKILL."""
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + grace_timeout
+    while time.monotonic() < deadline:
+        if not _process_running(pid):
+            return
+        time.sleep(0.5)
+    if _process_running(pid):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except OSError:
+            os.kill(pid, signal.SIGKILL)
+
+
+# =============================================================================
+# TOOL 3b: EDIT FILE (TARGETED STRING REPLACEMENT)
+# =============================================================================
+
+@mcp.tool(
+    title="Edit File",
+    description="""Edit a file by replacing an exact string with new content. The file must exist.
+Files must be within the designated data directory.
+
+Args:
+- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/main.py"). Always use the complete working directory path — never use relative paths.
+- old_string: The exact string to find and replace (must be unique in the file, or use replace_all)
+- new_string: The replacement string
+- replace_all: Replace every occurrence of old_string (default: false, replaces first occurrence only)
+- encoding: Text encoding (default: utf-8)
+
+Returns JSON: {path, replacements, status}"""
+)
+def edit_file(
+    path: Optional[str] = None,
+    old_string: Optional[str] = None,
+    new_string: Optional[str] = None,
+    replace_all: bool = False,
+    encoding: str = "utf-8",
+) -> str:
+    if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
+        return err
+    try:
+        file_path = _validate_write_path(_normalize_to_data_path(path))
+
+        if not os.path.isfile(file_path):
+            return json.dumps({"error": f"File not found: {file_path}", "path": path, "status": "error"})
+
+        with open(file_path, "r", encoding=encoding) as f:
+            content = f.read()
+
+        count = content.count(old_string)
+        if count == 0:
+            return json.dumps({"error": "old_string not found in file", "path": file_path, "status": "error"})
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            replacements = count
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+            replacements = 1
+
+        fd = os.open(file_path, os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(new_content)
+
+        return json.dumps({"path": file_path, "replacements": replacements, "status": "success"}, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "path": path, "status": "error"})
+
+
+# =============================================================================
+# TOOL 3c: SERVE — BACKGROUND PROCESS MANAGER FOR WEB SERVERS
+# =============================================================================
+
+_SERVE_REGISTRY_FILE = "serve_registry.json"
+
+
+def _serve_registry_path() -> str:
+    return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), _SERVE_REGISTRY_FILE)
+
+
+def _load_serve_registry() -> dict:
+    path = _serve_registry_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_serve_registry(registry: dict):
+    path = _serve_registry_path()
+    _secure_makedirs(os.path.dirname(path))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(registry, f, indent=2)
+
+
+def _process_running(pid: int) -> bool:
+    """Return True only if the process exists and is not a zombie."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    # On Unix, check /proc/<pid>/status for zombie state (Linux)
+    # On macOS, use ps to detect zombie
+    try:
+        status_path = f"/proc/{pid}/status"
+        if os.path.isfile(status_path):
+            with open(status_path) as f:
+                for line in f:
+                    if line.startswith("State:") and "Z" in line:
+                        return False
+            return True
+    except Exception:
+        pass
+    # macOS fallback: check via ps
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=2
+        )
+        stat = result.stdout.strip()
+        return bool(stat) and "Z" not in stat
+    except Exception:
+        return True
+
+
+def _tail_file(path: str, lines: int) -> str:
+    """Return last `lines` lines of a file without loading it all into memory."""
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return ""
+            buf = b""
+            pos = size
+            chunk_size = 8192
+            newlines_found = 0
+            while pos > 0 and newlines_found <= lines:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                buf = chunk + buf
+                newlines_found += chunk.count(b"\n")
+        return b"\n".join(buf.split(b"\n")[-(lines + 1):]).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+@mcp.tool(
+    title="Serve",
+    description="""Manage long-running background processes such as web servers.
+
+Actions:
+- start   : Launch a command as a background process. Returns name, pid, and log paths.
+- stop    : Stop a running process by name or pid.
+- status  : Check if a process is running (name or pid).
+- logs    : Tail stdout/stderr logs for a process (name or pid).
+- list    : List all managed processes with running/stopped status.
+- restart : Stop then re-start a named process using its saved command.
+
+Args:
+- action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
+- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080")
+- name    : Human-readable label for the process (default: auto-generated). Used to reference it later.
+- pid     : Process ID — alternative to name for stop/status/logs
+- cwd     : Working directory for the process (default: DATA_PATH). Can be any accessible directory.
+- lines   : Number of log lines to return for "logs" action (default: 50)
+
+Returns JSON with process details and, for "logs", stdout/stderr tail."""
+)
+def serve(
+    action: Optional[str] = None,
+    command: Optional[str] = None,
+    name: Optional[str] = None,
+    pid: Optional[int] = None,
+    cwd: Optional[str] = None,
+    lines: int = 50,
+) -> str:
+    if err := _validate_required(action=action):
+        return err
+
+    action = action.lower().strip()
+
+    # ── START ──────────────────────────────────────────────────────────
+    if action == "start":
+        if err := _validate_required(command=command):
+            return err
+
+        registry = _load_serve_registry()
+
+        # Auto-generate name from command if not provided
+        if not name:
+            base = command.split()[0].split("/")[-1]
+            name = f"{base}-{int(time.time())}"
+
+        # Reject if already running
+        if name in registry and _process_running(registry[name]["pid"]):
+            entry = registry[name]
+            return json.dumps({
+                "error": f"Process '{name}' is already running (pid {entry['pid']}). "
+                         "Use action='stop' first or choose a different name.",
+                "name": name, "pid": entry["pid"], "status": "already_running"
+            })
+
+        # Resolve cwd — allow any accessible directory (servers live outside DATA_PATH)
+        work_dir = os.path.abspath(os.path.expanduser(cwd)) if cwd else os.path.abspath(os.path.expanduser(DATA_PATH))
+        if not os.path.isdir(work_dir):
+            return json.dumps({"error": f"Working directory not found: {work_dir}", "status": "error"})
+
+        # Create log directory under DATA_PATH
+        log_dir = os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "serve_logs", name)
+        _secure_makedirs(log_dir)
+        stdout_log = os.path.join(log_dir, "stdout.log")
+        stderr_log = os.path.join(log_dir, "stderr.log")
+
+        try:
+            with open(stdout_log, "w") as out, open(stderr_log, "w") as err_f:
+                proc = subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=work_dir,
+                    stdout=out,
+                    stderr=err_f,
+                    start_new_session=True,  # detach from MCP server session
+                )
+
+            # Brief pause to catch immediate startup failures
+            time.sleep(0.5)
+            if not _process_running(proc.pid):
+                err_tail = _tail_file(stderr_log, 20)
+                return json.dumps({
+                    "error": "Process exited immediately after launch.",
+                    "stderr": err_tail,
+                    "name": name, "status": "failed"
+                })
+
+            registry[name] = {
+                "pid": proc.pid,
+                "command": command,
+                "cwd": work_dir,
+                "started_at": datetime.now().isoformat(),
+                "stdout_log": stdout_log,
+                "stderr_log": stderr_log,
+            }
+            _save_serve_registry(registry)
+
+            return json.dumps({
+                "name": name,
+                "pid": proc.pid,
+                "command": command,
+                "cwd": work_dir,
+                "stdout_log": stdout_log,
+                "stderr_log": stderr_log,
+                "status": "started",
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e), "name": name, "status": "error"})
+
+    # ── STOP ───────────────────────────────────────────────────────────
+    elif action == "stop":
+        registry = _load_serve_registry()
+        entry = None
+
+        if name and name in registry:
+            entry = registry[name]
+        elif pid is not None:
+            entry = next((e for e in registry.values() if e["pid"] == pid), None)
+            name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
+
+        if not entry:
+            return json.dumps({"error": f"No managed process found for name='{name}' / pid={pid}.", "status": "error"})
+
+        target_pid = entry["pid"]
+        if not _process_running(target_pid):
+            return json.dumps({"name": name, "pid": target_pid, "status": "already_stopped"})
+
+        try:
+            _kill_process(target_pid)
+        except Exception as e:
+            if _process_running(target_pid):
+                return json.dumps({"error": str(e), "name": name, "pid": target_pid, "status": "error"})
+
+        return json.dumps({"name": name, "pid": target_pid, "status": "stopped"}, indent=2)
+
+    # ── STATUS ─────────────────────────────────────────────────────────
+    elif action == "status":
+        registry = _load_serve_registry()
+        entry = None
+
+        if name and name in registry:
+            entry = registry[name]
+        elif pid is not None:
+            entry = next((e for e in registry.values() if e["pid"] == pid), None)
+            name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
+
+        if not entry:
+            return json.dumps({"error": f"No managed process found for name='{name}' / pid={pid}.", "status": "error"})
+
+        running = _process_running(entry["pid"])
+        return json.dumps({
+            "name": name,
+            "pid": entry["pid"],
+            "command": entry["command"],
+            "cwd": entry["cwd"],
+            "started_at": entry["started_at"],
+            "stdout_log": entry["stdout_log"],
+            "stderr_log": entry["stderr_log"],
+            "status": "running" if running else "stopped",
+        }, indent=2)
+
+    # ── LOGS ───────────────────────────────────────────────────────────
+    elif action == "logs":
+        registry = _load_serve_registry()
+        entry = None
+
+        if name and name in registry:
+            entry = registry[name]
+        elif pid is not None:
+            entry = next((e for e in registry.values() if e["pid"] == pid), None)
+            name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
+
+        if not entry:
+            return json.dumps({"error": f"No managed process found for name='{name}' / pid={pid}.", "status": "error"})
+
+        stdout_tail = _tail_file(entry["stdout_log"], lines)
+        stderr_tail = _tail_file(entry["stderr_log"], lines)
+        running = _process_running(entry["pid"])
+
+        return json.dumps({
+            "name": name,
+            "pid": entry["pid"],
+            "status": "running" if running else "stopped",
+            "stdout": stdout_tail or "(empty)",
+            "stderr": stderr_tail or "(empty)",
+        }, indent=2)
+
+    # ── LIST ───────────────────────────────────────────────────────────
+    elif action == "list":
+        registry = _load_serve_registry()
+        if not registry:
+            return json.dumps({"processes": [], "total": 0, "status": "ok"})
+
+        processes = []
+        dirty = False
+        for n, entry in list(registry.items()):
+            running = _process_running(entry["pid"])
+            processes.append({
+                "name": n,
+                "pid": entry["pid"],
+                "command": entry["command"],
+                "cwd": entry["cwd"],
+                "started_at": entry["started_at"],
+                "status": "running" if running else "stopped",
+            })
+            if not running:
+                del registry[n]
+                dirty = True
+
+        if dirty:
+            _save_serve_registry(registry)
+
+        return json.dumps({"processes": processes, "total": len(processes), "status": "ok"}, indent=2)
+
+    # ── RESTART ────────────────────────────────────────────────────────
+    elif action == "restart":
+        registry = _load_serve_registry()
+
+        if not name:
+            return json.dumps({"error": "name is required for restart.", "status": "error"})
+        if name not in registry:
+            return json.dumps({"error": f"No managed process named '{name}'.", "status": "error"})
+
+        entry = registry[name]
+        saved_command = entry["command"]
+        saved_cwd = entry["cwd"]
+
+        # Stop if running
+        target_pid = entry["pid"]
+        if _process_running(target_pid):
+            try:
+                _kill_process(target_pid)
+            except Exception:
+                pass
+
+        # Re-start with saved command and cwd (override allowed via args)
+        # start checks _process_running before re-using the name, so no pre-removal needed
+        return serve(
+            action="start",
+            command=command or saved_command,
+            name=name,
+            cwd=cwd or saved_cwd,
+            lines=lines,
+        )
+
+    else:
+        return json.dumps({
+            "error": f"Unknown action '{action}'. Use: start, stop, status, logs, list, restart.",
+            "status": "error"
         })
 
 

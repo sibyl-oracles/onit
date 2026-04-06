@@ -44,6 +44,10 @@ SECRETS = [
      None),
     ("web_google_client_secret", "Google OAuth2 client secret (for web UI auth)",
      None),
+    ("github_token",           "GitHub personal access token (for git operations)",
+     "GITHUB_TOKEN"),
+    ("huggingface_token",      "HuggingFace access token (for model hub access)",
+     "HF_TOKEN"),
 ]
 
 # ── Non-secret settings ────────────────────────────────────────────

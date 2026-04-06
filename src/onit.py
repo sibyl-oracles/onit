@@ -1255,7 +1255,7 @@ class OnIt(BaseModel):
             self.chat_ui.add_message("assistant", response, elapsed=elapsed_time)
         # Show local codebase path when sandbox generated code files
         if has_code_files(self.data_path):
-            self.chat_ui.add_message("system", f"Codebase saved to: {self.data_path}")
+            self.chat_ui.data_path = self.data_path
         try:
             with open(self.session_path, "a", encoding="utf-8") as f:
                 session_data = {

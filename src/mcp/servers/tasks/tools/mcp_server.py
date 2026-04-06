@@ -13,22 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-Tools MCP Server - Consolidated Web Search + Bash/Document Operations
+Tools MCP Server - Consolidated Web Search + Bash/Document Operations + GitHub
 
 Combines web search, content fetching, weather, bash commands, file I/O,
-and document search into a single MCP server.
+document search, and GitHub repository management into a single MCP server.
 
-10 Core Tools:
- 1. search            - Web/news search via DuckDuckGo
- 2. fetch_content     - Extract text, images, videos from URLs
- 3. get_weather       - Weather with auto location detection
- 4. extract_pdf_images- Extract images from PDF files
- 5. bash              - Execute shell commands
- 6. read_file         - Read files (text, PDF, binary metadata)
- 7. send_file         - Send files via callback URL or base64
- 8. search_document   - Search patterns in documents (incl. PDF)
- 9. extract_tables    - Extract tables from PDF/markdown
-10. get_document_context - Extract relevant context from documents
+12 Core Tools:
+ 1. search          - Web/news search via DuckDuckGo
+ 2. fetch_content   - Extract text, images, videos from URLs
+ 3. get_weather     - Weather with auto location detection
+ 4. bash            - Execute shell commands
+ 5. read_file       - Read files; mode="tables" or "images" for structured extraction
+ 6. write_file      - Write content to files (write/append modes)
+ 7. edit_file       - Edit a file by replacing an exact string
+ 8. serve           - Launch/stop/monitor background processes (web servers)
+ 9. grep            - Recursive pattern search across files in a directory
+10. search_document - Search within a single document; mode="context" for semantic search
+11. send_file       - Send files via callback URL or base64
+12. github_repo     - Create, get, list, fork, or delete GitHub repositories
 '''
 
 import json
@@ -52,20 +54,10 @@ DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
 DOCUMENTS_PATH = None
 
 
-def _secure_makedirs(dir_path: str) -> None:
-    """Create directory with owner-only permissions (0o700)."""
-    os.makedirs(dir_path, mode=0o700, exist_ok=True)
-
-
-def _validate_required(**kwargs) -> str:
-    """Check for missing required arguments. Returns JSON error string or empty string."""
-    missing = [name for name, value in kwargs.items() if value is None]
-    if missing:
-        return json.dumps({
-            "error": f"Missing required argument(s): {', '.join(missing)}.",
-            "status": "error"
-        })
-    return ""
+from src.mcp.servers.tasks.shared import (
+    secure_makedirs as _secure_makedirs,
+    validate_required as _validate_required,
+)
 
 
 def _init_submodules(data_path: str, documents_path: str = None, verbose: bool = False):
@@ -166,36 +158,27 @@ if not os.environ.get('ONIT_DISABLE_WEATHER'):
 
     Requires: OPENWEATHER_API_KEY environment variable."""
     )
-    def get_weather(place: str = None, forecast: bool = False) -> str:
+    def get_weather(place: Optional[str] = None, forecast: bool = False) -> str:
         return _get_weather(place=place, forecast=forecast)
 
 
-@mcp.tool(
-    title="Extract PDF Images",
-    description="""Extract all images from a PDF file and save them locally.
-
-Args:
-- pdf_path: Path to PDF file within data_path folder or URL (required)
-- output_dir: Directory within data_path folder to save extracted images (default: data_path/pdf_images)
-- min_size: Minimum image dimension in pixels to extract (default: 100)
-
-Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}"""
-)
-def extract_pdf_images(pdf_path: Optional[str] = None, output_dir: str = "", min_size: int = 100) -> str:
-    if err := _validate_required(pdf_path=pdf_path):
-        return err
-    return _extract_pdf_images(pdf_path=pdf_path, output_dir=output_dir, min_size=min_size)
-
-
-# -- Bash/Document tools (6) -----------------------------------------------
+# -- Bash/Document tools -----------------------------------------------
 
 from src.mcp.servers.tasks.os.bash.mcp_server import (
     bash as _bash,
     read_file as _read_file,
+    write_file as _write_file,
+    edit_file as _edit_file,
+    serve as _serve,
     send_file as _send_file,
     search_document as _search_document,
-    extract_tables as _extract_tables,
     get_document_context as _get_document_context,
+    extract_tables as _extract_tables,
+    search_directory as _search_directory,
+)
+
+from src.mcp.servers.tasks.web.search.mcp_server import (
+    extract_pdf_images as _extract_pdf_images,
 )
 
 
@@ -218,20 +201,165 @@ async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300
 
 @mcp.tool(
     title="Read File",
-    description="""Read file contents. Supports text files and PDFs. Binary files (images, audio, video) return metadata only.
+    description="""Read a file or extract structured content from it.
 
 Args:
-- path: File path within data_path folder (e.g., "data_path/report.pdf", "data_path/output.txt")
-- encoding: Text encoding (default: utf-8)
-- max_chars: Max characters to read (default: 100000)
+- path: File path within data_path folder (required)
+- mode: What to extract — "text" (default), "tables", or "images"
+  - "text"   : Return file content. Supports text files and PDFs; binary files return metadata.
+  - "tables" : Extract tables from PDF or markdown. Returns structured rows/headers.
+  - "images" : Extract embedded images from a PDF and save them locally.
+- encoding: Text encoding for "text" mode (default: utf-8)
+- max_chars: Max characters for "text" mode (default: 100000)
+- table_index: For "tables" — specific table to return (1-based, default: all)
+- output_format: For "tables" — "json" or "markdown" (default: "json")
+- output_dir: For "images" — directory to save extracted images (default: data_path/pdf_images)
+- min_size: For "images" — minimum image dimension in pixels to extract (default: 100)
 
-Returns JSON: {content, path, size_bytes, format, status} or {path, size_bytes, format, type} for binary files"""
+Returns JSON varies by mode:
+  text:   {content, path, size_bytes, format, status}
+  tables: {tables, total_tables, file, format, status}
+  images: {pdf_path, output_dir, images, image_count, status}"""
 )
-def read_file(path: Optional[str] = None, encoding: str = "utf-8", max_chars: int = 100000) -> str:
+def read_file(
+    path: Optional[str] = None,
+    mode: str = "text",
+    encoding: str = "utf-8",
+    max_chars: int = 100000,
+    table_index: Optional[int] = None,
+    output_format: str = "json",
+    output_dir: str = "",
+    min_size: int = 100,
+) -> str:
     if err := _validate_required(path=path):
         return err
-    return _read_file(path=path, encoding=encoding, max_chars=max_chars)
+    if mode == "text":
+        return _read_file(path=path, encoding=encoding, max_chars=max_chars)
+    elif mode == "tables":
+        return _extract_tables(path=path, table_index=table_index, output_format=output_format)
+    elif mode == "images":
+        return _extract_pdf_images(pdf_path=path, output_dir=output_dir, min_size=min_size)
+    else:
+        return json.dumps({"error": f"Unknown mode '{mode}'. Use: text, tables, images", "status": "error"})
 
+
+
+@mcp.tool(
+    title="Write File",
+    description="""Write content to a file. Creates directories if needed.
+Files are created within the working directory with owner-only access.
+
+Args:
+- path: FULL absolute file path (e.g., "data_path/output.txt"). Always use the complete working directory path — never use relative paths.
+- content: Text content to write (required)
+- mode: "write" (overwrite) or "append" (add to end) (default: "write")
+- encoding: Text encoding (default: utf-8)
+
+Returns JSON: {path, size_bytes, mode, status}"""
+)
+def write_file(
+    path: Optional[str] = None,
+    content: Optional[str] = None,
+    mode: str = "write",
+    encoding: str = "utf-8",
+) -> str:
+    if err := _validate_required(path=path, content=content):
+        return err
+    return _write_file(path=path, content=content, mode=mode, encoding=encoding)
+
+
+@mcp.tool(
+    title="Edit File",
+    description="""Edit a file by replacing an exact string with new content. The file must exist.
+
+Args:
+- path: FULL absolute file path (e.g., "data_path/main.py"). Always use the complete working directory path — never use relative paths.
+- old_string: The exact string to find and replace (must exist in the file)
+- new_string: The replacement string
+- replace_all: Replace every occurrence of old_string (default: false, replaces first only)
+- encoding: Text encoding (default: utf-8)
+
+Returns JSON: {path, replacements, status}"""
+)
+def edit_file(
+    path: Optional[str] = None,
+    old_string: Optional[str] = None,
+    new_string: Optional[str] = None,
+    replace_all: bool = False,
+    encoding: str = "utf-8",
+) -> str:
+    if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
+        return err
+    return _edit_file(path=path, old_string=old_string, new_string=new_string, replace_all=replace_all, encoding=encoding)
+
+
+@mcp.tool(
+    title="Serve",
+    description="""Manage long-running background processes such as web servers.
+
+Actions:
+- start   : Launch a command as a background process. Returns name, pid, and log paths.
+- stop    : Stop a running process by name or pid.
+- status  : Check if a process is running (name or pid).
+- logs    : Tail stdout/stderr logs for a process (name or pid).
+- list    : List all managed processes with running/stopped status.
+- restart : Stop then re-start a named process using its saved command.
+
+Args:
+- action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
+- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080")
+- name    : Human-readable label for the process (default: auto-generated)
+- pid     : Process ID — alternative to name for stop/status/logs
+- cwd     : Working directory for the process. Can be any accessible directory.
+- lines   : Number of log lines to return for "logs" action (default: 50)
+
+Returns JSON with process details and, for "logs", stdout/stderr tail."""
+)
+def serve(
+    action: Optional[str] = None,
+    command: Optional[str] = None,
+    name: Optional[str] = None,
+    pid: Optional[int] = None,
+    cwd: Optional[str] = None,
+    lines: int = 50,
+) -> str:
+    if err := _validate_required(action=action):
+        return err
+    return _serve(action=action, command=command, name=name, pid=pid, cwd=cwd, lines=lines)
+
+
+
+@mcp.tool(
+    title="Grep",
+    description="""Search for a pattern across all files in a directory (recursive grep).
+Returns structured results with file path, line number, and matching content.
+
+Args:
+- directory: Directory to search in (required)
+- pattern: Regex search pattern (required, e.g., "def train", "TODO", "import.*torch")
+- file_pattern: Glob to filter files (default: "*" for all, e.g., "*.py", "*.md")
+- case_sensitive: Case-sensitive matching (default: false)
+- include_hidden: Include hidden files/directories (default: false)
+- max_results: Maximum matches to return (default: 100)
+
+Returns JSON: {results, total_matches, pattern, directory, file_pattern, status}
+Each result includes: {file, line_number, content}"""
+)
+def grep(
+    directory: Optional[str] = None,
+    pattern: Optional[str] = None,
+    file_pattern: str = "*",
+    case_sensitive: bool = False,
+    include_hidden: bool = False,
+    max_results: int = 100,
+) -> str:
+    if err := _validate_required(directory=directory, pattern=pattern):
+        return err
+    return _search_directory(
+        directory=directory, pattern=pattern, file_pattern=file_pattern,
+        case_sensitive=case_sensitive, include_hidden=include_hidden,
+        max_results=max_results,
+    )
 
 
 @mcp.tool(
@@ -253,94 +381,118 @@ def send_file(path: Optional[str] = None, callback_url: Optional[str] = None) ->
     return _send_file(path=path, callback_url=callback_url)
 
 
-@mcp.tool(
-    title="Search Document",
-    description="""Search for a regex pattern in a single document file. Supports text, PDF, and markdown files.
-Uses grep-like regex pattern matching and returns matching lines with surrounding context.
+# -- GitHub tools --------------------------------------------------------------
 
-IMPORTANT - Required parameters:
-- path: File path within data_path folder to search (e.g., "data_path/report.pdf", "data_path/README.md")
-- pattern: Regex search pattern to find in the document (e.g., "error.*timeout", "subjects")
-  Do NOT use 'query' - the parameter name is 'pattern'.
-
-Optional parameters:
-- case_sensitive: Whether search is case-sensitive (default: false)
-- context_lines: Number of lines of context before/after each match (default: 3).
-  Do NOT use 'context_chars' - the parameter name is 'context_lines'.
-- max_matches: Maximum number of matches to return (default: 50).
-  Do NOT use 'max_sections' - the parameter name is 'max_matches'.
-
-Example: search_document(path="data_path/report.pdf", pattern="conclusion")
-
-Returns JSON: {matches, total_matches, file, format, status}
-Each match includes: {line_number, match, context_before, context_after}"""
+from src.mcp.servers.tasks.github.mcp_server import (
+    github_repo as _github_repo,
 )
-def search_document(
-    path: Annotated[Optional[str], Field(description="File path within data_path folder to search")] = None,
-    pattern: Annotated[Optional[str], Field(description="Regex search pattern to find in the document (e.g., 'error.*timeout', 'subjects')")] = None,
-    case_sensitive: Annotated[bool, Field(description="Whether search is case-sensitive")] = False,
-    context_lines: Annotated[int, Field(description="Number of lines of context before/after each match")] = 3,
-    max_matches: Annotated[int, Field(description="Maximum number of matches to return")] = 50,
+
+
+@mcp.tool(
+    title="GitHub Repository",
+    description="""Create, get, list, fork, or delete GitHub repositories via the GitHub API.
+
+Requires GITHUB_TOKEN environment variable (personal access token with repo scope).
+
+Actions:
+- create : Create a new repository (user or org). Returns repo details.
+- get    : Get info about an existing repository.
+- list   : List repositories for the authenticated user or an org.
+- fork   : Fork an existing repository into the authenticated user's account or an org.
+- delete : Delete a repository (requires admin access).
+
+Args:
+- action      : One of "create", "get", "list", "fork", "delete" (required)
+- name        : Repository name — required for create, get (owner/repo), fork (owner/repo), delete (owner/repo)
+- description : Repository description (create only, optional)
+- private     : Make repo private (create only, default: false)
+- auto_init   : Initialize with a README (create only, default: true)
+- gitignore_template : e.g. "Python", "Node" (create only, optional)
+- license_template   : e.g. "mit", "apache-2.0" (create only, optional)
+- org         : Organization name — if set for create/list, targets the org instead of the user
+- per_page    : Results per page for list (default: 30, max: 100)
+
+Returns JSON: repo details for create/get/fork; list of repos for list; status for delete."""
+)
+def github_repo(
+    action: Optional[str] = None,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    private: bool = False,
+    auto_init: bool = True,
+    gitignore_template: Optional[str] = None,
+    license_template: Optional[str] = None,
+    org: Optional[str] = None,
+    per_page: int = 30,
 ) -> str:
-    if err := _validate_required(path=path, pattern=pattern):
+    if err := _validate_required(action=action):
         return err
-    return _search_document(
-        path=path, pattern=pattern, case_sensitive=case_sensitive,
-        context_lines=context_lines, max_matches=max_matches,
+    return _github_repo(
+        action=action,
+        name=name,
+        description=description,
+        private=private,
+        auto_init=auto_init,
+        gitignore_template=gitignore_template,
+        license_template=license_template,
+        org=org,
+        per_page=per_page,
     )
 
 
-
 @mcp.tool(
-    title="Extract Tables",
-    description="""Extract tables from documents. Supports PDF and markdown files.
-Tables are returned in a structured format with headers and rows.
+    title="Search Document",
+    description="""Search within a single document file. Supports text, PDF, and markdown.
 
 Args:
-- path: File path within data_path folder (e.g., "data_path/report.pdf", "data_path/README.md")
-- table_index: Specific table index to extract (1-based, default: all)
-- output_format: Output format - "json" or "markdown" (default: "json")
+- path: File path within data_path folder (required)
+- mode: Search strategy — "pattern" (default) or "context"
+  - "pattern" : Regex search. Returns matching lines with surrounding context lines.
+  - "context" : Keyword/query-based. Returns the most relevant text sections.
+- pattern: Regex to match (required for mode="pattern", e.g., "error.*timeout")
+- query: Question or topic (required for mode="context", e.g., "what is the conclusion?")
+- keywords: Extra keywords for mode="context" (comma-separated)
+- case_sensitive: Case-sensitive matching for mode="pattern" (default: false)
+- context_lines: Lines of context around each match for mode="pattern" (default: 3)
+- max_matches: Max matches for mode="pattern" (default: 50)
+- context_chars: Characters of context per section for mode="context" (default: 500)
+- max_sections: Max sections for mode="context" (default: 5)
 
-Returns JSON: {tables, total_tables, file, format, status}
-Each table includes: {headers, rows, row_count, page (for PDF)}"""
+Returns JSON:
+  pattern: {matches, total_matches, file, format, status}
+  context: {sections, total_sections, query, file, format, status}"""
 )
-def extract_tables(
-    path: Optional[str] = None, table_index: Optional[int] = None, output_format: str = "json"
-) -> str:
-    if err := _validate_required(path=path):
-        return err
-    return _extract_tables(path=path, table_index=table_index, output_format=output_format)
-
-
-
-@mcp.tool(
-    title="Get Document Context",
-    description="""Extract relevant context from a document for answering questions.
-Searches for keywords and returns surrounding context that can support answers.
-
-Args:
-- path: Document path within data_path folder (text, PDF, or markdown)
-- query: The question or topic to find context for
-- keywords: Additional keywords to search (comma-separated)
-- context_chars: Characters of context around matches (default: 500)
-- max_sections: Maximum context sections to return (default: 5)
-
-Returns JSON: {sections, query, file, status}
-Each section includes: {content, relevance_keywords, position}"""
-)
-def get_document_context(
+def search_document(
     path: Optional[str] = None,
+    mode: str = "pattern",
+    pattern: Optional[str] = None,
     query: Optional[str] = None,
     keywords: Optional[str] = None,
+    case_sensitive: bool = False,
+    context_lines: int = 3,
+    max_matches: int = 50,
     context_chars: int = 500,
     max_sections: int = 5,
 ) -> str:
-    if err := _validate_required(path=path, query=query):
+    if err := _validate_required(path=path):
         return err
-    return _get_document_context(
-        path=path, query=query, keywords=keywords,
-        context_chars=context_chars, max_sections=max_sections,
-    )
+    if mode == "pattern":
+        if err := _validate_required(pattern=pattern):
+            return err
+        return _search_document(
+            path=path, pattern=pattern, case_sensitive=case_sensitive,
+            context_lines=context_lines, max_matches=max_matches,
+        )
+    elif mode == "context":
+        effective_query = query or pattern
+        if not effective_query:
+            return json.dumps({"error": "query (or pattern) is required for mode='context'", "status": "error"})
+        return _get_document_context(
+            path=path, query=effective_query, keywords=keywords,
+            context_chars=context_chars, max_sections=max_sections,
+        )
+    else:
+        return json.dumps({"error": f"Unknown mode '{mode}'. Use: pattern, context", "status": "error"})
 
 
 # =============================================================================
@@ -380,9 +532,9 @@ def run(
 
     logger.info(f"Starting Tools MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
-    logger.info("10 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
+    logger.info("12 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
                  "bash, read_file, send_file, search_document, "
-                 "extract_tables, get_document_context")
+                 "extract_tables, get_document_context, github_repo")
 
     if not verbose:
         import uvicorn.config
