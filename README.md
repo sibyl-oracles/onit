@@ -1,5 +1,7 @@
 # OnIt
 
+[![SafeSkill 90/100](https://img.shields.io/badge/SafeSkill-90%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/sibyl-oracles-onit)
+
 *OnIt* — the AI is working on the given task and will deliver the results shortly.
 
 OnIt is an intelligent agent for task automation and assistance. It connects to any OpenAI-compatible LLM (private [vLLM](https://github.com/vllm-project/vllm) servers or [OpenRouter.ai](https://openrouter.ai/)) and uses [MCP](https://modelcontextprotocol.io/) tools for web search, file operations, and more. It also supports the [A2A](https://a2a-protocol.org/) protocol for multi-agent communication.
