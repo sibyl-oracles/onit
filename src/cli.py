@@ -539,8 +539,16 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='Default topic context (e.g. "machine learning"). The model will assume this topic unless specified otherwise.')
     parser.add_argument('--prompt-intro', type=str, default=None,
                         help='Custom system prompt intro for the model (default: "I am a helpful AI assistant. My name is OnIt.").')
-    parser.add_argument('--plan', type=str, default=None, metavar='FILE',
-                        help='Path to a .md or .txt file whose contents will be used as the system prompt intro.')
+    parser.add_argument('--plan', type=str, default=None, metavar='FILE_OR_URL',
+                        help=(
+                            'Plan source for the system prompt intro. Accepts: '
+                            '(1) local path to a .md/.txt file; '
+                            '(2) raw HTTP/HTTPS URL to a .md file '
+                            '(e.g. https://raw.githubusercontent.com/user/repo/main/plan.md); '
+                            '(3) git repo URL with file path using the format '
+                            'git+https://github.com/user/repo.git[@branch]:path/to/plan.md '
+                            '(works with private repos if git credentials are configured).'
+                        ))
     # Text UI options
     parser.add_argument('--text-theme', type=str, default=None,
                         help='Text UI theme (e.g. "white", "dark").')
@@ -620,6 +628,87 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_plan(source: str) -> str:
+    """Load plan content from a local file, a raw HTTP/HTTPS URL, or a git repo.
+
+    Supported formats:
+      - Local path:  /path/to/plan.md  or  ~/plan.md
+      - Raw URL:     https://raw.githubusercontent.com/user/repo/main/plan.md
+      - Git repo:    git+https://github.com/user/repo.git[@branch]:path/to/plan.md
+                     git+ssh://git@github.com/user/repo.git[@branch]:path/to/plan.md
+    """
+    import subprocess
+    import tempfile
+
+    # --- git repo (git+ prefix) ---
+    if source.startswith('git+'):
+        url_part = source[4:]  # strip 'git+'
+
+        # Split repo URL from in-repo file path on the LAST ':' that is not
+        # part of the scheme (i.e. skip 'https://', 'ssh://', etc.)
+        scheme_end = url_part.find('://') + 3 if '://' in url_part else 0
+        colon_idx = url_part.rfind(':', scheme_end)
+        if colon_idx == -1:
+            print(
+                "Error: git plan URL must include a file path separated by ':', "
+                "e.g. git+https://github.com/user/repo.git:path/to/plan.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        repo_url = url_part[:colon_idx]
+        file_path = url_part[colon_idx + 1:]
+
+        # Optional branch specified as repo.git@branch
+        branch = None
+        at_idx = repo_url.rfind('@', scheme_end)
+        if at_idx != -1:
+            branch = repo_url[at_idx + 1:]
+            repo_url = repo_url[:at_idx]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clone_cmd = ['git', 'clone', '--depth', '1']
+            if branch:
+                clone_cmd += ['--branch', branch]
+            clone_cmd += [repo_url, tmpdir]
+            result = subprocess.run(clone_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(
+                    f"Error: failed to clone repository '{repo_url}': {result.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            full_path = os.path.join(tmpdir, file_path)
+            if not os.path.isfile(full_path):
+                print(
+                    f"Error: file '{file_path}' not found in repository '{repo_url}'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            with open(full_path, 'r') as _f:
+                return _f.read()
+
+    # --- raw HTTP/HTTPS URL ---
+    if source.startswith('http://') or source.startswith('https://'):
+        try:
+            response = requests.get(source, timeout=30)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as exc:
+            print(f"Error: failed to fetch plan from URL '{source}': {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    # --- local file ---
+    plan_path = os.path.expanduser(source)
+    if not os.path.isfile(plan_path):
+        print(f"Error: plan file '{plan_path}' not found.", file=sys.stderr)
+        sys.exit(1)
+    with open(plan_path, 'r') as _f:
+        return _f.read()
+
+
 def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     """Load the config file, merge setup defaults, and apply CLI overrides.
 
@@ -677,14 +766,10 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         if value is not None:
             config_data[config_key] = value
 
-    # --plan reads a file and sets prompt_intro (--prompt-intro takes precedence)
+    # --plan reads a file (local, raw URL, or git repo) and sets prompt_intro
+    # (--prompt-intro takes precedence)
     if getattr(args, 'plan', None) and not getattr(args, 'prompt_intro', None):
-        plan_path = os.path.expanduser(args.plan)
-        if not os.path.isfile(plan_path):
-            print(f"Error: plan file '{plan_path}' not found.", file=sys.stderr)
-            sys.exit(1)
-        with open(plan_path, 'r') as _f:
-            plan = _f.read()
+        plan = _load_plan(args.plan)
         config_data['prompt_intro'] = f"""You are an autonomous agent.
 Execute this research plan exactly as written, stage by stage.
 Never stop until the goal is completed.
