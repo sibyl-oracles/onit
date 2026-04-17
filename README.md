@@ -49,7 +49,8 @@ onit --web                          # Web UI on port 9000
 onit --gateway                      # Telegram/Viber bot gateway
 onit --a2a                          # A2A server on port 9001
 onit --client --task "your task"    # Send a task to an A2A server
-onit --sandbox                      # Enable sandbox mode for code execution
+onit --sandbox                      # Delegate code execution to a sandbox MCP provider
+onit --container                    # Run the whole process in a hardened Docker container
 ```
 
 ## Configuration
@@ -152,7 +153,10 @@ serving:
 | `--min-p` | Min-p sampling | `0.0` |
 | `--presence-penalty` | Presence penalty | `0.0` |
 | `--repetition-penalty` | Repetition penalty | `1.05` (or `1.0` with `--think`) |
-| `--sandbox` | Enable sandbox mode for code execution in isolated containers | `false` |
+| `--sandbox` | Delegate code execution to an external MCP sandbox provider | `false` |
+| `--container` | Run the entire OnIt process inside a hardened Docker container (read-only rootfs, non-root user, caps dropped, no host mounts). Requires Docker. Composable with `--sandbox`. | `false` |
+| `--container-gpus` | Pass GPUs into the container (e.g. `all`, `"device=0,1"`). Requires NVIDIA Container Toolkit. Default image ships CPU-only torch. | — |
+| `--container-mount` | Extra bind mount for the container, e.g. `/host/path:/container/path:ro`. Repeatable. Prefer `:ro`. | — |
 
 **Text UI:**
 
@@ -216,12 +220,74 @@ onit --web
 
 Supports optional Google OAuth2 authentication — see [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
 
-### Sandbox Mode
+### Container Mode
 
-Run code in isolated Docker containers. When enabled, the agent routes all code development and execution to a sandboxed environment, keeping the host system clean.
+Run the entire OnIt process inside a hardened Docker container so a breach in the agent, LLM output parser, or any MCP tool cannot reach the host OS:
 
 ```bash
-onit --sandbox
+onit --container                                         # interactive terminal in container
+onit --container --web                                   # web UI, port 9000 published
+onit --container --a2a --a2a-port 9100                   # non-default ports are honored (9100:9100)
+onit --container --container-gpus all                    # NVIDIA GPU pass-through
+onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
+  --documents-path /home/onit/documents                  # expose specific host paths read-only
+onit --container --sandbox                               # combine with per-tool sandboxing
+```
+
+The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Subsequent runs reuse the image — remove it (`docker rmi onit:local`) to force a rebuild after source changes.
+
+#### Isolation posture
+
+- Runs as non-root user `onit` (uid 1000).
+- `--read-only` root filesystem; `/tmp` and `/home/onit/.cache` are ephemeral tmpfs.
+- `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=256`, `--memory=2g`.
+- No host filesystem mounts by default. Outbound network is allowed (needed for LLM APIs).
+
+#### What crosses the boundary
+
+| Resource | Default behavior |
+|---|---|
+| `~/.onit/config.yaml` | Bind-mounted read-only at `/home/onit/.onit/config.yaml` |
+| `~/.onit/secrets.yaml` | Bind-mounted read-only if present |
+| Host keychain secrets | Passed as ephemeral env vars (not baked into image): `OPENROUTER_API_KEY`, `OLLAMA_API_KEY`, `OPENWEATHERMAP_API_KEY`, `TELEGRAM_BOT_TOKEN`, `VIBER_BOT_TOKEN`, `GITHUB_TOKEN`, `HF_TOKEN` |
+| Session data | Named volume `onit-data` mounted at `/home/onit/data` (writable, persistent) |
+| Ports | Published **only** for the active mode — see the ports table below |
+| GPUs | **Not** passed through unless `--container-gpus` is set |
+| Host filesystem | **Nothing** beyond the config/secrets files above unless `--container-mount` is set |
+
+#### Network ports
+
+The launcher publishes the minimum set of host ports for the selected mode. Interactive terminal mode publishes **no ports at all**. Outbound network (from the container) is always allowed so the agent can reach LLM APIs.
+
+| Mode flag | Default published port | Override flag | Example |
+|---|---|---|---|
+| (none / terminal) | — (no ports) | — | `onit --container` |
+| `--web` | `9000:9000` | `--web-port` | `onit --container --web --web-port 9500` → `9500:9500` |
+| `--a2a` | `9001:9001` | `--a2a-port` | `onit --container --a2a --a2a-port 9100` → `9100:9100` |
+| `--gateway viber` | `8443:8443` | `--viber-port` | `onit --container --gateway viber --viber-port 9443` → `9443:9443` |
+
+The host-side and container-side port numbers are kept identical so URLs such as webhooks work without translation. If you need to remap to a different host port, run the image with your own `docker run -p <host>:<container>` instead of `--container`.
+
+#### Container-only flags (not forwarded inside the container)
+
+| Flag | Purpose |
+|---|---|
+| `--container-gpus <spec>` | NVIDIA GPU pass-through. Values like `all` or `"device=0,1"`. Requires NVIDIA Container Toolkit on the host. The default image ships **CPU-only** torch — for GPU compute, rebuild the image with a CUDA torch wheel. |
+| `--container-mount <host>:<container>[:ro]` | Extra bind mount. Repeatable. Prefer `:ro`. Each mount punches a hole in the sandbox — never mount a host path that contains secrets you don't want the agent to see. |
+
+#### Preinstalled ML packages
+
+The container image ships with a default ML stack so the agent can run code without `pip install` at execution time: `torch`, `torchvision`, `torchaudio` (CPU-only wheels), `numpy`, `pandas`, `scikit-learn`, `matplotlib`, `einops`.
+
+See [docs/DOCKER.md](docs/DOCKER.md) for full details.
+
+### Sandbox Mode
+
+Delegate individual code-execution tool calls to an external MCP sandbox provider. Complementary to `--container` (which isolates the whole OnIt process); combine them for defense in depth.
+
+```bash
+onit --sandbox                   # per-tool sandboxing via external MCP provider
+onit --container --sandbox       # + whole-process isolation in a Docker container
 ```
 
 Or in `config.yaml`:

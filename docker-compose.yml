@@ -1,6 +1,18 @@
+x-onit-hardening: &onit-hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  mem_limit: 2g
+  tmpfs:
+    - /tmp:size=64m
+    - /home/onit/.cache:size=64m
+
 services:
   onit-mcp:
     build: .
+    <<: *onit-hardening
     ports:
       - "18200:18200"
       - "18201:18201"
@@ -12,36 +24,51 @@ services:
 
   onit-web:
     build: .
+    <<: *onit-hardening
     ports:
       - "9000:9000"
     env_file: .env
     depends_on:
       - onit-mcp
     volumes:
-      - web-sessions:/root/.onit/sessions
+      - web-sessions:/home/onit/.onit/sessions
     command: ["--web", "--web-port", "9000", "--mcp-host", "onit-mcp"]
 
   onit-a2a:
     build: .
+    <<: *onit-hardening
     ports:
       - "9001:9001"
     env_file: .env
     depends_on:
       - onit-mcp
     volumes:
-      - a2a-sessions:/root/.onit/sessions
+      - a2a-sessions:/home/onit/.onit/sessions
     command: ["--a2a", "--a2a-port", "9001", "--mcp-host", "onit-mcp"]
 
   onit-gateway:
     build: .
+    <<: *onit-hardening
     env_file: .env
     depends_on:
       - onit-mcp
     volumes:
-      - gateway-sessions:/root/.onit/sessions
+      - gateway-sessions:/home/onit/.onit/sessions
     command: ["--gateway", "--mcp-host", "onit-mcp"]
+
+  onit-terminal:
+    build: .
+    <<: *onit-hardening
+    env_file: .env
+    stdin_open: true
+    tty: true
+    volumes:
+      - terminal-sessions:/home/onit/.onit/sessions
+    profiles: ["terminal"]
+    command: []
 
 volumes:
   web-sessions:
   a2a-sessions:
   gateway-sessions:
+  terminal-sessions:

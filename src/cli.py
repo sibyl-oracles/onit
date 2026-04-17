@@ -565,6 +565,19 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='Disable streaming of tokens (streaming is enabled by default for text, web and a2a modes).')
     parser.add_argument('--sandbox', action='store_true', default=None,
                         help='Enable sandbox mode for code execution in isolated containers.')
+    parser.add_argument('--container', action='store_true', default=False,
+                        help='Run the entire OnIt process inside a hardened Docker container '
+                             'so a breach cannot reach the host OS.')
+    parser.add_argument('--container-gpus', type=str, default=None, dest='container_gpus',
+                        help='Pass GPUs into the container (e.g. "all" or "device=0,1"). '
+                             'Requires the NVIDIA Container Toolkit on the host. '
+                             'Note: default image ships CPU-only torch; rebuild with CUDA '
+                             'wheels for GPU workloads.')
+    parser.add_argument('--container-mount', type=str, action='append', default=None,
+                        dest='container_mount',
+                        help='Extra bind mount for the container, e.g. '
+                             '"/host/path:/container/path:ro". Repeatable. Use "ro" '
+                             'unless write access is required.')
 
     # Web UI options
     parser.add_argument('--web', action='store_true', default=None,
@@ -862,6 +875,16 @@ def _dispatch_mode(config_data: dict) -> None:
 def main():
     parser = _build_parser()
     args = parser.parse_args()
+
+    # --container: re-exec the whole process inside a hardened Docker container.
+    # Must happen before any config load or server setup touches the host.
+    if getattr(args, 'container', False):
+        from .container_launcher import run as _container_run, strip_launcher_args
+        sys.exit(_container_run(
+            strip_launcher_args(sys.argv[1:]),
+            gpus=getattr(args, 'container_gpus', None),
+            mounts=getattr(args, 'container_mount', None) or [],
+        ))
 
     # Setup wizard
     if args.command == "setup":

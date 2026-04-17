@@ -1,5 +1,103 @@
 # Docker
 
+## Running OnIt in a container (`--container`)
+
+The fastest way to run OnIt in an isolated container is:
+
+```bash
+onit --container                # interactive terminal inside container
+onit --container --web          # web UI, port 9000 mapped to host
+onit --container --a2a          # A2A server, port 9001 mapped to host
+```
+
+On first run, the launcher builds the `onit:local` image from the repository
+`Dockerfile`. Subsequent runs reuse the image.
+
+### What is isolated
+
+The container is started with hardening flags:
+
+- `--read-only` root filesystem (writes confined to `/home/onit/data` named volume and a `/tmp` tmpfs)
+- `--cap-drop=ALL` (no Linux capabilities beyond what the Python process strictly needs)
+- `--security-opt=no-new-privileges`
+- `--pids-limit=256`, `--memory=2g`
+- Runs as non-root `onit` user (uid 1000)
+- No host filesystem mounts by default
+
+### What crosses the boundary
+
+- `~/.onit/config.yaml` is bind-mounted **read-only** into the container.
+- `~/.onit/secrets.yaml` is bind-mounted **read-only** if it exists.
+- Secrets from the host OS keychain are passed as ephemeral env vars (not
+  baked into the image). Supported keys: `OPENROUTER_API_KEY`, `OLLAMA_API_KEY`,
+  `OPENWEATHERMAP_API_KEY`, `TELEGRAM_BOT_TOKEN`, `VIBER_BOT_TOKEN`,
+  `GITHUB_TOKEN`, `HF_TOKEN`.
+- A named volume `onit-data` is mounted at `/home/onit/data` for session
+  persistence.
+- Outbound network is allowed (needed for LLM API calls).
+- Ports are mapped **only** when the corresponding mode flag is used.
+
+### Exposing GPUs, ports, and extra host paths
+
+By default the container has **no GPUs, no extra host paths, and only the
+ports needed for the mode you selected** (`--web` → 9000, `--a2a` → 9001,
+`--gateway` viber → 8443). Override as needed:
+
+```bash
+# NVIDIA GPU pass-through (requires NVIDIA Container Toolkit on host).
+onit --container --container-gpus all
+
+# Specific GPUs only.
+onit --container --container-gpus '"device=0,1"'
+
+# Mount a host documents directory read-only into the container.
+onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
+  --documents-path /home/onit/documents
+
+# Multiple mounts — flag is repeatable.
+onit --container \
+  --container-mount "$HOME/datasets:/data:ro" \
+  --container-mount "$HOME/models:/models:ro"
+
+# Non-default ports are honored automatically.
+onit --container --web --web-port 9500       # publishes 9500:9500
+onit --container --a2a --a2a-port 9100       # publishes 9100:9100
+```
+
+Note: the default image ships **CPU-only torch** to keep the build small.
+`--container-gpus` plumbs the device through, but for actual GPU compute
+you need to rebuild the image with a CUDA torch wheel — see the section
+below on preinstalled ML packages.
+
+Each `--container-mount` punches a hole in the sandbox. Use `:ro` whenever
+possible, and never mount a host path that contains secrets you don't want
+the agent to see.
+
+### Preinstalled ML packages
+
+The container image ships with a default machine-learning stack so the agent
+can run ML code without `pip install` round-trips at execution time:
+
+- `torch`, `torchvision`, `torchaudio` (CPU-only wheels)
+- `numpy`, `pandas`, `scikit-learn`
+- `matplotlib`, `einops`
+
+CUDA is intentionally not included — containers have no GPU access by
+default, and CUDA wheels would add roughly 3 GB to the image. For GPU
+workloads, build a derivative image that replaces the CPU wheels with the
+appropriate CUDA build.
+
+### Combining with `--sandbox`
+
+`--container` and `--sandbox` are complementary. `--container` isolates the
+whole OnIt process from the host; `--sandbox` delegates individual code-
+execution tool calls to an external MCP sandbox provider. They can be used
+together for defense in depth:
+
+```bash
+onit --container --sandbox --web
+```
+
 ## Build the image
 
 ```bash
