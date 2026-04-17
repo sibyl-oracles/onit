@@ -122,12 +122,24 @@ BINARY_EXTENSIONS = {
 }
 
 
+def _in_container() -> bool:
+    """True when running inside the onit container (Dockerfile sets ONIT_CONTAINER=1).
+
+    In that case the container itself is the filesystem boundary, so MCP path
+    allowlists are relaxed — the agent can read/write any path the container
+    can see (including directories mapped via ``--container-mount``).
+    """
+    return os.environ.get("ONIT_CONTAINER") == "1"
+
+
 def _validate_write_path(file_path: str) -> str:
     """Validate that the write path is within DATA_PATH. Returns absolute path.
     Relative paths are resolved against DATA_PATH (not CWD)."""
     if not os.path.isabs(os.path.expanduser(file_path)):
         file_path = os.path.join(DATA_PATH, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
+    if _in_container():
+        return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
@@ -144,6 +156,8 @@ def _validate_read_path(file_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(file_path)):
         file_path = os.path.join(DATA_PATH, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
+    if _in_container():
+        return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
     if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
@@ -169,6 +183,8 @@ def _validate_dir_path(dir_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(dir_path)):
         dir_path = os.path.join(DATA_PATH, dir_path)
     abs_path = os.path.realpath(os.path.expanduser(dir_path))
+    if _in_container():
+        return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
     if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
@@ -190,7 +206,14 @@ def _validate_dir_path(dir_path: str) -> str:
 def _get_sandbox_env() -> dict:
     """Build a minimal environment dict for sandboxed shell execution.
     Strips most inherited env vars but preserves HOME and credential-related
-    variables so that keyring/keychain tools and credential helpers work."""
+    variables so that keyring/keychain tools and credential helpers work.
+
+    In container mode (``ONIT_CONTAINER=1``, set by the Dockerfile) the full
+    container env is forwarded — the Dockerfile curates that env (PIP_TARGET,
+    HF_HOME, MPLCONFIGDIR, XDG_*, …) and the container itself is the boundary,
+    so the allowlist-style stripping that makes sense on the host is just an
+    obstacle here.
+    """
     global _SANDBOX_ENV
     if _SANDBOX_ENV is not None:
         return dict(_SANDBOX_ENV)
@@ -201,6 +224,19 @@ def _get_sandbox_env() -> dict:
 
     # Use the real HOME so credential helpers (osxkeychain, gh, git config) work.
     real_home = os.path.expanduser("~")
+
+    if _in_container():
+        env = dict(os.environ)
+        env.update({
+            "TERM": "dumb",
+            "LANG": env.get("LANG", "en_US.UTF-8"),
+            "LC_ALL": env.get("LC_ALL", "en_US.UTF-8"),
+            "HOME": real_home,
+            "TMPDIR": tmp_dir,
+            "DATA_PATH": abs_data,
+        })
+        _SANDBOX_ENV = env
+        return dict(env)
 
     env = {
         "TERM": "dumb",
@@ -243,8 +279,12 @@ def _get_sandbox_env() -> dict:
             "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
         })
     else:
-        # Include conda and Homebrew paths so that python/pip resolve to the user's conda env.
+        # Include conda, container venv, and Homebrew paths so python/pip resolve
+        # to the environment where onit installed torch et al. /opt/venv is the
+        # venv created by our Dockerfile for --container runs; missing paths are
+        # filtered out below, so it's harmless on hosts without it.
         path_parts = [
+            "/opt/venv/bin",
             "/opt/miniconda3/bin",
             "/opt/miniconda3/condabin",
             "/usr/local/bin",
@@ -443,6 +483,12 @@ def _validate_bash_command(command: str) -> str | None:
     for pattern, description in _BLOCKED_PATTERNS:
         if pattern.search(check_command):
             return f"Command blocked: {description} is not allowed."
+
+    # In container mode the container itself is the filesystem boundary —
+    # skip the path allowlist so agent commands can reach --container-mount
+    # directories and any other path visible to the container.
+    if _in_container():
+        return None
 
     # Check for absolute path references outside allowed directories
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
@@ -855,8 +901,16 @@ def write_file(
 
 def _normalize_to_data_path(path: str) -> str:
     """Resolve path into DATA_PATH: relative paths are placed under it; absolute
-    paths outside it are re-rooted under it (strips leading separator)."""
+    paths outside it are re-rooted under it (strips leading separator).
+
+    In container mode we don't re-root — the container is the boundary, so
+    absolute paths (e.g. ``/data`` from --container-mount) are honored as-is.
+    """
     expanded = os.path.expanduser(path)
+    if _in_container():
+        if os.path.isabs(expanded):
+            return os.path.abspath(expanded)
+        return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), expanded)
     abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
     if not os.path.isabs(expanded) or not os.path.abspath(expanded).startswith(abs_data):
         return os.path.join(abs_data, expanded.lstrip(os.sep))

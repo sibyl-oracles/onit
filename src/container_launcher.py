@@ -23,6 +23,7 @@ the whole OnIt process.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -45,6 +46,11 @@ IMAGE_TAG = "onit:local"
 DATA_VOLUME = "onit-data"
 DEFAULT_MEMORY = "2g"
 DEFAULT_PIDS_LIMIT = "256"
+
+# CUDA runtime version baked into the image (see Dockerfile FROM line). Used to
+# warn the user when the host driver's supported CUDA version is older — host
+# driver CUDA must be >= image CUDA for GPU ops to work.
+_IMAGE_CUDA = (12, 6)
 
 
 def _check_docker() -> str:
@@ -135,13 +141,68 @@ def _config_mount_args() -> list[str]:
 def _hardening_args() -> list[str]:
     return [
         "--read-only",
-        "--tmpfs", "/tmp:rw,size=64m",
-        "--tmpfs", "/home/onit/.cache:rw,size=64m",
+        # /tmp is the agent's main scratch area. Wheel extraction for large
+        # packages (torch, etc) can easily exceed 1GB; keep this generous.
+        # Backed by host RAM — pip downloads go via PIP_CACHE_DIR on the data
+        # volume (see Dockerfile) so they don't compete for tmpfs.
+        "--tmpfs", "/tmp:rw,size=4g",
+        "--tmpfs", "/home/onit/.cache:rw,size=2g",
+        # Session transcripts default to ~/.onit/sessions — carve out a writable
+        # tmpfs so the read-only rootfs doesn't block session creation. Sessions
+        # written here are ephemeral; persistent history lives in the data volume.
+        "--tmpfs", "/home/onit/.onit/sessions:rw,size=64m",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--pids-limit", DEFAULT_PIDS_LIMIT,
         "--memory", DEFAULT_MEMORY,
     ]
+
+
+def _detect_gpu_support(docker: str) -> tuple[bool, str | None]:
+    """Check if ``docker run --gpus all`` is viable on this host.
+
+    Returns ``(available, warning)``. ``available`` is True only when both
+    ``nvidia-smi`` resolves and Docker has the nvidia runtime registered.
+    ``warning`` is set when the host driver's supported CUDA is older than the
+    image's CUDA runtime — GPU ops may fail even if --gpus attaches.
+    """
+    if not shutil.which("nvidia-smi"):
+        return (False, None)
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, text=True, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return (False, None)
+
+    # Docker needs the nvidia runtime registered (nvidia-container-toolkit).
+    try:
+        info = subprocess.run(
+            [docker, "info"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, text=True, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return (False, None)
+    if "nvidia" not in info.lower():
+        return (False, None)
+
+    # Parse "CUDA Version: X.Y" from the nvidia-smi header — this is the max
+    # CUDA the installed driver supports.
+    m = re.search(r"CUDA Version:\s*([0-9]+)\.([0-9]+)", smi)
+    if m:
+        host_cuda = (int(m.group(1)), int(m.group(2)))
+        if host_cuda < _IMAGE_CUDA:
+            warn = (
+                f"host NVIDIA driver supports CUDA {host_cuda[0]}.{host_cuda[1]} "
+                f"but the container image uses CUDA "
+                f"{_IMAGE_CUDA[0]}.{_IMAGE_CUDA[1]} — GPU ops may fail with "
+                f"'CUDA driver version is insufficient'. Update the host driver."
+            )
+            return (True, warn)
+    return (True, None)
 
 
 def _extract_port(args: list[str], flag: str, default: int) -> int:
@@ -203,9 +264,23 @@ def _run_docker(
 
     cmd.extend(_hardening_args())
     if gpus:
-        cmd.extend(["--gpus", gpus])
+        available, warn = _detect_gpu_support(docker)
+        if not available:
+            print(
+                "Note: --container-gpus requested but no usable GPU/"
+                "nvidia-container-toolkit found on this host — starting "
+                "without GPU attachment (torch will run on CPU).",
+                file=sys.stderr,
+            )
+        else:
+            if warn:
+                print(f"Warning: {warn}", file=sys.stderr)
+            cmd.extend(["--gpus", gpus])
     cmd.extend(_port_args(forwarded_args))
     cmd.extend(["-v", f"{DATA_VOLUME}:/home/onit/data"])
+    # Anchor the agent's cwd in the persistent writable volume so shell tools
+    # that write relative paths don't hit the read-only rootfs.
+    cmd.extend(["--workdir", "/home/onit/data"])
     cmd.extend(_config_mount_args())
     for m in mounts or []:
         cmd.extend(["-v", m])
@@ -251,6 +326,7 @@ def build_run_command(
         cmd.extend(["--gpus", gpus])
     cmd.extend(_port_args(forwarded_args))
     cmd.extend(["-v", f"{DATA_VOLUME}:/home/onit/data"])
+    cmd.extend(["--workdir", "/home/onit/data"])
     cmd.extend(config_mounts if config_mounts is not None else _config_mount_args())
     for m in mounts or []:
         cmd.extend(["-v", m])

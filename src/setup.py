@@ -112,8 +112,13 @@ def _file_get_secret(key: str) -> str | None:
     """Fallback: read secret from ~/.onit/secrets.yaml."""
     if not os.path.isfile(_SECRETS_PATH):
         return None
-    with open(_SECRETS_PATH, "r") as f:
-        data = yaml.safe_load(f) or {}
+    # A bind-mounted secrets.yaml from the host may be unreadable inside a
+    # container due to UID mismatch — treat as "not present" rather than crash.
+    try:
+        with open(_SECRETS_PATH, "r") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return None
     return data.get(key)
 
 

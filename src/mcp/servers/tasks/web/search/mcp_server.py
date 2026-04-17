@@ -105,10 +105,19 @@ def _validate_required(**kwargs) -> str:
     return ""
 
 
+def _in_container() -> bool:
+    """True when running inside the onit container (ONIT_CONTAINER=1). In that
+    case the container is the filesystem boundary, so DATA_PATH-only path
+    allowlists are relaxed."""
+    return os.environ.get("ONIT_CONTAINER") == "1"
+
+
 def _validate_write_path(file_path: str) -> str:
     """Validate that the write path is within DATA_PATH. Returns absolute path.
     Raises ValueError if outside allowed directory."""
     abs_path = os.path.realpath(os.path.expanduser(file_path))
+    if _in_container():
+        return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
@@ -121,6 +130,8 @@ def _validate_read_path(file_path: str) -> str:
     """Validate that the read path is within DATA_PATH. Returns absolute path.
     Raises ValueError if outside allowed directory."""
     abs_path = os.path.realpath(os.path.expanduser(file_path))
+    if _in_container():
+        return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
