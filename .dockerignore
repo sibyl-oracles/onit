@@ -12,6 +12,6 @@ htmlcov/
 .DS_Store
 .env
 .env.*
-scripts/
+scripts/*
 !scripts/onit-install-ml
 *.log
