@@ -97,6 +97,8 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
         openssh-client \
         sudo \
         build-essential \
+        curl \
+        wget \
     && rm -f /etc/apt/apt.conf.d/99no-verify \
     && rm -rf /var/lib/apt/lists/* \
     && (userdel -r ubuntu 2>/dev/null || true) \
@@ -147,37 +149,89 @@ COPY <<'EOF' /usr/local/bin/onit-install-ml
 #!/bin/bash
 # Install heavy ML packages into the persistent data volume on demand.
 # Usage: onit-install-ml [preset ...]
-#   torch    torch / torchvision / torchaudio (auto-detects CUDA vs CPU)
+#   torch    torch / torchvision / torchaudio (auto-picks wheel matching the
+#            host NVIDIA driver's max CUDA, or CPU if no GPU is attached)
 #   hf       transformers / datasets / accelerate / tokenizers / safetensors / hf_transfer
 #   extras   einops / phonemizer
 #   all      torch + hf + extras (default)
 set -euo pipefail
 presets=("${@:-all}")
+
 have_cuda() {
     [ -e /proc/driver/nvidia/version ] || compgen -G "/dev/nvidia*" >/dev/null 2>&1
 }
-install_torch() {
-    if have_cuda; then
-        echo ">>> Installing torch (CUDA 12.6 wheels)"
-        pip install --index-url https://download.pytorch.org/whl/cu126 \
-                    --extra-index-url https://pypi.org/simple \
-                    torch torchvision torchaudio
+
+# Map the host driver's max CUDA version (reported by nvidia-smi) to the
+# closest-matching torch wheel index. Newer driver == higher CUDA supported.
+# Picking a wheel built for a CUDA version <= driver avoids the "driver too
+# old" runtime error from torch.
+pick_torch_index() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo "cu126"; return
+    fi
+    local line major minor
+    line=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: *[0-9]+\.[0-9]+' | head -1 || true)
+    if [ -z "$line" ]; then
+        echo "cu126"; return
+    fi
+    major=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | cut -d. -f1)
+    minor=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+' | cut -d. -f2)
+    # Available torch wheel indices (as of 2025): cu118, cu121, cu124, cu126, cu128.
+    # Pick the highest one the driver can support.
+    if [ "$major" -gt 12 ] || { [ "$major" -eq 12 ] && [ "$minor" -ge 8 ]; }; then
+        echo "cu128"
+    elif [ "$major" -eq 12 ] && [ "$minor" -ge 6 ]; then
+        echo "cu126"
+    elif [ "$major" -eq 12 ] && [ "$minor" -ge 4 ]; then
+        echo "cu124"
+    elif [ "$major" -eq 12 ]; then
+        echo "cu121"
     else
-        echo ">>> Installing torch (CPU wheels — no GPU attached)"
-        pip install --index-url https://download.pytorch.org/whl/cpu \
-                    --extra-index-url https://pypi.org/simple \
-                    torch torchvision torchaudio
+        echo "cu118"
     fi
 }
+
+install_torch() {
+    local idx
+    if have_cuda; then
+        idx=$(pick_torch_index)
+        echo ">>> Installing torch ($idx wheels, matched to host driver)"
+    else
+        idx="cpu"
+        echo ">>> Installing torch (CPU wheels — no GPU attached)"
+    fi
+    # Wipe any prior torch install + bundled nvidia libs from PIP_TARGET so
+    # a previous (possibly wrong-CUDA) wheel doesn't leave stale deps next to
+    # the new one. `pip uninstall` doesn't work cleanly with --target, so we
+    # remove the directories directly; the glob is narrow enough not to touch
+    # unrelated packages.
+    if [ -n "${PIP_TARGET:-}" ] && [ -d "$PIP_TARGET" ]; then
+        rm -rf "$PIP_TARGET"/torch "$PIP_TARGET"/torch-*.dist-info \
+               "$PIP_TARGET"/torchvision "$PIP_TARGET"/torchvision-*.dist-info \
+               "$PIP_TARGET"/torchaudio "$PIP_TARGET"/torchaudio-*.dist-info \
+               "$PIP_TARGET"/nvidia "$PIP_TARGET"/nvidia_*-*.dist-info \
+               2>/dev/null || true
+    fi
+    # IMPORTANT: --index-url only, no --extra-index-url. The torch index
+    # mirrors common deps (numpy, pillow, fsspec, jinja2, …); adding pypi
+    # as a fallback lets pip pick up a pypi-hosted torch with a newer CUDA
+    # runtime (PEP 440 ranks the non-local "2.x" above the "2.x+cu126"
+    # local version) which breaks with "NVIDIA driver too old".
+    pip install --index-url "https://download.pytorch.org/whl/$idx" \
+                torch torchvision torchaudio
+}
+
 install_hf() {
     echo ">>> Installing Hugging Face stack"
     pip install transformers datasets accelerate \
                 safetensors tokenizers hf_transfer
 }
+
 install_extras() {
     echo ">>> Installing einops, phonemizer"
     pip install einops phonemizer
 }
+
 for p in "${presets[@]}"; do
     case "$p" in
         torch)  install_torch ;;
