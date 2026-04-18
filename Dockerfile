@@ -141,8 +141,55 @@ COPY --from=build --chown=onit:onit /build /home/onit/app
 
 # Helper the agent invokes to install heavy ML packages (torch, transformers,
 # etc) on demand. Goes to the persistent data volume via PIP_TARGET, so the
-# install cost is paid once per host.
-COPY scripts/onit-install-ml /usr/local/bin/onit-install-ml
+# install cost is paid once per host. Inlined via BuildKit heredoc so the
+# script survives gitignore/dockerignore filters.
+COPY <<'EOF' /usr/local/bin/onit-install-ml
+#!/bin/bash
+# Install heavy ML packages into the persistent data volume on demand.
+# Usage: onit-install-ml [preset ...]
+#   torch    torch / torchvision / torchaudio (auto-detects CUDA vs CPU)
+#   hf       transformers / datasets / accelerate / tokenizers / safetensors / hf_transfer
+#   extras   einops / phonemizer
+#   all      torch + hf + extras (default)
+set -euo pipefail
+presets=("${@:-all}")
+have_cuda() {
+    [ -e /proc/driver/nvidia/version ] || compgen -G "/dev/nvidia*" >/dev/null 2>&1
+}
+install_torch() {
+    if have_cuda; then
+        echo ">>> Installing torch (CUDA 12.6 wheels)"
+        pip install --index-url https://download.pytorch.org/whl/cu126 \
+                    --extra-index-url https://pypi.org/simple \
+                    torch torchvision torchaudio
+    else
+        echo ">>> Installing torch (CPU wheels — no GPU attached)"
+        pip install --index-url https://download.pytorch.org/whl/cpu \
+                    --extra-index-url https://pypi.org/simple \
+                    torch torchvision torchaudio
+    fi
+}
+install_hf() {
+    echo ">>> Installing Hugging Face stack"
+    pip install transformers datasets accelerate \
+                safetensors tokenizers hf_transfer
+}
+install_extras() {
+    echo ">>> Installing einops, phonemizer"
+    pip install einops phonemizer
+}
+for p in "${presets[@]}"; do
+    case "$p" in
+        torch)  install_torch ;;
+        hf)     install_hf ;;
+        extras) install_extras ;;
+        all)    install_torch; install_hf; install_extras ;;
+        *)      echo "Unknown preset: $p. Valid: torch, hf, extras, all" >&2; exit 1 ;;
+    esac
+done
+echo
+echo ">>> Done. Installed into $PIP_TARGET (persists across container runs)."
+EOF
 RUN chmod 0755 /usr/local/bin/onit-install-ml
 
 WORKDIR /home/onit/app
