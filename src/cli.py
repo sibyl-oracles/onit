@@ -578,6 +578,20 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='Extra bind mount for the container, e.g. '
                              '"/host/path:/container/path:ro". Repeatable. Use "ro" '
                              'unless write access is required.')
+    parser.add_argument('--container-memory', type=str, default=None,
+                        dest='container_memory',
+                        help='Hard memory cap for the container (e.g. "16g", "32g"). '
+                             'Default: unlimited — matches the host, suitable for long '
+                             'ML runs. Set this to isolate a wayward job.')
+    parser.add_argument('--container-shm-size', type=str, default=None,
+                        dest='container_shm_size',
+                        help='/dev/shm size inside the container (default: 4g). '
+                             'Raise for PyTorch DataLoader with many workers; Docker '
+                             'default of 64m causes "Bus error".')
+    parser.add_argument('--container-tmp-size', type=str, default=None,
+                        dest='container_tmp_size',
+                        help='/tmp tmpfs size inside the container (default: 16g). '
+                             'Backed by host RAM; counts toward --container-memory.')
 
     # Web UI options
     parser.add_argument('--web', action='store_true', default=None,
@@ -884,6 +898,9 @@ def main():
             strip_launcher_args(sys.argv[1:]),
             gpus=getattr(args, 'container_gpus', None),
             mounts=getattr(args, 'container_mount', None) or [],
+            memory=getattr(args, 'container_memory', None),
+            shm_size=getattr(args, 'container_shm_size', None),
+            tmp_size=getattr(args, 'container_tmp_size', None),
         ))
 
     # Setup wizard

@@ -1,23 +1,23 @@
 """
 Container launcher for ``onit --container``.
 
-Runs the entire OnIt process inside a hardened Docker container so that a
-breach in the agent, LLM output parser, or any MCP tool cannot reach the host
-filesystem or credentials. The launcher:
+Runs the entire OnIt process inside a Docker container so the agent's
+filesystem / apt / pip operations stay off the host. The launcher:
 
   * Verifies Docker is available.
   * Builds the ``onit:local`` image on first run.
-  * Invokes ``docker run`` (interactive terminal) or ``docker compose up``
-    (web / a2a / gateway) with hardening flags: read-only rootfs, all caps
-    dropped, ``no-new-privileges``, pid/memory limits, no host mounts beyond
-    the user's config file (read-only) and a named data volume.
+  * Invokes ``docker run`` with resource limits tuned for ML workloads
+    (generous /tmp + /dev/shm, high pids-limit, unlimited memory by default)
+    and no host mounts beyond the user's config/secrets (read-only), a named
+    data volume, and any ``--container-mount`` bind mounts.
   * Bridges host secrets (OS keychain / ``~/.onit/secrets.yaml``) into the
     container as ephemeral env vars, never baked into the image.
   * Proxies signals so Ctrl-C tears the container down cleanly.
 
-This is complementary to ``--sandbox``: ``--sandbox`` delegates individual
-tool calls to an external MCP sandbox provider, while ``--container`` wraps
-the whole OnIt process.
+The container keeps namespace / filesystem isolation from the host but does
+not drop capabilities or mount the rootfs read-only — the agent can run
+``sudo apt install`` and build native extensions. For per-tool sandboxing
+(stricter isolation with no sudo), use ``--sandbox`` instead.
 """
 
 from __future__ import annotations
@@ -44,8 +44,18 @@ _SECRET_ENV_KEYS = [
 
 IMAGE_TAG = "onit:local"
 DATA_VOLUME = "onit-data"
-DEFAULT_MEMORY = "2g"
-DEFAULT_PIDS_LIMIT = "256"
+# Default resource caps tuned for long-running ML experiments. Memory is left
+# unset (host's default = unlimited) so training jobs aren't OOM-killed at 2g.
+# Users can clamp with --container-memory. pids-limit is high enough for
+# DataLoader workers + torch.distributed + subprocess tools.
+DEFAULT_MEMORY: str | None = None
+DEFAULT_PIDS_LIMIT = "4096"
+# /dev/shm for PyTorch DataLoader IPC — Docker's 64m default causes "Bus error"
+# with num_workers>0. 4g covers typical training workloads.
+DEFAULT_SHM_SIZE = "4g"
+# /tmp tmpfs — wheel extraction, scratch files, dataset shuffling. Backed by
+# host RAM, so keep reasonable but bigger than the old 4g.
+DEFAULT_TMP_SIZE = "16g"
 
 # CUDA runtime version baked into the image (see Dockerfile FROM line). Used to
 # warn the user when the host driver's supported CUDA version is older — host
@@ -184,24 +194,30 @@ def _host_user_args(bind_mount_count: int) -> list[str]:
     return ["--user", f"{uid}:{gid}"]
 
 
-def _hardening_args() -> list[str]:
-    return [
-        "--read-only",
-        # /tmp is the agent's main scratch area. Wheel extraction for large
-        # packages (torch, etc) can easily exceed 1GB; keep this generous.
-        # Backed by host RAM — pip downloads go via PIP_CACHE_DIR on the data
-        # volume (see Dockerfile) so they don't compete for tmpfs.
-        "--tmpfs", "/tmp:rw,size=4g",
-        "--tmpfs", "/home/onit/.cache:rw,size=2g",
-        # Session transcripts default to ~/.onit/sessions — carve out a writable
-        # tmpfs so the read-only rootfs doesn't block session creation. Sessions
-        # written here are ephemeral; persistent history lives in the data volume.
-        "--tmpfs", "/home/onit/.onit/sessions:rw,size=64m",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-        "--pids-limit", DEFAULT_PIDS_LIMIT,
-        "--memory", DEFAULT_MEMORY,
-    ]
+def _runtime_args(
+    *, memory: str | None = None, shm_size: str | None = None,
+    tmp_size: str | None = None,
+) -> list[str]:
+    """Runtime flags for the container.
+
+    We keep namespace/filesystem isolation (separate rootfs, pid/net
+    namespaces) but relax the defense-in-depth flags (--read-only, cap-drop,
+    no-new-privileges) so the agent can run `sudo apt install` and ordinary
+    build tooling without fighting the sandbox. For stricter isolation use
+    ``--sandbox`` (tool-level MCP sandbox) instead.
+    """
+    args: list[str] = []
+    # Session transcripts tmpfs — small, still useful since sessions are
+    # ephemeral within a container run and persistent ones live on the volume.
+    args.extend(["--tmpfs", "/home/onit/.onit/sessions:rw,size=64m"])
+    # /tmp sized generously for ML scratch (wheel extraction, dataset shards).
+    args.extend(["--tmpfs", f"/tmp:rw,size={tmp_size or DEFAULT_TMP_SIZE}"])
+    # /dev/shm for DataLoader workers — default 64m breaks multiprocess IPC.
+    args.extend(["--shm-size", shm_size or DEFAULT_SHM_SIZE])
+    args.extend(["--pids-limit", DEFAULT_PIDS_LIMIT])
+    if memory or DEFAULT_MEMORY:
+        args.extend(["--memory", memory or DEFAULT_MEMORY])
+    return args
 
 
 def _detect_gpu_support(docker: str) -> tuple[bool, str | None]:
@@ -338,6 +354,9 @@ def _run_docker(
     *,
     gpus: str | None = None,
     mounts: list[str] | None = None,
+    memory: str | None = None,
+    shm_size: str | None = None,
+    tmp_size: str | None = None,
 ) -> int:
     """Run a single containerised onit process via ``docker run``."""
     cmd = [docker, "run", "--rm"]
@@ -348,7 +367,7 @@ def _run_docker(
     else:
         cmd.append("-i")
 
-    cmd.extend(_hardening_args())
+    cmd.extend(_runtime_args(memory=memory, shm_size=shm_size, tmp_size=tmp_size))
     if gpus:
         available, warn = _detect_gpu_support(docker)
         if not available:
@@ -405,6 +424,9 @@ def build_run_command(
     secret_env: list[str] | None = None,
     gpus: str | None = None,
     mounts: list[str] | None = None,
+    memory: str | None = None,
+    shm_size: str | None = None,
+    tmp_size: str | None = None,
 ) -> list[str]:
     """Assemble the ``docker run`` argv. Extracted for unit testing."""
     cmd = [docker, "run", "--rm"]
@@ -412,7 +434,7 @@ def build_run_command(
         cmd.append("-it")
     else:
         cmd.append("-i")
-    cmd.extend(_hardening_args())
+    cmd.extend(_runtime_args(memory=memory, shm_size=shm_size, tmp_size=tmp_size))
     if gpus:
         cmd.extend(["--gpus", gpus])
     cmd.extend(_port_args(forwarded_args))
@@ -436,22 +458,33 @@ def run(
     *,
     gpus: str | None = None,
     mounts: list[str] | None = None,
+    memory: str | None = None,
+    shm_size: str | None = None,
+    tmp_size: str | None = None,
 ) -> int:
     """Entry point called from ``cli.main`` when ``--container`` is passed.
 
     ``forwarded_args`` are the remaining argv tokens (launcher-only flags
     already stripped) that should be handed to the in-container ``onit``
     entrypoint. ``gpus`` and ``mounts`` are launcher-only pass-throughs.
+    ``memory``/``shm_size``/``tmp_size`` override the resource defaults.
     """
     docker = _check_docker()
     if not _image_exists(docker):
         _build_image(docker)
     _ensure_data_volume_writable(docker)
-    return _run_docker(docker, forwarded_args, gpus=gpus, mounts=mounts)
+    return _run_docker(
+        docker, forwarded_args,
+        gpus=gpus, mounts=mounts,
+        memory=memory, shm_size=shm_size, tmp_size=tmp_size,
+    )
 
 
 # Launcher-only flags consumed by the launcher, NOT forwarded into the container.
-_LAUNCHER_VALUE_FLAGS = frozenset({"--container-gpus", "--container-mount"})
+_LAUNCHER_VALUE_FLAGS = frozenset({
+    "--container-gpus", "--container-mount",
+    "--container-memory", "--container-shm-size", "--container-tmp-size",
+})
 
 
 def strip_launcher_args(argv: list[str]) -> list[str]:

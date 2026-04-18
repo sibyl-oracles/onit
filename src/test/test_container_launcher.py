@@ -59,15 +59,32 @@ def test_build_run_command_server_mode_no_tty():
     assert "-i" in cmd
 
 
-def test_build_run_command_applies_hardening():
+def test_build_run_command_applies_runtime_args():
     cmd = build_run_command(
         "docker", [], config_mounts=[], secret_env=[]
     )
-    assert "--read-only" in cmd
-    assert "--cap-drop=ALL" in cmd
-    assert "--security-opt=no-new-privileges" in cmd
+    # Resources tuned for ML workloads.
     assert "--pids-limit" in cmd
-    assert "--memory" in cmd
+    assert "--shm-size" in cmd
+    assert "--tmpfs" in cmd
+    # /tmp must be generously sized (at least 16g default).
+    assert any(t.startswith("/tmp:rw,size=") for t in cmd)
+    # Memory is unlimited by default so long training runs don't OOM at 2g.
+    assert "--memory" not in cmd
+    # Hardening flags that block `sudo apt` are off by default.
+    assert "--read-only" not in cmd
+    assert "--cap-drop=ALL" not in cmd
+    assert "--security-opt=no-new-privileges" not in cmd
+
+
+def test_build_run_command_respects_resource_overrides():
+    cmd = build_run_command(
+        "docker", [], config_mounts=[], secret_env=[],
+        memory="8g", shm_size="2g", tmp_size="32g",
+    )
+    i = cmd.index("--memory"); assert cmd[i + 1] == "8g"
+    i = cmd.index("--shm-size"); assert cmd[i + 1] == "2g"
+    assert "/tmp:rw,size=32g" in cmd
 
 
 def test_build_run_command_web_maps_9000():

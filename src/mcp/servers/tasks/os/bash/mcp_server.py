@@ -555,7 +555,9 @@ Args:
 - cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
 - timeout: Max seconds to wait (default: 300)
 
-Returns JSON: {stdout, stderr, returncode, cwd, command, status}"""
+Returns JSON: {stdout, stderr, returncode, cwd, command, status}
+
+Container mode (ONIT_CONTAINER=1): heavy ML packages (torch, transformers, accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, phonemizer) are NOT preinstalled. Install them on demand with `onit-install-ml [torch|hf|extras|all]` — it picks CUDA vs CPU wheels automatically and writes to the persistent data volume, so the install happens once per host."""
 )
 async def bash(
     command: Optional[str] = None,

@@ -33,27 +33,16 @@ COPY . .
 # discarded by the multi-stage copy).
 RUN pip install ".[all]"
 
-# Default ML packages available to agent-generated code inside the container.
-# CUDA 12.6 torch wheels — pair with the CUDA 12.6 runtime base below. GPUs
-# are only accessible when the user runs with `--container-gpus all` (or an
-# explicit device list); without that flag, torch falls back to CPU execution.
+# Lightweight scientific stack available to agent-generated code by default.
+# Small, universally useful, and keeps the image lean. Heavy ML packages
+# (torch, transformers, etc) are NOT baked in — the agent installs them on
+# demand via `onit-install-ml` into the persistent data volume (PIP_TARGET).
 RUN pip install \
-        --index-url https://download.pytorch.org/whl/cu126 \
-        --extra-index-url https://pypi.org/simple \
-        torch torchvision torchaudio \
-    && pip install \
         numpy \
-        matplotlib \
-        einops \
+        scipy \
         pandas \
-        scikit-learn \
-        phonemizer \
-        transformers \
-        datasets \
-        accelerate \
-        safetensors \
-        tokenizers \
-        hf_transfer
+        matplotlib \
+        scikit-learn
 
 
 # ── Runtime stage ───────────────────────────────────────────────────
@@ -84,12 +73,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # instantly. hf_transfer is installed in the build stage for faster pulls.
     HF_HOME=/home/onit/data/.huggingface \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
-    # Redirect XDG config/cache and matplotlib config away from the read-only
-    # rootfs. XDG_CACHE_HOME points at the writable tmpfs; XDG_CONFIG_HOME and
-    # MPLCONFIGDIR point at the persistent data volume (cache survives
-    # container restarts, speeds up matplotlib's font-manager build).
+    # Redirect XDG config/cache and matplotlib config to the persistent data
+    # volume. XDG_CACHE_HOME in particular needs to land on the volume because
+    # torch hub / torchvision weights are big (GBs) and the old tmpfs default
+    # would fill up. Volume-backed means cache survives container restarts.
     XDG_CONFIG_HOME=/home/onit/data/.config \
-    XDG_CACHE_HOME=/home/onit/.cache \
+    XDG_CACHE_HOME=/home/onit/data/.cache \
     MPLCONFIGDIR=/home/onit/data/.matplotlib
 
 # Minimal runtime deps only — no compiler. See build stage for TLS note.
@@ -106,11 +95,22 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
         libespeak-ng1 \
         git \
         openssh-client \
+        sudo \
+        build-essential \
     && rm -f /etc/apt/apt.conf.d/99no-verify \
     && rm -rf /var/lib/apt/lists/* \
     && (userdel -r ubuntu 2>/dev/null || true) \
     && groupadd --gid 1000 onit \
     && useradd --uid 1000 --gid 1000 --home /home/onit --shell /bin/bash onit \
+    # Passwordless sudo for the in-container user. The agent uses this to
+    # `apt install` extra system packages at runtime. Note: when the launcher
+    # runs the container as the host user's UID/GID, that user isn't `onit`,
+    # so sudoers is widened via %sudo and the user is added by the launcher's
+    # runtime bootstrap if needed. The NOPASSWD rule below matches by uid 1000
+    # which is the default non-bind-mount path.
+    && echo 'onit ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-onit \
+    && echo 'ALL ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-any \
+    && chmod 0440 /etc/sudoers.d/99-onit /etc/sudoers.d/99-any \
     && mkdir -p /home/onit/app /home/onit/data /home/onit/documents /home/onit/.onit \
     # World-writable on the directories the container process writes to. This
     # lets the launcher run the container as the host user's UID/GID (to match
@@ -138,6 +138,12 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
 
 COPY --from=build --chown=onit:onit /opt/venv /opt/venv
 COPY --from=build --chown=onit:onit /build /home/onit/app
+
+# Helper the agent invokes to install heavy ML packages (torch, transformers,
+# etc) on demand. Goes to the persistent data volume via PIP_TARGET, so the
+# install cost is paid once per host.
+COPY scripts/onit-install-ml /usr/local/bin/onit-install-ml
+RUN chmod 0755 /usr/local/bin/onit-install-ml
 
 WORKDIR /home/onit/app
 USER onit

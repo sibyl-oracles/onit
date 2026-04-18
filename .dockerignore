@@ -13,4 +13,5 @@ htmlcov/
 .env
 .env.*
 scripts/
+!scripts/onit-install-ml
 *.log
