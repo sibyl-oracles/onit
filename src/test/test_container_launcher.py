@@ -174,6 +174,88 @@ def test_build_run_command_includes_secret_env():
     assert cmd[i + 1] == "OPENROUTER_API_KEY=xyz"
 
 
+def test_build_run_command_auto_mounts_data_path(tmp_path):
+    data = tmp_path / "tts"
+    cmd = build_run_command(
+        "docker",
+        ["--data-path", str(data)],
+        config_mounts=[],
+        secret_env=[],
+    )
+    mount = f"{data}:{data}:rw"
+    assert mount in cmd
+    assert cmd[cmd.index(mount) - 1] == "-v"
+    assert data.is_dir()  # host dir is created so docker doesn't make it root-owned
+
+
+def test_build_run_command_auto_mounts_data_path_equals_form(tmp_path):
+    data = tmp_path / "tts"
+    cmd = build_run_command(
+        "docker",
+        [f"--data-path={data}"],
+        config_mounts=[],
+        secret_env=[],
+    )
+    assert f"{data}:{data}:rw" in cmd
+
+
+def test_build_run_command_auto_mounts_documents_path_ro(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    cmd = build_run_command(
+        "docker",
+        ["--documents-path", str(docs)],
+        config_mounts=[],
+        secret_env=[],
+    )
+    assert f"{docs}:{docs}:ro" in cmd
+
+
+def test_build_run_command_no_auto_mount_without_path_flags():
+    cmd = build_run_command(
+        "docker", ["--web"], config_mounts=[], secret_env=[]
+    )
+    # No extra :rw / :ro host mounts beyond the named data volume.
+    assert not any(a.endswith(":rw") for a in cmd)
+    assert not any(a.endswith(":ro") for a in cmd)
+
+
+def test_build_run_command_sets_host_user_on_bind_mount(tmp_path, monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("--user only applied on Linux")
+    monkeypatch.setattr("os.getuid", lambda: 1234)
+    monkeypatch.setattr("os.getgid", lambda: 5678)
+    cmd = build_run_command(
+        "docker",
+        ["--data-path", str(tmp_path / "d")],
+        config_mounts=[],
+        secret_env=[],
+    )
+    i = cmd.index("--user")
+    assert cmd[i + 1] == "1234:5678"
+
+
+def test_build_run_command_no_host_user_without_bind_mounts(monkeypatch):
+    monkeypatch.setattr("os.getuid", lambda: 1234, raising=False)
+    monkeypatch.setattr("os.getgid", lambda: 5678, raising=False)
+    cmd = build_run_command(
+        "docker", ["--web"], config_mounts=[], secret_env=[]
+    )
+    assert "--user" not in cmd
+
+
+def test_build_run_command_host_user_on_explicit_mount(monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("--user only applied on Linux")
+    monkeypatch.setattr("os.getuid", lambda: 1234)
+    monkeypatch.setattr("os.getgid", lambda: 5678)
+    cmd = build_run_command(
+        "docker", [], config_mounts=[], secret_env=[],
+        mounts=["/a:/b:rw"],
+    )
+    assert "--user" in cmd
+
+
 def test_check_docker_missing_exits(monkeypatch):
     from container_launcher import _check_docker
 

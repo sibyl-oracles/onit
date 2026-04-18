@@ -93,6 +93,32 @@ def _image_exists(docker: str) -> bool:
     return result.returncode == 0
 
 
+def _ensure_data_volume_writable(docker: str) -> None:
+    """Make the named data volume writable by any UID.
+
+    The Dockerfile chmods ``/home/onit/data`` to 0777 so a freshly-created
+    volume inherits those perms. But a volume that predates that change keeps
+    its original 0755 + onit:onit ownership — and when the launcher later
+    runs the container as the host user's UID/GID (to match bind mounts), the
+    container can't write to that volume. Fix it idempotently by chmodding
+    from a one-shot root container; no-op if the volume doesn't exist yet.
+    """
+    inspect = subprocess.run(
+        [docker, "volume", "inspect", DATA_VOLUME],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if inspect.returncode != 0:
+        return  # volume will be created with 0777 from the image
+    # -R because the volume already contains subdirs like .pip-cache and
+    # .huggingface created (on first use) as onit:onit 0755 — those would
+    # still reject writes from other UIDs even after we fix the top level.
+    subprocess.run(
+        [docker, "run", "--rm", "-u", "0:0", "--entrypoint", "chmod",
+         "-v", f"{DATA_VOLUME}:/v", IMAGE_TAG, "-R", "0777", "/v"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def _build_image(docker: str) -> None:
     root = _repo_root()
     if not (root / "Dockerfile").is_file():
@@ -136,6 +162,26 @@ def _config_mount_args() -> list[str]:
     if secrets.is_file():
         mounts.extend(["-v", f"{secrets}:/home/onit/.onit/secrets.yaml:ro"])
     return mounts
+
+
+def _host_user_args(bind_mount_count: int) -> list[str]:
+    """Return ``--user HOST_UID:HOST_GID`` when bind mounts are in play.
+
+    Bind-mounted host paths keep their host ownership inside the container.
+    The Dockerfile's baked ``onit`` user (UID/GID 1000) doesn't match most
+    hosts, so without this the in-container process can't read or write the
+    mount. We only apply this on Linux; Docker Desktop (macOS/Windows) runs
+    inside a VM that handles UID translation automatically.
+    """
+    if bind_mount_count <= 0:
+        return []
+    if sys.platform != "linux":
+        return []
+    try:
+        uid, gid = os.getuid(), os.getgid()
+    except AttributeError:
+        return []
+    return ["--user", f"{uid}:{gid}"]
 
 
 def _hardening_args() -> list[str]:
@@ -203,6 +249,46 @@ def _detect_gpu_support(docker: str) -> tuple[bool, str | None]:
             )
             return (True, warn)
     return (True, None)
+
+
+def _extract_flag_value(args: list[str], flag: str) -> str | None:
+    """Return the string value following ``flag`` in ``args``, or ``None``.
+
+    Accepts both ``--flag VALUE`` and ``--flag=VALUE`` forms.
+    """
+    prefix = f"{flag}="
+    for i, tok in enumerate(args):
+        if tok == flag and i + 1 < len(args):
+            return args[i + 1]
+        if tok.startswith(prefix):
+            return tok.split("=", 1)[1]
+    return None
+
+
+def _auto_path_mounts(forwarded_args: list[str]) -> list[str]:
+    """Bind-mount host paths referenced by forwarded path flags.
+
+    The container has a read-only rootfs, so a ``--data-path /home/user/tts``
+    passed through to the in-container onit would fail to create its target
+    directory. Detect absolute host paths on these flags and mount them at
+    the same path inside the container so the in-container process can use
+    them unchanged.
+    """
+    mounts: list[str] = []
+    # data_path is written to (session state, tool output) — rw.
+    data_path = _extract_flag_value(forwarded_args, "--data-path")
+    if data_path:
+        expanded = os.path.abspath(os.path.expanduser(data_path))
+        if expanded.startswith("/"):
+            os.makedirs(expanded, exist_ok=True)
+            mounts.extend(["-v", f"{expanded}:{expanded}:rw"])
+    # documents_path is read-only (search corpus).
+    docs_path = _extract_flag_value(forwarded_args, "--documents-path")
+    if docs_path:
+        expanded = os.path.abspath(os.path.expanduser(docs_path))
+        if expanded.startswith("/"):
+            mounts.extend(["-v", f"{expanded}:{expanded}:ro"])
+    return mounts
 
 
 def _extract_port(args: list[str], flag: str, default: int) -> int:
@@ -282,8 +368,13 @@ def _run_docker(
     # that write relative paths don't hit the read-only rootfs.
     cmd.extend(["--workdir", "/home/onit/data"])
     cmd.extend(_config_mount_args())
+    auto_mounts = _auto_path_mounts(forwarded_args)
+    cmd.extend(auto_mounts)
     for m in mounts or []:
         cmd.extend(["-v", m])
+    # Match host UID/GID so bind-mounted directories are writable from inside.
+    total_bind_mounts = (len(auto_mounts) // 2) + len(mounts or [])
+    cmd.extend(_host_user_args(total_bind_mounts))
     cmd.extend(_collect_secret_env())
     cmd.append(IMAGE_TAG)
     cmd.extend(forwarded_args)
@@ -328,8 +419,12 @@ def build_run_command(
     cmd.extend(["-v", f"{DATA_VOLUME}:/home/onit/data"])
     cmd.extend(["--workdir", "/home/onit/data"])
     cmd.extend(config_mounts if config_mounts is not None else _config_mount_args())
+    auto_mounts = _auto_path_mounts(forwarded_args)
+    cmd.extend(auto_mounts)
     for m in mounts or []:
         cmd.extend(["-v", m])
+    total_bind_mounts = (len(auto_mounts) // 2) + len(mounts or [])
+    cmd.extend(_host_user_args(total_bind_mounts))
     cmd.extend(secret_env if secret_env is not None else _collect_secret_env())
     cmd.append(IMAGE_TAG)
     cmd.extend(forwarded_args)
@@ -351,6 +446,7 @@ def run(
     docker = _check_docker()
     if not _image_exists(docker):
         _build_image(docker)
+    _ensure_data_volume_writable(docker)
     return _run_docker(docker, forwarded_args, gpus=gpus, mounts=mounts)
 
 
