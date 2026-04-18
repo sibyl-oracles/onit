@@ -221,13 +221,25 @@ install_torch() {
                 torch torchvision torchaudio
 }
 
+# Ensure torch is present before installing packages that depend on it.
+# Without this, pip resolves torch from pypi (ignoring the CUDA-matched index)
+# and lands a wheel whose bundled CUDA runtime doesn't match the host driver,
+# producing "NVIDIA driver too old" at import time.
+ensure_torch() {
+    if ! python3 -c "import torch" >/dev/null 2>&1; then
+        install_torch
+    fi
+}
+
 install_hf() {
+    ensure_torch
     echo ">>> Installing Hugging Face stack"
     pip install transformers datasets accelerate \
                 safetensors tokenizers hf_transfer
 }
 
 install_extras() {
+    ensure_torch
     echo ">>> Installing einops, phonemizer"
     pip install einops phonemizer
 }
