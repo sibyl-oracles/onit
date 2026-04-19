@@ -231,17 +231,42 @@ ensure_torch() {
     fi
 }
 
+# Emit a pip constraints file pinning torch to its currently-installed version.
+# Passed via --constraint to dependent installs so pip can't silently upgrade
+# torch off the pypi index and clobber our CUDA-matched wheel. Rationale:
+# pypi's "torch==2.x" outranks the CUDA-indexed "2.x+cuNNN" under PEP 440
+# (local-version tags rank lower), so a bare `pip install transformers` will
+# pull the pypi wheel and break driver compatibility.
+torch_constraints_file() {
+    local f
+    f=$(mktemp)
+    python3 - <<'PY' > "$f"
+for name in ("torch", "torchvision", "torchaudio"):
+    try:
+        mod = __import__(name)
+        print(f"{name}=={mod.__version__}")
+    except ImportError:
+        pass
+PY
+    echo "$f"
+}
+
 install_hf() {
     ensure_torch
     echo ">>> Installing Hugging Face stack"
-    pip install transformers datasets accelerate \
+    local c; c=$(torch_constraints_file)
+    pip install --constraint "$c" \
+                transformers datasets accelerate \
                 safetensors tokenizers hf_transfer
+    rm -f "$c"
 }
 
 install_extras() {
     ensure_torch
     echo ">>> Installing einops, phonemizer"
-    pip install einops phonemizer
+    local c; c=$(torch_constraints_file)
+    pip install --constraint "$c" einops phonemizer
+    rm -f "$c"
 }
 
 for p in "${presets[@]}"; do
