@@ -800,35 +800,38 @@ async def _ollama_process_streaming_response(
     tool_calls = None
     ui_streaming = False
 
-    async for chunk in chat_completion:
-        if not safety_queue.empty():
-            if ui_streaming and chat_ui:
-                chat_ui.stream_end()
-            return None
+    try:
+        async for chunk in chat_completion:
+            if not safety_queue.empty():
+                if ui_streaming and chat_ui:
+                    chat_ui.stream_end()
+                return None
 
-        # Tool calls arrive complete in the final chunk
-        if chunk.message.tool_calls:
-            tool_calls = chunk.message.tool_calls
+            # Tool calls arrive complete in the final chunk
+            if chunk.message.tool_calls:
+                tool_calls = chunk.message.tool_calls
 
-        # Thinking tokens (Ollama native think support)
-        thinking_tok = getattr(chunk.message, "thinking", None)
-        if thinking_tok and not tool_calls:
-            full_thinking += thinking_tok
-            if chat_ui:
-                if not ui_streaming:
-                    chat_ui.stream_start()
-                    ui_streaming = True
-                chat_ui.stream_think_token(thinking_tok)
+            # Thinking tokens (Ollama native think support)
+            thinking_tok = getattr(chunk.message, "thinking", None)
+            if thinking_tok and not tool_calls:
+                full_thinking += thinking_tok
+                if chat_ui:
+                    if not ui_streaming:
+                        chat_ui.stream_start()
+                        ui_streaming = True
+                    chat_ui.stream_think_token(thinking_tok)
 
-        # Content tokens
-        content_tok = chunk.message.content
-        if content_tok and not tool_calls:
-            full_content += content_tok
-            if chat_ui:
-                if not ui_streaming:
-                    chat_ui.stream_start()
-                    ui_streaming = True
-                chat_ui.stream_token(content_tok)
+            # Content tokens
+            content_tok = chunk.message.content
+            if content_tok and not tool_calls:
+                full_content += content_tok
+                if chat_ui:
+                    if not ui_streaming:
+                        chat_ui.stream_start()
+                        ui_streaming = True
+                    chat_ui.stream_token(content_tok)
+    except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
+        logging.getLogger(__name__).warning("Ollama stream interrupted: %s", e)
 
     if ui_streaming and chat_ui:
         chat_ui.stream_end()
