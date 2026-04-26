@@ -9,10 +9,19 @@ x-onit-hardening: &onit-hardening
     - /tmp:size=64m
     - /home/onit/.cache:size=64m
 
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
 services:
   onit-mcp:
     build: .
-    <<: *onit-hardening
+    <<: [*onit-hardening, *gpu]
     ports:
       - "18200:18200"
       - "18201:18201"
@@ -24,7 +33,7 @@ services:
 
   onit-web:
     build: .
-    <<: *onit-hardening
+    <<: [*onit-hardening, *gpu]
     ports:
       - "9000:9000"
     env_file: .env
@@ -36,7 +45,7 @@ services:
 
   onit-a2a:
     build: .
-    <<: *onit-hardening
+    <<: [*onit-hardening, *gpu]
     ports:
       - "9001:9001"
     env_file: .env
@@ -48,7 +57,7 @@ services:
 
   onit-gateway:
     build: .
-    <<: *onit-hardening
+    <<: [*onit-hardening, *gpu]
     env_file: .env
     depends_on:
       - onit-mcp
@@ -58,7 +67,7 @@ services:
 
   onit-terminal:
     build: .
-    <<: *onit-hardening
+    <<: [*onit-hardening, *gpu]
     env_file: .env
     stdin_open: true
     tty: true
