@@ -49,8 +49,8 @@ from .model.serving.chat import chat
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.types import FilePart, FileWithBytes, Part, TaskState, TaskStatus, TaskStatusUpdateEvent
-from a2a.utils import new_agent_text_message
+from a2a.types import Part, TaskState, TaskStatus, TaskStatusUpdateEvent
+from a2a.helpers.proto_helpers import new_text_message
 
 AGENT_CURSOR = "OnIt"
 USER_CURSOR = "You"
@@ -278,17 +278,15 @@ class OnItA2AExecutor(AgentExecutor):
         session = self._get_session(context)
 
         # Extract inline file parts from the A2A message and save to session data folder
-        import base64
         image_paths = []
         file_paths = []
         for part in context.message.parts:
-            if isinstance(part.root, FilePart) and isinstance(part.root.file, FileWithBytes):
-                file_obj = part.root.file
-                safe_name = os.path.basename(file_obj.name or 'file')
+            if part.HasField('raw') and part.raw:
+                safe_name = os.path.basename(part.filename or 'file')
                 filepath = os.path.join(session["data_path"], safe_name)
                 with open(filepath, 'wb') as f:
-                    f.write(base64.b64decode(file_obj.bytes))
-                if file_obj.mime_type and file_obj.mime_type.startswith('image/'):
+                    f.write(part.raw)
+                if part.media_type and part.media_type.startswith('image/'):
                     image_paths.append(filepath)
                 else:
                     file_paths.append(filepath)
@@ -309,12 +307,11 @@ class OnItA2AExecutor(AgentExecutor):
         async def _a2a_stream_callback(_token, full_content):
             try:
                 event = TaskStatusUpdateEvent(
-                    taskId=_task_id,
-                    contextId=_context_id,
-                    final=False,
+                    task_id=_task_id,
+                    context_id=_context_id,
                     status=TaskStatus(
-                        state=TaskState.working,
-                        message=new_agent_text_message(full_content),
+                        state=TaskState.TASK_STATE_WORKING,
+                        message=new_text_message(full_content),
                     ),
                 )
                 await event_queue.enqueue_event(event)
@@ -352,21 +349,19 @@ class OnItA2AExecutor(AgentExecutor):
         if _footer_parts:
             result = f"{result}\n\n({' · '.join(_footer_parts)})"
 
-        message = new_agent_text_message(result)
+        message = new_text_message(result)
 
         # Attach codebase zip when code files were generated
         zip_path = zip_code_files(session["data_path"])
         if zip_path:
             with open(zip_path, "rb") as zf:
-                zip_b64 = base64.b64encode(zf.read()).decode("utf-8")
+                zip_bytes = zf.read()
             zip_name = os.path.basename(zip_path)
-            message.parts.append(Part(root=FilePart(
-                file=FileWithBytes(
-                    bytes=zip_b64,
-                    mimeType="application/zip",
-                    name=zip_name,
-                )
-            )))
+            message.parts.add(
+                raw=zip_bytes,
+                media_type="application/zip",
+                filename=zip_name,
+            )
 
         await event_queue.enqueue_event(message)
 
@@ -1023,11 +1018,11 @@ class OnIt(BaseModel):
     async def run_a2a(self) -> None:
         """Run OnIt as an A2A server, accepting tasks from other agents."""
         import uvicorn
-        from a2a.server.apps import A2AStarletteApplication
         from a2a.server.request_handlers import DefaultRequestHandler
         from a2a.server.tasks import InMemoryTaskStore
-        from a2a.server.events import InMemoryQueueManager
+        from a2a.server.routes import create_jsonrpc_routes, create_agent_card_routes
         from a2a.types import AgentCard, AgentCapabilities, AgentSkill
+        from starlette.applications import Starlette
 
         agent_card = AgentCard(
             name=self.a2a_name,
@@ -1049,10 +1044,10 @@ class OnIt(BaseModel):
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
             task_store=InMemoryTaskStore(),
-            queue_manager=InMemoryQueueManager(),
+            agent_card=agent_card,
         )
-        a2a_app = A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler)
-        starlette_app = a2a_app.build()
+        routes = create_agent_card_routes(agent_card) + create_jsonrpc_routes(request_handler, rpc_url='/')
+        starlette_app = Starlette(routes=routes)
 
         # Add file upload/download routes so MCP tools can send files
         # back through the A2A server instead of requiring a separate file server

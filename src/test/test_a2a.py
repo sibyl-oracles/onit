@@ -62,14 +62,14 @@ class TestAgentCard:
 
     @pytest.mark.asyncio
     async def test_agent_card_url_construction(self):
-        """Verify the agent card URL is properly formed."""
+        """Verify the agent card URL is properly formed (1.0.x path: agent-card.json)."""
         base_urls = [
             "http://localhost:5001",
             "http://localhost:5001/",
         ]
         for base in base_urls:
-            card_url = f"{base.rstrip('/')}/.well-known/agent.json"
-            assert card_url == "http://localhost:5001/.well-known/agent.json"
+            card_url = f"{base.rstrip('/')}/.well-known/agent-card.json"
+            assert card_url == "http://localhost:5001/.well-known/agent-card.json"
 
 
 # ── JSON-RPC message/send ─────────────────────────────────────────────────────
@@ -277,30 +277,31 @@ class TestSendWithSDK:
 
         mock_update = MagicMock()
 
-        async def mock_send_message(message):
+        async def mock_send_message(request):
             yield (mock_task, mock_update)
 
         mock_client = MagicMock()
         mock_client.send_message = mock_send_message
 
-        mock_connect = AsyncMock(return_value=mock_client)
+        mock_factory = MagicMock()
+        mock_factory.create_from_url = AsyncMock(return_value=mock_client)
 
         with patch.dict("sys.modules", {
             "a2a": MagicMock(),
-            "a2a.client": MagicMock(
-                ClientFactory=MagicMock(connect=mock_connect),
-                create_text_message_object=MagicMock(return_value="mock_message"),
-            ),
-            "a2a.types": MagicMock(Role=MagicMock(user="user")),
+            "a2a.client": MagicMock(ClientFactory=MagicMock(return_value=mock_factory)),
+            "a2a.helpers": MagicMock(),
+            "a2a.helpers.proto_helpers": MagicMock(new_text_message=MagicMock(return_value="mock_message")),
+            "a2a.types": MagicMock(Role=MagicMock(ROLE_USER="user")),
         }):
-            from a2a.client import ClientFactory, create_text_message_object
+            from a2a.client import ClientFactory
+            from a2a.helpers.proto_helpers import new_text_message
             from a2a.types import Role
 
-            client = await ClientFactory.connect("http://localhost:5001")
-            message = create_text_message_object(role=Role.user, content="test")
+            client = await ClientFactory().create_from_url("http://localhost:5001")
+            request = new_text_message("test", role=Role.ROLE_USER)
 
             results = []
-            async for event in client.send_message(message):
+            async for event in client.send_message(request):
                 if isinstance(event, tuple):
                     task, update = event
                     results.append(task)
@@ -311,59 +312,55 @@ class TestSendWithSDK:
 
     @pytest.mark.asyncio
     async def test_sdk_send_message_direct_response(self):
-        """Test SDK client receiving a direct Message response."""
-        mock_part_root = MagicMock()
-        mock_part_root.text = "Direct SDK answer"
-
+        """Test SDK client receiving a direct Message response (1.0.x flat Part)."""
         mock_part = MagicMock()
-        mock_part.root = mock_part_root
+        mock_part.text = "Direct SDK answer"
 
         mock_message = MagicMock()
         mock_message.parts = [mock_part]
 
-        async def mock_send_message(message):
+        async def mock_send_message(request):
             yield mock_message
 
         mock_client = MagicMock()
         mock_client.send_message = mock_send_message
 
-        mock_connect = AsyncMock(return_value=mock_client)
+        mock_factory = MagicMock()
+        mock_factory.create_from_url = AsyncMock(return_value=mock_client)
 
         with patch.dict("sys.modules", {
             "a2a": MagicMock(),
-            "a2a.client": MagicMock(
-                ClientFactory=MagicMock(connect=mock_connect),
-                create_text_message_object=MagicMock(return_value="mock_message"),
-            ),
-            "a2a.types": MagicMock(Role=MagicMock(user="user")),
+            "a2a.client": MagicMock(ClientFactory=MagicMock(return_value=mock_factory)),
+            "a2a.helpers": MagicMock(),
+            "a2a.helpers.proto_helpers": MagicMock(new_text_message=MagicMock(return_value="mock_message")),
+            "a2a.types": MagicMock(Role=MagicMock(ROLE_USER="user")),
         }):
-            from a2a.client import ClientFactory, create_text_message_object
+            from a2a.client import ClientFactory
+            from a2a.helpers.proto_helpers import new_text_message
             from a2a.types import Role
 
-            client = await ClientFactory.connect("http://localhost:5001")
-            message = create_text_message_object(role=Role.user, content="test")
+            client = await ClientFactory().create_from_url("http://localhost:5001")
+            request = new_text_message("test", role=Role.ROLE_USER)
 
             results = []
-            async for event in client.send_message(message):
+            async for event in client.send_message(request):
                 if not isinstance(event, tuple):
                     for part in event.parts:
-                        results.append(part.root.text)
+                        results.append(part.text)
 
             assert "Direct SDK answer" in results
 
     @pytest.mark.asyncio
     async def test_sdk_connection_error(self):
         """Test handling of connection errors from SDK client."""
-        mock_connect = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_factory = MagicMock()
+        mock_factory.create_from_url = AsyncMock(side_effect=Exception("Connection refused"))
 
         with patch.dict("sys.modules", {
             "a2a": MagicMock(),
-            "a2a.client": MagicMock(
-                ClientFactory=MagicMock(connect=mock_connect),
-            ),
-            "a2a.types": MagicMock(Role=MagicMock(user="user")),
+            "a2a.client": MagicMock(ClientFactory=MagicMock(return_value=mock_factory)),
         }):
             from a2a.client import ClientFactory
 
             with pytest.raises(Exception, match="Connection refused"):
-                await ClientFactory.connect("http://localhost:5001")
+                await ClientFactory().create_from_url("http://localhost:5001")
