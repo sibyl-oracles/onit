@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-Chat function supporting private vLLM and OpenRouter.ai models via OpenAI-compatible API.
+Chat function supporting private vLLM, OpenRouter.ai, and Ollama cloud models.
 Provider is auto-detected from the host URL.
 """
 
@@ -28,6 +28,13 @@ import uuid
 import httpx
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError
 from typing import List, Optional, Any
+
+try:
+    from ollama import AsyncClient as OllamaAsyncClient
+    OLLAMA_SDK_AVAILABLE = True
+except ImportError:
+    OllamaAsyncClient = None
+    OLLAMA_SDK_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +58,17 @@ def _log_to_ui_or_verbose(message: str, chat_ui, verbose: bool, level: str = "in
         print(message)
 
 
+def _is_ollama_host(host: str) -> bool:
+    """Return True when host points to an Ollama cloud endpoint."""
+    return "ollama.com" in host or "ollama.ai" in host
+
+
 def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     """Resolve the API key based on the host URL.
 
     For OpenRouter hosts, use host_key param or OPENROUTER_API_KEY env var
-    or OS keychain. For vLLM and other local hosts, default to "EMPTY".
+    or OS keychain. For Ollama cloud hosts, use OLLAMA_API_KEY env var or
+    keychain. For vLLM and other local hosts, default to "EMPTY".
     """
     if "openrouter.ai" in host:
         if host_key and host_key != "EMPTY":
@@ -76,7 +89,47 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
                 "  - OPENROUTER_API_KEY environment variable"
             )
         return key
+    if _is_ollama_host(host):
+        if host_key and host_key != "EMPTY":
+            return host_key
+        key = os.environ.get("OLLAMA_API_KEY", "")
+        if not key:
+            try:
+                from src.setup import get_secret
+                key = get_secret("ollama_api_key") or ""
+            except Exception:
+                pass
+        if not key:
+            raise ValueError(
+                "Ollama cloud requires an API key. Set it via:\n"
+                "  - onit setup (recommended)\n"
+                "  - serving.host_key in the config YAML\n"
+                "  - OLLAMA_API_KEY environment variable"
+            )
+        return key
     return host_key
+
+
+def _create_ollama_client(host: str, api_key: str, timeout):
+    """Create an OllamaAsyncClient configured for the given host and API key."""
+    if not OLLAMA_SDK_AVAILABLE:
+        raise ImportError("The 'ollama' package is required for Ollama cloud support.")
+    _timeout = None if (timeout is None or timeout < 0) else timeout
+    return OllamaAsyncClient(
+        host=host,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=_timeout,
+    )
+
+
+async def _ollama_resolve_model_id(client, host: str) -> str:
+    """Fetch the first available model from an Ollama endpoint via client.list()."""
+    response = await client.list()
+    if not response.models:
+        raise ValueError(f"No models available at {host}")
+    model_id = response.models[0].model
+    logger.info("Auto-detected Ollama model: %s from %s", model_id, host)
+    return model_id
 
 
 async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
@@ -609,6 +662,25 @@ def _build_messages(instruction: str, images_bytes: list[str],
     return messages
 
 
+def _adapt_ollama_tool_calls(tool_calls) -> list:
+    """Convert Ollama tool_calls (dict arguments) to OpenAI-compatible SimpleNamespace objects.
+
+    Ollama's function.arguments is a dict; _handle_structured_tool_calls expects a JSON string.
+    """
+    adapted = []
+    for tc in tool_calls:
+        adapted.append(
+            types.SimpleNamespace(
+                id=f"call_{uuid.uuid4().hex[:24]}",
+                function=types.SimpleNamespace(
+                    name=tc.function.name,
+                    arguments=json.dumps(dict(tc.function.arguments)),
+                ),
+            )
+        )
+    return adapted
+
+
 async def _process_streaming_response(
     chat_completion, safety_queue: asyncio.Queue,
     chat_ui, think: bool,
@@ -705,6 +777,63 @@ async def _process_streaming_response(
         chat_ui.stream_end()
 
     return full_content, full_reasoning, full_tool_calls, ui_streaming, usage
+
+
+async def _ollama_process_streaming_response(
+    chat_completion,
+    safety_queue: asyncio.Queue,
+    chat_ui,
+    think: bool,
+) -> tuple[str, str, list | None, bool] | None:
+    """Consume an Ollama streaming chat completion and return accumulated results.
+
+    Returns (full_content, full_thinking, tool_calls_or_None, ui_was_streaming)
+    or None if the safety queue fired mid-stream.
+
+    Ollama streaming differences from OpenAI:
+    - Chunks have .message.content (str|None), no .choices
+    - Tool calls arrive complete in the final chunk, not as deltas
+    - No .usage field in streaming chunks
+    """
+    full_content = ""
+    full_thinking = ""
+    tool_calls = None
+    ui_streaming = False
+
+    async for chunk in chat_completion:
+        if not safety_queue.empty():
+            if ui_streaming and chat_ui:
+                chat_ui.stream_end()
+            return None
+
+        # Tool calls arrive complete in the final chunk
+        if chunk.message.tool_calls:
+            tool_calls = chunk.message.tool_calls
+
+        # Thinking tokens (Ollama native think support)
+        thinking_tok = getattr(chunk.message, "thinking", None)
+        if thinking_tok and not tool_calls:
+            full_thinking += thinking_tok
+            if chat_ui:
+                if not ui_streaming:
+                    chat_ui.stream_start()
+                    ui_streaming = True
+                chat_ui.stream_think_token(thinking_tok)
+
+        # Content tokens
+        content_tok = chunk.message.content
+        if content_tok and not tool_calls:
+            full_content += content_tok
+            if chat_ui:
+                if not ui_streaming:
+                    chat_ui.stream_start()
+                    ui_streaming = True
+                chat_ui.stream_token(content_tok)
+
+    if ui_streaming and chat_ui:
+        chat_ui.stream_end()
+
+    return full_content, full_thinking, tool_calls, ui_streaming
 
 
 def _unify_streaming_result(
@@ -847,8 +976,9 @@ async def _handle_structured_tool_calls(
 
 
 async def _compact_context(
-    messages: list, client: AsyncOpenAI, model: str,
+    messages: list, client, model: str,
     max_tokens: int, chat_ui, verbose: bool,
+    is_ollama: bool = False,
 ) -> list:
     """Summarize the conversation and return a compacted messages list.
 
@@ -898,13 +1028,22 @@ async def _compact_context(
         + "\n".join(parts)
     )
     try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": compaction_prompt}],
-            max_tokens=min(2048, max_tokens),
-            stream=False,
-        )
-        summary = (resp.choices[0].message.content or "").strip()
+        if is_ollama:
+            resp = await client.chat(
+                model=model,
+                messages=[{"role": "user", "content": compaction_prompt}],
+                options={"num_predict": min(2048, max_tokens)},
+                stream=False,
+            )
+            summary = (resp.message.content or "").strip()
+        else:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": compaction_prompt}],
+                max_tokens=min(2048, max_tokens),
+                stream=False,
+            )
+            summary = (resp.choices[0].message.content or "").strip()
     except Exception as e:
         logger.warning("Context compaction failed: %s", e)
         return messages
@@ -969,14 +1108,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     api_key = _resolve_api_key(host, host_key)
     # Use explicit timeout if provided; -1 or None means no timeout (infinite wait).
     _client_timeout = None if (timeout is None or timeout < 0) else timeout
-    client = AsyncOpenAI(base_url=host, api_key=api_key, timeout=_client_timeout)
+    is_ollama = _is_ollama_host(host)
+    if is_ollama:
+        ollama_client = _create_ollama_client(host, api_key, timeout)
+        client = None
+    else:
+        client = AsyncOpenAI(base_url=host, api_key=api_key, timeout=_client_timeout)
+        ollama_client = None
 
     # Resolve model: use explicit name if provided, otherwise auto-detect.
     if not model:
         _MODEL_RETRIES = 3
         for _attempt in range(1, _MODEL_RETRIES + 1):
             try:
-                model = await _resolve_model_id(client, host)
+                if is_ollama:
+                    model = await _ollama_resolve_model_id(ollama_client, host)
+                else:
+                    model = await _resolve_model_id(client, host)
                 break
             except Exception as e:
                 _err = f"Failed to resolve model from {host} (attempt {_attempt}/{_MODEL_RETRIES}): {e}"
@@ -992,8 +1140,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     _log_to_ui_or_verbose(f"Starting chat with model: {model}", chat_ui, verbose, level="info")
 
     # Query vLLM for the model's maximum context window if not provided in config.
-    # Skip for OpenRouter (doesn't expose max_model_len).
-    if max_context_tokens is None and "openrouter.ai" not in host:
+    # Skip for OpenRouter and Ollama (neither exposes max_model_len via vLLM endpoint).
+    if max_context_tokens is None and "openrouter.ai" not in host and not is_ollama:
         max_context_tokens = await _get_model_max_context(host, api_key, model)
         if max_context_tokens:
             _log_to_ui_or_verbose(
@@ -1025,7 +1173,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"Context at {usage_pct:.0%} ({_last_prompt_tokens:,}/{max_context_tokens:,} tokens). Compacting...",
                     chat_ui, verbose, level="warning",
                 )
-                messages = await _compact_context(messages, client, model, max_tokens, chat_ui, verbose)
+                messages = await _compact_context(
+                    messages,
+                    ollama_client if is_ollama else client,
+                    model, max_tokens, chat_ui, verbose,
+                    is_ollama=is_ollama,
+                )
                 _last_prompt_tokens = 0
 
         _strip_old_images(messages)
@@ -1043,44 +1196,89 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
                     return None
 
-                completion_kwargs = dict(
-                    model=model,
-                    messages=messages,
-                    stream=stream,
-                    tool_choice="auto",          # never "required"
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_tokens=max_tokens,             # cap to prevent runaway generation
-                    extra_body={
-                        "top_k": top_k,          # vLLM extension, important for Qwen3
-                        "min_p": min_p,
-                        "presence_penalty": presence_penalty,
-                        "repetition_penalty": repetition_penalty,
-                        "chat_template_kwargs": {"enable_thinking": think},  # if not using CoT
-                    },
-                )
-                if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
-                    completion_kwargs["tools"] = tools
-                if stream:
-                    completion_kwargs["stream_options"] = {"include_usage": True}
-
-                chat_completion = await client.chat.completions.create(**completion_kwargs)
+                if is_ollama:
+                    ollama_kwargs = dict(
+                        model=model,
+                        messages=messages,
+                        stream=stream,
+                        options={
+                            "temperature": temperature,
+                            "top_p": top_p,
+                            "top_k": top_k,
+                            "num_predict": max_tokens,
+                            "presence_penalty": presence_penalty,
+                            "repeat_penalty": repetition_penalty,
+                        },
+                    )
+                    if think:
+                        ollama_kwargs["think"] = True
+                    if tools:
+                        ollama_kwargs["tools"] = tools
+                    chat_completion = await ollama_client.chat(**ollama_kwargs)
+                else:
+                    completion_kwargs = dict(
+                        model=model,
+                        messages=messages,
+                        stream=stream,
+                        tool_choice="auto",          # never "required"
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=max_tokens,             # cap to prevent runaway generation
+                        extra_body={
+                            "top_k": top_k,          # vLLM extension, important for Qwen3
+                            "min_p": min_p,
+                            "presence_penalty": presence_penalty,
+                            "repetition_penalty": repetition_penalty,
+                            "chat_template_kwargs": {"enable_thinking": think},  # if not using CoT
+                        },
+                    )
+                    if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
+                        completion_kwargs["tools"] = tools
+                    if stream:
+                        completion_kwargs["stream_options"] = {"include_usage": True}
+                    chat_completion = await client.chat.completions.create(**completion_kwargs)
 
                 # Streaming path: iterate chunks, populate shared variables
                 if stream:
-                    stream_result = await _process_streaming_response(
-                        chat_completion, safety_queue, chat_ui, think,
-                    )
-                    if stream_result is None:
-                        return None
-                    _full_content, _full_reasoning, _full_tool_calls, _, _stream_usage = stream_result
-                    if _stream_usage is not None:
-                        _last_prompt_tokens = _stream_usage.prompt_tokens
-                        if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
-                            chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-                    _content, _tool_calls, _message_for_history = _unify_streaming_result(
-                        _full_content, _full_tool_calls,
-                    )
+                    if is_ollama:
+                        stream_result = await _ollama_process_streaming_response(
+                            chat_completion, safety_queue, chat_ui, think,
+                        )
+                        if stream_result is None:
+                            return None
+                        _full_content, _full_reasoning, _ollama_tcs, _ = stream_result
+                        if _ollama_tcs:
+                            _tool_calls = _adapt_ollama_tool_calls(_ollama_tcs)
+                            # arguments must be dict in the history message (Ollama validates this)
+                            _message_for_history = {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {"id": tc.id, "type": "function",
+                                     "function": {"name": tc.function.name,
+                                                  "arguments": json.loads(tc.function.arguments)}}
+                                    for tc in _tool_calls
+                                ],
+                            }
+                            _content = None
+                        else:
+                            _tool_calls = None
+                            _content = _full_content
+                            _message_for_history = {"role": "assistant", "content": _full_content}
+                    else:
+                        stream_result = await _process_streaming_response(
+                            chat_completion, safety_queue, chat_ui, think,
+                        )
+                        if stream_result is None:
+                            return None
+                        _full_content, _full_reasoning, _full_tool_calls, _, _stream_usage = stream_result
+                        if _stream_usage is not None:
+                            _last_prompt_tokens = _stream_usage.prompt_tokens
+                            if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                                chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        _content, _tool_calls, _message_for_history = _unify_streaming_result(
+                            _full_content, _full_tool_calls,
+                        )
 
                 await asyncio.sleep(0.1)
                 if not safety_queue.empty():
@@ -1113,15 +1311,40 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         # Non-streaming: extract from response object into unified variables
         if not stream:
-            _msg = chat_completion.choices[0].message
-            _content = _msg.content
-            _tool_calls = _msg.tool_calls if _msg.tool_calls else None
-            _message_for_history = _msg
-            # Capture token usage for context tracking
-            if chat_completion.usage is not None:
-                _last_prompt_tokens = chat_completion.usage.prompt_tokens
-                if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
-                    chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+            if is_ollama:
+                _msg = chat_completion.message
+                _content = _msg.content
+                _raw_tcs = getattr(_msg, "tool_calls", None)
+                _tool_calls = _adapt_ollama_tool_calls(_raw_tcs) if _raw_tcs else None
+                if _tool_calls:
+                    _message_for_history = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {"id": tc.id, "type": "function",
+                             "function": {"name": tc.function.name,
+                                          "arguments": json.loads(tc.function.arguments)}}
+                            for tc in _tool_calls
+                        ],
+                    }
+                else:
+                    _message_for_history = {"role": "assistant", "content": _content}
+                # Ollama exposes prompt_eval_count for token tracking
+                _pec = getattr(chat_completion, "prompt_eval_count", None)
+                if _pec is not None:
+                    _last_prompt_tokens = _pec
+                    if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                        chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+            else:
+                _msg = chat_completion.choices[0].message
+                _content = _msg.content
+                _tool_calls = _msg.tool_calls if _msg.tool_calls else None
+                _message_for_history = _msg
+                # Capture token usage for context tracking
+                if chat_completion.usage is not None:
+                    _last_prompt_tokens = chat_completion.usage.prompt_tokens
+                    if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                        chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:

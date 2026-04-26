@@ -2,7 +2,7 @@
 
 *OnIt* — the AI is working on the given task and will deliver the results shortly.
 
-OnIt is an intelligent agent for task automation and assistance. It connects to any OpenAI-compatible LLM (private [vLLM](https://github.com/vllm-project/vllm) servers or [OpenRouter.ai](https://openrouter.ai/)) and uses [MCP](https://modelcontextprotocol.io/) tools for web search, file operations, and more. It also supports the [A2A](https://a2a-protocol.org/) protocol for multi-agent communication.
+OnIt is an intelligent agent for task automation and assistance. It connects to private [vLLM](https://github.com/vllm-project/vllm) servers, [OpenRouter.ai](https://openrouter.ai/), and [Ollama cloud](https://ollama.com) for hosted models — and uses [MCP](https://modelcontextprotocol.io/) tools for web search, file operations, and more. It also supports the [A2A](https://a2a-protocol.org/) protocol for multi-agent communication.
 
 ## Getting Started
 
@@ -407,6 +407,37 @@ onit --host https://openrouter.ai/api/v1
 
 Browse available models at [openrouter.ai/models](https://openrouter.ai/models).
 
+### Ollama Cloud
+
+[Ollama cloud](https://ollama.com) hosts models that are accessed via the native [Ollama Python SDK](https://github.com/ollama/ollama-python). Store your API key once:
+
+```bash
+onit setup   # enter your Ollama API key when prompted
+```
+
+Or set the environment variable:
+
+```bash
+export OLLAMA_API_KEY=your-ollama-key
+```
+
+Then point OnIt at the Ollama cloud host and specify a model:
+
+```bash
+onit --host https://api.ollama.com --model gemma4:31b-cloud
+onit --host https://api.ollama.com --model llama4:scout-cloud
+```
+
+Model is auto-detected from the endpoint if `--model` is omitted. You can also set the host permanently in your config:
+
+```yaml
+serving:
+  host: https://api.ollama.com
+  model: gemma4:31b-cloud
+```
+
+> **Note:** Ollama cloud uses the `ollama_api_key` keyring entry (the same key used for the web search tool). Generation parameters (`temperature`, `top_p`, `top_k`, `--think`) are fully supported.
+
 ## Architecture
 
 ```
@@ -432,7 +463,7 @@ Browse available models at [openrouter.ai/models](https://openrouter.ai/models).
 │                 │                                   │
 │                 ▼                                   │
 │         chat() ◄──── Tool Registry                  │
-│    (vLLM / OpenRouter)  (auto-discovered)           │
+│  (vLLM / OpenRouter / Ollama cloud) (auto-discovered) │
 └─────────────────────────────────────────────────────┘
                          │
             ┌────────────┼────────────┐
@@ -464,7 +495,7 @@ onit/
 │   │   └── tools.py            # Tool registry and schema utilities
 │   ├── model/
 │   │   └── serving/
-│   │       └── chat.py         # LLM interface (vLLM + OpenRouter)
+│   │       └── chat.py         # LLM interface (vLLM, OpenRouter, Ollama cloud)
 │   ├── ui/
 │   │   ├── text.py             # Rich terminal UI
 │   │   ├── web.py              # Gradio web UI

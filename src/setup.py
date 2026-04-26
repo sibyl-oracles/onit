@@ -32,7 +32,7 @@ _SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.yaml")
 SECRETS = [
     ("host_key",               "LLM API key (for OpenRouter or remote vLLM)",
      "OPENROUTER_API_KEY"),
-    ("ollama_api_key",         "Ollama API key (enables web search tool)",
+    ("ollama_api_key",         "Ollama API key (enables web search and cloud LLM access)",
      "OLLAMA_API_KEY"),
     ("openweathermap_api_key", "OpenWeatherMap API key (enables weather tool)",
      "OPENWEATHERMAP_API_KEY"),
