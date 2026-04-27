@@ -132,13 +132,23 @@ def _in_container() -> bool:
     return os.environ.get("ONIT_CONTAINER") == "1"
 
 
+def _in_unrestricted() -> bool:
+    """True when the user passed ``--unrestricted`` (sets ONIT_UNRESTRICTED=1).
+
+    Relaxes all filesystem path restrictions so the agent can read/write
+    anywhere on the host and install packages freely.  Only truly catastrophic
+    operations (disk wipe, kernel modules, system shutdown) remain blocked.
+    """
+    return os.environ.get("ONIT_UNRESTRICTED") == "1"
+
+
 def _validate_write_path(file_path: str) -> str:
     """Validate that the write path is within DATA_PATH. Returns absolute path.
     Relative paths are resolved against DATA_PATH (not CWD)."""
     if not os.path.isabs(os.path.expanduser(file_path)):
         file_path = os.path.join(DATA_PATH, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
-    if _in_container():
+    if _in_container() or _in_unrestricted():
         return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
@@ -156,7 +166,7 @@ def _validate_read_path(file_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(file_path)):
         file_path = os.path.join(DATA_PATH, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
-    if _in_container():
+    if _in_container() or _in_unrestricted():
         return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
@@ -183,7 +193,7 @@ def _validate_dir_path(dir_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(dir_path)):
         dir_path = os.path.join(DATA_PATH, dir_path)
     abs_path = os.path.realpath(os.path.expanduser(dir_path))
-    if _in_container():
+    if _in_container() or _in_unrestricted():
         return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
@@ -225,7 +235,7 @@ def _get_sandbox_env() -> dict:
     # Use the real HOME so credential helpers (osxkeychain, gh, git config) work.
     real_home = os.path.expanduser("~")
 
-    if _in_container():
+    if _in_container() or _in_unrestricted():
         env = dict(os.environ)
         env.update({
             "TERM": "dumb",
@@ -300,6 +310,35 @@ def _get_sandbox_env() -> dict:
     _SANDBOX_ENV = env
     return dict(env)
 
+
+# Patterns blocked even in unrestricted/container modes (catastrophic ops only).
+_ALWAYS_BLOCKED_PATTERNS = [
+    # Destructive filesystem operations
+    (re.compile(r'\brm\s+(-[^\s]*\s+)*-r\s*f?\s+/', re.IGNORECASE), "rm -rf on root"),
+    (re.compile(r'\brm\s+(-[^\s]*\s+)*-f\s*r?\s+/', re.IGNORECASE), "rm -rf on root"),
+    (re.compile(r'\brm\s+(-[^\s]*\s+)*/\s*$', re.IGNORECASE), "rm on root"),
+    (re.compile(r'>\s*/dev/(sd|hd|nvme|vd|xvd)', re.IGNORECASE), "write to block device"),
+    (re.compile(r'>\s*/dev/mem', re.IGNORECASE), "write to /dev/mem"),
+    (re.compile(r'\bdd\b.*\bof\s*=\s*/dev/', re.IGNORECASE), "dd to device"),
+    (re.compile(r'\bmkfs\b', re.IGNORECASE), "mkfs command"),
+    (re.compile(r'\bfdisk\b', re.IGNORECASE), "fdisk command"),
+    (re.compile(r'\bparted\b', re.IGNORECASE), "parted command"),
+    # System shutdown / state
+    (re.compile(r'\bshutdown\b', re.IGNORECASE), "shutdown command"),
+    (re.compile(r'\breboot\b', re.IGNORECASE), "reboot command"),
+    (re.compile(r'\bpoweroff\b', re.IGNORECASE), "poweroff command"),
+    (re.compile(r'\bhalt\b', re.IGNORECASE), "halt command"),
+    (re.compile(r'\binit\s+[06]\b', re.IGNORECASE), "init runlevel change"),
+    # Kernel / boot
+    (re.compile(r'\binsmod\b', re.IGNORECASE), "insmod command"),
+    (re.compile(r'\brmmod\b', re.IGNORECASE), "rmmod command"),
+    (re.compile(r'\bmodprobe\b', re.IGNORECASE), "modprobe command"),
+    (re.compile(r'\bsysctl\s+-w\b', re.IGNORECASE), "sysctl write"),
+    # Windows-specific catastrophic ops
+    (re.compile(r'\bformat\b\s+[A-Za-z]:', re.IGNORECASE), "format drive"),
+    (re.compile(r'\bdiskpart\b', re.IGNORECASE), "diskpart command"),
+    (re.compile(r'\bbcdedit\b', re.IGNORECASE), "bcdedit command"),
+]
 
 # Blocked command patterns for the bash tool
 _BLOCKED_PATTERNS = [
@@ -478,6 +517,14 @@ def _validate_bash_command(command: str) -> str | None:
     """Check command for blocked patterns and path references outside allowed dirs.
     Returns error message or None if command is allowed."""
     check_command = _strip_heredoc_bodies(command)
+
+    # In unrestricted mode only the catastrophic always-blocked ops are checked;
+    # path restrictions and package-manager/env blocks are lifted.
+    if _in_unrestricted():
+        for pattern, description in _ALWAYS_BLOCKED_PATTERNS:
+            if pattern.search(check_command):
+                return f"Command blocked: {description} is not allowed."
+        return None
 
     # Check blocked command patterns
     for pattern, description in _BLOCKED_PATTERNS:
@@ -905,11 +952,11 @@ def _normalize_to_data_path(path: str) -> str:
     """Resolve path into DATA_PATH: relative paths are placed under it; absolute
     paths outside it are re-rooted under it (strips leading separator).
 
-    In container mode we don't re-root — the container is the boundary, so
-    absolute paths (e.g. ``/data`` from --container-mount) are honored as-is.
+    In container/unrestricted mode we don't re-root — absolute paths are
+    honored as-is so the agent can reach any visible location.
     """
     expanded = os.path.expanduser(path)
-    if _in_container():
+    if _in_container() or _in_unrestricted():
         if os.path.isabs(expanded):
             return os.path.abspath(expanded)
         return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), expanded)

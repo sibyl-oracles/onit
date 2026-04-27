@@ -565,6 +565,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='Disable streaming of tokens (streaming is enabled by default for text, web and a2a modes).')
     parser.add_argument('--sandbox', action='store_true', default=None,
                         help='Enable sandbox mode for code execution in isolated containers.')
+    parser.add_argument('--unrestricted', action='store_true', default=False,
+                        help='Run OnIt with unrestricted host filesystem access. '
+                             'The agent can read/write any path, use any working directory, '
+                             'and install packages freely (pip, apt, brew, etc.). '
+                             'Use only in trusted, isolated environments.')
     parser.add_argument('--container', action='store_true', default=False,
                         help='Run the entire OnIt process inside a hardened Docker container '
                              'so a breach cannot reach the host OS.')
@@ -990,6 +995,13 @@ def main():
             sys.exit(1)
         config_data['resume_session_id'] = sid
         print(f"Resuming session: {sid[:8]}...")
+
+    # --unrestricted: relax filesystem and command restrictions on the host.
+    # Must be set before MCP servers are spawned so child processes inherit it.
+    if getattr(args, 'unrestricted', False):
+        os.environ['ONIT_UNRESTRICTED'] = '1'
+        print("Warning: running in unrestricted mode — agent has full host filesystem access.",
+              file=sys.stderr)
 
     _setup_servers(config_data)
     _dispatch_mode(config_data)
