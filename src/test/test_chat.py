@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.chat import _resolve_api_key, _parse_tool_call_from_content, chat
+from model.serving.chat import _resolve_api_key, _parse_tool_call_from_content, _is_planning_response, chat
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
@@ -278,3 +278,142 @@ class TestChat:
         system_content = messages[0]["content"]
         assert "custom bot" in system_content
         assert "OnIt" not in system_content
+
+
+# ── _is_planning_response ───────────────────────────────────────────────────
+
+class TestIsPlanningResponse:
+    def test_let_me_prefix(self):
+        assert _is_planning_response("Let me create the files and push them.")
+
+    def test_i_will_prefix(self):
+        assert _is_planning_response("I will now implement the solution.")
+
+    def test_ill_prefix(self):
+        assert _is_planning_response("I'll start by reading the repository.")
+
+    def test_mid_sentence_planning(self):
+        assert _is_planning_response("Analysis done. Let me now write the output.")
+
+    def test_non_planning_returns_false(self):
+        assert not _is_planning_response("Here is the result you asked for.")
+
+    def test_final_answer_returns_false(self):
+        assert not _is_planning_response("The answer is 42.")
+
+    def test_empty_returns_false(self):
+        assert not _is_planning_response("")
+
+    def test_think_tags_stripped(self):
+        content = "<think>reasoning</think>Let me proceed with the plan."
+        assert _is_planning_response(content)
+
+
+# ── planning-continuation integration ──────────────────────────────────────
+
+def _mock_completion_with_finish(content="Hello!", tool_calls=None, finish_reason="stop"):
+    """Build a mock chat completion with an explicit finish_reason."""
+    message = MagicMock()
+    message.content = content
+    message.tool_calls = tool_calls
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = finish_reason
+    completion = MagicMock()
+    completion.choices = [choice]
+    completion.usage.prompt_tokens = 0
+    return completion
+
+
+class TestPlanningContinuation:
+    @pytest.mark.asyncio
+    async def test_planning_response_triggers_continuation(self):
+        """When tools are available and the model returns planning text, a continuation
+        prompt is injected and the model is called again."""
+        planning_text = "Let me create the files and push them to the repo."
+        final_answer = "All done!"
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(content=planning_text),
+            _mock_completion_with_finish(content=final_answer),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "write_file"}}]
+        mock_registry.tools = {"write_file"}
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Create a README and push it.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result == final_answer
+        # Must have called the API twice: once for planning, once for the continuation
+        assert mock_client.chat.completions.create.call_count == 2
+        second_call_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        # Continuation message should include explicit JSON tool-call format
+        second_call_messages = second_call_kwargs["messages"]
+        roles_and_contents = [(m["role"], m.get("content", "")) for m in second_call_messages
+                              if isinstance(m, dict)]
+        assert any("json" in c.lower() or "{" in c for _, c in roles_and_contents)
+        # tool_choice should be "required" to force tool use (OpenAI/vLLM path)
+        assert second_call_kwargs.get("tool_choice") == "required"
+        # max_tokens should be capped to limit time waste on a stuck model
+        assert second_call_kwargs.get("max_tokens") == 64
+
+    @pytest.mark.asyncio
+    async def test_planning_without_tools_no_continuation(self):
+        """Without tools, planning text is returned as-is (no continuation)."""
+        planning_text = "Let me think about the answer."
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(content=planning_text)
+        )
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Think about it.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result == planning_text
+        assert mock_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_planning_exhausted_returns_error(self):
+        """When MAX_PLANNING_CONTINUATIONS are exhausted, a clear error is returned."""
+        planning_text = "Let me write the comprehensive analysis."
+
+        mock_client = AsyncMock()
+        # Every call returns planning text — model never calls a tool
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(content=planning_text)
+        )
+
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Write a review.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            )
+
+        # Should return an error message, not the planning text
+        assert result is not None
+        assert "unable to complete" in result.lower() or "tool" in result.lower()
+        # Should have tried the initial call + MAX_PLANNING_CONTINUATIONS continuations
+        assert mock_client.chat.completions.create.call_count == 3  # 1 initial + 2 continuations

@@ -684,19 +684,21 @@ def _adapt_ollama_tool_calls(tool_calls) -> list:
 async def _process_streaming_response(
     chat_completion, safety_queue: asyncio.Queue,
     chat_ui, think: bool,
-) -> tuple[str, str, dict, bool, Any] | None:
+) -> tuple[str, str, dict, bool, Any, str | None] | None:
     """Consume a streaming chat completion and return accumulated results.
 
-    Returns (full_content, full_reasoning, full_tool_calls_dict, ui_was_streaming, usage)
+    Returns (full_content, full_reasoning, full_tool_calls_dict, ui_was_streaming, usage, finish_reason)
     or None if the safety queue fired mid-stream.  ``usage`` is the
     CompletionUsage object from the final chunk (requires stream_options
-    include_usage=True), or None if not available.
+    include_usage=True), or None if not available.  ``finish_reason`` is the
+    stop reason from the final chunk (e.g. "stop", "tool_calls", "length").
     """
     full_content = ""
     full_reasoning = ""
     full_tool_calls: dict = {}  # index -> {id, name, arguments}
     ui_streaming = False
     usage = None
+    finish_reason: str | None = None
     in_think = think  # True if we expect <think>...</think> in delta.content
 
     async for chunk in chat_completion:
@@ -709,7 +711,11 @@ async def _process_streaming_response(
             usage = chunk.usage
         if not chunk.choices:
             continue
-        delta = chunk.choices[0].delta
+        choice = chunk.choices[0]
+        # Capture finish_reason when it arrives (usually the final chunk)
+        if choice.finish_reason is not None:
+            finish_reason = choice.finish_reason
+        delta = choice.delta
 
         # Accumulate structured tool-call deltas
         if delta.tool_calls:
@@ -776,7 +782,7 @@ async def _process_streaming_response(
     if ui_streaming and chat_ui:
         chat_ui.stream_end()
 
-    return full_content, full_reasoning, full_tool_calls, ui_streaming, usage
+    return full_content, full_reasoning, full_tool_calls, ui_streaming, usage, finish_reason
 
 
 async def _ollama_process_streaming_response(
@@ -862,6 +868,96 @@ def _unify_streaming_result(
         }
         return None, tool_call_objs, message_for_history
     return full_content, None, {"role": "assistant", "content": full_content}
+
+
+_PLANNING_PREFIXES = (
+    "let me ", "i will ", "i'll ", "i'm going to ", "i am going to ",
+    "now i'll ", "now i will ", "first i'll ", "first i will ",
+    "next i'll ", "next i will ", "then i'll ", "then i will ",
+)
+
+def _is_planning_response(content: str) -> bool:
+    """Return True if the response looks like a plan announcement rather than a final answer.
+
+    Detects patterns like "Let me create X and then push it" where the model
+    states its intent in future tense but stops before executing tool calls.
+    Only returns True when tools are available (caller's responsibility).
+    """
+    if not content:
+        return False
+    # Strip thinking blocks
+    text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
+    lower = text.lower()
+    # Check sentence-start planning phrases
+    if any(lower.startswith(p) for p in _PLANNING_PREFIXES):
+        return True
+    # Check mid-sentence planning phrases (after ". " or "\n")
+    for p in _PLANNING_PREFIXES:
+        if f". {p}" in lower or f"\n{p}" in lower:
+            return True
+    return False
+
+
+def _build_tool_example(tool_registry) -> str:
+    """Return a filled-in JSON tool-call example using the first available tool's schema.
+
+    Prefers common action tools (bash, write_file, create_file) so the example
+    contains real argument names rather than an empty ``{}``.
+    """
+    preferred = ("bash", "shell", "run_command", "write_file", "create_file",
+                 "read_file", "list_files")
+    tool_names = sorted(tool_registry.tools) if tool_registry else []
+    # Pick preferred first, otherwise fall back to first alphabetically
+    chosen = next((t for t in preferred if t in tool_registry.tools), None) if tool_registry else None
+    if not chosen:
+        chosen = tool_names[0] if tool_names else "bash"
+
+    # Try to pull argument names from the schema
+    sample_args: dict = {}
+    try:
+        items = tool_registry.get_tool_items()
+        for item in items:
+            fn = item.get("function", {}) if isinstance(item, dict) else {}
+            if fn.get("name") == chosen:
+                props = fn.get("parameters", {}).get("properties", {})
+                for param_name, param_schema in list(props.items())[:2]:
+                    ptype = param_schema.get("type", "string")
+                    sample_args[param_name] = "<string>" if ptype == "string" else f"<{ptype}>"
+                break
+    except Exception:
+        pass
+
+    # Fall back to a sensible shape for well-known tools
+    if not sample_args:
+        _defaults = {
+            "bash": {"command": "<shell command>"},
+            "shell": {"command": "<shell command>"},
+            "run_command": {"command": "<shell command>"},
+            "write_file": {"path": "<file path>", "content": "<file content>"},
+            "create_file": {"path": "<file path>", "content": "<file content>"},
+            "read_file": {"path": "<file path>"},
+        }
+        sample_args = _defaults.get(chosen, {"input": "<value>"})
+
+    return json.dumps({"name": chosen, "arguments": sample_args})
+
+
+def _build_planning_continuation_prompt(tool_registry, continuation_count: int) -> str:
+    """Build a direct continuation prompt for models stuck in planning mode.
+
+    Includes a concrete JSON tool-call example (with real argument shapes) so the
+    raw-tool-call parser can catch it even on models that don't honour
+    tool_choice=required (e.g. Ollama).
+    """
+    tool_names = sorted(tool_registry.tools)[:6] if tool_registry else []
+    example = _build_tool_example(tool_registry)
+    tools_list = ", ".join(tool_names)
+    header = "OUTPUT ONLY JSON — no prose, no explanation." if continuation_count > 1 else "Do not write any text."
+    return (
+        f"{header} Call a tool RIGHT NOW using this exact JSON format:\n"
+        f"{example}\n"
+        f"Available tools: {tools_list}"
+    )
 
 
 def _extract_final_response(content: str, full_reasoning: str, full_content: str) -> str:
@@ -1154,10 +1250,17 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_CHAT_ITERATIONS = -1
     MAX_REPEATED_TOOL_CALLS = 30
     MAX_API_RETRIES = 3
+    MAX_PLANNING_CONTINUATIONS = 2
+    # JSON tool call is 15-30 tokens.  Cap at 64 so a 0.1 tok/s model wastes
+    # at most ~10 min per continuation attempt instead of 85+ min.
+    CONTINUATION_MAX_TOKENS = 64
     CONTEXT_COMPACT_THRESHOLD = 0.90
     iteration_count = 0
+    planning_continuation_count = 0
     tool_call_history: list = []  # list of (name, args_json) tuples
     _last_prompt_tokens: int = 0  # prompt token count from the last API response
+    _force_tool_call: bool = False  # set after a planning-only response to require tool use
+    _active_max_tokens: int = max_tokens  # may be reduced for continuation calls
 
     while True:
         iteration_count += 1
@@ -1189,6 +1292,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # Track streaming state across the try block for the final-response path
         _full_content = ""
         _full_reasoning = ""
+        _finish_reason: str | None = None
 
         # Retry loop for transient API errors — preserves accumulated messages/tool history
         api_error = None
@@ -1208,7 +1312,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             "temperature": temperature,
                             "top_p": top_p,
                             "top_k": top_k,
-                            "num_predict": max_tokens,
+                            "num_predict": _active_max_tokens,
                             "presence_penalty": presence_penalty,
                             "repeat_penalty": repetition_penalty,
                         },
@@ -1217,16 +1321,22 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         ollama_kwargs["think"] = True
                     if tools:
                         ollama_kwargs["tools"] = tools
+                    # Force JSON output when the model keeps generating planning prose
+                    # instead of tool calls.  Ollama's format="json" ensures the response
+                    # is parseable by _parse_tool_call_from_content even though Ollama has
+                    # no tool_choice="required" equivalent.
+                    if _force_tool_call and tools:
+                        ollama_kwargs["format"] = "json"
                     chat_completion = await ollama_client.chat(**ollama_kwargs)
                 else:
                     completion_kwargs = dict(
                         model=model,
                         messages=messages,
                         stream=stream,
-                        tool_choice="auto",          # never "required"
+                        tool_choice="required" if (_force_tool_call and tools) else "auto",
                         temperature=temperature,
                         top_p=top_p,
-                        max_tokens=max_tokens,             # cap to prevent runaway generation
+                        max_tokens=_active_max_tokens,
                         extra_body={
                             "top_k": top_k,          # vLLM extension, important for Qwen3
                             "min_p": min_p,
@@ -1274,11 +1384,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         )
                         if stream_result is None:
                             return None
-                        _full_content, _full_reasoning, _full_tool_calls, _, _stream_usage = stream_result
+                        _full_content, _full_reasoning, _full_tool_calls, _, _stream_usage, _finish_reason = stream_result
                         if _stream_usage is not None:
                             _last_prompt_tokens = _stream_usage.prompt_tokens
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        if _finish_reason == "length":
+                            _log_to_ui_or_verbose(
+                                "Model response truncated (finish_reason=length). "
+                                "Consider increasing max_tokens.",
+                                chat_ui, verbose, level="warning",
+                            )
+                        elif _finish_reason == "tool_calls" and not _full_tool_calls:
+                            _log_to_ui_or_verbose(
+                                f"Model signaled finish_reason=tool_calls but no tool calls received "
+                                f"(model={model}). Checking content for raw tool calls.",
+                                chat_ui, verbose, level="warning",
+                            )
                         _content, _tool_calls, _message_for_history = _unify_streaming_result(
                             _full_content, _full_tool_calls,
                         )
@@ -1319,6 +1441,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _content = _msg.content
                 _raw_tcs = getattr(_msg, "tool_calls", None)
                 _tool_calls = _adapt_ollama_tool_calls(_raw_tcs) if _raw_tcs else None
+                _finish_reason = getattr(chat_completion, "done_reason", None)
                 if _tool_calls:
                     _message_for_history = {
                         "role": "assistant",
@@ -1339,10 +1462,25 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                         chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
             else:
-                _msg = chat_completion.choices[0].message
+                _choice = chat_completion.choices[0]
+                _msg = _choice.message
                 _content = _msg.content
                 _tool_calls = _msg.tool_calls if _msg.tool_calls else None
+                _finish_reason = _choice.finish_reason
                 _message_for_history = _msg
+                # Warn on unexpected finish reasons
+                if _finish_reason == "length":
+                    _log_to_ui_or_verbose(
+                        "Model response truncated (finish_reason=length). "
+                        "Consider increasing max_tokens.",
+                        chat_ui, verbose, level="warning",
+                    )
+                elif _finish_reason == "tool_calls" and not _tool_calls:
+                    _log_to_ui_or_verbose(
+                        f"Model signaled finish_reason=tool_calls but no tool calls received "
+                        f"(model={model}). Checking content for raw tool calls.",
+                        chat_ui, verbose, level="warning",
+                    )
                 # Capture token usage for context tracking
                 if chat_completion.usage is not None:
                     _last_prompt_tokens = chat_completion.usage.prompt_tokens
@@ -1362,9 +1500,54 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             if should_continue:
                 continue
 
+            # Detect planning responses: the model announced intent ("Let me create X")
+            # but stopped without calling any tools.  Inject a concrete JSON-format
+            # continuation prompt and cap tokens to limit time waste on stuck models.
+            if (tools and tool_registry
+                    and _is_planning_response(_content)
+                    and planning_continuation_count < MAX_PLANNING_CONTINUATIONS):
+                planning_continuation_count += 1
+                _force_tool_call = True
+                _active_max_tokens = CONTINUATION_MAX_TOKENS
+                _log_to_ui_or_verbose(
+                    f"Model announced a plan without calling tools (continuation "
+                    f"{planning_continuation_count}/{MAX_PLANNING_CONTINUATIONS}, "
+                    f"capping tokens={CONTINUATION_MAX_TOKENS}).",
+                    chat_ui, verbose, level="info",
+                )
+                continuation_prompt = _build_planning_continuation_prompt(
+                    tool_registry, planning_continuation_count
+                )
+                messages.append({"role": "assistant", "content": _content})
+                messages.append({"role": "user", "content": continuation_prompt})
+                continue
+
+            # Continuations exhausted — model cannot call tools
+            if (tools and tool_registry
+                    and _is_planning_response(_content)
+                    and planning_continuation_count >= MAX_PLANNING_CONTINUATIONS):
+                _log_to_ui_or_verbose(
+                    f"Model ({model}) failed to call tools after "
+                    f"{MAX_PLANNING_CONTINUATIONS} continuation attempts. "
+                    "It may not support agentic tool use.",
+                    chat_ui, verbose, level="warning",
+                )
+                return (
+                    f"This model ({model}) was unable to complete the task — it repeatedly "
+                    f"described a plan but did not call any tools after "
+                    f"{MAX_PLANNING_CONTINUATIONS} attempts. "
+                    "Try a model with stronger tool-calling support "
+                    "(e.g. qwen3, mistral-nemo, llama3.1, deepseek-r1)."
+                )
+
+            _force_tool_call = False
+            _active_max_tokens = max_tokens
             return _extract_final_response(_content, _full_reasoning, _full_content)
 
-        # Structured tool calls: execute them and loop back
+        # Structured tool calls: execute them and loop back.
+        # Reset force/token flags — the model successfully called a tool.
+        _force_tool_call = False
+        _active_max_tokens = max_tokens
         bail = await _handle_structured_tool_calls(
             tool_calls, _message_for_history, tool_registry,
             timeout, data_path, chat_ui, verbose,
