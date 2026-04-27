@@ -241,6 +241,8 @@ class ChatUI:
 
     def add_tool_call(self, name: str, arguments: dict) -> None:
         """Add a tool invocation message inline in the chat history."""
+        if not self.show_logs:
+            return
         self.messages.append(Message(
             role="tool_call",
             content=json.dumps(arguments),
@@ -250,6 +252,8 @@ class ChatUI:
 
     def add_tool_result(self, name: str, result: str, truncate: int = 300) -> None:
         """Add a tool result message inline in the chat history."""
+        if not self.show_logs:
+            return
         display = result if len(result) <= truncate else result[:truncate] + "…"
         self.messages.append(Message(
             role="tool_result",
@@ -375,9 +379,11 @@ class ChatUI:
                 if role == "user":
                     self._render_user_message(content, msg_content, msg_time)
                 elif role == "tool_call":
-                    self._render_tool_call_message(content, msg_name, msg_content, msg_time)
+                    if self.show_logs:
+                        self._render_tool_call_message(content, msg_name, msg_content, msg_time)
                 elif role == "tool_result":
-                    self._render_tool_result_message(content, msg_name, msg_content, msg_time)
+                    if self.show_logs:
+                        self._render_tool_result_message(content, msg_name, msg_content, msg_time)
                 else:
                     self._render_assistant_message(content, msg_content, msg_time, msg_elapsed)
 
@@ -625,6 +631,8 @@ class ChatUI:
 
     def show_tool_start(self, name: str, arguments: dict) -> None:
         """Print a bordered tool-call block inline (mirrors chat history style)."""
+        if not self.show_logs:
+            return
         self._erase_stream_cursor()  # pause blinking cursor during tool execution
         ts = self.format_timestamp()
         args_str = json.dumps(arguments, ensure_ascii=False)
@@ -647,6 +655,8 @@ class ChatUI:
 
     def tool_log(self, name: str, data: str, level: str = "info") -> None:
         """Display real-time log messages from MCP tools (e.g. sandbox output)."""
+        if not self.show_logs:
+            return
         style = "bright_yellow" if level == "warning" else "bright_red" if level == "error" else "bright_cyan"
         self.console.print(f"  [{name}] {data}", style=style)
 
@@ -656,6 +666,8 @@ class ChatUI:
 
     def show_tool_done(self, name: str, result: str, success: bool = True) -> None:
         """Print a bordered tool-result block inline (mirrors chat history style)."""
+        if not self.show_logs:
+            return
         ts = self.format_timestamp()
         display = result if len(result) <= 300 else result[:300] + "…"
         border_style = "bold green" if success else "bold red"
