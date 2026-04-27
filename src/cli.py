@@ -2,14 +2,18 @@
 CLI entry point for the OnIt agent.
 
 Usage:
-    onit                        # interactive terminal chat
-    onit setup                  # interactive setup wizard
-    onit setup --show           # show current configuration
-    onit --web                  # Gradio web UI
-    onit --gateway              # Telegram bot gateway
-    onit --config my.yaml       # custom config
-    onit --a2a                  # A2A server mode
-    onit --client --a2a-task "question"  # send task to A2A server (default: localhost:9001)
+    onit                                          # interactive terminal chat
+    onit setup                                    # interactive setup wizard
+    onit setup --show                             # show current configuration
+    onit sessions                                 # list previous sessions
+    onit resume [TAG_OR_ID]                       # resume a previous session
+    onit ask "your question"                      # send a task to a remote A2A server
+    onit serve a2a [--port 9001]                  # run as an A2A protocol server
+    onit serve web [--port 9000]                  # launch the Gradio web UI
+    onit serve gateway [telegram|viber|auto]      # run as a messaging bot gateway
+    onit serve loop "task" [--period 60]          # repeat a task on a timer
+    onit --config my.yaml                         # custom config file
+    onit --container                              # run in a hardened Docker container
 """
 
 import argparse
@@ -163,7 +167,7 @@ class _StreamState:
         """Hide terminal cursor and show a blinking white block instead."""
         if not self.cursor_shown:
             sys.stdout.write("\033[?25l")
-            sys.stdout.write("\033[5m\u2588\033[0m")
+            sys.stdout.write("\033[5m█\033[0m")
             sys.stdout.flush()
             self.cursor_shown = True
 
@@ -495,12 +499,14 @@ def _build_parser() -> argparse.ArgumentParser:
         description="OnIt — an intelligent agent for task automation and assistance.",
     )
 
-    # Subcommands (setup, sessions)
     subparsers = parser.add_subparsers(dest="command")
-    setup_parser = subparsers.add_parser("setup",
-                                         help="Interactive setup wizard.")
+
+    # setup
+    setup_parser = subparsers.add_parser("setup", help="Interactive setup wizard.")
     setup_parser.add_argument("--show", action="store_true",
                               help="Display current configuration.")
+
+    # sessions
     sessions_parser = subparsers.add_parser("sessions",
                                             help="List and manage previous sessions.")
     sessions_parser.add_argument("--limit", type=int, default=20,
@@ -511,146 +517,118 @@ def _build_parser() -> argparse.ArgumentParser:
                                  help="Tag a session: --tag <session-id-or-tag> <new-tag>")
     sessions_parser.add_argument("--clear", action="store_true",
                                  help="Delete all previous sessions and the index.")
-    resume_parser = subparsers.add_parser("resume",
-                                          help="Resume a previous session.")
+
+    # resume
+    resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
     resume_parser.add_argument("session", nargs="?", default="last",
                                help='Session tag, UUID, or "last" (default: last).')
 
-    # General options
-    parser.add_argument('--resume', type=str, default=None, metavar='TAG_OR_ID',
+    # ask: send a task to a remote A2A server
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Send a task to a remote OnIt A2A server and print the response.")
+    ask_parser.add_argument("task", type=str,
+                            help="Task to send to the A2A server.")
+    ask_parser.add_argument("--file", type=str, default=None,
+                            help="File to upload along with the task.")
+    ask_parser.add_argument("--image", type=str, default=None,
+                            help="Image file for vision processing (model must be a VLM).")
+    ask_parser.add_argument("--server", type=str, default="http://localhost:9001",
+                            help="A2A server URL (default: http://localhost:9001).")
+
+    # serve: run OnIt in a server or daemon mode
+    serve_parser = subparsers.add_parser("serve",
+                                         help="Run OnIt in a server or daemon mode.")
+    serve_sub = serve_parser.add_subparsers(dest="serve_mode", metavar="MODE")
+    serve_sub.required = True
+
+    # serve a2a
+    a2a_p = serve_sub.add_parser("a2a", help="Run as an A2A protocol server.")
+    a2a_p.add_argument("--port", type=int, default=None,
+                       help="A2A server port (default: 9001, or a2a_port in config).")
+
+    # serve web
+    web_p = serve_sub.add_parser("web", help="Launch the Gradio web UI.")
+    web_p.add_argument("--port", type=int, default=None,
+                       help="Web UI port (default: 9000, or web_port in config).")
+
+    # serve gateway
+    gw_p = serve_sub.add_parser("gateway",
+                                 help="Run as a Telegram or Viber bot gateway.")
+    gw_p.add_argument("gateway_type", nargs="?",
+                      choices=["telegram", "viber", "auto"], default="auto",
+                      help="Gateway type: telegram, viber, or auto (default: auto-detect from env vars).")
+    gw_p.add_argument("--webhook-url", type=str, default=None, dest="webhook_url",
+                      help="Public HTTPS URL for Viber webhook (or set VIBER_WEBHOOK_URL env var).")
+    gw_p.add_argument("--port", type=int, default=None,
+                      help="Local port for Viber webhook server (default: 8443, or viber_port in config).")
+
+    # serve loop
+    loop_p = serve_sub.add_parser("loop",
+                                   help="Repeat a task on a configurable timer.")
+    loop_p.add_argument("task", type=str,
+                        help="Task to execute repeatedly.")
+    loop_p.add_argument("--period", type=float, default=None,
+                        help="Seconds between iterations (default: 10, or period in config).")
+
+    # ── General options ──────────────────────────────────────────────────────
+    parser.add_argument("--resume", type=str, default=None, metavar="TAG_OR_ID",
                         help='Resume a previous session by tag, UUID, or "last" for the most recent.')
-    parser.add_argument('--config', type=str, default=None,
-                        help='Path to the configuration YAML file.')
-    parser.add_argument('--host', type=str, default=None,
-                        help='LLM serving host URL (e.g. http://localhost:8000/v1). Overrides config and ONIT_HOST env var.')
-    parser.add_argument('--model', type=str, default=None,
-                        help='Model name to use (e.g. Qwen/Qwen3-30B-A3B-Instruct-2507). Skips auto-detection from endpoint.')
-    parser.add_argument('--verbose', action='store_true', default=None,
-                        help='Enable verbose logging.')
-    parser.add_argument('--timeout', type=int, default=None,
-                        help='Request timeout in seconds (-1 for no timeout).')
-    parser.add_argument('--template-path', type=str, default=None,
-                        help='Path to custom prompt template YAML file.')
-    parser.add_argument('--data-path', type=str, default=None,
-                        help='Override the working data directory path for file operations (default: system temp dir).')
-    parser.add_argument('--documents-path', type=str, default=None,
-                        help='Path to local documents directory. The model will search here before the web.')
-    parser.add_argument('--topic', type=str, default=None,
-                        help='Default topic context (e.g. "machine learning"). The model will assume this topic unless specified otherwise.')
-    parser.add_argument('--prompt-intro', type=str, default=None,
-                        help='Custom system prompt intro for the model (default: "I am a helpful AI assistant. My name is OnIt.").')
-    parser.add_argument('--plan', type=str, default=None, metavar='FILE',
-                        help='Path to a .md or .txt file whose contents will be used as the system prompt intro.')
-    # Text UI options
-    parser.add_argument('--text-theme', type=str, default=None,
-                        help='Text UI theme (e.g. "white", "dark").')
-    parser.add_argument('--show-logs', action='store_true', default=None,
-                        help='Show execution logs.')
-    parser.add_argument('--think', action='store_true', default=None,
-                        help='Enable thinking/reasoning mode (CoT).')
-    parser.add_argument('--temperature', type=float, default=None,
-                        help='Sampling temperature (default: 0.6).')
-    parser.add_argument('--top-p', type=float, default=None, dest='top_p',
-                        help='Top-p nucleus sampling (default: 0.95).')
-    parser.add_argument('--top-k', type=int, default=None, dest='top_k',
-                        help='Top-k sampling (default: 20).')
-    parser.add_argument('--min-p', type=float, default=None, dest='min_p',
-                        help='Min-p sampling (default: 0.0).')
-    parser.add_argument('--presence-penalty', type=float, default=None, dest='presence_penalty',
-                        help='Presence penalty (default: 0.0).')
-    parser.add_argument('--repetition-penalty', type=float, default=None, dest='repetition_penalty',
-                        help='Repetition penalty (default: 1.05, or 1.0 with --think).')
-    parser.add_argument('--no-stream', action='store_true', default=None,
-                        dest='no_stream',
-                        help='Disable streaming of tokens (streaming is enabled by default for text, web and a2a modes).')
-    parser.add_argument('--sandbox', action='store_true', default=None,
-                        help='Enable sandbox mode for code execution in isolated containers.')
-    parser.add_argument('--unrestricted', action='store_true', default=False,
-                        help='Run OnIt with unrestricted host filesystem access. '
-                             'The agent can read/write any path, use any working directory, '
-                             'and install packages freely (pip, apt, brew, etc.). '
-                             'Use only in trusted, isolated environments.')
-    parser.add_argument('--container', action='store_true', default=False,
-                        help='Run the entire OnIt process inside a hardened Docker container '
-                             'so a breach cannot reach the host OS.')
-    parser.add_argument('--container-gpus', type=str, default=None, dest='container_gpus',
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to the configuration YAML file.")
+    parser.add_argument("--host", type=str, default=None,
+                        help="LLM serving host URL (e.g. http://localhost:8000/v1). "
+                             "Overrides config and ONIT_HOST env var.")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Model name to use (e.g. Qwen/Qwen3-30B-A3B-Instruct-2507). "
+                             "Skips auto-detection from endpoint.")
+    parser.add_argument("--verbose", action="store_true", default=None,
+                        help="Enable verbose logging.")
+    parser.add_argument("--plan", type=str, default=None, metavar="FILE",
+                        help="Path to a .md or .txt file whose contents become the system prompt.")
+    parser.add_argument("--think", action="store_true", default=None,
+                        help="Enable thinking/reasoning mode (CoT).")
+    parser.add_argument("--no-stream", action="store_true", default=None, dest="no_stream",
+                        help="Disable streaming of tokens (streaming is on by default).")
+    parser.add_argument("--show-logs", action="store_true", default=None,
+                        help="Show tool execution logs.")
+
+    # ── Isolation ────────────────────────────────────────────────────────────
+    parser.add_argument("--sandbox", action="store_true", default=None,
+                        help="Delegate code execution to an external MCP sandbox provider.")
+    parser.add_argument("--unrestricted", action="store_true", default=False,
+                        help="Run with unrestricted host filesystem access. "
+                             "The agent can read/write any path, use any working directory, "
+                             "and install packages freely. Use only in trusted environments.")
+    parser.add_argument("--container", action="store_true", default=False,
+                        help="Run the entire OnIt process inside a hardened Docker container "
+                             "so a breach cannot reach the host OS.")
+    parser.add_argument("--container-gpus", type=str, default=None, dest="container_gpus",
                         help='Pass GPUs into the container (e.g. "all" or "device=0,1"). '
-                             'Requires the NVIDIA Container Toolkit on the host. '
-                             'Note: default image ships CPU-only torch; rebuild with CUDA '
-                             'wheels for GPU workloads.')
-    parser.add_argument('--container-mount', type=str, action='append', default=None,
-                        dest='container_mount',
-                        help='Extra bind mount for the container, e.g. '
-                             '"/host/path:/container/path:ro". Repeatable. Use "ro" '
-                             'unless write access is required.')
-    parser.add_argument('--container-memory', type=str, default=None,
-                        dest='container_memory',
-                        help='Hard memory cap for the container (e.g. "16g", "32g"). '
-                             'Default: unlimited — matches the host, suitable for long '
-                             'ML runs. Set this to isolate a wayward job.')
-    parser.add_argument('--container-shm-size', type=str, default=None,
-                        dest='container_shm_size',
-                        help='/dev/shm size inside the container (default: 4g). '
-                             'Raise for PyTorch DataLoader with many workers; Docker '
-                             'default of 64m causes "Bus error".')
-    parser.add_argument('--container-tmp-size', type=str, default=None,
-                        dest='container_tmp_size',
-                        help='/tmp tmpfs size inside the container (default: 16g). '
-                             'Backed by host RAM; counts toward --container-memory.')
+                             "Requires the NVIDIA Container Toolkit on the host.")
+    parser.add_argument("--container-mount", type=str, action="append", default=None,
+                        dest="container_mount",
+                        help="Extra bind mount for the container, e.g. "
+                             "/host/path:/container/path:ro. Repeatable.")
+    parser.add_argument("--container-memory", type=str, default=None,
+                        dest="container_memory",
+                        help="Hard memory cap for the container (e.g. 16g).")
+    parser.add_argument("--container-shm-size", type=str, default=None,
+                        dest="container_shm_size",
+                        help="/dev/shm size inside the container (default: 4g).")
+    parser.add_argument("--container-tmp-size", type=str, default=None,
+                        dest="container_tmp_size",
+                        help="/tmp tmpfs size inside the container (default: 16g).")
 
-    # Web UI options
-    parser.add_argument('--web', action='store_true', default=None,
-                        help='Launch Gradio web chat UI.')
-    parser.add_argument('--web-port', type=int, default=None,
-                        help='Port for Gradio web UI (default: 9000).')
-
-    # A2A options
-    parser.add_argument('--a2a', action='store_true', default=None,
-                        help='Run as an A2A protocol server.')
-    parser.add_argument('--a2a-port', type=int, default=None,
-                        help='A2A server port (default: 9001).')
-    parser.add_argument('--client', '--a2a-client', action='store_true', default=False,
-                        dest='a2a_client',
-                        help='Client mode: send a task to a remote OnIt A2A server and print the answer.')
-    parser.add_argument('--a2a-host', type=str, default='http://localhost:9001',
-                        help='A2A server URL for client mode (default: http://localhost:9001).')
-    parser.add_argument('--a2a-task', '--task', type=str, default=None,
-                        help='Task to execute in A2A loop or client mode.')
-    parser.add_argument('--a2a-file', '--file', type=str, default=None,
-                        help='File to upload to the A2A server along with the task.')
-    parser.add_argument('--a2a-image', '--image', type=str, default=None,
-                        help='Image file to send to the A2A server for vision processing (model is a VLM).')
-    parser.add_argument('--a2a-loop', '--loop', action='store_true', default=None,
-                        help='Enable A2A loop mode.')
-    parser.add_argument('--a2a-period', '--period', type=float, default=None,
-                        help='Period in seconds between A2A loop iterations (default: 10).')
-
-    # Gateway options
-    parser.add_argument('--gateway', nargs='?', const='auto', default=None,
-                        choices=['telegram', 'viber', 'auto'],
-                        help='Run as a messaging gateway. Options: telegram, viber, auto '
-                             '(auto-detect from env vars). Default when flag used alone: auto.')
-    parser.add_argument('--viber-webhook-url', type=str, default=None,
-                        help='Public HTTPS URL for Viber webhook (or set VIBER_WEBHOOK_URL env var).')
-    parser.add_argument('--viber-port', type=int, default=None,
-                        help='Local port for Viber webhook server (default: 8443).')
-
-    # MCP options
-    parser.add_argument('--mcp-host', type=str, default=None,
-                        help='Override the host/IP in all MCP server URLs (e.g. 192.168.1.100).')
-    parser.add_argument('--ollama-api-key', type=str, default=None,
-                        help='Ollama API key for web search. Overrides OLLAMA_API_KEY env var.')
-    parser.add_argument('--openweathermap-api-key', type=str, default=None,
-                        help='OpenWeatherMap API key for weather tool. Overrides OPENWEATHERMAP_API_KEY env var.')
-    parser.add_argument('--mcp-sse', type=str, action='append', default=None,
-                        help='URL of an external MCP tools server using SSE transport (can be repeated). '
-                             'Example: --mcp-sse http://localhost:8080/sse')
-    parser.add_argument('--mcp-server', type=str, action='append', default=None,
-                        help='URL of an external MCP tools server using Streamable HTTP transport (can be repeated). '
-                             'Example: --mcp-server http://localhost:8080/mcp')
+    # ── External MCP servers ─────────────────────────────────────────────────
+    parser.add_argument("--mcp-sse", type=str, action="append", default=None,
+                        help="URL of an external MCP server (SSE transport, repeatable). "
+                             "Example: --mcp-sse http://localhost:8080/sse")
+    parser.add_argument("--mcp-server", type=str, action="append", default=None,
+                        help="URL of an external MCP server (Streamable HTTP transport, repeatable). "
+                             "Example: --mcp-server http://localhost:8080/mcp")
 
     return parser
-
 
 
 def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
@@ -682,36 +660,41 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         _merge_base(config_data, setup_data)
         config_data = setup_data
 
-    # override config with CLI args (only if explicitly provided)
-    arg_to_config = {
-        'a2a_loop': 'loop',
-        'a2a_period': 'period',
-        'a2a_task': 'task',
-        'verbose': 'verbose',
-        'text_theme': 'theme',
-        'timeout': 'timeout',
-        'show_logs': 'show_logs',
-        'web': 'web',
-        'web_port': 'web_port',
-        'data_path': 'data_path',
-        'template_path': 'template_path',
-        'documents_path': 'documents_path',
-        'topic': 'topic',
-        'prompt_intro': 'prompt_intro',
-        'a2a': 'a2a',
-        'a2a_port': 'a2a_port',
-        'gateway': 'gateway',
-        'viber_webhook_url': 'viber_webhook_url',
-        'viber_port': 'viber_port',
-        'sandbox': 'sandbox',
-    }
-    for arg_name, config_key in arg_to_config.items():
+    # Map top-level CLI flags that still exist
+    for arg_name, config_key in [
+        ('verbose', 'verbose'),
+        ('show_logs', 'show_logs'),
+        ('sandbox', 'sandbox'),
+    ]:
         value = getattr(args, arg_name, None)
         if value is not None:
             config_data[config_key] = value
 
-    # --plan reads a file and sets prompt_intro (--prompt-intro takes precedence)
-    if getattr(args, 'plan', None) and not getattr(args, 'prompt_intro', None):
+    # serve subcommand: inject mode-specific settings into config_data
+    if getattr(args, 'command', None) == 'serve':
+        serve_mode = getattr(args, 'serve_mode', None)
+        if serve_mode == 'a2a':
+            config_data['a2a'] = True
+            if args.port is not None:
+                config_data['a2a_port'] = args.port
+        elif serve_mode == 'web':
+            config_data['web'] = True
+            if args.port is not None:
+                config_data['web_port'] = args.port
+        elif serve_mode == 'gateway':
+            config_data['gateway'] = args.gateway_type
+            if getattr(args, 'webhook_url', None):
+                config_data['viber_webhook_url'] = args.webhook_url
+            if getattr(args, 'port', None) is not None:
+                config_data['viber_port'] = args.port
+        elif serve_mode == 'loop':
+            config_data['loop'] = True
+            config_data['task'] = args.task
+            if getattr(args, 'period', None) is not None:
+                config_data['period'] = args.period
+
+    # --plan reads a file and sets prompt_intro
+    if getattr(args, 'plan', None):
         plan_path = os.path.expanduser(args.plan)
         if not os.path.isfile(plan_path):
             print(f"Error: plan file '{plan_path}' not found.", file=sys.stderr)
@@ -731,29 +714,13 @@ Never stop until the goal is completed.
     if args.no_stream:
         config_data['stream'] = False
 
-    # --host overrides serving.host in config
+    # --host, --model, --think override serving config
     if args.host:
         config_data.setdefault('serving', {})['host'] = args.host
-
-    # --model overrides serving.model in config
     if args.model:
         config_data.setdefault('serving', {})['model'] = args.model
-
-    # --think overrides serving.think in config
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
-
-    # sampling params override serving config
-    for _arg, _key in [('temperature', 'temperature'), ('top_p', 'top_p'), ('top_k', 'top_k'),
-                        ('min_p', 'min_p'), ('presence_penalty', 'presence_penalty'),
-                        ('repetition_penalty', 'repetition_penalty')]:
-        _val = getattr(args, _arg, None)
-        if _val is not None:
-            config_data.setdefault('serving', {})[_key] = _val
-
-    # --mcp-host overrides mcp.mcp_host in config
-    if args.mcp_host:
-        config_data.setdefault('mcp', {})['mcp_host'] = args.mcp_host
 
     # --mcp-sse / --mcp-server add external MCP servers to the servers list
     for urls, prefix in [(args.mcp_sse, 'ExternalSSE'), (args.mcp_server, 'ExternalMCP')]:
@@ -794,21 +761,16 @@ Never stop until the goal is completed.
               "or run: onit setup", file=sys.stderr)
         sys.exit(1)
 
-    # Check OLLAMA_API_KEY for web search support
-    ollama_api_key = resolve_credential(
-        args.ollama_api_key, 'OLLAMA_API_KEY', 'ollama_api_key')
+    # API keys: resolved from env vars and keyring only
+    ollama_api_key = resolve_credential(None, 'OLLAMA_API_KEY', 'ollama_api_key')
     if ollama_api_key:
         os.environ['OLLAMA_API_KEY'] = ollama_api_key
     else:
         os.environ['ONIT_DISABLE_WEB_SEARCH'] = '1'
 
-    # Check OPENWEATHERMAP_API_KEY for weather tool support
-    weather_api_key = resolve_credential(
-        args.openweathermap_api_key, 'OPENWEATHERMAP_API_KEY',
-        'openweathermap_api_key')
+    weather_api_key = resolve_credential(None, 'OPENWEATHERMAP_API_KEY', 'openweathermap_api_key')
     if not weather_api_key:
-        weather_api_key = resolve_credential(
-            None, 'OPENWEATHER_API_KEY', 'openweathermap_api_key')
+        weather_api_key = resolve_credential(None, 'OPENWEATHER_API_KEY', 'openweathermap_api_key')
     if weather_api_key:
         os.environ['OPENWEATHERMAP_API_KEY'] = weather_api_key
     else:
@@ -817,10 +779,8 @@ Never stop until the goal is completed.
     # Resolve gateway type and token
     gateway_type = config_data.get('gateway')
     if gateway_type:
-        telegram_token = resolve_credential(
-            None, 'TELEGRAM_BOT_TOKEN', 'telegram_bot_token')
-        viber_token = resolve_credential(
-            None, 'VIBER_BOT_TOKEN', 'viber_bot_token')
+        telegram_token = resolve_credential(None, 'TELEGRAM_BOT_TOKEN', 'telegram_bot_token')
+        viber_token = resolve_credential(None, 'VIBER_BOT_TOKEN', 'viber_bot_token')
 
         if gateway_type == 'auto':
             # Auto-detect: prefer Telegram for backward compat, fall back to Viber
@@ -829,14 +789,14 @@ Never stop until the goal is completed.
             elif viber_token:
                 gateway_type = 'viber'
             else:
-                print("Error: --gateway requires TELEGRAM_BOT_TOKEN or VIBER_BOT_TOKEN "
-                      "environment variable.", file=sys.stderr)
+                print("Error: 'onit serve gateway' requires TELEGRAM_BOT_TOKEN or "
+                      "VIBER_BOT_TOKEN environment variable.", file=sys.stderr)
                 sys.exit(1)
 
         if gateway_type == 'viber':
             if not viber_token:
-                print("Error: --gateway viber requires VIBER_BOT_TOKEN environment variable.",
-                      file=sys.stderr)
+                print("Error: 'onit serve gateway viber' requires VIBER_BOT_TOKEN "
+                      "environment variable.", file=sys.stderr)
                 sys.exit(1)
             config_data['gateway_token'] = viber_token
             # Resolve webhook URL
@@ -844,13 +804,13 @@ Never stop until the goal is completed.
                            or os.environ.get('VIBER_WEBHOOK_URL'))
             if not webhook_url:
                 print("Error: Viber gateway requires a webhook URL. "
-                      "Set VIBER_WEBHOOK_URL env var or --viber-webhook-url.",
+                      "Set VIBER_WEBHOOK_URL env var or pass --webhook-url.",
                       file=sys.stderr)
                 sys.exit(1)
             config_data['viber_webhook_url'] = webhook_url
         else:  # telegram
             if not telegram_token:
-                print("Error: --gateway telegram requires TELEGRAM_BOT_TOKEN "
+                print("Error: 'onit serve gateway telegram' requires TELEGRAM_BOT_TOKEN "
                       "environment variable.", file=sys.stderr)
                 sys.exit(1)
             config_data['gateway_token'] = telegram_token
@@ -871,15 +831,13 @@ def _setup_servers(config_data: dict) -> None:
     if os.environ.get('ONIT_DISABLE_WEATHER'):
         print("Warning: OPENWEATHERMAP_API_KEY is not set. Weather tool is unavailable.",
               file=sys.stderr)
-        print("  Set via env var, --openweathermap-api-key, or run: onit setup\n",
-              file=sys.stderr)
+        print("  Set via env var or run: onit setup\n", file=sys.stderr)
     if os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
         print("WARNING: OLLAMA_API_KEY is not set or invalid. "
               "Internet search is DISABLED.", file=sys.stderr)
         print("  OnIt will NOT be able to search the web in this session.",
               file=sys.stderr)
-        print("  Set via env var, --ollama-api-key, or run: onit setup\n",
-              file=sys.stderr)
+        print("  Set via env var or run: onit setup\n", file=sys.stderr)
 
 
 def _dispatch_mode(config_data: dict) -> None:
@@ -952,29 +910,26 @@ def main():
         print(format_sessions_table(sessions))
         return
 
-    # Resume subcommand: translate to --resume flag and continue normal startup
+    # resume subcommand: translate to --resume flag and continue normal startup
     if args.command == "resume":
         args.resume = args.session
 
-    # Client mode: send task to remote A2A server and exit
-    if args.a2a_client:
-        if not args.a2a_task:
-            print("Error: --client requires --a2a-task", file=sys.stderr)
-            sys.exit(1)
-        # Validate image file if provided
-        if args.a2a_image:
+    # ask subcommand: send task to remote A2A server and exit
+    if args.command == "ask":
+        if args.image:
             valid_image_ext = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
-            image_path = os.path.abspath(os.path.expanduser(args.a2a_image))
+            image_path = os.path.abspath(os.path.expanduser(args.image))
             if not os.path.isfile(image_path):
                 print(f"Error: Image file not found: {image_path}", file=sys.stderr)
                 sys.exit(1)
             ext = os.path.splitext(image_path)[1].lower()
             if ext not in valid_image_ext:
-                print(f"Error: Invalid image file. Supported formats: {', '.join(sorted(valid_image_ext))}", file=sys.stderr)
+                print(f"Error: Invalid image file. Supported formats: {', '.join(sorted(valid_image_ext))}",
+                      file=sys.stderr)
                 sys.exit(1)
-            args.a2a_image = image_path
+            args.image = image_path
         try:
-            answer = _send_task(args.a2a_host, args.a2a_task, file=args.a2a_file, image=args.a2a_image)
+            answer = _send_task(args.server, args.task, file=args.file, image=args.image)
             print(answer)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -996,9 +951,8 @@ def main():
         config_data['resume_session_id'] = sid
         print(f"Resuming session: {sid[:8]}...")
 
-    # --unrestricted: relax filesystem and command restrictions on the host.
     # Must be set before MCP servers are spawned so child processes inherit it.
-    if getattr(args, 'unrestricted', False):
+    if args.unrestricted:
         os.environ['ONIT_UNRESTRICTED'] = '1'
         print("Warning: running in unrestricted mode — agent has full host filesystem access.",
               file=sys.stderr)

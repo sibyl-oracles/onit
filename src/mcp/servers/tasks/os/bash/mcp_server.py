@@ -133,13 +133,17 @@ def _in_container() -> bool:
 
 
 def _in_unrestricted() -> bool:
-    """True when the user passed ``--unrestricted`` (sets ONIT_UNRESTRICTED=1).
-
-    Relaxes all filesystem path restrictions so the agent can read/write
-    anywhere on the host and install packages freely.  Only truly catastrophic
-    operations (disk wipe, kernel modules, system shutdown) remain blocked.
-    """
+    """True when the user passed ``--unrestricted`` (sets ONIT_UNRESTRICTED=1)."""
     return os.environ.get("ONIT_UNRESTRICTED") == "1"
+
+
+def _path_restrictions_relaxed() -> bool:
+    """True when filesystem path allowlisting should be skipped.
+
+    Container mode: the container itself is the isolation boundary.
+    Unrestricted mode: user explicitly opted into full host access.
+    """
+    return _in_container() or _in_unrestricted()
 
 
 def _validate_write_path(file_path: str) -> str:
@@ -148,7 +152,7 @@ def _validate_write_path(file_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(file_path)):
         file_path = os.path.join(DATA_PATH, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
-    if _in_container() or _in_unrestricted():
+    if _path_restrictions_relaxed():
         return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
@@ -166,7 +170,7 @@ def _validate_read_path(file_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(file_path)):
         file_path = os.path.join(DATA_PATH, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
-    if _in_container() or _in_unrestricted():
+    if _path_restrictions_relaxed():
         return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
@@ -193,7 +197,7 @@ def _validate_dir_path(dir_path: str) -> str:
     if not os.path.isabs(os.path.expanduser(dir_path)):
         dir_path = os.path.join(DATA_PATH, dir_path)
     abs_path = os.path.realpath(os.path.expanduser(dir_path))
-    if _in_container() or _in_unrestricted():
+    if _path_restrictions_relaxed():
         return abs_path
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
@@ -235,7 +239,7 @@ def _get_sandbox_env() -> dict:
     # Use the real HOME so credential helpers (osxkeychain, gh, git config) work.
     real_home = os.path.expanduser("~")
 
-    if _in_container() or _in_unrestricted():
+    if _path_restrictions_relaxed():
         env = dict(os.environ)
         env.update({
             "TERM": "dumb",
@@ -956,7 +960,7 @@ def _normalize_to_data_path(path: str) -> str:
     honored as-is so the agent can reach any visible location.
     """
     expanded = os.path.expanduser(path)
-    if _in_container() or _in_unrestricted():
+    if _path_restrictions_relaxed():
         if os.path.isabs(expanded):
             return os.path.abspath(expanded)
         return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), expanded)

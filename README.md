@@ -42,15 +42,24 @@ onit
 
 That's it. MCP tools start automatically, and you get an interactive chat with tool access.
 
-### Other interfaces
+## CLI at a Glance
 
-```bash
-onit --web                          # Web UI on port 9000
-onit --gateway                      # Telegram/Viber bot gateway
-onit --a2a                          # A2A server on port 9001
-onit --client --task "your task"    # Send a task to an A2A server
-onit --sandbox                      # Delegate code execution to a sandbox MCP provider
-onit --container                    # Run the whole process in a hardened Docker container
+```
+onit                                          # interactive terminal chat
+onit setup                                    # configure LLM endpoint, API keys
+onit resume [TAG_OR_ID]                       # continue a previous session
+onit sessions                                 # list saved sessions
+
+onit serve a2a                                # A2A protocol server (port 9001)
+onit serve web                                # Gradio web UI (port 9000)
+onit serve gateway [telegram|viber|auto]      # Telegram or Viber bot
+onit serve loop "task" --period 60            # repeat a task on a timer
+
+onit ask "what is the weather in Manila"      # send a task to a running A2A server
+
+onit --container                              # run in a hardened Docker container
+onit --sandbox                                # delegate code execution to a sandbox
+onit --unrestricted                           # unrestricted host filesystem access
 ```
 
 ## Configuration
@@ -83,13 +92,25 @@ serving:
   # model: google/gemini-2.5-pro
   think: true
   max_tokens: 262144
+  # Sampling parameters (all optional — sensible defaults apply):
+  # temperature: 1.0
+  # top_p: 0.95
+  # top_k: 20
+  # presence_penalty: 1.5
+  # repetition_penalty: 1.0
 
 verbose: false
 timeout: 600
 sandbox: false
 
-web: false
 web_port: 9000
+a2a_port: 9001
+
+theme: white         # or "dark"
+topic: ~             # default topic context, e.g. "machine learning"
+template_path: ~     # custom prompt template YAML
+documents_path: ~    # local documents directory
+data_path: ~         # working directory for file operations (default: system temp)
 
 mcp:
   servers:
@@ -101,253 +122,119 @@ mcp:
       enabled: true
 ```
 
-### Tip: Qwen3.5 recommended parameters
+### Sampling parameters
 
-[Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-27B) works best with mode-specific sampling parameters:
+Sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`) are set in `configs/default.yaml` under `serving:`. They are not exposed as CLI flags to keep the command line clean.
+
+**Recommended parameters for Qwen3.5:**
 
 | Mode | Use case | `temperature` | `top_p` | `top_k` | `presence_penalty` |
 |------|----------|:---:|:---:|:---:|:---:|
-| Thinking (`--think`) | General | `1.0` | `0.95` | `20` | `1.5` |
-| Thinking (`--think`) | Precise coding | `0.6` | `0.95` | `20` | `0.0` |
+| Thinking (`think: true`) | General | `1.0` | `0.95` | `20` | `1.5` |
+| Thinking (`think: true`) | Precise coding | `0.6` | `0.95` | `20` | `0.0` |
 | Instruct (no think) | General | `0.7` | `0.8` | `20` | `1.5` |
 | Instruct (no think) | Reasoning | `1.0` | `1.0` | `40` | `2.0` |
 
-Set `repetition_penalty: 1.0` in all cases (OnIt handles `think`/non-`think` automatically). Example for thinking + general tasks:
-
-```bash
-onit --think --temperature 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
-```
-
-Or in `configs/default.yaml`:
-
-```yaml
-serving:
-  host: http://localhost:8000/v1
-  think: true
-  temperature: 1.0
-  top_p: 0.95
-  top_k: 20
-  presence_penalty: 1.5
-  repetition_penalty: 1.0
-```
+Set `repetition_penalty: 1.0` in all cases.
 
 ## CLI Reference
 
-**General:**
+### Interactive chat (default)
+
+```bash
+onit [OPTIONS]
+```
+
+Starts an interactive terminal chat with tool access. MCP servers start automatically.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--config` | Path to YAML configuration file | `configs/default.yaml` |
-| `--host` | LLM serving host URL | — |
+| `--config FILE` | Path to YAML configuration file | `configs/default.yaml` |
+| `--host URL` | LLM serving host URL. Overrides config and `ONIT_HOST` | — |
+| `--model NAME` | Model name. Skips auto-detection from endpoint | — |
 | `--verbose` | Enable verbose logging | `false` |
-| `--timeout` | Request timeout in seconds (`-1` = none) | `600` |
-| `--template-path` | Path to custom prompt template YAML file | — |
-| `--documents-path` | Path to local documents directory | — |
-| `--topic` | Default topic context (e.g. `"machine learning"`) | — |
-| `--prompt-intro` | Custom system prompt intro | — |
-| `--no-stream` | Disable token streaming | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
-| `--temperature` | Sampling temperature | `0.6` |
-| `--top-p` | Top-p nucleus sampling | `0.95` |
-| `--top-k` | Top-k sampling | `20` |
-| `--min-p` | Min-p sampling | `0.0` |
-| `--presence-penalty` | Presence penalty | `0.0` |
-| `--repetition-penalty` | Repetition penalty | `1.05` (or `1.0` with `--think`) |
+| `--no-stream` | Disable token streaming | `false` |
+| `--show-logs` | Show tool execution logs | `false` |
+| `--plan FILE` | Path to a `.md` or `.txt` plan file; contents become the system prompt | — |
+| `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | — |
 | `--sandbox` | Delegate code execution to an external MCP sandbox provider | `false` |
-| `--container` | Run the entire OnIt process inside a hardened Docker container (read-only rootfs, non-root user, caps dropped, no host mounts). Requires Docker. Composable with `--sandbox`. | `false` |
-| `--container-gpus` | Pass GPUs into the container (e.g. `all`, `"device=0,1"`). Requires NVIDIA Container Toolkit. Default image ships CPU-only torch. | — |
-| `--container-mount` | Extra bind mount for the container, e.g. `/host/path:/container/path:ro`. Repeatable. Prefer `:ro`. | — |
+| `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
+| `--container` | Run the entire OnIt process inside a hardened Docker container | `false` |
+| `--mcp-sse URL` | Add an external MCP server (SSE transport, repeatable) | — |
+| `--mcp-server URL` | Add an external MCP server (Streamable HTTP transport, repeatable) | — |
 
-**Text UI:**
+### `onit setup`
+
+Interactive setup wizard. Configures the LLM endpoint, API keys, and preferences. Stores settings in `~/.onit/config.yaml` and secrets in the OS keychain.
+
+```bash
+onit setup           # run the wizard
+onit setup --show    # print current configuration
+```
+
+### `onit sessions`
+
+List and manage saved sessions.
+
+```bash
+onit sessions                          # list recent sessions (default: 20)
+onit sessions --limit 50               # list up to 50 sessions
+onit sessions --tag abc123 "my-chat"   # tag a session for easy recall
+onit sessions --rebuild                # rebuild session index from JSONL files
+onit sessions --clear                  # delete all session history
+```
+
+### `onit resume`
+
+Resume a previous session by tag or UUID.
+
+```bash
+onit resume              # resume the most recent session
+onit resume my-chat      # resume by tag
+onit resume abc123       # resume by session UUID prefix
+```
+
+Equivalent to `onit --resume TAG_OR_ID`.
+
+### `onit ask`
+
+Send a single task to a running OnIt A2A server and print the response. Useful for scripting, pipelines, or one-shot queries without starting a local agent.
+
+```bash
+onit ask "what is the weather in Manila"
+onit ask "summarize this document" --file report.pdf
+onit ask "describe this image" --image photo.jpg
+onit ask "write a script" --server http://192.168.1.10:9001
+```
+
+| Argument / Flag | Description | Default |
+|-----------------|-------------|---------|
+| `task` (positional) | Task to send to the server | required |
+| `--file PATH` | File to upload along with the task | — |
+| `--image PATH` | Image file for vision processing (model must be a VLM) | — |
+| `--server URL` | A2A server URL | `http://localhost:9001` |
+
+### `onit serve`
+
+Run OnIt in a persistent server or daemon mode. All serve modes run indefinitely until interrupted (Ctrl+C).
+
+#### `onit serve a2a`
+
+Run OnIt as an [A2A protocol](https://a2a-protocol.org/) server so other agents or clients can send tasks.
+
+```bash
+onit serve a2a                 # listen on port 9001 (default)
+onit serve a2a --port 9100     # custom port
+```
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--text-theme` | Text UI theme (`white` or `dark`) | `dark` |
-| `--show-logs` | Show execution logs | `false` |
-
-**Web UI:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--web` | Launch Gradio web UI | `false` |
-| `--web-port` | Gradio web UI port | `9000` |
-
-**Gateway (Telegram / Viber):**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--gateway` | Auto-detect gateway (Telegram or Viber based on env vars) | — |
-| `--gateway telegram` | Run as a Telegram bot | — |
-| `--gateway viber` | Run as a Viber bot | — |
-| `--viber-webhook-url` | Public HTTPS URL for Viber webhook | — |
-| `--viber-port` | Local port for Viber webhook server | `8443` |
-
-**A2A (Agent-to-Agent):**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--a2a` | Run as an A2A protocol server | `false` |
-| `--a2a-port` | A2A server port | `9001` |
-| `--client` | Send a task to a remote A2A server | `false` |
-| `--a2a-host` | A2A server URL for client mode | `http://localhost:9001` |
-| `--task` | Task string for A2A client or loop mode | — |
-| `--file` | File to upload with the task | — |
-| `--image` | Image file for vision processing | — |
-| `--loop` | Enable A2A loop mode | `false` |
-| `--period` | Seconds between loop iterations | `10` |
-
-**MCP (Model Context Protocol):**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--mcp-host` | Override host/IP in all MCP server URLs | — |
-| `--mcp-sse` | URL of an external MCP server (SSE transport, can be repeated) | — |
-| `--mcp-server` | URL of an external MCP server (Streamable HTTP transport, can be repeated) | — |
-
-## Features
-
-### Interactive Chat
-
-Rich terminal UI with input history, theming, and execution logs. Press Enter or Ctrl+C to interrupt any running task.
-
-### Web UI
-
-Gradio-based browser interface with file upload and real-time streaming:
-
-```bash
-onit --web
-```
-
-Supports optional Google OAuth2 authentication — see [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
-
-### Container Mode
-
-Run the entire OnIt process inside a hardened Docker container so a breach in the agent, LLM output parser, or any MCP tool cannot reach the host OS:
-
-```bash
-onit --container                                         # interactive terminal in container
-onit --container --web                                   # web UI, port 9000 published
-onit --container --a2a --a2a-port 9100                   # non-default ports are honored (9100:9100)
-onit --container --container-gpus all                    # NVIDIA GPU pass-through
-onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
-  --documents-path /home/onit/documents                  # expose specific host paths read-only
-onit --container --sandbox                               # combine with per-tool sandboxing
-```
-
-The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Subsequent runs reuse the image — remove it (`docker rmi onit:local`) to force a rebuild after source changes.
-
-#### Isolation posture
-
-- Runs as non-root user `onit` (uid 1000).
-- `--read-only` root filesystem; `/tmp` and `/home/onit/.cache` are ephemeral tmpfs.
-- `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=256`, `--memory=2g`.
-- No host filesystem mounts by default. Outbound network is allowed (needed for LLM APIs).
-
-#### What crosses the boundary
-
-| Resource | Default behavior |
-|---|---|
-| `~/.onit/config.yaml` | Bind-mounted read-only at `/home/onit/.onit/config.yaml` |
-| `~/.onit/secrets.yaml` | Bind-mounted read-only if present |
-| Host keychain secrets | Passed as ephemeral env vars (not baked into image): `OPENROUTER_API_KEY`, `OLLAMA_API_KEY`, `OPENWEATHERMAP_API_KEY`, `TELEGRAM_BOT_TOKEN`, `VIBER_BOT_TOKEN`, `GITHUB_TOKEN`, `HF_TOKEN` |
-| Session data | Named volume `onit-data` mounted at `/home/onit/data` (writable, persistent) |
-| Ports | Published **only** for the active mode — see the ports table below |
-| GPUs | **Not** passed through unless `--container-gpus` is set |
-| Host filesystem | **Nothing** beyond the config/secrets files above unless `--container-mount` is set |
-
-#### Network ports
-
-The launcher publishes the minimum set of host ports for the selected mode. Interactive terminal mode publishes **no ports at all**. Outbound network (from the container) is always allowed so the agent can reach LLM APIs.
-
-| Mode flag | Default published port | Override flag | Example |
-|---|---|---|---|
-| (none / terminal) | — (no ports) | — | `onit --container` |
-| `--web` | `9000:9000` | `--web-port` | `onit --container --web --web-port 9500` → `9500:9500` |
-| `--a2a` | `9001:9001` | `--a2a-port` | `onit --container --a2a --a2a-port 9100` → `9100:9100` |
-| `--gateway viber` | `8443:8443` | `--viber-port` | `onit --container --gateway viber --viber-port 9443` → `9443:9443` |
-
-The host-side and container-side port numbers are kept identical so URLs such as webhooks work without translation. If you need to remap to a different host port, run the image with your own `docker run -p <host>:<container>` instead of `--container`.
-
-#### Container-only flags (not forwarded inside the container)
-
-| Flag | Purpose |
-|---|---|
-| `--container-gpus <spec>` | NVIDIA GPU pass-through. Values like `all` or `"device=0,1"`. Requires NVIDIA Container Toolkit on the host. The default image ships **CPU-only** torch — for GPU compute, rebuild the image with a CUDA torch wheel. |
-| `--container-mount <host>:<container>[:ro]` | Extra bind mount. Repeatable. Prefer `:ro`. Each mount punches a hole in the sandbox — never mount a host path that contains secrets you don't want the agent to see. |
-
-#### Preinstalled ML packages
-
-The container image ships with a default ML stack so the agent can run code without `pip install` at execution time: `torch`, `torchvision`, `torchaudio` (CPU-only wheels), `numpy`, `pandas`, `scikit-learn`, `matplotlib`, `einops`.
-
-See [docs/DOCKER.md](docs/DOCKER.md) for full details.
-
-### Sandbox Mode
-
-Delegate individual code-execution tool calls to an external MCP sandbox provider. Complementary to `--container` (which isolates the whole OnIt process); combine them for defense in depth.
-
-```bash
-onit --sandbox                   # per-tool sandboxing via external MCP provider
-onit --container --sandbox       # + whole-process isolation in a Docker container
-```
-
-Or in `config.yaml`:
-
-```yaml
-sandbox: true
-```
-
-Sandbox mode requires an MCP server that provides sandbox tools (e.g. `sandbox_run_code`, `sandbox_install_packages`, `sandbox_stop`). The agent auto-injects `session_id` and `data_path` into any tool whose schema declares those parameters, so the MCP server can maintain per-session containers and mount the correct data directory.
-
-When the user interrupts a running task (Ctrl+C, Enter, or stop button), the agent automatically calls `sandbox_stop` to clean up the container.
-
-### MCP Tool Integration
-
-MCP servers start automatically. Tools are auto-discovered and available to the agent.
-
-| Server | Description |
-|--------|-------------|
-| PromptsMCPServer | Prompt templates for instruction generation |
-| ToolsMCPServer | Web search, bash commands, file operations, and document tools |
-
-Connect to additional external MCP servers:
-
-```bash
-onit --mcp-sse http://localhost:8080/sse --mcp-sse http://192.168.1.50:9090/sse
-```
-
-### Messaging Gateways
-
-Chat with OnIt from **Telegram** or **Viber**. Configure bot tokens via `onit setup` or environment variables, then:
-
-```bash
-onit --gateway telegram
-onit --gateway viber --viber-webhook-url https://your-domain.com/viber
-```
-
-Install the gateway dependency separately if not using `[all]`:
-
-```bash
-pip install "onit[gateway]"
-```
-
-### A2A Protocol
-
-Run OnIt as an [A2A](https://a2a-protocol.org/) server so other agents can send tasks:
-
-```bash
-onit --a2a
-```
+| `--port PORT` | A2A server port | `9001` (or `a2a_port` in config) |
 
 The agent card is available at `http://localhost:9001/.well-known/agent.json`.
 
-**Send a task via CLI:**
-
-```bash
-onit --client --task "what is the weather in Manila"
-onit --client --task "describe this" --image photo.jpg
-```
-
-**Send a task via Python (A2A SDK):**
+**Send a task from another agent (Python A2A SDK):**
 
 ```python
 from a2a.client import ClientFactory, create_text_message_object
@@ -363,21 +250,150 @@ async def main():
 asyncio.run(main())
 ```
 
-### Loop Mode
+#### `onit serve web`
 
-Repeat a task on a configurable timer (useful for monitoring):
-
-```bash
-onit --loop --task "Check the weather in Manila" --period 60
-```
-
-### Custom Prompt Templates
+Launch the Gradio web chat UI.
 
 ```bash
-onit --template-path my_template.yaml
+onit serve web                 # open on port 9000 (default)
+onit serve web --port 9500     # custom port
 ```
 
-See example templates in `src/mcp/prompts/prompt_templates/`.
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--port PORT` | Web UI port | `9000` (or `web_port` in config) |
+
+Supports optional Google OAuth2 authentication — see [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
+
+#### `onit serve gateway`
+
+Run OnIt as a Telegram or Viber bot. Configure bot tokens via `onit setup` or environment variables.
+
+```bash
+onit serve gateway                                      # auto-detect from env vars
+onit serve gateway telegram                             # Telegram bot
+onit serve gateway viber --webhook-url https://...      # Viber bot
+```
+
+| Argument / Flag | Description | Default |
+|-----------------|-------------|---------|
+| `gateway_type` (positional) | `telegram`, `viber`, or `auto` | `auto` |
+| `--webhook-url URL` | Public HTTPS URL for Viber webhook (or set `VIBER_WEBHOOK_URL`) | — |
+| `--port PORT` | Local port for Viber webhook server | `8443` (or `viber_port` in config) |
+
+Required environment variables (set via `onit setup` or export):
+- Telegram: `TELEGRAM_BOT_TOKEN`
+- Viber: `VIBER_BOT_TOKEN`, `VIBER_WEBHOOK_URL`
+
+Install gateway dependencies if not using `[all]`:
+
+```bash
+pip install "onit[gateway]"
+```
+
+#### `onit serve loop`
+
+Repeat a task on a configurable timer. Useful for monitoring, polling, or autonomous scheduled work.
+
+```bash
+onit serve loop "check the weather in Manila" --period 60
+onit serve loop "summarize today's news" --period 3600
+```
+
+| Argument / Flag | Description | Default |
+|-----------------|-------------|---------|
+| `task` (positional) | Task to execute repeatedly | required |
+| `--period SECONDS` | Seconds between iterations | `10` (or `period` in config) |
+
+## Isolation Modes
+
+OnIt offers three isolation levels. They can be combined (e.g. `--container --sandbox`).
+
+### `--sandbox`
+
+Delegates individual code-execution tool calls to an external MCP sandbox provider. Complementary to `--container`.
+
+```bash
+onit --sandbox
+onit --container --sandbox   # defense in depth
+```
+
+Requires an MCP server that provides sandbox tools (`sandbox_run_code`, `sandbox_install_packages`, `sandbox_stop`). Set `sandbox: true` in `config.yaml` to enable by default.
+
+### `--container`
+
+Runs the entire OnIt process inside a hardened Docker container so a breach cannot reach the host OS.
+
+```bash
+onit --container                                          # interactive terminal in container
+onit --container serve web                                # web UI, port 9000 published
+onit --container serve a2a --port 9100                    # A2A server on custom port
+onit --container --container-gpus all                     # NVIDIA GPU pass-through
+onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
+  serve web                                               # expose host path read-only
+onit --container --sandbox                                # combine with per-tool sandboxing
+```
+
+The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Subsequent runs reuse the image.
+
+**Container sub-flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--container-gpus SPEC` | NVIDIA GPU pass-through (e.g. `all`, `"device=0,1"`). Requires NVIDIA Container Toolkit. |
+| `--container-mount HOST:CONTAINER[:ro]` | Extra bind mount. Repeatable. Prefer `:ro`. |
+| `--container-memory SIZE` | Hard memory cap (e.g. `16g`). Default: unlimited. |
+| `--container-shm-size SIZE` | `/dev/shm` size (default: `4g`). Raise for PyTorch DataLoader. |
+| `--container-tmp-size SIZE` | `/tmp` tmpfs size (default: `16g`). Backed by host RAM. |
+
+**Isolation posture:** non-root user, read-only rootfs, `--cap-drop=ALL`, no host mounts by default, outbound network allowed.
+
+**What crosses the boundary:**
+
+| Resource | Default behavior |
+|---|---|
+| `~/.onit/config.yaml` | Bind-mounted read-only |
+| Host keychain secrets | Passed as ephemeral env vars |
+| Session data | Named volume `onit-data` (writable, persistent) |
+| Ports | Published only for the active mode |
+| Host filesystem | Nothing beyond config/secrets unless `--container-mount` is set |
+
+**Published ports by mode:**
+
+| Mode | Default port | Override |
+|---|---|---|
+| (terminal) | — (no ports) | — |
+| `serve web` | `9000:9000` | `--port` |
+| `serve a2a` | `9001:9001` | `--port` |
+| `serve gateway viber` | `8443:8443` | `--port` |
+
+See [docs/DOCKER.md](docs/DOCKER.md) for full details.
+
+### `--unrestricted`
+
+Runs OnIt with lifted filesystem restrictions on the host — the agent can read/write any path, use any working directory, and install packages freely (pip, apt, brew, etc.). Use only in trusted, isolated environments.
+
+```bash
+onit --unrestricted
+```
+
+Catastrophic commands (disk wipe, reboot, kernel module loading) are always blocked regardless of this flag.
+
+## MCP Tool Integration
+
+MCP servers start automatically. Tools are auto-discovered and available to the agent.
+
+| Server | Description |
+|--------|-------------|
+| PromptsMCPServer | Prompt templates for instruction generation |
+| ToolsMCPServer | Web search, bash commands, file operations, and document tools |
+
+Connect to additional external MCP servers:
+
+```bash
+onit --mcp-sse http://localhost:8080/sse
+onit --mcp-server http://localhost:8080/mcp
+```
 
 ## Model Serving
 
@@ -409,7 +425,7 @@ Browse available models at [openrouter.ai/models](https://openrouter.ai/models).
 
 ### Ollama Cloud
 
-[Ollama cloud](https://ollama.com) hosts models that are accessed via the native [Ollama Python SDK](https://github.com/ollama/ollama-python). Store your API key once:
+[Ollama cloud](https://ollama.com) hosts models accessed via the native [Ollama Python SDK](https://github.com/ollama/ollama-python). Store your API key once:
 
 ```bash
 onit setup   # enter your Ollama API key when prompted
@@ -436,7 +452,7 @@ serving:
   model: gemma4:31b-cloud
 ```
 
-> **Note:** Ollama cloud uses the `ollama_api_key` keyring entry (the same key used for the web search tool). Generation parameters (`temperature`, `top_p`, `top_k`, `--think`) are fully supported.
+> **Note:** Ollama cloud uses the `ollama_api_key` keyring entry (the same key used for the web search tool).
 
 ## Architecture
 
