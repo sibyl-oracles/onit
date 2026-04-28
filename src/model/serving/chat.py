@@ -874,6 +874,7 @@ _PLANNING_PREFIXES = (
     "let me ", "i will ", "i'll ", "i'm going to ", "i am going to ",
     "now i'll ", "now i will ", "first i'll ", "first i will ",
     "next i'll ", "next i will ", "then i'll ", "then i will ",
+    "the user wants me to ",
 )
 
 def _is_planning_response(content: str) -> bool:
@@ -1251,9 +1252,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_REPEATED_TOOL_CALLS = 30
     MAX_API_RETRIES = 3
     MAX_PLANNING_CONTINUATIONS = 2
-    # JSON tool call is 15-30 tokens.  Cap at 64 so a 0.1 tok/s model wastes
-    # at most ~10 min per continuation attempt instead of 85+ min.
-    CONTINUATION_MAX_TOKENS = 64
+    # JSON tool call is 15-30 tokens but some models (e.g. deepseek) prepend
+    # thinking tokens before the JSON.  512 gives enough headroom while still
+    # bounding time on very slow models (~85 min at 0.1 tok/s worst case).
+    CONTINUATION_MAX_TOKENS = 512
     CONTEXT_COMPACT_THRESHOLD = 0.90
     iteration_count = 0
     planning_continuation_count = 0
@@ -1545,9 +1547,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             return _extract_final_response(_content, _full_reasoning, _full_content)
 
         # Structured tool calls: execute them and loop back.
-        # Reset force/token flags — the model successfully called a tool.
+        # Reset force/token/planning flags — the model successfully called a tool.
         _force_tool_call = False
         _active_max_tokens = max_tokens
+        planning_continuation_count = 0
         bail = await _handle_structured_tool_calls(
             tool_calls, _message_for_history, tool_registry,
             timeout, data_path, chat_ui, verbose,
