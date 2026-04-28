@@ -50,6 +50,14 @@ SECRETS = [
      "HF_TOKEN"),
 ]
 
+# Lookup table: keyring_key → env_var_name (for keys that have one).
+# Used by get_secret() to check env vars before keyring/file — critical in
+# container mode where the OS keychain is unreachable but the container
+# launcher injects secrets as env vars (e.g. GITHUB_TOKEN).
+_SECRET_ENV_MAP: dict[str, str] = {
+    key: env for key, _, env in SECRETS if env
+}
+
 # ── Non-secret settings ────────────────────────────────────────────
 # (dot_path, prompt_label, default_value)
 SETTINGS = [
@@ -134,7 +142,17 @@ def store_secret(key: str, value: str):
 
 
 def get_secret(key: str) -> str | None:
-    """Retrieve a secret from the OS keychain, falling back to file storage."""
+    """Retrieve a secret: env var > OS keychain > file fallback.
+
+    Checking the env var first makes this work inside containers where the
+    host OS keychain is unreachable but the launcher injected secrets as env
+    vars (e.g. GITHUB_TOKEN bridged in by container_launcher).
+    """
+    env_var = _SECRET_ENV_MAP.get(key)
+    if env_var:
+        val = os.environ.get(env_var)
+        if val:
+            return val
     if KEYRING_AVAILABLE:
         try:
             val = keyring.get_password(SERVICE_NAME, key)
