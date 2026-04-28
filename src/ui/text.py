@@ -918,7 +918,7 @@ class ChatUI:
         header.append("╚" + "═" * 50 + "╝", style=self.theme.styles.get("prompt", "bold blue"))
         self.console.print(Align.center(header))
         self.console.print()
-        self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey58 on grey11")))
+        self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey50 on black")))
 
     def _input_with_history(self, prompt: str = "➤ ") -> str:
         """Dispatch to the platform-appropriate raw-input implementation."""
@@ -1279,7 +1279,7 @@ class ChatUI:
         while True:
             self.console.clear()
             self.console.print(self.render())
-            self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey58 on grey11")))
+            self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey50 on black")))
             try:
                 self.console.print()
                 user_input = self._input_with_history("➤ ")
@@ -1289,7 +1289,7 @@ class ChatUI:
                 # Show panel with the user's message, then a plain (non-Live)
                 # thinking indicator so the console is free for streaming tokens.
                 self.console.print(self.render())
-                self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey58 on grey11")))
+                self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey50 on black")))
                 self.console.print()
                 return user_input
             # capture control-d
