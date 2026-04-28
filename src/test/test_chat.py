@@ -364,7 +364,7 @@ class TestPlanningContinuation:
         # tool_choice should be "required" to force tool use (OpenAI/vLLM path)
         assert second_call_kwargs.get("tool_choice") == "required"
         # max_tokens should be capped to limit time waste on a stuck model
-        assert second_call_kwargs.get("max_tokens") == 64
+        assert second_call_kwargs.get("max_tokens") == 512
 
     @pytest.mark.asyncio
     async def test_planning_without_tools_no_continuation(self):
