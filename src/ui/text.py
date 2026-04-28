@@ -495,8 +495,8 @@ class ChatUI:
         """Render thinking indicator in input panel"""
         thinking = Text()
         thinking.append("🤖 ", style="bold")
-        thinking.append("Assistant is thinking", style="bold magenta")
-        thinking.append("...", style="magenta blink")
+        thinking.append("Assistant is thinking", style="bright_white")
+        thinking.append("...", style="bright_white blink")
         
         return Panel(
             thinking,
@@ -718,15 +718,15 @@ class ChatUI:
             self._stream_think_started = True
             self.console.print(
                 f"┌─ 💭 Thinking [{self.format_timestamp()}]",
-                style="dim italic",
+                style="bright_white",
             )
-        print(f"\033[2m\033[3m{token}\033[0m", end="", flush=True)
+        self.console.print(token, end="", style="bright_white")
 
     def stream_think_end(self) -> None:
         """Close the thinking block if it is open."""
         if self._stream_think_started:
             print()  # newline after last think token
-            self.console.print("└" + "─" * 40, style="dim")
+            self.console.print("└" + "─" * 40, style="bright_white")
             self._stream_think_started = False
 
     def stream_token(self, token: str) -> None:
@@ -918,7 +918,7 @@ class ChatUI:
         header.append("╚" + "═" * 50 + "╝", style=self.theme.styles.get("prompt", "bold blue"))
         self.console.print(Align.center(header))
         self.console.print()
-        self.console.print("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey50 on #000000", justify="center")
+        self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
 
     def _input_with_history(self, prompt: str = "➤ ") -> str:
         """Dispatch to the platform-appropriate raw-input implementation."""
@@ -1279,7 +1279,7 @@ class ChatUI:
         while True:
             self.console.clear()
             self.console.print(self.render())
-            self.console.print("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey50 on #000000", justify="center")
+            self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
             try:
                 self.console.print()
                 user_input = self._input_with_history("➤ ")
@@ -1289,7 +1289,7 @@ class ChatUI:
                 # Show panel with the user's message, then a plain (non-Live)
                 # thinking indicator so the console is free for streaming tokens.
                 self.console.print(self.render())
-                self.console.print("OnIt may produce inaccurate information. Verify important details independently.", style="italic grey50 on #000000", justify="center")
+                self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
                 self.console.print()
                 return user_input
             # capture control-d
