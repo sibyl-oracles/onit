@@ -217,6 +217,39 @@ def _validate_dir_path(dir_path: str) -> str:
     )
 
 
+def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
+    """Load GITHUB_TOKEN from keyring when absent, then set up GIT_ASKPASS.
+
+    Git will call GIT_ASKPASS for each credential prompt; the script echoes
+    'x-access-token' for username prompts and the token for all others.
+    GIT_TERMINAL_PROMPT=0 prevents git from falling back to an interactive tty.
+    """
+    if "GITHUB_TOKEN" not in env:
+        try:
+            from src.setup import get_secret
+            token = get_secret("github_token")
+            if token:
+                env["GITHUB_TOKEN"] = token
+                env.setdefault("GH_TOKEN", token)
+        except Exception:
+            pass
+
+    if env.get("GITHUB_TOKEN") and "GIT_ASKPASS" not in env:
+        askpass = os.path.join(tmp_dir, "git_askpass.sh")
+        if not os.path.isfile(askpass):
+            with open(askpass, "w") as f:
+                f.write(
+                    "#!/bin/sh\n"
+                    'case "$1" in\n'
+                    '  *[Uu]sername*) echo "x-access-token" ;;\n'
+                    '  *) echo "$GITHUB_TOKEN" ;;\n'
+                    "esac\n"
+                )
+            os.chmod(askpass, 0o700)
+        env["GIT_ASKPASS"] = askpass
+        env["GIT_TERMINAL_PROMPT"] = "0"
+
+
 def _get_sandbox_env() -> dict:
     """Build a minimal environment dict for sandboxed shell execution.
     Strips most inherited env vars but preserves HOME and credential-related
@@ -252,6 +285,7 @@ def _get_sandbox_env() -> dict:
         target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
         if target_env_bin and os.path.isdir(target_env_bin):
             env["PATH"] = target_env_bin + os.pathsep + env.get("PATH", "")
+        _inject_github_credentials(env, tmp_dir)
         _SANDBOX_ENV = env
         return dict(env)
 
@@ -320,6 +354,7 @@ def _get_sandbox_env() -> dict:
     if DOCUMENTS_PATH:
         env["DOCUMENTS_PATH"] = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
 
+    _inject_github_credentials(env, tmp_dir)
     _SANDBOX_ENV = env
     return dict(env)
 
