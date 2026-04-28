@@ -257,9 +257,10 @@ class OnItA2AExecutor(AgentExecutor):
                     f.write("")
             configured_data_path = self.onit.config_data.get('data_path')
             if configured_data_path:
-                data_path = str(Path(configured_data_path).expanduser().resolve())
+                base_path = str(Path(configured_data_path).expanduser().resolve())
             else:
-                data_path = str(Path.home() / "sandbox")
+                base_path = str(Path.home() / "sandbox")
+            data_path = os.path.join(base_path, session_id)
             os.makedirs(data_path, exist_ok=True)
             self._sessions[key] = {
                 "session_id": session_id,
