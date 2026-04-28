@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 import threading
@@ -374,6 +375,55 @@ def _is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
         return False
 
 
+def _resolve_env_bin(env_name_or_path: str) -> str | None:
+    """Resolve a conda env name or path to its bin directory.
+
+    Accepts either an environment name (e.g. "env_B") or an absolute path
+    (e.g. "/home/user/miniconda3/envs/env_B"). Returns the bin/ directory
+    path if found, or None if the environment cannot be located.
+    """
+    expanded = os.path.expanduser(env_name_or_path)
+
+    # Absolute path given — use bin/ directly
+    if os.path.isabs(expanded):
+        bin_dir = os.path.join(expanded, "bin")
+        return bin_dir if os.path.isdir(bin_dir) else None
+
+    # Try conda to resolve by name
+    try:
+        result = subprocess.run(
+            ["conda", "info", "--envs", "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            import json as _json
+            info = _json.loads(result.stdout)
+            for env_path in info.get("envs", []):
+                if os.path.basename(env_path) == env_name_or_path:
+                    bin_dir = os.path.join(env_path, "bin")
+                    if os.path.isdir(bin_dir):
+                        return bin_dir
+    except Exception:
+        pass
+
+    # Fall back to common conda prefix locations
+    for root in (
+        os.path.expanduser("~/miniconda3"),
+        os.path.expanduser("~/anaconda3"),
+        os.path.expanduser("~/miniforge3"),
+        os.path.expanduser("~/mambaforge"),
+        os.path.expanduser("~/conda"),
+        "/opt/miniconda3",
+        "/opt/anaconda3",
+        "/opt/conda",
+    ):
+        bin_dir = os.path.join(root, "envs", env_name_or_path, "bin")
+        if os.path.isdir(bin_dir):
+            return bin_dir
+
+    return None
+
+
 def _is_external_server(server: dict) -> bool:
     """Return True if the server was added via --mcp-sse or --mcp-server."""
     name = server.get('name', '')
@@ -596,6 +646,11 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── Isolation ────────────────────────────────────────────────────────────
     parser.add_argument("--sandbox", action="store_true", default=None,
                         help="Delegate code execution to an external MCP sandbox provider.")
+    parser.add_argument("--target-env", type=str, default=None, dest="target_env",
+                        help="Conda environment name or path for code execution "
+                             "(e.g. env_B or ~/miniconda3/envs/env_B). "
+                             "OnIt runs in its own environment while all bash commands "
+                             "use the target environment's Python, pip, and binaries.")
     parser.add_argument("--unrestricted", action="store_true", default=False,
                         help="Run with unrestricted host filesystem access. "
                              "The agent can read/write any path, use any working directory, "
@@ -956,6 +1011,15 @@ def main():
         os.environ['ONIT_UNRESTRICTED'] = '1'
         print("Warning: running in unrestricted mode — agent has full host filesystem access.",
               file=sys.stderr)
+
+    if args.target_env:
+        bin_path = _resolve_env_bin(args.target_env)
+        if bin_path:
+            os.environ['ONIT_TARGET_ENV_BIN'] = bin_path
+            print(f"Target env: {args.target_env} → {bin_path}", file=sys.stderr)
+        else:
+            print(f"Warning: could not locate conda env '{args.target_env}'. "
+                  "Check the name or provide an absolute path.", file=sys.stderr)
 
     _setup_servers(config_data)
     _dispatch_mode(config_data)

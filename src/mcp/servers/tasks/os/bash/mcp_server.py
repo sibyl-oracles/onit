@@ -249,6 +249,9 @@ def _get_sandbox_env() -> dict:
             "TMPDIR": tmp_dir,
             "DATA_PATH": abs_data,
         })
+        target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
+        if target_env_bin and os.path.isdir(target_env_bin):
+            env["PATH"] = target_env_bin + os.pathsep + env.get("PATH", "")
         _SANDBOX_ENV = env
         return dict(env)
 
@@ -264,7 +267,8 @@ def _get_sandbox_env() -> dict:
     # Pass through credential-related env vars if set in the parent environment.
     for var in ("GITHUB_TOKEN", "GH_TOKEN", "GH_CONFIG_DIR",
                 "SSH_AUTH_SOCK", "SSH_AGENT_PID",
-                "GIT_ASKPASS", "GIT_CREDENTIAL_HELPER"):
+                "GIT_ASKPASS", "GIT_CREDENTIAL_HELPER",
+                "ONIT_TARGET_ENV_BIN"):
         val = os.environ.get(var)
         if val:
             env[var] = val
@@ -306,7 +310,12 @@ def _get_sandbox_env() -> dict:
             "/usr/bin",
             "/bin",
         ]
-        env["PATH"] = ":".join(p for p in path_parts if os.path.isdir(p))
+        base_path = ":".join(p for p in path_parts if os.path.isdir(p))
+        target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
+        if target_env_bin and os.path.isdir(target_env_bin):
+            env["PATH"] = target_env_bin + ":" + base_path
+        else:
+            env["PATH"] = base_path
 
     if DOCUMENTS_PATH:
         env["DOCUMENTS_PATH"] = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
@@ -549,6 +558,11 @@ def _validate_bash_command(command: str) -> str | None:
     abs_data_lower = abs_data.lower() if IS_WINDOWS else abs_data
     abs_docs_lower = abs_docs.lower() if (IS_WINDOWS and abs_docs) else abs_docs
 
+    target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
+    # Allow the entire env prefix (parent of bin/) so scripts can reference
+    # env_B's lib/, include/, share/, etc. with absolute paths.
+    target_env_prefix = os.path.normpath(os.path.dirname(target_env_bin)) if target_env_bin else None
+
     def _is_allowed_path(p: str) -> bool:
         """Check if a path is within allowed directories or is a standard tool path."""
         norm = os.path.normpath(p)
@@ -563,6 +577,9 @@ def _validate_bash_command(command: str) -> str | None:
                 return True
             if abs_docs and norm.startswith(abs_docs):
                 return True
+        # Allow the target conda env (bin/, lib/, share/, etc.)
+        if target_env_prefix and norm.startswith(target_env_prefix):
+            return True
         # Allow standard Unix tool/device paths (check against original path
         # since os.path.normpath on Windows converts /usr/bin to \usr\bin)
         if p.startswith(('/usr/bin/', '/usr/local/bin/', '/bin/',
