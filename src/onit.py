@@ -1202,6 +1202,8 @@ class OnIt(BaseModel):
         if self.web:
             return
         import sys
+        if hasattr(self, 'chat_ui') and self.chat_ui and hasattr(self.chat_ui, 'stop_thinking'):
+            self.chat_ui.stop_thinking()
         try:
             loop.remove_reader(sys.stdin.fileno())
         except Exception:

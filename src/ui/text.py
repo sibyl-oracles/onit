@@ -131,6 +131,7 @@ class ChatUI:
         ]
         self._spinner_step = 0
         self._spinner_timer: Optional[threading.Timer] = None
+        self._spinner_stop_event: Optional[threading.Event] = None
         self._thinking_stop_event: Optional[threading.Event] = None
         self._thinking_thread: Optional[threading.Thread] = None
         self.model_name = ""  # auto-detected model name, set by chat()
@@ -511,6 +512,7 @@ class ChatUI:
     def start_status(self) -> None:
         """Start the status spinner with rotating messages."""
         self._spinner_step = 0
+        self._spinner_stop_event = threading.Event()
         self._update_spinner_text()
         self.status.start()
         self._schedule_spinner_rotation()
@@ -523,12 +525,16 @@ class ChatUI:
 
     def _schedule_spinner_rotation(self) -> None:
         """Schedule the next spinner message rotation."""
+        if self._spinner_stop_event and self._spinner_stop_event.is_set():
+            return
         self._spinner_timer = threading.Timer(3.0, self._rotate_spinner)
         self._spinner_timer.daemon = True
         self._spinner_timer.start()
 
     def _rotate_spinner(self) -> None:
         """Advance to the next spinner message and schedule the next rotation."""
+        if self._spinner_stop_event and self._spinner_stop_event.is_set():
+            return
         self._spinner_step += 1
         self._update_spinner_text()
         self._schedule_spinner_rotation()
@@ -539,6 +545,8 @@ class ChatUI:
 
         Handles cases where status might not be initialized or already stopped.
         """
+        if self._spinner_stop_event:
+            self._spinner_stop_event.set()
         try:
             if self._spinner_timer:
                 self._spinner_timer.cancel()
@@ -554,9 +562,13 @@ class ChatUI:
 
     def _start_thinking_spinner(self) -> None:
         """Start a background thread that shows an animated spinner with rotating messages."""
+        # Stop any existing spinner to prevent zombie threads from accumulating
+        self._stop_thinking_spinner()
         self._thinking_stop_event = threading.Event()
 
         _FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        _stop_event = self._thinking_stop_event  # capture local ref; avoids NoneType if cleared
 
         def _animate() -> None:
             # Show blinking block cursor while thinking
@@ -576,7 +588,7 @@ class ChatUI:
                 # Rotate message every ~30 frames (~2.4s at 80ms/frame)
                 if ticks % 30 == 0:
                     msg_idx += 1
-                if self._thinking_stop_event.wait(0.08):
+                if _stop_event.wait(0.08):
                     break
 
         self._thinking_thread = threading.Thread(target=_animate, daemon=True)
@@ -1276,6 +1288,7 @@ class ChatUI:
     def get_user_input(self) -> str:
         """Get user input from the console with history support (up/down arrows)"""
         self.stop_status()
+        self.stop_thinking()  # ensure no spinner thread is writing to stdout while user types
         while True:
             self.console.clear()
             self.console.print(self.render())
