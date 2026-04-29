@@ -706,7 +706,8 @@ async def _process_streaming_response(
             if ui_streaming and chat_ui:
                 chat_ui.stream_end()
             return None
-        # Capture usage from the final chunk (stream_options include_usage=True)
+        # Capture usage from the final chunk (stream_options include_usage=True).
+        # This must be read before stream_end() so set_context_usage can fire first.
         if chunk.usage is not None:
             usage = chunk.usage
         if not chunk.choices:
@@ -779,9 +780,6 @@ async def _process_streaming_response(
                         ui_streaming = True
                     chat_ui.stream_token(token)
 
-    if ui_streaming and chat_ui:
-        chat_ui.stream_end()
-
     return full_content, full_reasoning, full_tool_calls, ui_streaming, usage, finish_reason
 
 
@@ -805,6 +803,7 @@ async def _ollama_process_streaming_response(
     full_thinking = ""
     tool_calls = None
     ui_streaming = False
+    prompt_eval_count = 0
 
     try:
         async for chunk in chat_completion:
@@ -816,6 +815,11 @@ async def _ollama_process_streaming_response(
             # Tool calls arrive complete in the final chunk
             if chunk.message.tool_calls:
                 tool_calls = chunk.message.tool_calls
+
+            # Capture prompt token count from final chunk for context tracking.
+            pec = getattr(chunk, "prompt_eval_count", None)
+            if pec:
+                prompt_eval_count = pec
 
             # Thinking tokens (Ollama native think support)
             thinking_tok = getattr(chunk.message, "thinking", None)
@@ -839,10 +843,7 @@ async def _ollama_process_streaming_response(
     except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
         logging.getLogger(__name__).warning("Ollama stream interrupted: %s", e)
 
-    if ui_streaming and chat_ui:
-        chat_ui.stream_end()
-
-    return full_content, full_thinking, tool_calls, ui_streaming
+    return full_content, full_thinking, tool_calls, ui_streaming, prompt_eval_count
 
 
 def _unify_streaming_result(
@@ -1361,7 +1362,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         )
                         if stream_result is None:
                             return None
-                        _full_content, _full_reasoning, _ollama_tcs, _ = stream_result
+                        _full_content, _full_reasoning, _ollama_tcs, _ui_was_streaming, _ollama_prompt_tokens = stream_result
+                        if _ollama_prompt_tokens:
+                            _last_prompt_tokens = _ollama_prompt_tokens
+                            if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                                chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        if _ui_was_streaming and chat_ui:
+                            chat_ui.stream_end()
                         if _ollama_tcs:
                             _tool_calls = _adapt_ollama_tool_calls(_ollama_tcs)
                             # arguments must be dict in the history message (Ollama validates this)
@@ -1386,11 +1393,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         )
                         if stream_result is None:
                             return None
-                        _full_content, _full_reasoning, _full_tool_calls, _, _stream_usage, _finish_reason = stream_result
+                        _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
                         if _stream_usage is not None:
                             _last_prompt_tokens = _stream_usage.prompt_tokens
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        if _ui_was_streaming and chat_ui:
+                            chat_ui.stream_end()
                         if _finish_reason == "length":
                             _log_to_ui_or_verbose(
                                 "Model response truncated (finish_reason=length). "
