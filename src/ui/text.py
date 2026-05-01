@@ -22,6 +22,7 @@ If not, it will fall back to standard print statements.
 '''
 import asyncio
 import json
+import os
 import sys
 import time
 import threading
@@ -1013,12 +1014,13 @@ class ChatUI:
     def _handle_delete_key(
         current_input: list[str],
         cursor_pos: int,
+        fd: int,
     ) -> tuple[list[str], int]:
         """Handle the Delete key (ESC [ 3 ~), removing the char at cursor_pos."""
-        rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+        rlist, _, _ = _select.select([fd], [], [], 0.05)
         if not rlist:
             return current_input, cursor_pos
-        next3 = sys.stdin.read(1)
+        next3 = os.read(fd, 1).decode('utf-8', errors='replace')
         if next3 == '~' and cursor_pos < len(current_input):
             del current_input[cursor_pos]
             sys.stdout.write(''.join(current_input[cursor_pos:]) + ' ')
@@ -1027,7 +1029,7 @@ class ChatUI:
         return current_input, cursor_pos
 
     @staticmethod
-    def _drain_escape_sequence() -> None:
+    def _drain_escape_sequence(fd: int) -> None:
         """Drain remaining bytes of an unrecognized escape sequence without blocking.
 
         Reads until no byte arrives within 20 ms or a typical sequence terminator
@@ -1036,10 +1038,10 @@ class ChatUI:
         etc.) from leaking into normal character input.
         """
         while True:
-            rlist, _, _ = _select.select([sys.stdin], [], [], 0.02)
+            rlist, _, _ = _select.select([fd], [], [], 0.02)
             if not rlist:
                 break
-            ch = sys.stdin.read(1)
+            ch = os.read(fd, 1).decode('utf-8', errors='replace')
             if ch == '~' or ('A' <= ch <= 'Z'):
                 break
 
@@ -1110,7 +1112,7 @@ class ChatUI:
             num_display_lines = 1
 
             while True:
-                char = sys.stdin.read(1)
+                char = os.read(fd, 1).decode('utf-8', errors='replace')
 
                 if char in ('\r', '\n'):
                     if in_paste:
@@ -1145,16 +1147,16 @@ class ChatUI:
                     # ESC key from the start of a multi-byte terminal sequence.
                     # Without this, a bare ESC press would block the next read(1)
                     # call and silently consume (drop) the following keypress.
-                    rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                    rlist, _, _ = _select.select([fd], [], [], 0.05)
                     if not rlist:
                         continue  # Standalone ESC — ignore, nothing to drop
 
-                    next1 = sys.stdin.read(1)
+                    next1 = os.read(fd, 1).decode('utf-8', errors='replace')
                     if next1 == '[':
-                        rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                        rlist, _, _ = _select.select([fd], [], [], 0.05)
                         if not rlist:
                             continue
-                        next2 = sys.stdin.read(1)
+                        next2 = os.read(fd, 1).decode('utf-8', errors='replace')
                         if next2 in ('A', 'B', 'C', 'D'):  # Arrow keys only
                             current_input, cursor_pos, temp_history_index, saved_input, num_display_lines = (
                                 self._handle_arrow_keys(
@@ -1166,41 +1168,41 @@ class ChatUI:
                             # \e[2~  = Insert key
                             # \e[200~ = bracketed-paste start
                             # \e[201~ = bracketed-paste end
-                            rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                            rlist, _, _ = _select.select([fd], [], [], 0.05)
                             if not rlist:
                                 continue
-                            next3 = sys.stdin.read(1)
+                            next3 = os.read(fd, 1).decode('utf-8', errors='replace')
                             if next3 == '~':
                                 pass  # Insert key — ignore
                             elif next3 == '0':
                                 # Could be \e[20~  (F9) or \e[200~/\e[201~ (paste)
-                                rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                                rlist, _, _ = _select.select([fd], [], [], 0.05)
                                 if not rlist:
                                     continue
-                                next4 = sys.stdin.read(1)
+                                next4 = os.read(fd, 1).decode('utf-8', errors='replace')
                                 if next4 == '~':
                                     pass  # \e[20~ = F9 — ignore (was the bug: previously
                                           # read one extra byte here, dropping user input)
                                 elif next4 in ('0', '1'):
                                     # \e[200~ or \e[201~: one more byte expected ('~')
-                                    rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                                    rlist, _, _ = _select.select([fd], [], [], 0.05)
                                     if rlist:
-                                        next5 = sys.stdin.read(1)
+                                        next5 = os.read(fd, 1).decode('utf-8', errors='replace')
                                         if next5 == '~':
                                             in_paste = (next4 == '0')
                                 else:
-                                    self._drain_escape_sequence()
+                                    self._drain_escape_sequence(fd)
                             else:
-                                self._drain_escape_sequence()
+                                self._drain_escape_sequence(fd)
                         elif next2 == '3':  # Delete key: \e[3~
                             current_input, cursor_pos = self._handle_delete_key(
-                                current_input, cursor_pos,
+                                current_input, cursor_pos, fd,
                             )
                         else:
                             # Unrecognised sequence (Home \e[H/\e[1~, End \e[F/\e[4~,
                             # PgUp \e[5~, PgDn \e[6~, Fn keys, etc.).
                             # Drain any remaining bytes so they don't appear as text.
-                            self._drain_escape_sequence()
+                            self._drain_escape_sequence(fd)
 
                 elif char in ('\x7f', '\b'):  # Backspace
                     current_input, cursor_pos = self._handle_backspace(
