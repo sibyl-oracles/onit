@@ -1253,11 +1253,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_REPEATED_TOOL_CALLS = 30
     MAX_API_RETRIES = 3
     MAX_PLANNING_CONTINUATIONS = 2
-    # JSON tool call is 15-30 tokens but some models (e.g. deepseek) prepend
-    # thinking tokens before the JSON.  512 gives enough headroom while still
-    # bounding time on very slow models (~85 min at 0.1 tok/s worst case).
-    CONTINUATION_MAX_TOKENS = 512
-    CONTEXT_COMPACT_THRESHOLD = 0.90
+    # Continuation token budget: thinking models can emit thousands of reasoning tokens
+    # before the tool-call JSON, so give them the full max_tokens when think=True.
+    # Without thinking, 512 is still enough for any tool-call JSON payload.
+    CONTINUATION_MAX_TOKENS = max_tokens if think else 512
+    # Compaction threshold: fire early enough that prompt_tokens + max_tokens still fits
+    # within the context window after new messages are added (tool results, etc.).
+    # Reserve max_tokens output budget + 5% of the window as a safety buffer.
+    if max_context_tokens:
+        _reserved = max_tokens + int(max_context_tokens * 0.05)
+        CONTEXT_COMPACT_THRESHOLD = min(0.90, max(0.50, 1.0 - _reserved / max_context_tokens))
+    else:
+        CONTEXT_COMPACT_THRESHOLD = 0.90
     iteration_count = 0
     planning_continuation_count = 0
     tool_call_history: list = []  # list of (name, args_json) tuples
@@ -1306,6 +1313,15 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
                     return None
 
+                # Cap output tokens to the space remaining in the context window.
+                # _last_prompt_tokens is from the previous call; add a 512-token buffer
+                # for messages appended since then (tool results, etc.).
+                _api_max_tokens = _active_max_tokens
+                if max_context_tokens and _last_prompt_tokens > 0:
+                    _available = max_context_tokens - _last_prompt_tokens - 512
+                    if _available < _api_max_tokens:
+                        _api_max_tokens = max(_available, 64)
+
                 if is_ollama:
                     ollama_kwargs = dict(
                         model=model,
@@ -1315,7 +1331,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             "temperature": temperature,
                             "top_p": top_p,
                             "top_k": top_k,
-                            "num_predict": _active_max_tokens,
+                            "num_predict": _api_max_tokens,
                             "presence_penalty": presence_penalty,
                             "repeat_penalty": repetition_penalty,
                         },
@@ -1339,7 +1355,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         tool_choice="required" if (_force_tool_call and tools) else "auto",
                         temperature=temperature,
                         top_p=top_p,
-                        max_tokens=_active_max_tokens,
+                        max_tokens=_api_max_tokens,
                         extra_body={
                             "top_k": top_k,          # vLLM extension, important for Qwen3
                             "min_p": min_p,

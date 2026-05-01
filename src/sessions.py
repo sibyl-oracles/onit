@@ -220,17 +220,26 @@ def resolve_session(identifier: str,
 def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Return the most recently updated session ID."""
     index = _load_index(sessions_dir)
+    sessions_path = Path(sessions_dir)
+
     if not index:
-        # Fall back to file modification time
-        sessions_path = Path(sessions_dir)
         jsonl_files = list(sessions_path.glob("*.jsonl"))
         if not jsonl_files:
             return None
         jsonl_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return jsonl_files[0].stem
-    # Sort by updated timestamp
+
+    # Use max(index updated, file mtime) so sessions modified by text-mode chat
+    # (which doesn't call update_session) are still ranked by actual last use.
+    def _effective_ts(sid: str, meta: dict) -> float:
+        idx_ts = meta.get("updated", 0)
+        try:
+            return max(idx_ts, (sessions_path / f"{sid}.jsonl").stat().st_mtime)
+        except OSError:
+            return idx_ts
+
     sorted_sessions = sorted(index.items(),
-                             key=lambda x: x[1].get("updated", 0),
+                             key=lambda x: _effective_ts(x[0], x[1]),
                              reverse=True)
     return sorted_sessions[0][0] if sorted_sessions else None
 

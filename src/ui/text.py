@@ -29,6 +29,7 @@ import threading
 if sys.platform != "win32":
     import tty
     import termios
+    import select as _select
 else:
     import msvcrt
 from collections import deque
@@ -1013,11 +1014,10 @@ class ChatUI:
         current_input: list[str],
         cursor_pos: int,
     ) -> tuple[list[str], int]:
-        """Handle the Delete key (ESC [ 3 ~), removing the char at cursor_pos.
-
-        Returns:
-            Updated (current_input, cursor_pos).
-        """
+        """Handle the Delete key (ESC [ 3 ~), removing the char at cursor_pos."""
+        rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+        if not rlist:
+            return current_input, cursor_pos
         next3 = sys.stdin.read(1)
         if next3 == '~' and cursor_pos < len(current_input):
             del current_input[cursor_pos]
@@ -1025,6 +1025,23 @@ class ChatUI:
             sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
             sys.stdout.flush()
         return current_input, cursor_pos
+
+    @staticmethod
+    def _drain_escape_sequence() -> None:
+        """Drain remaining bytes of an unrecognized escape sequence without blocking.
+
+        Reads until no byte arrives within 20 ms or a typical sequence terminator
+        ('~' or an uppercase ASCII letter) is seen — whichever comes first.
+        This prevents stray bytes from unhandled sequences (PgUp, PgDn, Fn keys,
+        etc.) from leaking into normal character input.
+        """
+        while True:
+            rlist, _, _ = _select.select([sys.stdin], [], [], 0.02)
+            if not rlist:
+                break
+            ch = sys.stdin.read(1)
+            if ch == '~' or ('A' <= ch <= 'Z'):
+                break
 
     @staticmethod
     def _handle_backspace(
@@ -1124,34 +1141,66 @@ class ChatUI:
                     raise EOFError
 
                 elif char == '\x1b':  # Escape sequence
+                    # Use select with a 50 ms timeout to distinguish a standalone
+                    # ESC key from the start of a multi-byte terminal sequence.
+                    # Without this, a bare ESC press would block the next read(1)
+                    # call and silently consume (drop) the following keypress.
+                    rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                    if not rlist:
+                        continue  # Standalone ESC — ignore, nothing to drop
+
                     next1 = sys.stdin.read(1)
                     if next1 == '[':
+                        rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                        if not rlist:
+                            continue
                         next2 = sys.stdin.read(1)
-                        if next2 == '2':
-                            # Check for bracketed paste: \e[200~ (start) or \e[201~ (end)
-                            next3 = sys.stdin.read(1)
-                            if next3 == '0':
-                                next4 = sys.stdin.read(1)
-                                next5 = sys.stdin.read(1)  # should be '~'
-                                if next4 == '0' and next5 == '~':
-                                    in_paste = True
-                                elif next4 == '1' and next5 == '~':
-                                    in_paste = False
-                                # else: unknown sequence, discard
-                            elif next3 == '~':
-                                pass  # Insert key (\e[2~), ignore
-                            # else: unknown \e[2X sequence, discard
-                        elif next2 == '3':  # Delete key
-                            current_input, cursor_pos = self._handle_delete_key(
-                                current_input, cursor_pos,
-                            )
-                        else:  # Arrow keys (A/B/C/D)
+                        if next2 in ('A', 'B', 'C', 'D'):  # Arrow keys only
                             current_input, cursor_pos, temp_history_index, saved_input, num_display_lines = (
                                 self._handle_arrow_keys(
                                     next2, prompt, current_input, cursor_pos,
                                     temp_history_index, saved_input, num_display_lines,
                                 )
                             )
+                        elif next2 == '2':
+                            # \e[2~  = Insert key
+                            # \e[200~ = bracketed-paste start
+                            # \e[201~ = bracketed-paste end
+                            rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                            if not rlist:
+                                continue
+                            next3 = sys.stdin.read(1)
+                            if next3 == '~':
+                                pass  # Insert key — ignore
+                            elif next3 == '0':
+                                # Could be \e[20~  (F9) or \e[200~/\e[201~ (paste)
+                                rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                                if not rlist:
+                                    continue
+                                next4 = sys.stdin.read(1)
+                                if next4 == '~':
+                                    pass  # \e[20~ = F9 — ignore (was the bug: previously
+                                          # read one extra byte here, dropping user input)
+                                elif next4 in ('0', '1'):
+                                    # \e[200~ or \e[201~: one more byte expected ('~')
+                                    rlist, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                                    if rlist:
+                                        next5 = sys.stdin.read(1)
+                                        if next5 == '~':
+                                            in_paste = (next4 == '0')
+                                else:
+                                    self._drain_escape_sequence()
+                            else:
+                                self._drain_escape_sequence()
+                        elif next2 == '3':  # Delete key: \e[3~
+                            current_input, cursor_pos = self._handle_delete_key(
+                                current_input, cursor_pos,
+                            )
+                        else:
+                            # Unrecognised sequence (Home \e[H/\e[1~, End \e[F/\e[4~,
+                            # PgUp \e[5~, PgDn \e[6~, Fn keys, etc.).
+                            # Drain any remaining bytes so they don't appear as text.
+                            self._drain_escape_sequence()
 
                 elif char in ('\x7f', '\b'):  # Backspace
                     current_input, cursor_pos = self._handle_backspace(

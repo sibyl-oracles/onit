@@ -1264,6 +1264,12 @@ class OnIt(BaseModel):
                 f.write(json.dumps(session_data) + "\n")
         except Exception:
             pass
+        try:
+            from .sessions import update_session
+            update_session(self.session_id, task=task,
+                           sessions_dir=os.path.dirname(self.session_path))
+        except Exception:
+            pass
 
     def _format_elapsed_time(self, elapsed_secs: float) -> str:
         """Format elapsed time string, including tokens/sec if available."""
