@@ -1348,6 +1348,25 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         ollama_kwargs["format"] = "json"
                     chat_completion = await ollama_client.chat(**ollama_kwargs)
                 else:
+                    _extra_body = {
+                        "top_k": top_k,          # vLLM extension, important for Qwen3
+                        "min_p": min_p,
+                        "presence_penalty": presence_penalty,
+                        "repetition_penalty": repetition_penalty,
+                    }
+                    if think:
+                        _chat_template_kwargs: dict = {"enable_thinking": True}
+                        # preserve_thinking is only supported on Qwen3.6+
+                        _model_lower = model.lower()
+                        _qwen3_ver = next(
+                            (float(p.removeprefix("qwen"))
+                             for p in _model_lower.replace("/", "-").split("-")
+                             if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()),
+                            None,
+                        )
+                        if _qwen3_ver is not None and _qwen3_ver >= 3.6:
+                            _chat_template_kwargs["preserve_thinking"] = True
+                        _extra_body["chat_template_kwargs"] = _chat_template_kwargs
                     completion_kwargs = dict(
                         model=model,
                         messages=messages,
@@ -1356,13 +1375,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         temperature=temperature,
                         top_p=top_p,
                         max_tokens=_api_max_tokens,
-                        extra_body={
-                            "top_k": top_k,          # vLLM extension, important for Qwen3
-                            "min_p": min_p,
-                            "presence_penalty": presence_penalty,
-                            "repetition_penalty": repetition_penalty,
-                            "chat_template_kwargs": {"enable_thinking": think},  # if not using CoT
-                        },
+                        extra_body=_extra_body,
                     )
                     if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
                         completion_kwargs["tools"] = tools
