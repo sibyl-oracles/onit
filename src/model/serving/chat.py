@@ -1191,7 +1191,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
     session_id = kwargs.get('session_id', '')
-    max_tokens = kwargs.get('max_tokens', 8192)
+    max_tokens = kwargs.get('max_tokens', 262144)
     temperature = kwargs.get('temperature', 0.6)
     top_p = kwargs.get('top_p', 0.95)
     top_k = kwargs.get('top_k', 20)
@@ -1313,14 +1313,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
                     return None
 
-                # Cap output tokens to the space remaining in the context window.
-                # _last_prompt_tokens is from the previous call; add a 512-token buffer
-                # for messages appended since then (tool results, etc.).
+                # Compute output token budget from available context window space.
+                # _last_prompt_tokens is from the previous call; subtract 512 as a
+                # buffer for messages added since then (tool results, etc.).
+                # For normal calls: expand to all available space so thinking models
+                # and long outputs aren't cut off when context is sparse.
+                # For reduced-budget continuations (_active_max_tokens < max_tokens):
+                # respect the lower limit but still cap at available space.
                 _api_max_tokens = _active_max_tokens
-                if max_context_tokens and _last_prompt_tokens > 0:
-                    _available = max_context_tokens - _last_prompt_tokens - 512
-                    if _available < _api_max_tokens:
-                        _api_max_tokens = max(_available, 64)
+                if max_context_tokens:
+                    _prompt_est = _last_prompt_tokens if _last_prompt_tokens > 0 else 0
+                    _available = max(max_context_tokens - _prompt_est - 512, 64)
+                    if _active_max_tokens < max_tokens:
+                        # Continuation with reduced budget — don't expand, but prevent overflow
+                        _api_max_tokens = min(_available, _active_max_tokens)
+                    else:
+                        # Normal call — use all available context window space
+                        _api_max_tokens = _available
 
                 if is_ollama:
                     ollama_kwargs = dict(

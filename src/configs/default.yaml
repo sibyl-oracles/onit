@@ -4,7 +4,7 @@ serving:
   # host_key: EMPTY  # API key. For OpenRouter set here or via OPENROUTER_API_KEY env var
   # model: auto-detected from endpoint. Set explicitly for OpenRouter.
   think: false
-  max_tokens: 8192
+  max_tokens: 262144
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."
