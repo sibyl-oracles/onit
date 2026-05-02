@@ -1327,9 +1327,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     if _active_max_tokens < max_tokens:
                         # Continuation with reduced budget — don't expand, but prevent overflow
                         _api_max_tokens = min(_available, _active_max_tokens)
-                    else:
-                        # Normal call — use all available context window space
+                    elif _last_prompt_tokens > 0:
+                        # Normal call with known prompt usage — use all available context window space
                         _api_max_tokens = _available
+                    # else: first call, prompt size unknown — keep configured _active_max_tokens
 
                 if is_ollama:
                     ollama_kwargs = dict(
