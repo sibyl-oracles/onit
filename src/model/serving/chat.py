@@ -1323,7 +1323,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _api_max_tokens = _active_max_tokens
                 if max_context_tokens:
                     _prompt_est = _last_prompt_tokens if _last_prompt_tokens > 0 else 0
-                    _available = max(max_context_tokens - _prompt_est - 512, 64)
+                    # Buffer must cover tokens added since the last call (tool results, etc.).
+                    # MAX_TOOL_RESPONSE chars / ~3 chars-per-token gives the token equivalent.
+                    _growth_buffer = max(MAX_TOOL_RESPONSE // 3, 512)
+                    _available = max(max_context_tokens - _prompt_est - _growth_buffer, 64)
                     if _active_max_tokens < max_tokens:
                         # Continuation with reduced budget — don't expand, but prevent overflow
                         _api_max_tokens = min(_available, _active_max_tokens)
