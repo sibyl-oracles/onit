@@ -1304,6 +1304,26 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _full_reasoning = ""
         _finish_reason: str | None = None
 
+        # Pre-call compaction: _last_prompt_tokens is from the previous API call and may
+        # underestimate the true prompt size after large tool results were appended.
+        # If the estimated output budget is critically small, compact now rather than
+        # letting the model hit finish_reason=length with an empty/tag-only response.
+        if max_context_tokens and _last_prompt_tokens > 0:
+            _growth_buffer_pre = max(MAX_TOOL_RESPONSE // 2, 1024)
+            _available_est = max_context_tokens - _last_prompt_tokens - _growth_buffer_pre
+            _min_useful_output = max(256, min(max_tokens // 4, 1024))
+            if _available_est < _min_useful_output:
+                _log_to_ui_or_verbose(
+                    f"Estimated output budget ({max(_available_est, 0):,} tokens) is below "
+                    f"minimum ({_min_useful_output:,}). Compacting context before API call...",
+                    chat_ui, verbose, level="warning",
+                )
+                messages = await _compact_context(
+                    messages, ollama_client if is_ollama else client,
+                    model, max_tokens, chat_ui, verbose, is_ollama=is_ollama,
+                )
+                _last_prompt_tokens = 0
+
         # Retry loop for transient API errors — preserves accumulated messages/tool history
         api_error = None
         for api_attempt in range(1, MAX_API_RETRIES + 1):
@@ -1438,6 +1458,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                 "Consider increasing max_tokens.",
                                 chat_ui, verbose, level="warning",
                             )
+                            # Force compaction at the start of the next loop iteration so
+                            # we don't keep truncating if context is genuinely exhausted.
+                            if max_context_tokens:
+                                _last_prompt_tokens = max_context_tokens
                         elif _finish_reason == "tool_calls" and not _full_tool_calls:
                             _log_to_ui_or_verbose(
                                 f"Model signaled finish_reason=tool_calls but no tool calls received "
@@ -1518,6 +1542,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         "Consider increasing max_tokens.",
                         chat_ui, verbose, level="warning",
                     )
+                    if max_context_tokens:
+                        _last_prompt_tokens = max_context_tokens
                 elif _finish_reason == "tool_calls" and not _tool_calls:
                     _log_to_ui_or_verbose(
                         f"Model signaled finish_reason=tool_calls but no tool calls received "
