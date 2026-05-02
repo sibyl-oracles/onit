@@ -1458,10 +1458,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                 "Consider increasing max_tokens.",
                                 chat_ui, verbose, level="warning",
                             )
-                            # Force compaction at the start of the next loop iteration so
-                            # we don't keep truncating if context is genuinely exhausted.
-                            if max_context_tokens:
-                                _last_prompt_tokens = max_context_tokens
                         elif _finish_reason == "tool_calls" and not _full_tool_calls:
                             _log_to_ui_or_verbose(
                                 f"Model signaled finish_reason=tool_calls but no tool calls received "
@@ -1542,8 +1538,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         "Consider increasing max_tokens.",
                         chat_ui, verbose, level="warning",
                     )
-                    if max_context_tokens:
-                        _last_prompt_tokens = max_context_tokens
                 elif _finish_reason == "tool_calls" and not _tool_calls:
                     _log_to_ui_or_verbose(
                         f"Model signaled finish_reason=tool_calls but no tool calls received "
