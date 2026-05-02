@@ -1314,26 +1314,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     return None
 
                 # Compute output token budget from available context window space.
-                # _last_prompt_tokens is from the previous call; subtract 512 as a
-                # buffer for messages added since then (tool results, etc.).
-                # For normal calls: expand to all available space so thinking models
-                # and long outputs aren't cut off when context is sparse.
-                # For reduced-budget continuations (_active_max_tokens < max_tokens):
-                # respect the lower limit but still cap at available space.
+                # _last_prompt_tokens is from the previous call; add a growth buffer
+                # to account for tokens added since then (tool results, messages, etc.).
+                # Always cap at available space to prevent context overflow errors.
                 _api_max_tokens = _active_max_tokens
                 if max_context_tokens:
                     _prompt_est = _last_prompt_tokens if _last_prompt_tokens > 0 else 0
-                    # Buffer must cover tokens added since the last call (tool results, etc.).
-                    # MAX_TOOL_RESPONSE chars / ~3 chars-per-token gives the token equivalent.
-                    _growth_buffer = max(MAX_TOOL_RESPONSE // 3, 512)
+                    # Use MAX_TOOL_RESPONSE // 2 (not // 3) because code/JSON can be
+                    # ~1.5 chars/token rather than 3, so the same char limit costs more tokens.
+                    _growth_buffer = max(MAX_TOOL_RESPONSE // 2, 1024)
                     _available = max(max_context_tokens - _prompt_est - _growth_buffer, 64)
                     if _active_max_tokens < max_tokens:
                         # Continuation with reduced budget — don't expand, but prevent overflow
                         _api_max_tokens = min(_available, _active_max_tokens)
                     elif _last_prompt_tokens > 0:
-                        # Normal call with known prompt usage — use all available context window space
+                        # Normal call with known prompt usage — expand to all available space
                         _api_max_tokens = _available
-                    # else: first call, prompt size unknown — keep configured _active_max_tokens
+                    # Always cap to prevent overflow — covers first call and stale estimates
+                    _api_max_tokens = min(_api_max_tokens, _available)
 
                 if is_ollama:
                     ollama_kwargs = dict(
