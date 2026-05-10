@@ -29,9 +29,9 @@ class TestFindDefaultConfig:
 
     def test_returns_fallback_when_no_file(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        result = _find_default_config()
-        # Should return the default path string even if file doesn't exist
-        assert "default.yaml" in result
+        with patch("src.cli.os.path.isfile", return_value=False):
+            result = _find_default_config()
+        assert result == "configs/default.yaml"
 
 
 # ── _download_files ─────────────────────────────────────────────────────────

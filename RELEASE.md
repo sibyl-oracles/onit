@@ -10,11 +10,19 @@
 - **VLM Web Image Fetch** — New MCP server (`VlmWebMCPServer`) for fetching and processing images from web URLs in vision-language model workflows.
 - **Web UI Tool Calls** — Tool call details are now shown inline during the spinner/thinking phase in the web UI.
 - **Windows Support** — OnIt now works on Windows with platform-specific fixes for signal handling and terminal UI.
+- **Container Mode** (`--container`) — Run the entire OnIt process inside a hardened Docker container. Supports GPU pass-through (`--container-gpus`), extra bind mounts (`--container-mount`), memory cap (`--container-memory`), and custom `/dev/shm` and `/tmp` sizes.
+- **Plan Mode** (`--plan FILE`) — Load a markdown or text file as the initial prompt/plan for a chat session, useful for kicking off coding or analysis workflows from a prepared specification.
+- **Context Compaction** — Automatic context-window compaction summarises older messages when the context limit is approached, with a streaming inline notification so users can see when compaction occurred.
+- **Target Environment** (`--target-env`) — Point the agent's bash tool at a specific conda or virtual environment's Python, pip, and binaries without leaving the host shell.
+- **Unrestricted Mode** (`--unrestricted`) — Opt-in flag that grants the agent full host filesystem access, lifting the default sandbox path restrictions for power users and CI pipelines.
+- **Ollama Cloud Support** — Connect to hosted Ollama cloud endpoints in addition to local Ollama servers.
 
 ### Improvements
 
 - **Show Logs for Web & A2A** — The `--show-logs` flag now applies to web UI and A2A server modes, not just terminal and gateway.
 - **3 Default MCP Servers** — Added a third default MCP server for VLM web image URL fetching alongside the existing Prompts and Tools servers.
+- **Repetition Penalty** — Repetition penalty is now applied automatically for Ollama models (higher default when thinking mode is off) to reduce output looping.
+- **a2a-sdk 1.0** — Upgraded to `a2a-sdk>=1.0.0` for improved A2A protocol compatibility.
 - **Prompt Engineering** — Improved prompt templates for better instruction generation.
 
 ## v0.1.3c
