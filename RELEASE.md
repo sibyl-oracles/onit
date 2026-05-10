@@ -19,11 +19,23 @@
 
 ### Improvements
 
+- **DeepSeek v4 Compatibility** — Increased continuation token budget (64 → 512) to accommodate models like DeepSeek that prepend thinking tokens before tool-call JSON, preventing premature truncation of tool calls.
 - **Show Logs for Web & A2A** — The `--show-logs` flag now applies to web UI and A2A server modes, not just terminal and gateway.
 - **3 Default MCP Servers** — Added a third default MCP server for VLM web image URL fetching alongside the existing Prompts and Tools servers.
 - **Repetition Penalty** — Repetition penalty is now applied automatically for Ollama models (higher default when thinking mode is off) to reduce output looping.
 - **a2a-sdk 1.0** — Upgraded to `a2a-sdk>=1.0.0` for improved A2A protocol compatibility.
 - **Prompt Engineering** — Improved prompt templates for better instruction generation.
+
+### Bug Fixes
+
+- Fixed token length calculation errors causing premature context truncation.
+- Fixed context compaction triggering incorrectly in some conversation flows.
+- Fixed `max_tokens` handling for models with varying context window sizes.
+- Fixed chat API errors in edge cases with tool call sequences.
+- Fixed planning continuation count not resetting after a successful tool call, which could cause the agent to give up too early on complex multi-tool tasks.
+- Fixed terminal UI rendering issues and text display bugs.
+- Fixed git credential handling in container mode.
+- Fixed `--show` flag not applying correctly in some invocation paths.
 
 ## v0.1.3c
 
