@@ -35,13 +35,14 @@ else:
     import msvcrt
 from collections import deque
 from dataclasses import dataclass
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 from rich.align import Align
 from rich.theme import Theme
 from rich.prompt import Prompt
 from rich.status import Status
+from rich.rule import Rule
 from rich.box import Box
 from rich.box import ROUNDED, HEAVY
 from datetime import datetime
@@ -355,12 +356,12 @@ class ChatUI:
             subtitle_align="right"
         )
 
-    def render_messages(self) -> Panel:
+    def render_messages(self) -> Group:
         """
-        Render all messages in the upper panel with error handling.
+        Render all messages with error handling.
 
         Returns:
-            Panel: A Rich Panel containing the rendered messages
+            Group: A Rich Group containing the rendered messages between horizontal rules
         """
         try:
             if not self.messages:
@@ -396,29 +397,19 @@ class ChatUI:
             else:
                 subtitle = f"Showing last {len(display_msgs)} of {len(self.messages)} messages"
                 subtitle_align = "right"
-            panel = Panel(
-                content,
-                title="[bold white]💬 Chat History[/]",
-                title_align="left",
-                border_style="blue",
-                box=HORIZONTAL_THICK,
-                padding=(1, 0),
-                subtitle=subtitle,
-                subtitle_align=subtitle_align,
-            )
 
-            return panel
+            header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
+            footer = Rule(subtitle, characters="━", style="blue", align=subtitle_align)
+            return Group(header, Text(""), content, footer)
 
         except Exception as e:
             # Fallback rendering on error - ensures UI doesn't crash
-            return Panel(
+            return Group(
+                Rule("[bold red]⚠️  Rendering Error[/]", characters="━", style="red"),
                 Text(f"Error rendering messages: {e}", style="error"),
-                title="[bold red]⚠️  Rendering Error[/]",
-                border_style="red",
-                box=ROUNDED
             )
 
-    def _render_welcome_panel(self) -> Panel:
+    def _render_welcome_panel(self) -> Group:
         """Render welcome message when no messages exist."""
         welcome = Text()
         welcome.append("🤖 ", style="bold")
@@ -427,14 +418,9 @@ class ChatUI:
         welcome.append("Commands: ", style=self.theme.styles.get("user", "bold cyan"))
         welcome.append("'Ctl+c' to close", style=self.theme.styles.get("user", "bold cyan"))
 
-        return Panel(
-            Align.center(welcome, vertical="middle"),
-            title="[bold white]💬 Chat History[/]",
-            title_align="left",
-            border_style="blue",
-            box=HORIZONTAL_THICK,
-            padding=(1, 0)
-        )
+        header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
+        footer = Rule(characters="━", style="blue")
+        return Group(header, Text(""), Align.center(welcome, vertical="middle"), Text(""), footer)
 
     def _render_tool_call_message(self, content: Text, name: str, args_str: str, msg_time: str) -> None:
         content.append(f"┌─ ⚙️  {name} ", style="bold dark_orange3")
@@ -896,7 +882,7 @@ class ChatUI:
         self._link_state = 0
         self._stream_header_printed = False
 
-    def render(self, thinking: bool = False) -> Union[Panel, None]:
+    def render(self, thinking: bool = False) -> Union[Group, None]:
         """
         Render complete layout including chat messages and optionally execution logs.
 
