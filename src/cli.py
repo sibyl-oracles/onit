@@ -759,8 +759,8 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             sys.exit(1)
         with open(rules_path, 'r') as _f:
             rules = _f.read()
-        config_data['prompt_intro'] = f"""You are an expert coding agent.
-Follow these rules precisely when writing, reviewing, or modifying code.
+        config_data['prompt_intro'] = f"""I am an expert coding agent.
+I follow these rules precisely when writing, reviewing, or modifying code.
 
 <rules>
 {rules}
