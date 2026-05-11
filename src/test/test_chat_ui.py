@@ -5,6 +5,7 @@ import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
+from rich.console import Group
 from rich.panel import Panel
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -111,14 +112,14 @@ class TestChatUI:
         assert chat_ui.show_logs is False
 
     def test_render_messages_empty(self, chat_ui):
-        panel = chat_ui.render_messages()
-        assert isinstance(panel, Panel)
+        result = chat_ui.render_messages()
+        assert isinstance(result, Group)
 
     def test_render_messages_with_content(self, chat_ui):
         chat_ui.add_message("user", "hello")
         chat_ui.add_message("assistant", "hi", elapsed="0.5s")
-        panel = chat_ui.render_messages()
-        assert isinstance(panel, Panel)
+        result = chat_ui.render_messages()
+        assert isinstance(result, Group)
 
     def test_render_logs_panel_empty(self, chat_ui):
         panel = chat_ui.render_logs_panel()
@@ -131,14 +132,14 @@ class TestChatUI:
         assert isinstance(panel, Panel)
 
     def test_render_returns_panel(self, chat_ui):
-        panel = chat_ui.render()
-        assert isinstance(panel, Panel)
+        result = chat_ui.render()
+        assert isinstance(result, Group)
 
     def test_render_with_show_logs(self, chat_ui):
         chat_ui.set_show_logs(True)
         chat_ui.add_log("visible log")
-        panel = chat_ui.render()
-        assert isinstance(panel, Panel)
+        result = chat_ui.render()
+        assert isinstance(result, Group)
 
     def test_stop_status_no_error(self, chat_ui):
         # Should not raise even if status is already stopped
