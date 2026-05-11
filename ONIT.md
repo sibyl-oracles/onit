@@ -1,4 +1,4 @@
-# CLAUDE.md — 12-rule template
+# ONIT.md — 12-rule template (borrowed from CLAUDE.md)
 
 These rules apply to every task in this project unless explicitly overridden.
 Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.

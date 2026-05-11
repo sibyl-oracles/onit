@@ -57,6 +57,8 @@ onit serve loop "task" --period 60            # repeat a task on a timer
 
 onit ask "what is the weather in Manila"      # send a task to a running A2A server
 
+onit --rules                                  # load coding rules from ONIT.md
+onit --rules path/to/rules.md                # load coding rules from a custom file
 onit --container                              # run in a hardened Docker container
 onit --sandbox                                # delegate code execution to a sandbox
 onit --unrestricted                           # unrestricted host filesystem access
@@ -156,7 +158,7 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--no-stream` | Disable token streaming | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
-| `--plan FILE` | Path to a `.md` or `.txt` plan file; contents become the system prompt | — |
+| `--rules [FILE]` | Load a coding-rules `.md` file to guide the agent's behaviour. Defaults to `ONIT.md` in the current directory when no path is given | `ONIT.md` |
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | — |
 | `--sandbox` | Delegate code execution to an external MCP sandbox provider | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
@@ -305,6 +307,60 @@ onit serve loop "summarize today's news" --period 3600
 | `task` (positional) | Task to execute repeatedly | required |
 | `--period SECONDS` | Seconds between iterations | `10` (or `period` in config) |
 
+## Coding Rules (`--rules`)
+
+`--rules` injects a Markdown rules file into the agent's system prompt, giving it explicit coding guidelines to follow throughout the session. This is the primary way to improve and customise the agent's coding behaviour.
+
+```bash
+onit --rules                       # load ONIT.md from the current directory (default)
+onit --rules path/to/RULES.md      # load a custom rules file
+onit --rules --host http://localhost:8000/v1   # combine with any other flags
+```
+
+When no file is specified, `--rules` reads `ONIT.md` in the current working directory. The file contents are wrapped in a `<rules>` block and prepended to the system prompt:
+
+```
+You are an expert coding agent.
+Follow these rules precisely when writing, reviewing, or modifying code.
+
+<rules>
+... contents of ONIT.md ...
+</rules>
+```
+
+**Creating your own rules file:**
+
+Place an `ONIT.md` at the root of your project and run `onit --rules`. The agent will follow your rules automatically for every task in that session.
+
+Example `ONIT.md`:
+
+```markdown
+## Style
+- Use snake_case for all identifiers.
+- Maximum line length: 88 characters.
+
+## Tests
+- Every public function must have a test.
+- Tests must assert the business intent, not just the return value.
+
+## Safety
+- Never silence exceptions. Log and re-raise.
+- Validate all external inputs at the boundary.
+```
+
+**With a vLLM or OpenRouter backend:**
+
+```bash
+onit --rules --host http://localhost:8000/v1
+onit --rules --host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro
+```
+
+**With Ollama cloud:**
+
+```bash
+onit --rules --host https://api.ollama.com --model glm-5.1:cloud
+```
+
 ## Isolation Modes
 
 OnIt offers three isolation levels. They can be combined (e.g. `--container --sandbox`).
@@ -440,8 +496,21 @@ export OLLAMA_API_KEY=your-ollama-key
 Then point OnIt at the Ollama cloud host and specify a model:
 
 ```bash
+onit --host https://api.ollama.com --model glm-5.1:cloud
 onit --host https://api.ollama.com --model gemma4:31b-cloud
 onit --host https://api.ollama.com --model llama4:scout-cloud
+```
+
+Combine with `--rules` to load your coding guidelines:
+
+```bash
+onit --rules --host https://api.ollama.com --model glm-5.1:cloud
+```
+
+Enable thinking mode (if supported by the model):
+
+```bash
+onit --think --host https://api.ollama.com --model glm-5.1:cloud
 ```
 
 Model is auto-detected from the endpoint if `--model` is omitted. You can also set the host permanently in your config:
@@ -449,7 +518,7 @@ Model is auto-detected from the endpoint if `--model` is omitted. You can also s
 ```yaml
 serving:
   host: https://api.ollama.com
-  model: gemma4:31b-cloud
+  model: glm-5.1:cloud
 ```
 
 > **Note:** Ollama cloud uses the `ollama_api_key` keyring entry (the same key used for the web search tool).
