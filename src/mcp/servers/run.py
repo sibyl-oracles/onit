@@ -56,6 +56,20 @@ def run_server(name:str,
     Returns:
         bool: True if server started successfully, False otherwise
     """
+    # Redirect this child process's logging to a file so MCP server output
+    # never appears on the onit terminal that spawned the pool — especially
+    # important when a second onit instance shares the already-running servers.
+    _log_dir = os.path.expanduser('~/.onit/logs')
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = os.path.join(_log_dir, f'mcp_{name}_{port}.log')
+    _log_level = logging.DEBUG if options.get('verbose') else logging.ERROR
+    logging.basicConfig(
+        filename=_log_file,
+        level=_log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+
     try:
         # If port is already in use (another onit instance started this server),
         # skip starting and treat as success.
