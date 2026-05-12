@@ -1585,7 +1585,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # Detect planning responses: the model announced intent ("Let me create X")
             # but stopped without calling any tools.  Inject a concrete JSON-format
             # continuation prompt and cap tokens to limit time waste on stuck models.
+            # Skip when finish_reason=length: a token-truncated response is not a plan —
+            # "Let me" appearing mid-response would cause a false positive continuation loop.
             if (tools and tool_registry
+                    and _finish_reason != "length"
                     and _is_planning_response(_content)
                     and planning_continuation_count < MAX_PLANNING_CONTINUATIONS):
                 planning_continuation_count += 1
@@ -1606,6 +1609,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
             # Continuations exhausted — model cannot call tools
             if (tools and tool_registry
+                    and _finish_reason != "length"
                     and _is_planning_response(_content)
                     and planning_continuation_count >= MAX_PLANNING_CONTINUATIONS):
                 _log_to_ui_or_verbose(
