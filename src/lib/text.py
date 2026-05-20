@@ -1,21 +1,19 @@
 import re
 
-# Only remove known model wrapper tags; a generic <[^>]+> pattern would
-# accidentally delete LaTeX/math content containing < and > characters.
-_WRAPPER_TAG_RE = re.compile(r'</?(?:answer|think|stop)>', re.IGNORECASE)
+_TAG_RE = re.compile(r'<[^>]+>')
 
 def remove_tags(text: str) -> str:
     """
-    Remove known model wrapper tags (<answer>, <think>, <stop>) from text.
+    Remove all HTML/XML tags from text.
 
     Args:
         text: The text to process
     Returns:
-        The text with wrapper tags removed
+        The text with all tags removed
     """
     if not text:
         return text
-    return _WRAPPER_TAG_RE.sub('', text)
+    return _TAG_RE.sub('', text)
 
 def text_between_tags(text: str, tag: str) -> tuple[bool, str]:
     """
