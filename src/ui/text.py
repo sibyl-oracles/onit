@@ -870,9 +870,9 @@ class ChatUI:
                 style="bold yellow",
             )
         # Save to history so intermediate AI turns appear in the chat panel.
-        # Strip all XML-style tags (same as remove_tags) so the final turn's
-        # content matches onit.py's comparison and gets elapsed time updated.
-        content = re.sub(r"<[^>]+>", "", self._streaming_content).strip()
+        # Strip only known model wrapper tags — a generic <[^>]+> pattern would
+        # delete LaTeX/math content that happens to contain < and > characters.
+        content = re.sub(r"</?(?:answer|think|stop)>", "", self._streaming_content, flags=re.IGNORECASE).strip()
         if content:
             self.add_message("assistant", content)
         self._streaming_content = ""
