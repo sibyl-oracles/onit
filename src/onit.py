@@ -848,7 +848,7 @@ class OnIt(BaseModel):
             'verbose': self.verbose or self.show_logs,
             'data_path': effective_data_path,
             'session_id': effective_session_id,
-            'max_tokens': self.model_serving.get('max_tokens', 8192),
+            'max_tokens': self.model_serving.get('max_tokens', 32768),
             'max_context_tokens': self.model_serving.get('max_context_tokens', None),
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
@@ -964,7 +964,7 @@ class OnIt(BaseModel):
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', 8192),
+                          'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history()}
                 for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
@@ -1418,7 +1418,7 @@ class OnIt(BaseModel):
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', 8192),
+                          'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history(),
                           'stream': self.stream}

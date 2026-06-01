@@ -93,7 +93,7 @@ serving:
   # model: auto-detected from endpoint. Set explicitly for OpenRouter:
   # model: google/gemini-2.5-pro
   think: true
-  max_tokens: 262144
+  max_tokens: 32768   # max output tokens per response (fits any single answer)
   # Sampling parameters (all optional — sensible defaults apply):
   # temperature: 1.0
   # top_p: 0.95

@@ -57,10 +57,16 @@ test = [
     "pytest-asyncio",
     "pytest-cov",
 ]
+bench = [
+    "inspect-ai>=0.3.0",
+    "datasets",
+    "huggingface-hub",
+]
 all = [
     "onit[web]",
     "onit[gateway]",
     "onit[test]",
+    "onit[bench]",
 ]
 
 [project.scripts]

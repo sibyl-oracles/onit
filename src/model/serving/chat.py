@@ -962,6 +962,15 @@ def _build_planning_continuation_prompt(tool_registry, continuation_count: int) 
     )
 
 
+# Prompt used to resume a final answer that hit the output token limit mid-stream.
+_FINAL_CONTINUATION_PROMPT = (
+    "Your previous reply was cut off mid-sentence because it reached the output "
+    "length limit. Continue from exactly where it stopped. Do not repeat anything "
+    "you already wrote, do not restate the question, and do not add any preamble — "
+    "just continue the text seamlessly."
+)
+
+
 def _extract_final_response(content: str, full_reasoning: str, full_content: str) -> str:
     """Clean up the final text response, stripping think tags and applying fallbacks."""
     last_response = content
@@ -1191,7 +1200,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
     session_id = kwargs.get('session_id', '')
-    max_tokens = kwargs.get('max_tokens', 262144)
+    max_tokens = kwargs.get('max_tokens', 32768)
     temperature = kwargs.get('temperature', 0.6)
     top_p = kwargs.get('top_p', 0.95)
     top_k = kwargs.get('top_k', 20)
@@ -1253,6 +1262,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_REPEATED_TOOL_CALLS = 30
     MAX_API_RETRIES = 3
     MAX_PLANNING_CONTINUATIONS = 2
+    # Max times to resume a final answer that was cut off by the output token
+    # budget (finish_reason=length).  Each resume grants another max_tokens of
+    # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
+    MAX_FINAL_CONTINUATIONS = 3
     # Continuation token budget: thinking models can emit thousands of reasoning tokens
     # before the tool-call JSON, so give them the full max_tokens when think=True.
     # Without thinking, 512 is still enough for any tool-call JSON payload.
@@ -1272,6 +1285,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     _force_tool_call: bool = False  # set after a planning-only response to require tool use
     _active_max_tokens: int = max_tokens  # may be reduced for continuation calls
     _force_compact: bool = False  # set when finish_reason=length to compact on next iteration
+    _final_continuation_count = 0  # times the final answer was resumed after truncation
+    _final_answer_prefix = ""      # accumulated text from prior truncated final-answer turns
 
     while True:
         iteration_count += 1
@@ -1582,6 +1597,28 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             if should_continue:
                 continue
 
+            # Truncated final answer: the model produced plain-text output (not a
+            # tool call) that was cut off by the output token budget
+            # (finish_reason=length).  Resume generation from the partial text so
+            # the user gets the complete response, stitching the pieces together.
+            # Compaction would be wrong here — there is context room to spare; the
+            # answer simply exceeded max_tokens — and it would summarize away the
+            # exact partial text we need to continue from.
+            if (_finish_reason == "length"
+                    and _final_continuation_count < MAX_FINAL_CONTINUATIONS):
+                _final_continuation_count += 1
+                _force_compact = False  # don't discard the partial answer
+                _partial = _extract_final_response(_content, _full_reasoning, _full_content)
+                _final_answer_prefix += _partial
+                messages.append({"role": "assistant", "content": _partial})
+                messages.append({"role": "user", "content": _FINAL_CONTINUATION_PROMPT})
+                _log_to_ui_or_verbose(
+                    f"Final response truncated (finish_reason=length); resuming "
+                    f"({_final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
+                    chat_ui, verbose, level="info",
+                )
+                continue
+
             # Detect planning responses: the model announced intent ("Let me create X")
             # but stopped without calling any tools.  Inject a concrete JSON-format
             # continuation prompt and cap tokens to limit time waste on stuck models.
@@ -1628,7 +1665,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
             _force_tool_call = False
             _active_max_tokens = max_tokens
-            return _extract_final_response(_content, _full_reasoning, _full_content)
+            _final = _extract_final_response(_content, _full_reasoning, _full_content)
+            # Stitch on any text from earlier turns that were truncated and resumed.
+            if _final_answer_prefix:
+                _final = _final_answer_prefix + _final
+            return _final
 
         # Structured tool calls: execute them and loop back.
         # Reset force/token/planning flags — the model successfully called a tool.

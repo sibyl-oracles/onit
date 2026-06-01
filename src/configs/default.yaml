@@ -4,7 +4,10 @@ serving:
   # host_key: EMPTY  # API key. For OpenRouter set here or via OPENROUTER_API_KEY env var
   # model: auto-detected from endpoint. Set explicitly for OpenRouter.
   think: false
-  max_tokens: 262144
+  # Max output tokens per response. 32768 fits any single answer and keeps the
+  # context-compaction threshold healthy (~90%) on large-context models.
+  max_tokens: 32768
+  # max_context_tokens: 1048576  # model's context window; auto-detected from vLLM if unset
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."

@@ -42,3 +42,6 @@ htmlcov/
 # Scripts
 configs/*
 scripts/*
+
+# Eval
+*.eval

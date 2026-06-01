@@ -389,6 +389,60 @@ class TestPlanningContinuation:
         assert mock_client.chat.completions.create.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_truncated_final_answer_resumes_and_stitches(self):
+        """A final answer cut off by finish_reason=length is resumed and the
+        pieces are stitched into one complete response."""
+        part1 = "Here is the first half of the answer "
+        part2 = "and here is the rest of it."
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(content=part1, finish_reason="length"),
+            _mock_completion_with_finish(content=part2, finish_reason="stop"),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Explain at length.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result == part1 + part2
+        assert mock_client.chat.completions.create.call_count == 2
+        # The resume call must carry the partial answer + a continuation prompt.
+        second_messages = mock_client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        contents = [m.get("content", "") for m in second_messages if isinstance(m, dict)]
+        assert part1 in contents
+        assert any("cut off" in c.lower() for c in contents)
+
+    @pytest.mark.asyncio
+    async def test_truncated_final_answer_resume_is_bounded(self):
+        """If the model keeps getting truncated, resumes are capped and whatever
+        text accumulated is still returned (never less than before)."""
+        mock_client = AsyncMock()
+        # Always truncated — model never finishes.
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(content="chunk ", finish_reason="length")
+        )
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Explain forever.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            )
+
+        # 1 initial + MAX_FINAL_CONTINUATIONS (3) resumes = 4 calls.
+        assert mock_client.chat.completions.create.call_count == 4
+        # All four chunks are stitched into the returned answer.
+        assert result == "chunk " * 4
+
+    @pytest.mark.asyncio
     async def test_planning_exhausted_returns_error(self):
         """When MAX_PLANNING_CONTINUATIONS are exhausted, a clear error is returned."""
         planning_text = "Let me write the comprehensive analysis."
