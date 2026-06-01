@@ -66,12 +66,115 @@ OpenRouter / local vLLM are selected just by changing `ONIT_BENCH_HOST`.
 
 | Category | Benchmarks | Status |
 |---|---|---|
-| Coding | HumanEval | **wired (smoke)** |
-| | MBPP, LiveCodeBench, SWE-bench | Phase 2 |
+| Coding | HumanEval, MBPP | **wired** (native, Docker sandbox) |
+| | BigCodeBench, LiveCodeBench Pro | **wired** (via `inspect_evals`, Docker) |
+| | SWE-bench | **wired** via dedicated runner — see [SWE-bench](#swe-bench) below |
 | Reasoning | GSM8K | **wired (smoke)** |
 | | GPQA-Diamond, MMLU-Pro, MATH/AIME, BBH, DROP | Phase 3 |
 | Factuality | SimpleQA, TruthfulQA, FRAMES | Phase 3 scaffold (`tasks/factuality.py`) |
 | Agentic | GAIA, BFCL, tau-bench | Phase 4 scaffold (`tasks/agentic.py`, `onit_agent.py`) |
+
+## SWE-bench
+
+SWE-bench is a **repo-editing agent** benchmark: given a real GitHub issue, the
+agent must edit a real codebase so the project's hidden tests pass. It does *not*
+fit the final-answer provider path the other coding tasks use, so it has its own
+runner: [`benchmarks/swe_bench_runner.py`](swe_bench_runner.py).
+
+### How it works (and where OnIt's sandbox fits)
+
+OnIt roots all of its file tools (`read_file`, `edit_file`, `write_file`,
+`grep`, `bash`) at its `data_path`. The runner exploits this in three stages:
+
+1. **Edit — OnIt.** For each instance the repo is cloned at its `base_commit`
+   into a per-instance workspace, and OnIt's `data_path` is pointed at it. OnIt
+   then reads the issue and edits the source *inside that repo*. With
+   `--onit-sandbox`, OnIt executes code through its **MCP sandbox provider**
+   (`sandbox_run_code`, etc.) instead of the host — so it can compile/run the
+   project safely while iterating. (You can additionally run the whole runner
+   inside `onit --container` for process-level isolation.)
+2. **Capture.** The model patch is the workspace `git diff`, with test-file
+   edits stripped out (the grader supplies the gold test patch).
+3. **Grade — official harness.** Patches are written to `predictions.jsonl` and
+   scored by the official `swebench` Docker harness, which applies each patch to
+   the canonical per-instance image and runs the tests. This is exactly the
+   grader behind the public leaderboard, so scores are comparable.
+
+### Prerequisites
+
+```bash
+pip install -e ".[bench]"      # inspect-ai, inspect-evals, datasets
+pip install swebench           # the official grading harness
+# Docker daemon running; ~120 GB free disk for the full image set
+# (Lite/Verified subsets pull far fewer images).
+export HF_TOKEN=...            # recommended for dataset/image pulls
+# Eval target, as for all benchmarks:
+export ONIT_BENCH_MODEL=glm-5.1:cloud
+export OLLAMA_API_KEY=...
+```
+
+If you use `--onit-sandbox`, also configure an MCP sandbox provider (a server
+exposing `sandbox_run_code` / `sandbox_install_packages` / `sandbox_stop`) and
+set `sandbox: true` works automatically via the flag. Without it, OnIt edits and
+runs on the host — fine inside a container or VM, riskier on a workstation.
+
+### Run it
+
+```bash
+# Smoke: 5 instances of SWE-bench Lite, host execution, then grade.
+python -m benchmarks.swe_bench_runner --dataset lite --tier smoke
+
+# Sampled: 100 Lite instances, OnIt sandboxed, 4 parallel graders.
+python -m benchmarks.swe_bench_runner --dataset lite --tier sampled \
+    --onit-sandbox --run-id onit-lite --max-workers 4
+
+# Full SWE-bench Verified (500), leaderboard-comparable.
+python -m benchmarks.swe_bench_runner --dataset verified --run-id onit-verified \
+    --max-workers 8
+
+# Generate patches only (e.g. to grade later / on another machine):
+python -m benchmarks.swe_bench_runner --dataset lite --tier smoke --no-grade
+```
+
+| Flag | Purpose | Default |
+|---|---|---|
+| `--dataset` | `lite` (300) / `verified` (500) / `full` (2294) | `lite` |
+| `--tier` | sets `--limit` from the tier preset (smoke=5, sampled=100, full=all) | — |
+| `--limit` | explicit instance cap (overrides `--tier`) | — |
+| `--onit-sandbox` | OnIt executes code via its MCP sandbox provider | off |
+| `--run-id` | label for predictions + harness report | `onit` |
+| `--max-workers` | parallel grading containers | 4 |
+| `--data-root` | where workspaces + `predictions.jsonl` live | `$TMPDIR/onit-swebench` |
+| `--no-grade` | generate patches only, skip Docker grading | off |
+
+### Output
+
+The runner prints a resolve-rate table and the harness writes a per-instance
+report:
+
+```
+# SWE-bench summary
+
+| Dataset | Model        | Instances | Resolved | Resolve rate |
+|---------|--------------|-----------|----------|--------------|
+| lite    | glm-5.1:cloud| 5         | 2        | 0.400        |
+```
+
+Per-instance pass/fail and logs are in the harness's `logs/run_evaluation/<run_id>/`.
+
+### Notes & caveats
+
+- **Two sandboxes, by design:** OnIt's sandbox isolates the *editing/iteration*
+  step; the official harness's Docker images are the *graded* environment. They
+  are separate on purpose — grading must use the canonical image to be valid.
+- This runner is **separate from the Inspect pipeline** (`run.py`/`report.py`)
+  because grading is orchestrated by the SWE-bench Docker harness, not an Inspect
+  scorer.
+- The stock `inspect_evals` SWE-bench task is still registered as `swe_bench` in
+  `run.py`, but it benchmarks Inspect's *own* tool-calling agent, **not OnIt** —
+  use it only for comparison.
+- First run is slow: cloning repos and pulling SWE-bench images dominates. Reuse
+  `--data-root` across runs to keep cloned workspaces.
 
 ## Notes
 

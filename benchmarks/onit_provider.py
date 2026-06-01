@@ -40,23 +40,18 @@ _agent: Any | None = None
 _agent_lock: asyncio.Lock | None = None
 
 
-def _build_agent_blocking() -> Any:
-    """Construct an OnIt agent. Must run in a thread with no running loop.
+def base_config_data() -> dict[str, Any]:
+    """Build the headless OnIt config used to drive benchmarks.
 
-    Starts the MCP servers (idempotent — skips ports already bound) then builds
-    the agent, which discovers tools against those servers.
+    ``loop=True`` skips terminal-UI setup; streaming is off. The eval target
+    (host/model) and per-request timeout come from the environment.
     """
-    # Imported lazily so importing this module never pulls in the whole agent
-    # stack (keeps the provider unit-testable with a stub).
-    from src.cli import _ensure_mcp_servers
-    from src.onit import OnIt
-
     sessions_dir = Path(tempfile.gettempdir()) / "onit-bench-sessions"
     data_dir = Path(tempfile.gettempdir()) / "onit-bench-data"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    config_data: dict[str, Any] = {
+    return {
         "serving": bench_config.resolve_serving(),
         # Headless: no streaming, no terminal ChatUI (loop=True skips UI setup).
         "stream": False,
@@ -70,19 +65,31 @@ def _build_agent_blocking() -> Any:
         "data_path": str(data_dir),
         "mcp": {
             "servers": [
-                {
-                    "name": "PromptsMCPServer",
-                    "url": "http://127.0.0.1:18200/sse",
-                    "enabled": True,
-                },
-                {
-                    "name": "ToolsMCPServer",
-                    "url": "http://127.0.0.1:18201/sse",
-                    "enabled": True,
-                },
+                {"name": "PromptsMCPServer", "url": "http://127.0.0.1:18200/sse",
+                 "enabled": True},
+                {"name": "ToolsMCPServer", "url": "http://127.0.0.1:18201/sse",
+                 "enabled": True},
             ]
         },
     }
+
+
+def _build_agent_blocking(config_overrides: dict[str, Any] | None = None) -> Any:
+    """Construct an OnIt agent. Must run in a thread with no running loop.
+
+    Starts the MCP servers (idempotent — skips ports already bound) then builds
+    the agent, which discovers tools against those servers. ``config_overrides``
+    are shallow-merged onto :func:`base_config_data` (e.g. ``{"sandbox": True}``
+    to delegate code execution to OnIt's MCP sandbox provider).
+    """
+    # Imported lazily so importing this module never pulls in the whole agent
+    # stack (keeps the provider unit-testable with a stub).
+    from src.cli import _ensure_mcp_servers
+    from src.onit import OnIt
+
+    config_data = base_config_data()
+    if config_overrides:
+        config_data.update(config_overrides)
 
     _ensure_mcp_servers(config_data)
     return OnIt(config_data)

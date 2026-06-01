@@ -28,11 +28,19 @@ from .tasks import coding, reasoning
 TASKS = {
     "gsm8k": reasoning.gsm8k,
     "humaneval": coding.humaneval,
+    "mbpp": coding.mbpp,
+    "bigcodebench": coding.bigcodebench,
+    "livecodebench": coding.livecodebench,
+    # Deferred: needs the native-tools bridge (see tasks/coding.py). Excluded
+    # from default categories; invoke explicitly with `--tasks swe_bench`.
+    "swe_bench": coding.swe_bench,
 }
 CATEGORIES = {
     "reasoning": ["gsm8k"],
-    "coding": ["humaneval"],
-    "all": list(TASKS),
+    # Provider-compatible coding tasks (all require a Docker daemon).
+    "coding": ["humaneval", "mbpp", "bigcodebench", "livecodebench"],
+    # Everything wired and provider-compatible (excludes deferred swe_bench).
+    "all": ["gsm8k", "humaneval", "mbpp", "bigcodebench", "livecodebench"],
 }
 
 

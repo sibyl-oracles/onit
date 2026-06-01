@@ -59,6 +59,7 @@ test = [
 ]
 bench = [
     "inspect-ai>=0.3.0",
+    "inspect-evals",
     "datasets",
     "huggingface-hub",
 ]
