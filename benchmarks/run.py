@@ -59,17 +59,33 @@ def _resolve_task_names(requested: list[str]) -> list[str]:
     return [n for n in names if not (n in seen or seen.add(n))]
 
 
+def _print_benchmark_list() -> None:
+    """Print the alias -> benchmark-name table (what --tasks accepts)."""
+    print(f"{'Alias':<16} {'Benchmark':<20} Category")
+    print(f"{'-' * 16} {'-' * 20} {'-' * 10}")
+    for alias in TASKS:
+        name, category = bench_config.BENCHMARKS.get(alias, (alias, "-"))
+        print(f"{alias:<16} {name:<20} {category}")
+    print(f"\nCategories: {', '.join(sorted(CATEGORIES))}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="benchmarks.run", description=__doc__)
     parser.add_argument("--tier", default=bench_config.DEFAULT_TIER,
                         choices=list(bench_config.TIERS),
                         help="Run preset (sample limit + concurrency).")
     parser.add_argument("--tasks", nargs="+", default=["all"],
-                        help="Task names or categories to run "
+                        help="Task aliases or categories to run "
                              f"({sorted(TASKS)} / {sorted(CATEGORIES)}).")
+    parser.add_argument("--list", action="store_true",
+                        help="List benchmark aliases and their names, then exit.")
     parser.add_argument("--log-dir", default="benchmarks/logs",
                         help="Where Inspect writes .eval logs.")
     args = parser.parse_args(argv)
+
+    if args.list:
+        _print_benchmark_list()
+        return
 
     tier = bench_config.TIERS[args.tier]
     model = f"onit/{bench_config.model_label()}"
@@ -82,8 +98,10 @@ def main(argv: list[str] | None = None) -> None:
     req_timeout = bench_config.bench_timeout()
     time_limit = req_timeout * 4 if req_timeout > 0 else None
 
-    print(f"[bench] tier={tier.name} model={model} "
-          f"tasks={task_names} limit={tier.limit} time_limit={time_limit}s")
+    task_labels = [f"{n} ({bench_config.display_name(n)})" for n in task_names]
+    print(f"[bench] tier={tier.name} model={model} limit={tier.limit} "
+          f"time_limit={time_limit}s")
+    print(f"[bench] benchmarks: {', '.join(task_labels)}")
 
     inspect_eval(
         tasks,

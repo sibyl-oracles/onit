@@ -15,6 +15,8 @@ from pathlib import Path
 
 from inspect_ai.log import list_eval_logs, read_eval_log
 
+from . import config as bench_config
+
 # A metric drop larger than this (absolute) fails the regression gate.
 DEFAULT_TOLERANCE = 0.05
 
@@ -40,12 +42,15 @@ def collect(log_dir: str) -> dict[str, dict]:
 
 
 def to_markdown(results: dict[str, dict]) -> str:
-    lines = ["# OnIt benchmark summary", "", "| Benchmark | Model | Samples | Metrics |",
-             "|---|---|---|---|"]
+    lines = ["# OnIt benchmark summary", "",
+             "| Benchmark | Alias | Model | Samples | Metrics |",
+             "|---|---|---|---|---|"]
     for task in sorted(results):
         r = results[task]
+        # ``task`` is the Inspect task name == the CLI alias.
+        name = bench_config.display_name(task)
         metrics = ", ".join(f"{k}={v:.3f}" for k, v in sorted(r["metrics"].items()))
-        lines.append(f"| {task} | {r['model']} | {r['samples']} | {metrics} |")
+        lines.append(f"| {name} | {task} | {r['model']} | {r['samples']} | {metrics} |")
     return "\n".join(lines) + "\n"
 
 

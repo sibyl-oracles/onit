@@ -8,6 +8,8 @@ engineering, tool use, and the tool loop — not just the underlying LLM.
 This suite is intentionally **outside `src/test/`** and excluded from the default
 `pytest` run (it is slow, networked, and costs tokens).
 
+See [RESULTS.md](RESULTS.md) for the curated table of `full`-tier benchmark scores.
+
 ## Quick start
 
 ```bash
@@ -39,6 +41,23 @@ python -m benchmarks.run --tier sampled --tasks reasoning coding
 | `ONIT_BENCH_THINK` | Enable thinking mode | `false` |
 
 OpenRouter / local vLLM are selected just by changing `ONIT_BENCH_HOST`.
+
+## Benchmark aliases
+
+Each benchmark has a short **alias** — the name you pass to `--tasks` and the
+label shown in Inspect logs and the report table. List them any time with
+`python -m benchmarks.run --list`.
+
+| Alias | Benchmark | Category | How it runs |
+|---|---|---|---|
+| `gsm8k` | GSM8K | reasoning | provider (numeric match) |
+| `humaneval` | HumanEval | coding | provider + Docker sandbox |
+| `mbpp` | MBPP | coding | provider + Docker sandbox |
+| `bigcodebench` | BigCodeBench | coding | provider + Docker (`inspect_evals`) |
+| `livecodebench` | LiveCodeBench Pro | coding | provider + Docker (`inspect_evals`) |
+| `swe_bench` | SWE-bench | coding | dedicated runner — see [SWE-bench](#swe-bench) |
+
+Categories (`--tasks <category>`): `reasoning`, `coding`, `all`.
 
 ## Tiers
 

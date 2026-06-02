@@ -44,6 +44,23 @@ DEFAULT_TIER = "smoke"
 # Default eval target: Ollama cloud (see README "Default eval target").
 DEFAULT_HOST = "https://api.ollama.com"
 
+# Alias (CLI / Inspect task name) -> canonical benchmark display name + category.
+# The alias is what you pass to ``--tasks`` and what Inspect logs/reports show.
+BENCHMARKS: dict[str, tuple[str, str]] = {
+    "gsm8k": ("GSM8K", "reasoning"),
+    "humaneval": ("HumanEval", "coding"),
+    "mbpp": ("MBPP", "coding"),
+    "bigcodebench": ("BigCodeBench", "coding"),
+    "livecodebench": ("LiveCodeBench Pro", "coding"),
+    "swe_bench": ("SWE-bench", "coding"),
+}
+
+
+def display_name(alias: str) -> str:
+    """Return the canonical benchmark name for an alias (or the alias itself)."""
+    entry = BENCHMARKS.get(alias)
+    return entry[0] if entry else alias
+
 
 def resolve_serving() -> dict:
     """Build OnIt's ``serving`` config block from environment variables.

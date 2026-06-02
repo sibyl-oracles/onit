@@ -596,6 +596,7 @@ onit/
 - [Docker](docs/DOCKER.md) — Docker and Docker Compose setup
 - [Web Authentication](docs/WEB_AUTHENTICATION.md) — Web UI authentication reference
 - [Web Deployment](docs/DEPLOYMENT_WEB.md) — Production deployment with HTTP/HTTPS
+- [Benchmarks](benchmarks/README.md) — Capability benchmark suite (Inspect AI) and results
 
 ## License
 
