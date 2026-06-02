@@ -971,9 +971,9 @@ _FINAL_CONTINUATION_PROMPT = (
 )
 
 
-def _extract_final_response(content: str, full_reasoning: str, full_content: str) -> str:
+def _extract_final_response(content: str | None, full_reasoning: str, full_content: str) -> str:
     """Clean up the final text response, stripping think tags and applying fallbacks."""
-    last_response = content
+    last_response = content or ""
     if "</think>" in last_response:
         last_response = last_response.split("</think>")[1]
     # Fallback: if delta.content was empty but reasoning_content had the answer,
