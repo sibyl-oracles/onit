@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample, hf_dataset
@@ -33,6 +34,11 @@ from inspect_ai.solver import TaskState, generate, system_message
 from inspect_ai.util import ExecResult, sandbox
 
 _VERIFY_TIMEOUT = 30
+
+# Dedicated minimal grading sandbox. An explicit compose path stops Inspect from
+# auto-discovering the repo-root production docker-compose.yml (which references
+# a missing .env and builds the full GPU OnIt image).
+_SANDBOX = ("docker", str(Path(__file__).parent / "compose.yaml"))
 
 _HUMANEVAL_INSTRUCTION = (
     "Complete the Python function. Return the full, self-contained function "
@@ -121,7 +127,7 @@ def humaneval() -> Task:
         dataset=dataset,
         solver=[system_message(_HUMANEVAL_INSTRUCTION), generate()],
         scorer=code_exec_scorer(_humaneval_program),
-        sandbox="docker",
+        sandbox=_SANDBOX,
     )
 
 
@@ -157,7 +163,7 @@ def mbpp() -> Task:
         dataset=dataset,
         solver=[system_message(_MBPP_INSTRUCTION), generate()],
         scorer=code_exec_scorer(_mbpp_program),
-        sandbox="docker",
+        sandbox=_SANDBOX,
     )
 
 

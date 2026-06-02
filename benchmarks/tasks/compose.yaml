@@ -1,0 +1,14 @@
+# Minimal grading sandbox for the native coding tasks (humaneval, mbpp).
+#
+# Inspect runs each model solution as `python -c <program>` in this container.
+# It must NOT inherit the repo-root production docker-compose.yml (GPU
+# reservations, env_file: .env, the full OnIt image) — these tasks only need a
+# stock Python interpreter with no network access to untrusted generated code.
+services:
+  default:
+    image: "python:3.12-slim"
+    command: ["tail", "-f", "/dev/null"]
+    init: true
+    network_mode: none
+    cpus: 1.0
+    mem_limit: 1g
