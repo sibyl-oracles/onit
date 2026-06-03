@@ -70,9 +70,20 @@ def _run(cmd: list[str], cwd: str | None = None, check: bool = True) -> subproce
 
 
 def _prepare_workspace(repo: str, base_commit: str, dest: Path) -> None:
-    """Clone ``repo`` (``owner/name``) at ``base_commit`` into ``dest``."""
-    if dest.exists():
+    """Clone ``repo`` (``owner/name``) at ``base_commit`` into ``dest``.
+
+    If ``dest`` already holds a valid checkout (e.g. a resumed run re-attempting
+    an instance that errored last time), reset it to ``base_commit`` and discard
+    any leftover edits so the captured diff starts from a clean base. A leftover
+    directory that is *not* a valid repo (a half-finished clone) is removed and
+    cloned fresh.
+    """
+    if (dest / ".git").is_dir():
+        _run(["git", "reset", "--hard", "--quiet", base_commit], cwd=str(dest))
+        _run(["git", "clean", "-fdq"], cwd=str(dest))
         return
+    if dest.exists():
+        _run(["rm", "-rf", str(dest)])
     url = f"https://github.com/{repo}.git"
     _run(["git", "clone", "--quiet", url, str(dest)])
     _run(["git", "checkout", "--quiet", base_commit], cwd=str(dest))
@@ -99,6 +110,44 @@ def _model_patch(workspace: Path) -> str:
     """Return the agent's patch (working-tree diff, excluding test files)."""
     diff = _run(["git", "diff"], cwd=str(workspace), check=False).stdout
     return _strip_test_hunks(diff)
+
+
+def _load_existing(preds_path: Path) -> dict[str, dict]:
+    """Load prior predictions keyed by ``instance_id`` (for resume).
+
+    Tolerates a truncated final line from a hard crash (e.g. the process was
+    killed mid-write) by skipping records that don't parse.
+    """
+    results: dict[str, dict] = {}
+    if not preds_path.exists():
+        return results
+    for line in preds_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        iid = rec.get("instance_id")
+        if iid:
+            results[iid] = rec
+    return results
+
+
+def _write_predictions(preds_path: Path, results: dict[str, dict]) -> None:
+    """Atomically rewrite the predictions file from the in-memory results map.
+
+    Written after every instance so a run that dies (out of credits, OOM, Ctrl-C)
+    leaves a consistent file we can resume from. The rewrite is cheap relative to
+    a single agent call, and ``os.replace`` is atomic so a crash mid-write can
+    never corrupt the existing predictions.
+    """
+    tmp = preds_path.with_suffix(preds_path.suffix + ".tmp")
+    with tmp.open("w") as fh:
+        for rec in results.values():
+            fh.write(json.dumps(rec) + "\n")
+    tmp.replace(preds_path)
 
 
 async def _solve_instance(agent, inst: dict, workspace: Path, timeout: int) -> str:
@@ -128,29 +177,50 @@ def generate_predictions(args) -> tuple[Path, str]:
 
     model_name = bench_config.model_label()
     overrides = {"sandbox": True} if args.onit_sandbox else None
-    agent = _build_agent_blocking(overrides)  # sync: no running loop here
     timeout = bench_config.bench_timeout()
 
     data_root = Path(args.data_root).expanduser()
     data_root.mkdir(parents=True, exist_ok=True)
     preds_path = data_root / f"predictions_{args.run_id}.jsonl"
 
-    with preds_path.open("w") as fh:
-        for i, inst in enumerate(rows, 1):
-            iid = inst["instance_id"]
-            ws = data_root / iid
-            print(f"[swe-bench] ({i}/{len(rows)}) {iid}")
-            try:
-                _prepare_workspace(inst["repo"], inst["base_commit"], ws)
-                patch = asyncio.run(_solve_instance(agent, inst, ws, timeout))
-            except Exception as exc:  # noqa: BLE001 - record empty patch on failure
-                print(f"  ! {iid} failed: {exc}", file=sys.stderr)
-                patch = ""
-            fh.write(json.dumps({
-                "instance_id": iid,
-                "model_name_or_path": model_name,
-                "model_patch": patch,
-            }) + "\n")
+    # Resume: keep instances that already succeeded and re-attempt the rest. A
+    # run halted mid-way (e.g. out of cloud credits) leaves the completed slice
+    # on disk, so we only spend on instances that never finished. Only "ok"
+    # records count as done — an instance that errored last time (empty patch)
+    # is retried, so a credit outage doesn't permanently zero out the tail.
+    results = {} if args.fresh else _load_existing(preds_path)
+    done = {iid for iid, rec in results.items() if rec.get("_onit_status") == "ok"}
+    todo = [r for r in rows if r["instance_id"] not in done]
+    if done:
+        print(f"[swe-bench] resuming: {len(done)}/{len(rows)} already complete, "
+              f"{len(todo)} to run")
+    if not todo:
+        print(f"[swe-bench] all {len(rows)} instances already complete: {preds_path}")
+        return preds_path, model_name
+
+    # Build the agent only once there is real work to do.
+    agent = _build_agent_blocking(overrides)  # sync: no running loop here
+
+    for i, inst in enumerate(rows, 1):
+        iid = inst["instance_id"]
+        if iid in done:
+            continue
+        ws = data_root / iid
+        print(f"[swe-bench] ({i}/{len(rows)}) {iid}")
+        try:
+            _prepare_workspace(inst["repo"], inst["base_commit"], ws)
+            patch = asyncio.run(_solve_instance(agent, inst, ws, timeout))
+            status = "ok"
+        except Exception as exc:  # noqa: BLE001 - record error; resume retries it
+            print(f"  ! {iid} failed: {exc}", file=sys.stderr)
+            patch, status = "", "error"
+        results[iid] = {
+            "instance_id": iid,
+            "model_name_or_path": model_name,
+            "model_patch": patch,
+            "_onit_status": status,  # internal; the swebench harness ignores it
+        }
+        _write_predictions(preds_path, results)
 
     print(f"[swe-bench] wrote {preds_path}")
     return preds_path, model_name
@@ -199,6 +269,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--data-root", default=str(Path(tempfile.gettempdir()) / "onit-swebench"))
     p.add_argument("--no-grade", action="store_true",
                    help="Only generate predictions; skip the Docker harness.")
+    p.add_argument("--fresh", action="store_true",
+                   help="Ignore any existing predictions file and start over "
+                        "(default is to resume, skipping completed instances).")
     args = p.parse_args(argv)
 
     if args.limit is None and args.tier:

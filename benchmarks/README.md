@@ -31,6 +31,24 @@ python -m benchmarks.run --tier smoke   --tasks gsm8k
 python -m benchmarks.run --tier sampled --tasks reasoning coding
 ```
 
+### Resuming an interrupted run
+
+Long runs (especially `--tier full`) persist results incrementally, so a run
+that dies part-way — out of cloud credits, killed, crashed — can pick up where
+it stopped instead of repeating completed work:
+
+```bash
+# Resume the most recent run for this tier (re-runs only the unfinished samples).
+python -m benchmarks.run --tier full --resume
+
+# Or point at a specific .eval log.
+python -m benchmarks.run --tier full --resume benchmarks/logs/full/<log>.eval
+```
+
+Inspect writes each sample to the `.eval` log as it completes; `--resume` calls
+`eval_retry` on that log, which re-runs only the incomplete/errored samples and
+keeps the rest. (See [SWE-bench](#swe-bench) for resuming that runner.)
+
 ## Eval target (environment)
 
 | Variable | Purpose | Default |
@@ -155,6 +173,20 @@ python -m benchmarks.swe_bench_runner --dataset verified --run-id onit-verified 
 python -m benchmarks.swe_bench_runner --dataset lite --tier smoke --no-grade
 ```
 
+**Resuming:** the runner is resumable by default. Each prediction is written to
+`predictions_<run-id>.jsonl` as soon as the instance finishes, so a run that
+dies part-way (out of credits, killed) can be re-invoked with the *same*
+`--run-id` and `--data-root`: instances that already succeeded are skipped, and
+instances that errored last time are re-attempted (from a freshly reset
+workspace). Pass `--fresh` to ignore prior predictions and start over.
+
+```bash
+# First run dies at instance 70/100 (e.g. credits run out)...
+python -m benchmarks.swe_bench_runner --dataset lite --tier sampled --run-id onit-lite
+# ...re-run the exact same command once credits are back; it resumes from 70.
+python -m benchmarks.swe_bench_runner --dataset lite --tier sampled --run-id onit-lite
+```
+
 | Flag | Purpose | Default |
 |---|---|---|
 | `--dataset` | `lite` (300) / `verified` (500) / `full` (2294) | `lite` |
@@ -165,6 +197,7 @@ python -m benchmarks.swe_bench_runner --dataset lite --tier smoke --no-grade
 | `--max-workers` | parallel grading containers | 4 |
 | `--data-root` | where workspaces + `predictions.jsonl` live | `$TMPDIR/onit-swebench` |
 | `--no-grade` | generate patches only, skip Docker grading | off |
+| `--fresh` | ignore existing predictions and start over (default: resume) | off |
 
 ### Output
 

@@ -69,6 +69,31 @@ def _print_benchmark_list() -> None:
     print(f"\nCategories: {', '.join(sorted(CATEGORIES))}")
 
 
+def _resume(args, tier) -> None:
+    """Resume an interrupted run via Inspect's ``eval_retry``.
+
+    Inspect writes each sample to the ``.eval`` log as it completes, so a run
+    that died part-way (out of credits, killed, crashed) leaves the finished
+    samples on disk. ``eval_retry`` re-runs only the incomplete/errored samples
+    from that log and merges them in, so we never re-pay for completed work.
+    """
+    from inspect_ai import eval_retry
+    from inspect_ai.log import list_eval_logs
+
+    log_dir = f"{args.log_dir}/{tier.name}"
+    if args.resume == "__latest__":
+        logs = list_eval_logs(log_dir)  # newest first
+        if not logs:
+            sys.exit(f"[bench] --resume: no .eval logs found under {log_dir!r}")
+        target = logs[0]
+        print(f"[bench] resuming most recent log: {target.name}")
+    else:
+        target = args.resume
+        print(f"[bench] resuming log: {target}")
+
+    eval_retry(target, max_connections=tier.max_connections)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="benchmarks.run", description=__doc__)
     parser.add_argument("--tier", default=bench_config.DEFAULT_TIER,
@@ -81,6 +106,13 @@ def main(argv: list[str] | None = None) -> None:
                         help="List benchmark aliases and their names, then exit.")
     parser.add_argument("--log-dir", default="benchmarks/logs",
                         help="Where Inspect writes .eval logs.")
+    parser.add_argument("--resume", nargs="?", const="__latest__", default=None,
+                        metavar="LOG",
+                        help="Resume a previous run: re-run only the "
+                             "incomplete/errored samples from an existing .eval "
+                             "log (completed samples are kept). Pass a log path, "
+                             "or use the flag alone to resume the most recent log "
+                             "for the selected tier.")
     args = parser.parse_args(argv)
 
     if args.list:
@@ -89,6 +121,11 @@ def main(argv: list[str] | None = None) -> None:
 
     tier = bench_config.TIERS[args.tier]
     model = f"onit/{bench_config.model_label()}"
+
+    if args.resume is not None:
+        _resume(args, tier)
+        return
+
     task_names = _resolve_task_names(args.tasks)
     tasks = [TASKS[name]() for name in task_names]
 
