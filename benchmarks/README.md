@@ -33,21 +33,25 @@ python -m benchmarks.run --tier sampled --tasks reasoning coding
 
 ### Resuming an interrupted run
 
-Long runs (especially `--tier full`) persist results incrementally, so a run
-that dies part-way — out of cloud credits, killed, crashed — can pick up where
-it stopped instead of repeating completed work:
+Runs **resume by default**. Inspect writes each sample to the `.eval` log as it
+completes, so a run that dies part-way — out of cloud credits, killed, crashed —
+leaves the finished samples on disk. Re-running the *same command* detects the
+most recent incomplete log for each task (matched by task + model + tier) and
+re-runs only the unfinished samples, keeping the rest:
 
 ```bash
-# Resume the most recent run for this tier (re-runs only the unfinished samples).
-python -m benchmarks.run --tier full --resume
+# First run is cancelled at 78/1319 samples (e.g. credits run out)...
+python -m benchmarks.run --tier full --tasks bigcodebench
+# ...just run it again; it picks up from sample 79.
+python -m benchmarks.run --tier full --tasks bigcodebench
 
-# Or point at a specific .eval log.
-python -m benchmarks.run --tier full --resume benchmarks/logs/full/<log>.eval
+# Force a clean run, ignoring any prior logs:
+python -m benchmarks.run --tier full --tasks bigcodebench --fresh
 ```
 
-Inspect writes each sample to the `.eval` log as it completes; `--resume` calls
-`eval_retry` on that log, which re-runs only the incomplete/errored samples and
-keeps the rest. (See [SWE-bench](#swe-bench) for resuming that runner.)
+A task whose most recent log already finished (`success`), used a different
+model, or doesn't exist yet is run fresh. (See [SWE-bench](#swe-bench) for
+resuming that runner.)
 
 ## Eval target (environment)
 
