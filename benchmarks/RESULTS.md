@@ -2,6 +2,7 @@
 
 | Benchmark | Host | Model | Accuracy | Stderr |
 |---|---|---|---|---|
+| bigcodebench | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.518 | 0.015 |
 | gsm8k | https://api.ollama.com | glm-5.1:cloud | 0.978 | 0.004 |
 | gsm8k | https://api.ollama.com | gemma4:31b-cloud | 0.978 | 0.004 |
 | gsm8k | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.953 | 0.006 |
