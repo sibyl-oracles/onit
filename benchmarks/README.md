@@ -144,8 +144,7 @@ OnIt roots all of its file tools (`read_file`, `edit_file`, `write_file`,
 ### Prerequisites
 
 ```bash
-pip install -e ".[bench]"      # inspect-ai, inspect-evals, datasets
-pip install swebench           # the official grading harness
+pip install -e ".[swe_bench]"  # inspect-ai, inspect-evals, datasets + swebench grading harness
 # Docker daemon running; ~120 GB free disk for the full image set
 # (Lite/Verified subsets pull far fewer images).
 export HF_TOKEN=...            # recommended for dataset/image pulls

@@ -63,11 +63,16 @@ bench = [
     "datasets",
     "huggingface-hub",
 ]
+swe_bench = [
+    "onit[bench]",
+    "swebench",
+]
 all = [
     "onit[web]",
     "onit[gateway]",
     "onit[test]",
     "onit[bench]",
+    "onit[swe_bench]",
 ]
 
 [project.scripts]
