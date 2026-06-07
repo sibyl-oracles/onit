@@ -225,9 +225,13 @@ Per-instance pass/fail and logs are in the harness's `logs/run_evaluation/<run_i
 - This runner is **separate from the Inspect pipeline** (`run.py`/`report.py`)
   because grading is orchestrated by the SWE-bench Docker harness, not an Inspect
   scorer.
-- The stock `inspect_evals` SWE-bench task is still registered as `swe_bench` in
-  `run.py`, but it benchmarks Inspect's *own* tool-calling agent, **not OnIt** —
-  use it only for comparison.
+- `python -m benchmarks.run --tasks swe_bench` now **delegates to this runner**
+  (dataset `verified`, run-id `onit-<tier>`) and tees its progress, errors, and
+  final score to `benchmarks/logs/<tier>/swe_bench.log`. It used to route to the
+  stock `inspect_evals` task, which benchmarks Inspect's *own* tool-calling agent
+  rather than OnIt — incompatible with the final-text provider, so every instance
+  graded to 0 (`mean=0`). The stock task is still callable directly via
+  `coding.swe_bench` for comparison only.
 - First run is slow: cloning repos and pulling SWE-bench images dominates. Reuse
   `--data-root` across runs to keep cloned workspaces.
 

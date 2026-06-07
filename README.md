@@ -598,6 +598,10 @@ onit/
 - [Web Deployment](docs/DEPLOYMENT_WEB.md) — Production deployment with HTTP/HTTPS
 - [Benchmarks](benchmarks/README.md) — Capability benchmark suite (Inspect AI) and results
 
+## TODO
+
+- [ ] Integrate the [Mistral Search Toolkit](https://docs.mistral.ai/studio-api/knowledge-rag/search-toolkit) for knowledge/RAG search.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.

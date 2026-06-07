@@ -32,6 +32,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,46 @@ import uuid
 from pathlib import Path
 
 from . import config as bench_config
+
+# Module logger. By default it has no handlers (library behaviour); ``main`` /
+# ``setup_logging`` attach a console + file handler so the final score and any
+# per-instance errors land in a tail-able log file for monitoring.
+log = logging.getLogger("benchmarks.swe_bench")
+
+
+def setup_logging(log_file: str | Path | None) -> Path | None:
+    """Send this runner's output to the console and (optionally) a log file.
+
+    Returns the resolved log-file path (or ``None`` if no file was requested) so
+    callers can report where to tail. Idempotent: re-attaching to the same file
+    does not duplicate handlers.
+    """
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+
+    have_stream = any(isinstance(h, logging.StreamHandler) and
+                      not isinstance(h, logging.FileHandler) for h in log.handlers)
+    if not have_stream:
+        stream = logging.StreamHandler()
+        stream.setFormatter(fmt)
+        log.addHandler(stream)
+
+    if not log_file:
+        return None
+    path = Path(log_file).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    resolved = str(path.resolve())
+    already = any(
+        isinstance(h, logging.FileHandler) and
+        os.path.realpath(getattr(h, "baseFilename", "")) == resolved
+        for h in log.handlers
+    )
+    if not already:
+        fh = logging.FileHandler(path)
+        fh.setFormatter(fmt)
+        log.addHandler(fh)
+    return path
 
 # Public SWE-bench dataset ids on Hugging Face.
 DATASETS = {
@@ -192,10 +234,10 @@ def generate_predictions(args) -> tuple[Path, str]:
     done = {iid for iid, rec in results.items() if rec.get("_onit_status") == "ok"}
     todo = [r for r in rows if r["instance_id"] not in done]
     if done:
-        print(f"[swe-bench] resuming: {len(done)}/{len(rows)} already complete, "
-              f"{len(todo)} to run")
+        log.info("[swe-bench] resuming: %d/%d already complete, %d to run",
+                 len(done), len(rows), len(todo))
     if not todo:
-        print(f"[swe-bench] all {len(rows)} instances already complete: {preds_path}")
+        log.info("[swe-bench] all %d instances already complete: %s", len(rows), preds_path)
         return preds_path, model_name
 
     # Build the agent only once there is real work to do.
@@ -206,13 +248,15 @@ def generate_predictions(args) -> tuple[Path, str]:
         if iid in done:
             continue
         ws = data_root / iid
-        print(f"[swe-bench] ({i}/{len(rows)}) {iid}")
+        log.info("[swe-bench] (%d/%d) %s", i, len(rows), iid)
         try:
             _prepare_workspace(inst["repo"], inst["base_commit"], ws)
             patch = asyncio.run(_solve_instance(agent, inst, ws, timeout))
             status = "ok"
+            if not patch.strip():
+                log.warning("  ! %s produced an empty patch", iid)
         except Exception as exc:  # noqa: BLE001 - record error; resume retries it
-            print(f"  ! {iid} failed: {exc}", file=sys.stderr)
+            log.error("  ! %s failed: %s", iid, exc, exc_info=True)
             patch, status = "", "error"
         results[iid] = {
             "instance_id": iid,
@@ -222,7 +266,10 @@ def generate_predictions(args) -> tuple[Path, str]:
         }
         _write_predictions(preds_path, results)
 
-    print(f"[swe-bench] wrote {preds_path}")
+    errored = [iid for iid, rec in results.items() if rec.get("_onit_status") == "error"]
+    if errored:
+        log.warning("[swe-bench] %d instance(s) errored: %s", len(errored), ", ".join(errored))
+    log.info("[swe-bench] wrote %s", preds_path)
     return preds_path, model_name
 
 
@@ -236,21 +283,28 @@ def grade(preds_path: Path, args, model_name: str) -> None:
         "--run_id", args.run_id,
         "--max_workers", str(args.max_workers),
     ]
-    print(f"[swe-bench] grading: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    log.info("[swe-bench] grading: %s", " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        log.error("[swe-bench] grading harness failed (exit %s): %s", exc.returncode, exc)
+        raise
     # The harness writes <model>.<run_id>.json in the CWD.
     report = Path(f"{model_name}.{args.run_id}.json".replace("/", "__"))
     if report.exists():
         data = json.loads(report.read_text())
         total = data.get("total_instances") or data.get("submitted_instances")
         resolved = len(data.get("resolved_ids", []))
-        print("\n# SWE-bench summary\n")
-        print("| Dataset | Model | Instances | Resolved | Resolve rate |")
-        print("|---|---|---|---|---|")
         rate = (resolved / total) if total else 0.0
-        print(f"| {args.dataset} | {model_name} | {total} | {resolved} | {rate:.3f} |")
+        log.info("\n# SWE-bench summary\n")
+        log.info("| Dataset | Model | Instances | Resolved | Resolve rate |")
+        log.info("|---|---|---|---|---|")
+        log.info("| %s | %s | %s | %s | %.3f |",
+                 args.dataset, model_name, total, resolved, rate)
+        log.info("[swe-bench] FINAL SCORE: resolved %s/%s (%.1f%%)",
+                 resolved, total, rate * 100)
     else:
-        print(f"[swe-bench] report {report} not found; see harness logs.")
+        log.error("[swe-bench] report %s not found; see harness logs.", report)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -272,14 +326,25 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--fresh", action="store_true",
                    help="Ignore any existing predictions file and start over "
                         "(default is to resume, skipping completed instances).")
+    p.add_argument("--log-file", default=None,
+                   help="Tee the run's progress, errors, and final score to this "
+                        "file (in addition to the console) for easy monitoring.")
     args = p.parse_args(argv)
+
+    log_path = setup_logging(args.log_file)
+    if log_path:
+        log.info("[swe-bench] logging to %s", log_path)
 
     if args.limit is None and args.tier:
         args.limit = bench_config.TIERS[args.tier].limit
 
-    preds_path, model_name = generate_predictions(args)
-    if not args.no_grade:
-        grade(preds_path, args, model_name)
+    try:
+        preds_path, model_name = generate_predictions(args)
+        if not args.no_grade:
+            grade(preds_path, args, model_name)
+    except Exception:
+        log.exception("[swe-bench] run failed")
+        raise
 
 
 if __name__ == "__main__":
