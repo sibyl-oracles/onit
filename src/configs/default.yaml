@@ -8,6 +8,9 @@ serving:
   # context-compaction threshold healthy (~90%) on large-context models.
   max_tokens: 32768
   # max_context_tokens: 1048576  # model's context window; auto-detected from vLLM if unset
+  # num_ctx: 32768  # Ollama only: context window (prompt+output). Ollama defaults this
+  #                 # to 2048, which truncates long answers. Auto-sized from the model's
+  #                 # native window (capped at max(max_tokens*2, 32768)) when unset.
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."
@@ -21,7 +24,9 @@ session_path: "~/.onit/sessions"
 # see template examples in the `src/mcp/prompts/prompt_templates` folder
 template_path:
 
-# number of seconds before a request times out; -1 for no timeout
+# number of seconds before a request times out; -1 for no overall timeout.
+# Even with -1, connection setup and streaming stalls (no chunk received for
+# 300s) are bounded so a wedged server cannot hang the chat loop forever.
 timeout: -1
 
 # Web UI settings

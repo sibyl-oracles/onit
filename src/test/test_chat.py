@@ -471,3 +471,67 @@ class TestPlanningContinuation:
         assert "unable to complete" in result.lower() or "tool" in result.lower()
         # Should have tried the initial call + MAX_PLANNING_CONTINUATIONS continuations
         assert mock_client.chat.completions.create.call_count == 3  # 1 initial + 2 continuations
+
+
+class TestHangPrevention:
+    """Regression tests for the forever-hang: no client timeout + blocked API call."""
+
+    def test_positive_timeout_passed_through(self):
+        from model.serving.chat import _build_client_timeout
+        assert _build_client_timeout(120, stream=True) == 120
+        assert _build_client_timeout(0, stream=False) == 0
+
+    def test_no_timeout_still_bounds_connect_and_stream_stall(self):
+        import httpx
+        from model.serving.chat import _build_client_timeout, CONNECT_TIMEOUT, STREAM_STALL_TIMEOUT
+        for t in (None, -1):
+            cfg = _build_client_timeout(t, stream=True)
+            assert isinstance(cfg, httpx.Timeout)
+            assert cfg.connect == CONNECT_TIMEOUT
+            assert cfg.read == STREAM_STALL_TIMEOUT
+
+    def test_no_timeout_non_streaming_has_unbounded_read(self):
+        """Non-streaming long generations must not be cut off by the stall timeout."""
+        import httpx
+        from model.serving.chat import _build_client_timeout, CONNECT_TIMEOUT
+        cfg = _build_client_timeout(-1, stream=False)
+        assert isinstance(cfg, httpx.Timeout)
+        assert cfg.connect == CONNECT_TIMEOUT
+        assert cfg.read is None
+
+    @pytest.mark.asyncio
+    async def test_safety_queue_aborts_blocked_api_call(self):
+        """Pressing stop must interrupt an API call that never returns."""
+        from model.serving.chat import _await_with_safety, _SAFETY_ABORT
+
+        async def never_returns():
+            await asyncio.sleep(3600)
+
+        safety_queue = asyncio.Queue()
+        safety_queue.put_nowait("stop")
+        result = await asyncio.wait_for(
+            _await_with_safety(never_returns(), safety_queue, poll=0.05), timeout=5
+        )
+        assert result is _SAFETY_ABORT
+
+    @pytest.mark.asyncio
+    async def test_safety_race_returns_result_when_call_completes(self):
+        from model.serving.chat import _await_with_safety
+
+        async def quick():
+            return "ok"
+
+        result = await _await_with_safety(quick(), asyncio.Queue(), poll=0.05)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_safety_race_propagates_exceptions(self):
+        from model.serving.chat import _await_with_safety
+        from openai import APITimeoutError
+        import httpx
+
+        async def boom():
+            raise APITimeoutError(request=httpx.Request("POST", "http://localhost:8000/v1"))
+
+        with pytest.raises(APITimeoutError):
+            await _await_with_safety(boom(), asyncio.Queue(), poll=0.05)

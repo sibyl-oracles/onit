@@ -42,6 +42,29 @@ logger = logging.getLogger(__name__)
 # Larger responses are truncated to avoid blowing up the context window.
 MAX_TOOL_RESPONSE = 16000
 
+# Stall detection for the "no timeout" (-1) configuration.  Even with no
+# overall request timeout, the connect phase and the gap between streamed
+# chunks must be bounded — otherwise a wedged server (e.g. vLLM guided
+# decoding stalling on tool_choice="required") hangs the chat loop forever
+# with no way to recover.
+CONNECT_TIMEOUT = 30.0
+STREAM_STALL_TIMEOUT = 300.0
+
+
+def _build_client_timeout(timeout, stream: bool):
+    """Return the timeout configuration for the API client.
+
+    A positive ``timeout`` is used as-is (total request timeout).  ``None`` or
+    a negative value means "no overall limit": connect time is still bounded,
+    and when streaming, the gap between chunks is bounded by
+    STREAM_STALL_TIMEOUT.  Streaming read timeouts apply per-chunk, so long
+    generations are unaffected — only a genuine stall raises.
+    """
+    if timeout is not None and timeout >= 0:
+        return timeout
+    read = STREAM_STALL_TIMEOUT if stream else None
+    return httpx.Timeout(connect=CONNECT_TIMEOUT, read=read, write=30.0, pool=30.0)
+
 
 def _truncate_tool_response(response: str) -> str:
     """Truncate a tool response if it exceeds MAX_TOOL_RESPONSE characters."""
@@ -110,15 +133,14 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     return host_key
 
 
-def _create_ollama_client(host: str, api_key: str, timeout):
+def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True):
     """Create an OllamaAsyncClient configured for the given host and API key."""
     if not OLLAMA_SDK_AVAILABLE:
         raise ImportError("The 'ollama' package is required for Ollama cloud support.")
-    _timeout = None if (timeout is None or timeout < 0) else timeout
     return OllamaAsyncClient(
         host=host,
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=_timeout,
+        timeout=_build_client_timeout(timeout, stream),
     )
 
 
@@ -166,6 +188,29 @@ async def _get_model_max_context(host: str, api_key: str, model: str) -> Optiona
                             return int(val)
     except Exception as e:
         logger.debug("Could not query max_model_len from vLLM: %s", e)
+    return None
+
+
+async def _get_ollama_max_context(client, model: str) -> Optional[int]:
+    """Query Ollama for the model's native maximum context length.
+
+    Ollama exposes per-architecture metadata via ``client.show(model)``; the
+    context window lives in ``modelinfo`` under the key ``<arch>.context_length``
+    (e.g. ``qwen3.context_length``).  Returns None if it can't be determined.
+
+    This matters because Ollama defaults ``num_ctx`` to 2048 unless told
+    otherwise — far smaller than ``max_tokens`` — which silently truncates long
+    responses mid-stream.  Knowing the native window lets us size ``num_ctx`` and
+    drive the same context-compaction accounting used for vLLM.
+    """
+    try:
+        resp = await client.show(model)
+        modelinfo = getattr(resp, "modelinfo", None) or {}
+        for key, val in modelinfo.items():
+            if key.endswith(".context_length") and val:
+                return int(val)
+    except Exception as e:
+        logger.debug("Could not query context_length from Ollama: %s", e)
     return None
 
 
@@ -788,11 +833,13 @@ async def _ollama_process_streaming_response(
     safety_queue: asyncio.Queue,
     chat_ui,
     think: bool,
-) -> tuple[str, str, list | None, bool] | None:
+) -> tuple[str, str, list | None, bool, int, str | None] | None:
     """Consume an Ollama streaming chat completion and return accumulated results.
 
-    Returns (full_content, full_thinking, tool_calls_or_None, ui_was_streaming)
-    or None if the safety queue fired mid-stream.
+    Returns (full_content, full_thinking, tool_calls_or_None, ui_was_streaming,
+    prompt_eval_count, done_reason) or None if the safety queue fired mid-stream.
+    ``done_reason`` is Ollama's stop reason from the final chunk (e.g. "stop",
+    "length"); it lets the caller detect token-budget truncation and resume.
 
     Ollama streaming differences from OpenAI:
     - Chunks have .message.content (str|None), no .choices
@@ -804,6 +851,7 @@ async def _ollama_process_streaming_response(
     tool_calls = None
     ui_streaming = False
     prompt_eval_count = 0
+    done_reason = None
 
     try:
         async for chunk in chat_completion:
@@ -811,6 +859,11 @@ async def _ollama_process_streaming_response(
                 if ui_streaming and chat_ui:
                     chat_ui.stream_end()
                 return None
+
+            # Capture the stop reason from the final chunk (done=True).
+            dr = getattr(chunk, "done_reason", None)
+            if dr:
+                done_reason = dr
 
             # Tool calls arrive complete in the final chunk
             if chunk.message.tool_calls:
@@ -843,7 +896,7 @@ async def _ollama_process_streaming_response(
     except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
         logging.getLogger(__name__).warning("Ollama stream interrupted: %s", e)
 
-    return full_content, full_thinking, tool_calls, ui_streaming, prompt_eval_count
+    return full_content, full_thinking, tool_calls, ui_streaming, prompt_eval_count, done_reason
 
 
 def _unify_streaming_result(
@@ -1035,6 +1088,33 @@ async def _handle_raw_tool_call(
 _SAFETY_ABORT = object()  # sentinel distinct from None
 
 
+async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float = 0.25):
+    """Await *awaitable* while polling the safety queue.
+
+    The chat loop only checks the safety queue between streamed chunks, so a
+    user stop request goes unnoticed while blocked on the initial API call
+    (e.g. during prompt processing or guided-decoding grammar compilation).
+    This races the awaitable against the queue: if the queue fires first, the
+    in-flight request is cancelled and _SAFETY_ABORT is returned.
+    """
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=poll)
+            if done:
+                return task.result()
+            if not safety_queue.empty():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                return _SAFETY_ABORT
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
 async def _handle_structured_tool_calls(
     tool_calls: list, message_for_history, tool_registry,
     timeout, data_path, chat_ui, verbose: bool,
@@ -1210,20 +1290,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     memories = kwargs.get('memories', None)
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
     max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
+    num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
 
     images_bytes = _load_images(images, chat_ui, verbose)
     messages = _build_messages(instruction, images_bytes, prompt_intro,
                                kwargs.get('session_history', None), memories)
 
     api_key = _resolve_api_key(host, host_key)
-    # Use explicit timeout if provided; -1 or None means no timeout (infinite wait).
-    _client_timeout = None if (timeout is None or timeout < 0) else timeout
+    # Explicit positive timeout applies to the whole request; -1/None means no
+    # overall limit but connect and per-chunk stall timeouts still apply (see
+    # _build_client_timeout) so a wedged server can't hang the loop forever.
     is_ollama = _is_ollama_host(host)
     if is_ollama:
-        ollama_client = _create_ollama_client(host, api_key, timeout)
+        ollama_client = _create_ollama_client(host, api_key, timeout, stream)
         client = None
     else:
-        client = AsyncOpenAI(base_url=host, api_key=api_key, timeout=_client_timeout)
+        client = AsyncOpenAI(base_url=host, api_key=api_key,
+                             timeout=_build_client_timeout(timeout, stream))
         ollama_client = None
 
     # Resolve model: use explicit name if provided, otherwise auto-detect.
@@ -1257,6 +1340,27 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             _log_to_ui_or_verbose(
                 f"Model max context: {max_context_tokens:,} tokens", chat_ui, verbose, level="info"
             )
+
+    # Ollama: resolve the context window (num_ctx).  Ollama defaults num_ctx to
+    # 2048, which silently truncates any response longer than ~prompt+2048 tokens
+    # regardless of num_predict.  Use the explicit override if given, otherwise the
+    # model's native window, capped to a sane ceiling so a huge-context model
+    # doesn't try to allocate a giant KV cache and fail to load.
+    if is_ollama:
+        if num_ctx is None:
+            _native_ctx = await _get_ollama_max_context(ollama_client, model)
+            # Ceiling keeps auto-sizing safe; raise serving.num_ctx to go higher.
+            _ctx_ceiling = max(max_tokens * 2, 32768)
+            if _native_ctx:
+                num_ctx = min(_native_ctx, _ctx_ceiling)
+            else:
+                num_ctx = _ctx_ceiling
+        _log_to_ui_or_verbose(
+            f"Ollama context window (num_ctx): {num_ctx:,} tokens", chat_ui, verbose, level="info"
+        )
+        # Keep compaction accounting consistent with the window Ollama allocates.
+        if max_context_tokens is None:
+            max_context_tokens = num_ctx
 
     MAX_CHAT_ITERATIONS = -1
     MAX_REPEATED_TOOL_CALLS = 30
@@ -1386,6 +1490,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             "temperature": temperature,
                             "top_p": top_p,
                             "top_k": top_k,
+                            "num_ctx": num_ctx,
                             "num_predict": _api_max_tokens,
                             "presence_penalty": presence_penalty,
                             "repeat_penalty": repetition_penalty,
@@ -1401,7 +1506,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     # no tool_choice="required" equivalent.
                     if _force_tool_call and tools:
                         ollama_kwargs["format"] = "json"
-                    chat_completion = await ollama_client.chat(**ollama_kwargs)
+                    chat_completion = await _await_with_safety(
+                        ollama_client.chat(**ollama_kwargs), safety_queue)
+                    if chat_completion is _SAFETY_ABORT:
+                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
+                        return None
                 else:
                     _extra_body = {
                         "top_k": top_k,          # vLLM extension, important for Qwen3
@@ -1436,7 +1545,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         completion_kwargs["tools"] = tools
                     if stream:
                         completion_kwargs["stream_options"] = {"include_usage": True}
-                    chat_completion = await client.chat.completions.create(**completion_kwargs)
+                    chat_completion = await _await_with_safety(
+                        client.chat.completions.create(**completion_kwargs), safety_queue)
+                    if chat_completion is _SAFETY_ABORT:
+                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
+                        return None
 
                 # Streaming path: iterate chunks, populate shared variables
                 if stream:
@@ -1446,13 +1559,20 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         )
                         if stream_result is None:
                             return None
-                        _full_content, _full_reasoning, _ollama_tcs, _ui_was_streaming, _ollama_prompt_tokens = stream_result
+                        _full_content, _full_reasoning, _ollama_tcs, _ui_was_streaming, _ollama_prompt_tokens, _finish_reason = stream_result
                         if _ollama_prompt_tokens:
                             _last_prompt_tokens = _ollama_prompt_tokens
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
+                        if _finish_reason == "length":
+                            _log_to_ui_or_verbose(
+                                "Model response truncated (finish_reason=length). "
+                                "Consider increasing num_ctx/max_tokens.",
+                                chat_ui, verbose, level="warning",
+                            )
+                            _force_compact = True
                         if _ollama_tcs:
                             _tool_calls = _adapt_ollama_tool_calls(_ollama_tcs)
                             # arguments must be dict in the history message (Ollama validates this)
@@ -1510,6 +1630,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 api_error = f"Request to {host} timed out (read timeout during streaming)."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="error")
+                # tool_choice="required" engages guided decoding on vLLM, which
+                # can stall on large tool schemas.  If that's what we asked for,
+                # retry without it rather than wedging the server again.
+                if _force_tool_call:
+                    _force_tool_call = False
+                    _active_max_tokens = max_tokens
+                    _log_to_ui_or_verbose(
+                        "Dropping tool_choice=required for retry (possible guided-decoding stall).",
+                        chat_ui, verbose, level="warning",
+                    )
             except OpenAIError as e:
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)

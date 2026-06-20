@@ -486,10 +486,11 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     """Start MCP servers if they are not already running, then wait for readiness."""
     from urllib.parse import urlparse
 
-    # Propagate data_path and documents_path to MCP servers via environment variables
-    data_path = config_data.get('data_path', '')
-    if data_path:
-        os.environ['ONIT_DATA_PATH'] = str(Path(data_path).expanduser().resolve())
+    # Propagate data_path and documents_path to MCP servers via environment variables.
+    # Fall back to OnIt's own default (~/sandbox) when unset so the MCP servers write
+    # to the same absolute local path the UI displays, instead of their /tmp fallback.
+    data_path = config_data.get('data_path') or str(Path.home() / "sandbox")
+    os.environ['ONIT_DATA_PATH'] = str(Path(data_path).expanduser().resolve())
     docs_path = config_data.get('documents_path', '')
     if docs_path:
         os.environ['ONIT_DOCUMENTS_PATH'] = docs_path
@@ -654,6 +655,9 @@ def _build_parser() -> argparse.ArgumentParser:
                              "(e.g. env_B or ~/miniconda3/envs/env_B). "
                              "OnIt runs in its own environment while all bash commands "
                              "use the target environment's Python, pip, and binaries.")
+    parser.add_argument("--data-path", "--data_path", type=str, default=None, dest="data_path",
+                        help="Working directory for agent files (default: ~/sandbox). "
+                             "Overrides data_path in the config YAML.")
     parser.add_argument("--unrestricted", action="store_true", default=False,
                         help="Run with unrestricted host filesystem access. "
                              "The agent can read/write any path, use any working directory, "
@@ -778,6 +782,8 @@ I follow these rules precisely when writing, reviewing, or modifying code.
         config_data.setdefault('serving', {})['model'] = args.model
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
+    if args.data_path:
+        config_data['data_path'] = args.data_path
 
     # --mcp-sse / --mcp-server add external MCP servers to the servers list
     for urls, prefix in [(args.mcp_sse, 'ExternalSSE'), (args.mcp_server, 'ExternalMCP')]:

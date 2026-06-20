@@ -853,7 +853,7 @@ class OnIt(BaseModel):
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
         }
-        for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
+        for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
             if _k in self.model_serving:
                 kwargs[_k] = self.model_serving[_k]
         if self.prompt_intro:
@@ -967,7 +967,7 @@ class OnIt(BaseModel):
                           'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history()}
-                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
+                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]
                 last_response = await chat(host=self.model_serving["host"],
@@ -1188,11 +1188,26 @@ class OnIt(BaseModel):
         safety_warning = self.messages.get('safety_warning', "Press 'Enter' key to stop all tasks.")
         self.chat_ui.console.print(safety_warning, style="dim")
         self.chat_ui.start_thinking()
+        fd = sys.stdin.fileno()
         def _on_enter():
-            sys.stdin.readline()
-            self.safety_queue.put_nowait(STOP_TAG)
+            # Drain the available bytes with a raw, non-buffered read. Two reasons:
+            #   1. ``sys.stdin.readline()`` *blocks* until a full line is available;
+            #      running it inside this event-loop callback would freeze the loop
+            #      (and the streaming UI) whenever stdin is readable mid-line.
+            #   2. ``sys.stdin`` is buffered — readline() pulls bytes into a Python
+            #      userspace buffer that the raw ``os.read(fd, 1)`` input reader can
+            #      never see, silently swallowing the start of the user's next message.
+            #   ``os.read`` on a fd the selector just reported readable returns
+            #   immediately and leaves any unconsumed bytes in the kernel tty buffer,
+            #   where the text-UI input reader can still pick them up.
+            try:
+                data = os.read(fd, 4096)
+            except OSError:
+                return
+            if b"\n" in data or b"\r" in data:
+                self.safety_queue.put_nowait(STOP_TAG)
         try:
-            loop.add_reader(sys.stdin.fileno(), _on_enter)
+            loop.add_reader(fd, _on_enter)
         except NotImplementedError:
             pass  # Windows ProactorEventLoop does not support add_reader
         return _on_enter
@@ -1422,7 +1437,7 @@ class OnIt(BaseModel):
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history(),
                           'stream': self.stream}
-                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty'):
+                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]
                 if self.prompt_intro:

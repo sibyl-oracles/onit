@@ -433,3 +433,67 @@ class TestClientDisconnectMiddleware:
 
         assert len(calls) == 1
         assert calls[0]["body"] == body_content
+
+
+class TestEnterKeyListener:
+    """The Enter-key stop listener shares stdin with the raw text-UI input
+    reader (``os.read(fd, 1)``). It must therefore be non-blocking and read
+    *unbuffered* — otherwise it either freezes the event loop or strands the
+    start of the user's next message in Python's stdin buffer, which surfaces
+    as dropped input characters in the text UI.
+    """
+
+    def _make_stub(self, safety_queue):
+        stub = MagicMock()
+        stub.web = False
+        stub.messages = {}
+        stub.safety_queue = safety_queue
+        return stub
+
+    @pytest.mark.asyncio
+    async def test_newline_signals_stop_without_buffered_readline(self, monkeypatch):
+        r, w = os.pipe()
+        try:
+            fake_stdin = MagicMock()
+            fake_stdin.fileno.return_value = r
+            # If the implementation ever falls back to buffered readline() this
+            # raises, failing the test loudly instead of silently stranding bytes.
+            fake_stdin.readline.side_effect = AssertionError("must not use buffered readline()")
+            monkeypatch.setattr(sys, "stdin", fake_stdin)
+
+            loop = asyncio.get_running_loop()
+            q = asyncio.Queue()
+            cb = OnIt._setup_enter_key_listener(self._make_stub(q), loop)
+            assert cb is not None
+            try:
+                os.write(w, b"\n")
+                await asyncio.wait_for(q.get(), timeout=1.0)  # STOP_TAG enqueued
+            finally:
+                loop.remove_reader(r)
+            assert q.empty()
+        finally:
+            os.close(r)
+            os.close(w)
+
+    @pytest.mark.asyncio
+    async def test_partial_line_does_not_stop(self, monkeypatch):
+        """Bytes without a newline (type-ahead) must not trigger a stop, and the
+        callback must return promptly rather than block waiting for a newline."""
+        r, w = os.pipe()
+        try:
+            fake_stdin = MagicMock()
+            fake_stdin.fileno.return_value = r
+            monkeypatch.setattr(sys, "stdin", fake_stdin)
+
+            loop = asyncio.get_running_loop()
+            q = asyncio.Queue()
+            cb = OnIt._setup_enter_key_listener(self._make_stub(q), loop)
+            try:
+                os.write(w, b"hello")  # no newline
+                await asyncio.sleep(0.1)  # give the reader a chance to fire
+                assert q.empty()  # no false stop, and it did not block the loop
+            finally:
+                loop.remove_reader(r)
+        finally:
+            os.close(r)
+            os.close(w)
