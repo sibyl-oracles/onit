@@ -57,8 +57,6 @@ onit serve loop "task" --period 60            # repeat a task on a timer
 
 onit ask "what is the weather in Manila"      # send a task to a running A2A server
 
-onit --rules                                  # load coding rules from ONIT.md
-onit --rules path/to/rules.md                # load coding rules from a custom file
 onit --container                              # run in a hardened Docker container
 onit --sandbox                                # delegate code execution to a sandbox
 onit --unrestricted                           # unrestricted host filesystem access
@@ -158,7 +156,6 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--no-stream` | Disable token streaming | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
-| `--rules [FILE]` | Load a coding-rules `.md` file to guide the agent's behaviour. Defaults to `ONIT.md` in the current directory when no path is given | `ONIT.md` |
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | — |
 | `--sandbox` | Delegate code execution to an external MCP sandbox provider | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
@@ -307,60 +304,6 @@ onit serve loop "summarize today's news" --period 3600
 | `task` (positional) | Task to execute repeatedly | required |
 | `--period SECONDS` | Seconds between iterations | `10` (or `period` in config) |
 
-## Coding Rules (`--rules`)
-
-`--rules` injects a Markdown rules file into the agent's system prompt, giving it explicit coding guidelines to follow throughout the session. This is the primary way to improve and customise the agent's coding behaviour.
-
-```bash
-onit --rules                       # load ONIT.md from the current directory (default)
-onit --rules path/to/RULES.md      # load a custom rules file
-onit --rules --host http://localhost:8000/v1   # combine with any other flags
-```
-
-When no file is specified, `--rules` reads `ONIT.md` in the current working directory. The file contents are wrapped in a `<rules>` block and prepended to the system prompt:
-
-```
-You are an expert coding agent.
-Follow these rules precisely when writing, reviewing, or modifying code.
-
-<rules>
-... contents of ONIT.md ...
-</rules>
-```
-
-**Creating your own rules file:**
-
-Place an `ONIT.md` at the root of your project and run `onit --rules`. The agent will follow your rules automatically for every task in that session.
-
-Example `ONIT.md`:
-
-```markdown
-## Style
-- Use snake_case for all identifiers.
-- Maximum line length: 88 characters.
-
-## Tests
-- Every public function must have a test.
-- Tests must assert the business intent, not just the return value.
-
-## Safety
-- Never silence exceptions. Log and re-raise.
-- Validate all external inputs at the boundary.
-```
-
-**With a vLLM or OpenRouter backend:**
-
-```bash
-onit --rules --host http://localhost:8000/v1
-onit --rules --host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro
-```
-
-**With Ollama cloud:**
-
-```bash
-onit --rules --host https://api.ollama.com --model glm-5.1:cloud
-```
-
 ## Isolation Modes
 
 OnIt offers three isolation levels. They can be combined (e.g. `--container --sandbox`).
@@ -442,7 +385,7 @@ MCP servers start automatically. Tools are auto-discovered and available to the 
 | Server | Description |
 |--------|-------------|
 | PromptsMCPServer | Prompt templates for instruction generation |
-| ToolsMCPServer | Web search, bash commands, file operations, and document tools |
+| ToolsMCPServer | Web search, local search, bash commands, file operations, and document tools |
 
 Connect to additional external MCP servers:
 
@@ -450,6 +393,75 @@ Connect to additional external MCP servers:
 onit --mcp-sse http://localhost:8080/sse
 onit --mcp-server http://localhost:8080/mcp
 ```
+
+## Local Search over In-House Data
+
+OnIt includes a local search toolkit modeled on the [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/): a composable pipeline that unifies **ingestion** (parse → chunk → embed/index) and **retrieval** (BM25 sparse, dense embeddings, hybrid fusion) behind a single interface. Everything runs on your own infrastructure — documents, index, and embeddings never leave your machine, so the agent can answer questions from private company data that web search cannot see.
+
+| Format | Extension | Parser |
+|--------|-----------|--------|
+| PDF | `.pdf` | pypdf (per page) |
+| Markdown | `.md`, `.markdown` | built-in |
+| Text / CSV | `.txt`, `.text`, `.csv` | built-in |
+| Word | `.docx` | python-docx (paragraphs and tables) |
+| Excel | `.xlsx`, `.xlsm` | openpyxl (per sheet) |
+
+### Quick start
+
+```bash
+# 1. Install the optional parsers for Word and Excel (PDF/md/txt work out of the box)
+pip install "onit[search]"
+
+# 2. Point OnIt at your document folder
+export ONIT_DOCUMENTS_PATH=~/company-docs     # or set documents_path in config.yaml
+
+# 3. Run and ask questions about your data
+onit
+> what is our vacation policy?
+```
+
+The agent uses two MCP tools, registered automatically in the ToolsMCPServer:
+
+| Tool | Description |
+|------|-------------|
+| `index_documents` | Ingest a directory: parse, chunk (default 1600 chars, 200 overlap), and index. Incremental — unchanged files are skipped, deleted files are dropped. Use `rebuild: true` to start fresh or `status_only: true` for index statistics. |
+| `local_search` | Query the index and return ranked chunks with source file and location (page, sheet, table). Auto-ingests the default corpus on first use. |
+
+### Retrieval methods
+
+`local_search` supports three methods, selected with the `method` argument:
+
+| Method | How it works | Requires |
+|--------|--------------|----------|
+| `bm25` | Okapi BM25 sparse lexical ranking (pure Python) | nothing |
+| `dense` | Cosine similarity over chunk embeddings | an embedding endpoint |
+| `hybrid` *(default)* | Reciprocal rank fusion of BM25 + dense rankings | falls back to `bm25` when no embedding endpoint is configured |
+
+Dense and hybrid retrieval use any **OpenAI-compatible** `/embeddings` endpoint — a private vLLM or Ollama server keeps everything on-premises:
+
+```bash
+export ONIT_EMBEDDING_HOST=http://localhost:8000/v1   # vLLM, Ollama, etc.
+export ONIT_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+export ONIT_EMBEDDING_API_KEY=...                     # only if the endpoint needs one
+```
+
+When these are set, `index_documents` embeds chunks during ingestion and `local_search` embeds the query at search time. Without them, everything still works with BM25 — no network calls are made.
+
+### How it works
+
+```
+Ingestion:  documents → parse (pdf/md/txt/csv/docx/xlsx) → chunk → [embed] → index
+Retrieval:  query → BM25 ranking ─┐
+            query → [dense ranking] ─┴→ reciprocal rank fusion → top-k chunks + sources
+```
+
+- The index is a single JSON file at `data_path/local_search/index.json` (owner-only permissions). Delete it or pass `rebuild: true` to re-ingest from scratch.
+- Corpus directories must be inside `documents_path` or `data_path` — the same filesystem sandbox that governs all OnIt file tools (relaxed inside `--container`).
+- Set `ONIT_DISABLE_LOCAL_SEARCH=1` to unregister both tools.
+
+### Adding a new document format
+
+Parsers follow a small adapter interface: each returns a list of `(location, text)` blocks (e.g. `("page 3", ...)`, `("sheet Sales", ...)`). To support a new format, add a parser to `src/mcp/servers/tasks/local/search/toolkit.py`, register its extension in `SUPPORTED_EXTENSIONS`, and dispatch it from `parse_document()` — chunking, indexing, and retrieval pick it up automatically.
 
 ## Model Serving
 
@@ -499,12 +511,6 @@ Then point OnIt at the Ollama cloud host and specify a model:
 onit --host https://api.ollama.com --model glm-5.1:cloud
 onit --host https://api.ollama.com --model gemma4:31b-cloud
 onit --host https://api.ollama.com --model llama4:scout-cloud
-```
-
-Combine with `--rules` to load your coding guidelines:
-
-```bash
-onit --rules --host https://api.ollama.com --model glm-5.1:cloud
 ```
 
 Enable thinking mode (if supported by the model):
@@ -600,7 +606,7 @@ onit/
 
 ## TODO
 
-- [ ] Integrate the [Mistral Search Toolkit](https://docs.mistral.ai/studio-api/knowledge-rag/search-toolkit) for knowledge/RAG search.
+- [x] Integrate a [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/)–style pipeline for knowledge/RAG search over in-house data. See [Local Search over In-House Data](#local-search-over-in-house-data).
 
 ## License
 

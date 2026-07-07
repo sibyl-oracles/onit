@@ -12,7 +12,6 @@ Usage:
     onit serve web [--port 9000]                  # launch the Gradio web UI
     onit serve gateway [telegram|viber|auto]      # run as a messaging bot gateway
     onit serve loop "task" [--period 60]          # repeat a task on a timer
-    onit --rules [ONIT.md]                         # load coding rules from a markdown file
     onit --config my.yaml                         # custom config file
     onit --container                              # run in a hardened Docker container
 """
@@ -636,10 +635,6 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Skips auto-detection from endpoint.")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
-    parser.add_argument("--rules", type=str, nargs="?", const="ONIT.md", default=None,
-                        metavar="FILE",
-                        help="Path to a rules .md file that guides the agent's coding behaviour "
-                             "(default file: ONIT.md in the current directory).")
     parser.add_argument("--think", action="store_true", default=None,
                         help="Enable thinking/reasoning mode (CoT).")
     parser.add_argument("--no-stream", action="store_true", default=None, dest="no_stream",
@@ -754,22 +749,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             config_data['task'] = args.task
             if getattr(args, 'period', None) is not None:
                 config_data['period'] = args.period
-
-    # --rules reads an md file and injects its contents as coding guidelines
-    if getattr(args, 'rules', None):
-        rules_path = os.path.expanduser(args.rules)
-        if not os.path.isfile(rules_path):
-            print(f"Error: rules file '{rules_path}' not found.", file=sys.stderr)
-            sys.exit(1)
-        with open(rules_path, 'r') as _f:
-            rules = _f.read()
-        config_data['prompt_intro'] = f"""I am an expert coding agent.
-I follow these rules precisely when writing, reviewing, or modifying code.
-
-<rules>
-{rules}
-</rules>
-"""
 
     # --no-stream explicitly disables streaming (default is True)
     if args.no_stream:

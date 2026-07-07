@@ -18,7 +18,7 @@ Tools MCP Server - Consolidated Web Search + Bash/Document Operations + GitHub
 Combines web search, content fetching, weather, bash commands, file I/O,
 document search, and GitHub repository management into a single MCP server.
 
-12 Core Tools:
+14 Core Tools:
  1. search          - Web/news search via DuckDuckGo
  2. fetch_content   - Extract text, images, videos from URLs
  3. get_weather     - Weather with auto location detection
@@ -31,6 +31,8 @@ document search, and GitHub repository management into a single MCP server.
 10. search_document - Search within a single document; mode="context" for semantic search
 11. send_file       - Send files via callback URL or base64
 12. github_repo     - Create, get, list, fork, or delete GitHub repositories
+13. index_documents - Ingest in-house documents (pdf/md/txt/csv/docx/xlsx) into the local search index
+14. local_search    - BM25/dense/hybrid retrieval over indexed in-house documents
 '''
 
 import json
@@ -61,9 +63,10 @@ from src.mcp.servers.tasks.shared import (
 
 
 def _init_submodules(data_path: str, documents_path: str = None, verbose: bool = False):
-    """Initialize DATA_PATH, DOCUMENTS_PATH, and logging in both sub-modules."""
+    """Initialize DATA_PATH, DOCUMENTS_PATH, and logging in the sub-modules."""
     import src.mcp.servers.tasks.os.bash.mcp_server as bash_mod
     import src.mcp.servers.tasks.web.search.mcp_server as search_mod
+    import src.mcp.servers.tasks.local.search.mcp_server as local_mod
 
     bash_mod.DATA_PATH = data_path
     bash_mod.DOCUMENTS_PATH = documents_path
@@ -72,10 +75,14 @@ def _init_submodules(data_path: str, documents_path: str = None, verbose: bool =
     search_mod.DEFAULT_MEDIA_DIR = os.path.join(
         os.path.abspath(os.path.expanduser(data_path)), "media"
     )
+    local_mod.DATA_PATH = data_path
+    local_mod.DOCUMENTS_PATH = documents_path
+    local_mod._INDEX = None  # Reset cached index
 
     level = logging.INFO if verbose else logging.ERROR
     bash_mod.logger.setLevel(level)
     search_mod.logger.setLevel(level)
+    local_mod.logger.setLevel(level)
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +502,76 @@ def search_document(
         return json.dumps({"error": f"Unknown mode '{mode}'. Use: pattern, context", "status": "error"})
 
 
+# -- Local Search tools (in-house data) ----------------------------------------
+
+from src.mcp.servers.tasks.local.search.mcp_server import (
+    index_documents as _index_documents,
+    local_search as _local_search,
+)
+
+if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
+    @mcp.tool(
+        title="Index Local Documents",
+        description="""Ingest in-house documents into the local search index.
+Parses, chunks, and indexes files for BM25 and (when an embedding endpoint is
+configured) dense retrieval. Unchanged files are skipped; deleted files are
+dropped from the index.
+
+Supported formats: pdf, md, txt, csv, docx, xlsx
+
+Args:
+- path: Directory to index (default: documents_path, else data_path)
+- recursive: Recurse into subdirectories (default: true)
+- rebuild: Discard the existing index and re-ingest everything (default: false)
+- chunk_size: Characters per chunk (default: 1600)
+- chunk_overlap: Character overlap between chunks (default: 200)
+- status_only: Only report index statistics without ingesting (default: false)
+
+Returns JSON: {directory, indexed, skipped_unchanged, removed, errors,
+total_documents, total_chunks, embedding_model, status}"""
+    )
+    def index_documents(
+        path: Optional[str] = None,
+        recursive: bool = True,
+        rebuild: bool = False,
+        chunk_size: int = 1600,
+        chunk_overlap: int = 200,
+        status_only: bool = False,
+    ) -> str:
+        return _index_documents(
+            path=path, recursive=recursive, rebuild=rebuild,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            status_only=status_only,
+        )
+
+    @mcp.tool(
+        title="Search Local Documents",
+        description="""Search in-house documents (pdf, md, txt, csv, docx, xlsx)
+using the local search index. Automatically ingests the default corpus on
+first use. Use this for questions about internal/private data instead of
+web search.
+
+Args:
+- query: Natural-language query or keywords (required)
+- top_k: Number of results (default: 5, max: 20)
+- method: "hybrid" (default; BM25 + embeddings fused), "bm25" (lexical only),
+  or "dense" (embeddings only — requires ONIT_EMBEDDING_HOST/MODEL)
+- path: Optional corpus directory to (re)index before searching
+
+Returns JSON: {query, method, results: [{rank, score, file, location, text}],
+total_results, total_documents, total_chunks, status}"""
+    )
+    def local_search(
+        query: Optional[str] = None,
+        top_k: int = 5,
+        method: str = "hybrid",
+        path: Optional[str] = None,
+    ) -> str:
+        if err := _validate_required(query=query):
+            return err
+        return _local_search(query=query, top_k=top_k, method=method, path=path)
+
+
 # =============================================================================
 # SERVER ENTRY POINT
 # =============================================================================
@@ -532,9 +609,10 @@ def run(
 
     logger.info(f"Starting Tools MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
-    logger.info("12 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
+    logger.info("14 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
                  "bash, read_file, send_file, search_document, "
-                 "extract_tables, get_document_context, github_repo")
+                 "extract_tables, get_document_context, github_repo, "
+                 "index_documents, local_search")
 
     if not verbose:
         import uvicorn.config

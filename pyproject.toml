@@ -44,6 +44,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+search = [
+    "python-docx",
+    "openpyxl",
+]
 web = [
     "gradio",
     "google-auth",
@@ -68,6 +72,7 @@ swe_bench = [
     "swebench",
 ]
 all = [
+    "onit[search]",
     "onit[web]",
     "onit[gateway]",
     "onit[test]",
