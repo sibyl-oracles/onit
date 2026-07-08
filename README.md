@@ -20,6 +20,12 @@ cd onit
 pip install -e ".[all]"
 ```
 
+To update an existing source install and upgrade all dependencies to their latest compatible versions:
+
+```bash
+pip install -e '.[all]' -U --upgrade-strategy eager
+```
+
 ### 2. Setup
 
 ```bash
