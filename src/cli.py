@@ -9,7 +9,7 @@ Usage:
     onit resume [TAG_OR_ID]                       # resume a previous session
     onit ask "your question"                      # send a task to a remote A2A server
     onit serve a2a [--port 9001]                  # run as an A2A protocol server
-    onit serve web [--port 9000]                  # launch the Gradio web UI
+    onit serve web [--port 9000]                  # launch the web UI
     onit serve gateway [telegram|viber|auto]      # run as a messaging bot gateway
     onit serve loop "task" [--period 60]          # repeat a task on a timer
     onit --config my.yaml                         # custom config file
@@ -599,9 +599,12 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="A2A server port (default: 9001, or a2a_port in config).")
 
     # serve web
-    web_p = serve_sub.add_parser("web", help="Launch the Gradio web UI.")
+    web_p = serve_sub.add_parser("web", help="Launch the web UI.")
     web_p.add_argument("--port", type=int, default=None,
                        help="Web UI port (default: 9000, or web_port in config).")
+    web_p.add_argument("--ui", type=str, choices=["native", "gradio"], default=None,
+                       help="Web UI implementation: native FastAPI SSE UI (default) "
+                            "or the legacy Gradio UI.")
 
     # serve gateway
     gw_p = serve_sub.add_parser("gateway",
@@ -738,6 +741,8 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             config_data['web'] = True
             if args.port is not None:
                 config_data['web_port'] = args.port
+            if getattr(args, 'ui', None) is not None:
+                config_data['web_ui'] = args.ui
         elif serve_mode == 'gateway':
             config_data['gateway'] = args.gateway_type
             if getattr(args, 'webhook_url', None):

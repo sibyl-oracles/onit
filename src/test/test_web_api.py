@@ -1,0 +1,385 @@
+"""Tests for src/ui/api.py — the FastAPI + SSE web UI (WebApiUI)."""
+
+import asyncio
+import json
+import os
+import sys
+import threading
+import time
+import uuid
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from starlette.testclient import TestClient
+
+from ui.api import ApiSession, WebApiUI, _sse
+from ui import auth as ui_auth
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+class FakeOnit:
+    """Stub of Onit.process_task that streams two tokens and returns a reply."""
+
+    def __init__(self, response="Hello world", delay=0.0):
+        self.response = response
+        self.delay = delay
+        self.calls = []
+
+    async def process_task(self, task, session_path=None, data_path=None,
+                           safety_queue=None, stream_callback=None,
+                           stream_complete_callback=None, stats=None,
+                           tool_status_callback=None, session_id=None, **kwargs):
+        self.calls.append(task)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if tool_status_callback:
+            tool_status_callback("test_tool(query)")
+            tool_status_callback("")
+        if stream_callback:
+            stream_callback("Hello ", "Hello ")
+            stream_callback("world", "Hello world")
+        if stream_complete_callback:
+            stream_complete_callback("Hello world", 42.0)
+        if stats is not None:
+            stats["tokens_per_second"] = 42.0
+        if session_path:
+            with open(session_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"task": task, "response": self.response,
+                                    "timestamp": 0}) + "\n")
+        return self.response
+
+
+@pytest.fixture
+def bg_loop():
+    """A running event loop on a background thread (stands in for OnIt's loop)."""
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    yield loop
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=2)
+
+
+@pytest.fixture
+def ui(tmp_path, bg_loop):
+    ui = WebApiUI(
+        session_path=str(tmp_path / "sessions" / "current.jsonl"),
+        title="Test Chat",
+    )
+    ui._onit = FakeOnit()
+    ui._loop = bg_loop
+    ui.build_app()
+    return ui
+
+
+@pytest.fixture
+def client(ui):
+    return TestClient(ui.app)
+
+
+def parse_sse(text):
+    """Parse SSE payload text into a list of (event, data) tuples."""
+    events = []
+    for block in text.split("\n\n"):
+        event, data = None, None
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data = json.loads(line[5:].strip())
+        if event:
+            events.append((event, data))
+    return events
+
+
+# ── Unit: session management ───────────────────────────────────────────────
+
+class TestSessionManagement:
+    def test_create_new_session(self, ui):
+        sid, session = ui._get_or_create_session()
+        assert sid == session.session_id
+        assert os.path.isfile(session.session_path)
+        assert os.path.isdir(session.data_path)
+
+    def test_reuse_supplied_uuid(self, ui):
+        want = str(uuid.uuid4())
+        sid, _ = ui._get_or_create_session(want)
+        assert sid == want
+
+    def test_invalid_session_id_rejected(self, ui):
+        sid, _ = ui._get_or_create_session("../../etc/passwd")
+        assert sid != "../../etc/passwd"
+        # A fresh valid UUID was generated instead
+        uuid.UUID(sid)
+
+    def test_existing_session_returned(self, ui):
+        sid, session = ui._get_or_create_session()
+        sid2, session2 = ui._get_or_create_session(sid)
+        assert sid2 == sid
+        assert session2 is session
+
+
+class TestExtractFilePaths:
+    def test_local_path_becomes_link(self, ui, tmp_path):
+        sid, session = ui._get_or_create_session()
+        fname = "result.csv"
+        with open(os.path.join(session.data_path, fname), "w") as f:
+            f.write("a,b\n")
+        text = f"Saved to {session.data_path}/{fname}"
+        cleaned, files = ui._extract_file_paths(
+            text, data_path=session.data_path, session_id=sid)
+        assert f"[{fname}](/uploads/{sid}/{fname})" in cleaned
+        assert files == [os.path.join(session.data_path, fname)]
+
+
+# ── API endpoints ──────────────────────────────────────────────────────────
+
+class TestConfigEndpoint:
+    def test_config(self, client):
+        data = client.get("/api/config").json()
+        assert data["title"] == "Test Chat"
+        assert data["auth_enabled"] is False
+        assert data["authenticated"] is True
+
+    def test_index_served(self, client):
+        res = client.get("/")
+        assert res.status_code == 200
+        assert "OnIt" in res.text
+
+    def test_static_assets_served(self, client):
+        assert client.get("/static/app.js").status_code == 200
+        assert client.get("/static/style.css").status_code == 200
+
+
+class TestHistoryEndpoint:
+    def test_history_creates_session(self, client):
+        data = client.get("/api/history").json()
+        uuid.UUID(data["session_id"])
+        assert data["messages"] == []
+        assert data["processing"] is False
+
+    def test_history_sticky_via_header(self, client):
+        sid = client.get("/api/history").json()["session_id"]
+        data = client.get("/api/history", headers={"X-Session-Id": sid}).json()
+        assert data["session_id"] == sid
+
+
+class TestChatEndpoint:
+    def test_chat_streams_and_persists(self, client, ui):
+        sid = client.get("/api/history").json()["session_id"]
+        res = client.post("/api/chat", json={"message": "hi"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("text/event-stream")
+        events = parse_sse(res.text)
+        names = [e for e, _ in events]
+        assert "token" in names
+        assert "phase_end" in names
+        assert "status" in names
+        assert "done" in names
+        done = dict(events)["done"]
+        assert done["content"] == "Hello world"
+        assert done["tok_s"] == 42.0
+
+        # Deltas reassemble the streamed message
+        deltas = "".join(d["delta"] for e, d in events if e == "token")
+        assert deltas == "Hello world"
+
+        # Turn was persisted and appears in history
+        history = client.get("/api/history", headers={"X-Session-Id": sid}).json()
+        assert history["processing"] is False
+        assert [m["role"] for m in history["messages"]] == ["user", "assistant"]
+        assert ui._onit.calls == ["hi"]
+
+    def test_chat_empty_message_rejected(self, client):
+        assert client.post("/api/chat", json={"message": " "}).status_code == 400
+
+    def test_chat_conflict_while_processing(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        session.processing = True
+        res = client.post("/api/chat", json={"message": "hi"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 409
+
+    def test_chat_attaches_uploaded_files(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        with open(os.path.join(session.data_path, "notes.txt"), "w") as f:
+            f.write("hello")
+        res = client.post("/api/chat",
+                          json={"message": "summarize", "files": ["notes.txt"]},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        assert "Relevant files:" in ui._onit.calls[-1]
+        assert os.path.join(session.data_path, "notes.txt") in ui._onit.calls[-1]
+
+    def test_stop_signals_safety_queue(self, client, ui, bg_loop):
+        sid, session = ui._get_or_create_session()
+        session.processing = True
+        res = client.post("/api/chat/stop", headers={"X-Session-Id": sid})
+        assert res.json()["stopped"] is True
+        deadline = time.time() + 2
+        while session.safety_queue.qsize() == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        assert session.safety_queue.qsize() == 1
+
+
+class TestUploadEndpoints:
+    def test_upload_roundtrip(self, client):
+        sid = client.get("/api/history").json()["session_id"]
+        res = client.post("/api/upload",
+                          files={"file": ("data.txt", b"payload")},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["name"] == "data.txt"
+
+        download = client.get(body["url"])
+        assert download.status_code == 200
+        assert download.content == b"payload"
+
+    def test_upload_path_traversal_blocked(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        res = client.post("/api/upload",
+                          files={"file": ("../../evil.txt", b"x")},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        assert res.json()["name"] == "evil.txt"
+        assert os.path.isfile(os.path.join(session.data_path, "evil.txt"))
+
+    def test_serve_unknown_session_404(self, client):
+        assert client.get(f"/uploads/{uuid.uuid4()}/x.txt").status_code == 404
+
+    def test_mcp_callback_upload(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        res = client.post(f"/uploads/{sid}/",
+                          files={"file": ("tool-output.png", b"png")})
+        assert res.status_code == 200
+        assert os.path.isfile(os.path.join(session.data_path, "tool-output.png"))
+
+
+class TestClearEndpoint:
+    def test_clear_wipes_session(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        with open(session.session_path, "w") as f:
+            f.write(json.dumps({"task": "t", "response": "r", "timestamp": 0}) + "\n")
+        with open(os.path.join(session.data_path, "f.txt"), "w") as f:
+            f.write("x")
+        res = client.post("/api/clear", headers={"X-Session-Id": sid})
+        assert res.json()["cleared"] is True
+        assert os.path.getsize(session.session_path) == 0
+        assert os.listdir(session.data_path) == []
+
+
+class TestSessionsEndpoints:
+    def test_new_session(self, client):
+        sid = client.post("/api/sessions/new").json()["session_id"]
+        uuid.UUID(sid)
+
+    def test_list_sessions(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        with open(session.session_path, "w") as f:
+            f.write(json.dumps({"task": "first task", "response": "r",
+                                "timestamp": 0}) + "\n")
+        sessions = client.get("/api/sessions").json()["sessions"]
+        assert any(s["session_id"] == sid for s in sessions)
+
+    def test_delete_session(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        path = session.session_path
+        res = client.request("DELETE", f"/api/sessions/{sid}")
+        assert res.json()["deleted"] is True
+        assert not os.path.exists(path)
+        assert sid not in ui._web_sessions
+
+    def test_delete_invalid_id(self, client):
+        assert client.request("DELETE", "/api/sessions/not-a-uuid").status_code == 400
+
+    def test_rename_unknown_session(self, client):
+        res = client.patch(f"/api/sessions/{uuid.uuid4()}", json={"tag": "x"})
+        assert res.status_code == 400
+
+
+# ── Auth-enabled app ───────────────────────────────────────────────────────
+
+@pytest.fixture
+def auth_ui(tmp_path, bg_loop, monkeypatch):
+    monkeypatch.setattr(ui_auth, "GOOGLE_AUTH_AVAILABLE", True)
+    monkeypatch.setattr("ui.api.GOOGLE_AUTH_AVAILABLE", True)
+    monkeypatch.setattr("ui.api.GoogleAuthenticator", lambda *a, **k: object())
+    ui = WebApiUI(
+        session_path=str(tmp_path / "sessions" / "current.jsonl"),
+        google_client_id="test-client-id.apps.googleusercontent.com",
+        google_client_secret="test-secret",
+    )
+    ui._onit = FakeOnit()
+    ui._loop = bg_loop
+    ui.build_app()
+    return ui
+
+
+class TestAuth:
+    def test_api_requires_auth(self, auth_ui):
+        client = TestClient(auth_ui.app)
+        assert client.get("/api/history").status_code == 401
+        assert client.post("/api/chat", json={"message": "hi"}).status_code == 401
+
+    def test_config_is_public(self, auth_ui):
+        client = TestClient(auth_ui.app)
+        data = client.get("/api/config").json()
+        assert data["auth_enabled"] is True
+        assert data["authenticated"] is False
+
+    def test_valid_cookie_grants_access(self, auth_ui):
+        from datetime import datetime, timedelta
+        auth_ui._authenticated_cookies["cookie123"] = {
+            "email": "user@test.com",
+            "session_id": "s1",
+            "expires": datetime.now() + timedelta(hours=1),
+        }
+        client = TestClient(auth_ui.app, cookies={"onit_auth": "cookie123"})
+        assert client.get("/api/history").status_code == 200
+        data = client.get("/api/config").json()
+        assert data["authenticated"] is True
+        assert data["email"] == "user@test.com"
+
+    def test_expired_cookie_rejected(self, auth_ui):
+        from datetime import datetime, timedelta
+        auth_ui._authenticated_cookies["old"] = {
+            "email": "user@test.com",
+            "session_id": "s1",
+            "expires": datetime.now() - timedelta(hours=1),
+        }
+        client = TestClient(auth_ui.app, cookies={"onit_auth": "old"})
+        assert client.get("/api/history").status_code == 401
+
+    def test_auth_check_endpoint(self, auth_ui):
+        client = TestClient(auth_ui.app)
+        assert client.get("/auth/check").json() == {"authenticated": False}
+
+    def test_login_redirects_to_google(self, auth_ui):
+        client = TestClient(auth_ui.app)
+        res = client.get("/auth/login", follow_redirects=False)
+        assert res.status_code == 307 or res.status_code == 302
+        assert "accounts.google.com" in res.headers["location"]
+
+
+# ── Misc ───────────────────────────────────────────────────────────────────
+
+def test_sse_format():
+    out = _sse("token", {"delta": "hi"})
+    assert out == 'event: token\ndata: {"delta": "hi"}\n\n'
+
+
+def test_delete_session_helper(tmp_path):
+    from sessions import delete_session, register_session
+    sid = str(uuid.uuid4())
+    sessions_dir = str(tmp_path)
+    with open(os.path.join(sessions_dir, f"{sid}.jsonl"), "w") as f:
+        f.write("")
+    register_session(sid, sessions_dir=sessions_dir)
+    assert delete_session(sid, sessions_dir=sessions_dir) is True
+    assert not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl"))
+    assert delete_session(sid, sessions_dir=sessions_dir) is False

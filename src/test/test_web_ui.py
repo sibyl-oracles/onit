@@ -155,7 +155,7 @@ class TestGoogleAuthenticator:
             "email": "user@example.com",
             "email_verified": True,
         }
-        with patch("ui.web.id_token.verify_oauth2_token", return_value=mock_idinfo):
+        with patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
             result = authenticator.verify_token("fake-token")
         assert result == "user@example.com"
 
@@ -164,7 +164,7 @@ class TestGoogleAuthenticator:
             "email": "user@example.com",
             "email_verified": False,
         }
-        with patch("ui.web.id_token.verify_oauth2_token", return_value=mock_idinfo):
+        with patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
             result = authenticator.verify_token("fake-token")
         assert result is None
 
@@ -173,12 +173,12 @@ class TestGoogleAuthenticator:
             "email": "hacker@evil.com",
             "email_verified": True,
         }
-        with patch("ui.web.id_token.verify_oauth2_token", return_value=mock_idinfo):
+        with patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
             result = authenticator.verify_token("fake-token")
         assert result is None
 
     def test_verify_token_invalid_raises(self, authenticator):
-        with patch("ui.web.id_token.verify_oauth2_token", side_effect=ValueError("bad token")):
+        with patch("ui.auth.id_token.verify_oauth2_token", side_effect=ValueError("bad token")):
             result = authenticator.verify_token("bad-token")
         assert result is None
 
@@ -189,13 +189,13 @@ class TestGoogleAuthenticator:
 
         mock_idinfo = {"email": "user@example.com", "email_verified": True}
 
-        with patch("ui.web.http_requests.post", return_value=mock_resp), \
-             patch("ui.web.id_token.verify_oauth2_token", return_value=mock_idinfo):
+        with patch("ui.auth.http_requests.post", return_value=mock_resp), \
+             patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
             result = authenticator.exchange_code_for_token("code", "verifier", "http://localhost/callback")
         assert result == "user@example.com"
 
     def test_exchange_code_failure(self, authenticator):
-        with patch("ui.web.http_requests.post", side_effect=Exception("network error")):
+        with patch("ui.auth.http_requests.post", side_effect=Exception("network error")):
             result = authenticator.exchange_code_for_token("code", "verifier", "http://localhost/callback")
         assert result is None
 
@@ -204,7 +204,7 @@ class TestGoogleAuthenticator:
         mock_resp.json.return_value = {"access_token": "xxx"}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("ui.web.http_requests.post", return_value=mock_resp):
+        with patch("ui.auth.http_requests.post", return_value=mock_resp):
             result = authenticator.exchange_code_for_token("code", "verifier", "http://localhost/callback")
         assert result is None
 

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OnIt Chat</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%86%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/vendor/hljs-github.min.css" media="(prefers-color-scheme: light)" id="hljs-light" />
+  <link rel="stylesheet" href="/static/vendor/hljs-github-dark.min.css" media="(prefers-color-scheme: dark)" id="hljs-dark" />
+</head>
+<body>
+  <div id="app" class="app" hidden>
+    <!-- ── Sidebar ─────────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div class="brand"><span class="brand-mark">◆</span><span class="brand-name" id="brand-title">OnIt</span></div>
+        <button class="icon-btn" id="sidebar-close" title="Close sidebar" aria-label="Close sidebar">⟨</button>
+      </div>
+      <button class="new-chat-btn" id="new-chat">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v12M2 8h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        New chat
+      </button>
+      <div class="sidebar-label">Chats</div>
+      <nav class="session-list" id="session-list"></nav>
+      <div class="sidebar-foot" id="sidebar-foot" hidden>
+        <div class="user-chip">
+          <span class="user-avatar" id="user-avatar"></span>
+          <span class="user-email" id="user-email"></span>
+        </div>
+        <a class="logout-link" href="/auth/logout" title="Sign out">Sign out</a>
+      </div>
+    </aside>
+
+    <!-- ── Main ────────────────────────────────────────────────── -->
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn" id="sidebar-open" title="Open sidebar" aria-label="Open sidebar" hidden>⟩</button>
+        <div class="topbar-title" id="topbar-title"></div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="logs-toggle" title="Execution logs" hidden>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+            <span class="theme-icon-light">☀</span><span class="theme-icon-dark">☾</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat-column" id="chat-column">
+          <div class="welcome" id="welcome">
+            <div class="welcome-mark">◆</div>
+            <h1 id="welcome-title">What can I do for you?</h1>
+            <p class="welcome-sub">OnIt is on it — ask anything, attach files, or request a task.</p>
+          </div>
+          <div id="messages"></div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer" id="composer">
+          <div class="attachments" id="attachments" hidden></div>
+          <div class="composer-row">
+            <button class="icon-btn attach-btn" id="attach-btn" title="Attach file">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 12.5l-8.5 8.5a6 6 0 01-8.5-8.5L12.6 3.9a4 4 0 015.7 5.7L9.7 18.2a2 2 0 01-2.8-2.8l7.8-7.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <textarea id="input" class="input" rows="1" placeholder="Message OnIt…"></textarea>
+            <button class="send-btn" id="send-btn" title="Send" disabled>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="send-btn stop-btn" id="stop-btn" title="Stop" hidden>
+              <svg width="12" height="12" viewBox="0 0 12 12"><rect width="12" height="12" rx="2" fill="currentColor"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="composer-hint">OnIt can make mistakes. Verify important results.</div>
+      </div>
+      <input type="file" id="file-input" hidden />
+    </main>
+
+    <!-- ── Logs drawer ─────────────────────────────────────────── -->
+    <aside class="logs-drawer" id="logs-drawer" hidden>
+      <div class="logs-head">
+        <span>Execution logs</span>
+        <button class="icon-btn" id="logs-close" aria-label="Close logs">✕</button>
+      </div>
+      <div class="logs-body" id="logs-body"></div>
+    </aside>
+  </div>
+
+  <!-- ── Login view ──────────────────────────────────────────── -->
+  <div id="login" class="login" hidden>
+    <div class="login-card">
+      <div class="welcome-mark">◆</div>
+      <h1 id="login-title">OnIt Chat</h1>
+      <p>Sign in to continue</p>
+      <a class="google-btn" href="/auth/login">
+        <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0012 23z"/><path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 010-4.19V7.07H2.18a11 11 0 000 9.87l3.66-2.85z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15A11 11 0 002.18 7.07l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z"/></svg>
+        Sign in with Google
+      </a>
+      <p class="login-note">Your session stays active for 24 hours.</p>
+    </div>
+  </div>
+
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

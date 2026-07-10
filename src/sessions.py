@@ -161,6 +161,28 @@ def tag_session(session_id: str, tag: str,
     return True
 
 
+def delete_session(session_id: str,
+                   sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool:
+    """Delete a session's JSONL history file and its index entry.
+
+    Returns True if either the file or the index entry existed.
+    """
+    found = False
+    index = _load_index(sessions_dir)
+    if session_id in index:
+        del index[session_id]
+        _save_index(index, sessions_dir)
+        found = True
+    jsonl_path = os.path.join(sessions_dir, f"{session_id}.jsonl")
+    if os.path.isfile(jsonl_path):
+        try:
+            os.remove(jsonl_path)
+            found = True
+        except OSError:
+            pass
+    return found
+
+
 def find_session_by_tag(tag: str,
                         sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Find a session ID by its tag (case-insensitive prefix match).

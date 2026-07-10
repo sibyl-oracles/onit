@@ -57,7 +57,7 @@ onit resume [TAG_OR_ID]                       # continue a previous session
 onit sessions                                 # list saved sessions
 
 onit serve a2a                                # A2A protocol server (port 9001)
-onit serve web                                # Gradio web UI (port 9000)
+onit serve web                                # web UI (port 9000)
 onit serve gateway [telegram|viber|auto]      # Telegram or Viber bot
 onit serve loop "task" --period 60            # repeat a task on a timer
 
@@ -257,16 +257,20 @@ asyncio.run(main())
 
 #### `onit serve web`
 
-Launch the Gradio web chat UI.
+Launch the web chat UI — a FastAPI server that streams agent output over
+Server-Sent Events into a modern chat interface (streaming markdown, tool
+status, session sidebar, file attachments, light/dark theme).
 
 ```bash
 onit serve web                 # open on port 9000 (default)
 onit serve web --port 9500     # custom port
+onit serve web --ui gradio     # legacy Gradio UI (deprecated)
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--port PORT` | Web UI port | `9000` (or `web_port` in config) |
+| `--ui {native,gradio}` | Web UI implementation | `native` (or `web_ui` in config) |
 
 Supports optional Google OAuth2 authentication — see [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
 
@@ -548,8 +552,8 @@ serving:
 │                     OnIt (src/onit.py)              │
 │                                                     │
 │  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────┐ │
-│  │ ChatUI  │ │ WebChatUI│ │ Telegram │ │ Viber  │ │ A2A  │ │
-│  │(terminal│ │ (Gradio) │ │ Gateway  │ │Gateway │ │Server│ │
+│  │ ChatUI  │ │ WebApiUI │ │ Telegram │ │ Viber  │ │ A2A  │ │
+│  │(terminal│ │(FastAPI) │ │ Gateway  │ │Gateway │ │Server│ │
 │  └────┬────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └──┬───┘ │
 │       └─────────┬─┘            │             │       │
 │                 ▼                 ▼                 │
@@ -595,7 +599,9 @@ onit/
 │   │       └── chat.py         # LLM interface (vLLM, OpenRouter, Ollama cloud)
 │   ├── ui/
 │   │   ├── text.py             # Rich terminal UI
-│   │   ├── web.py              # Gradio web UI
+│   │   ├── api.py              # FastAPI + SSE web UI
+│   │   ├── static/             # Web UI assets (no build step)
+│   │   ├── web.py              # Legacy Gradio web UI (deprecated)
 │   │   ├── telegram.py         # Telegram bot gateway
 │   │   └── viber.py            # Viber bot gateway
 │   └── test/                   # Test suite (pytest)
