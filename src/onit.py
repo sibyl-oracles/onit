@@ -72,6 +72,47 @@ async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool 
         logger.warning("sandbox_stop failed: %s", e)
 
 
+# Substring → layman-friendly status line, first match wins. Raw tool log
+# output (pip, git, curl …) is too noisy to show users verbatim.
+_TOOL_LOG_PHRASES = [
+    ("requirement already satisfied", "Checking installed components…"),
+    ("successfully installed", "Finishing installation…"),
+    ("installing", "Installing components…"),
+    ("building wheel", "Installing components…"),
+    ("preparing metadata", "Installing components…"),
+    ("collecting", "Downloading required files…"),
+    ("downloading", "Downloading required files…"),
+    ("fetching", "Downloading required files…"),
+    ("cloning", "Downloading source code…"),
+    ("receiving objects", "Downloading source code…"),
+    ("resolving deltas", "Downloading source code…"),
+    ("uploading", "Uploading files…"),
+]
+
+
+def friendly_tool_status(name: str, data) -> str:
+    """Reduce a raw tool log payload to one short, human-readable line.
+
+    MCP log notifications carry structured data (e.g. ``{'msg': ..., 'extra':
+    None}``); unwrap it, keep the first non-empty line, and translate common
+    operations into plain language. Returns "" when there is nothing to show.
+    """
+    if isinstance(data, dict):
+        text = str(data.get("msg") or data.get("message") or "")
+    else:
+        text = str(data or "")
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not line:
+        return ""
+    low = line.lower()
+    for needle, phrase in _TOOL_LOG_PHRASES:
+        if needle in low:
+            return phrase
+    if len(line) > 100:
+        line = line[:99] + "…"
+    return f"{name}: {line}"
+
+
 class StreamingAdapter:
     """Minimal chat_ui adapter that forwards streaming tokens to a callback.
 
@@ -169,7 +210,7 @@ class StreamingAdapter:
 
     def start_tool_spinner(self, name, arguments):
         if self._on_tool_status:
-            self._on_tool_status(f"{name}({arguments})")
+            self._on_tool_status(f"Running {name}…")
 
     def stop_tool_spinner(self):
         if self._on_tool_status:
@@ -182,23 +223,21 @@ class StreamingAdapter:
             truncated = result[:500] + "..." if len(result) > 500 else result
             print(f"{name} returned: {truncated}")
 
-    def tool_log(self, name: str, data: str, level: str = "info") -> None:
-        """Called when a tool emits a log/notification message (e.g. sandbox output)."""
+    def tool_log(self, name: str, data, level: str = "info") -> None:
+        """Called when a tool emits a log/notification message (e.g. sandbox output).
+
+        Shown only as a one-line status update — raw output is never streamed
+        into the message text (it would fill the chat with pip/git noise).
+        """
         if self._on_tool_status:
-            self._on_tool_status(f"[{name}] {data}")
-        if self.on_token:
-            # Forward sandbox output as a streaming token so the UI shows it in real-time
-            log_line = f"\n[{name}] {data}\n"
-            self._content += log_line
-            result = self.on_token(log_line, self._content)
-            if asyncio.iscoroutine(result):
-                task = asyncio.ensure_future(result)
-                self._pending.append(task)
+            status = friendly_tool_status(name, data)
+            if status:
+                self._on_tool_status(status)
 
     def tool_progress(self, name, elapsed_seconds):
         """Called periodically during long-running tool calls to keep SSE alive."""
         if self._on_tool_status:
-            self._on_tool_status(f"{name} running… ({elapsed_seconds}s)")
+            self._on_tool_status(f"Running {name}… ({elapsed_seconds}s)")
         if self.on_token:
             # Send an empty-content SSE event as a keepalive heartbeat
             result = self.on_token("", self._content)

@@ -24,7 +24,7 @@ SSE event schema (see docs/web-ui-plan.md):
     token         {"delta": str}
     phase_end     {"content": str}
     status        {"text": str}
-    done          {"content": str, "files": [...], "zip": {...}|null,
+    done          {"content": str, "files": [...],
                    "elapsed": float, "tok_s": float}
     error         {"message": str}
 """
@@ -47,7 +47,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
-from src.lib.files import zip_code_files
 from src.sessions import delete_session as _delete_session_index
 from src.sessions import list_sessions as _list_sessions
 from src.sessions import tag_session as _tag_session
@@ -91,8 +90,8 @@ def _sse(event: str, payload: dict) -> str:
 
 
 def _remove_session_zip(data_path: str) -> None:
-    """Remove the sibling <data_path>.zip left by zip_code_files, so a
-    cleared/deleted session can't re-serve a stale archive."""
+    """Remove the sibling <data_path>.zip that older versions generated via
+    zip_code_files, so a cleared/deleted session leaves no stale archive."""
     zip_path = data_path.rstrip(os.sep) + ".zip"
     if os.path.isfile(zip_path):
         try:
@@ -261,8 +260,11 @@ class WebApiUI:
             "timestamp": datetime.now().strftime("%I:%M %p %d %b"),
         })
 
-    def tool_log(self, name: str, data: str, level: str = "info") -> None:
-        """Forward real-time log messages from MCP tools (e.g. sandbox output)."""
+    def tool_log(self, name: str, data, level: str = "info") -> None:
+        """Forward real-time log messages from MCP tools (e.g. sandbox output)
+        to the developer logs drawer, unwrapping structured MCP payloads."""
+        if isinstance(data, dict):
+            data = data.get("msg") or data.get("message") or data
         self.add_log(f"[{name}] {data}", level=level)
 
     def tool_progress(self, name: str, elapsed_seconds: int) -> None:
@@ -428,18 +430,9 @@ class WebApiUI:
             display, file_paths = self._extract_file_paths(
                 response, data_path=session.data_path, session_id=session.session_id
             )
-            zip_info = None
-            zip_path = zip_code_files(session.data_path)
-            if zip_path:
-                zip_info = {
-                    "name": os.path.basename(zip_path),
-                    "url": f"/api/zip/{session.session_id}",
-                    "size": os.path.getsize(zip_path),
-                }
             events.put_nowait(("done", {
                 "content": display,
                 "files": self._file_infos(file_paths, session.session_id),
-                "zip": zip_info,
                 "elapsed": round(elapsed, 2),
                 "tok_s": round(tok_s, 1),
             }))
@@ -635,6 +628,25 @@ class WebApiUI:
             sid, _session = self._get_or_create_session(str(uuid.uuid4()))
             return {"session_id": sid}
 
+        @app.delete("/api/sessions")
+        async def api_delete_all_sessions():
+            if any(s.processing for s in self._web_sessions.values()):
+                return JSONResponse(
+                    {"detail": "A task is still running; stop it first"},
+                    status_code=409,
+                )
+            sessions_dir = self._sessions_dir()
+            indexed = _list_sessions(sessions_dir=sessions_dir, limit=1_000_000)
+            sids = {s["session_id"] for s in indexed} | set(self._web_sessions.keys())
+            for sid in sids:
+                session = self._web_sessions.pop(sid, None)
+                data_path = (session.data_path if session and session.data_path
+                             else os.path.join(self.data_path, sid))
+                shutil.rmtree(data_path, ignore_errors=True)
+                _remove_session_zip(data_path)
+                _delete_session_index(sid, sessions_dir=sessions_dir)
+            return {"deleted": len(sids)}
+
         @app.delete("/api/sessions/{session_id}")
         async def api_delete_session(session_id: str):
             if not _UUID_RE.match(session_id):
@@ -659,22 +671,6 @@ class WebApiUI:
                 return {"renamed": True}
             detail = result if isinstance(result, str) else "Session not found"
             return JSONResponse({"detail": detail}, status_code=400)
-
-        @app.get("/api/zip/{session_id}")
-        async def api_zip(session_id: str):
-            if session_id not in self._web_sessions:
-                return Response(content="Session not found", status_code=404)
-            data_path = self._web_sessions[session_id].data_path
-            zip_path = data_path.rstrip(os.sep) + ".zip"
-            if not os.path.isfile(zip_path):
-                zip_path = zip_code_files(data_path)
-            if zip_path and os.path.isfile(zip_path):
-                return FileResponse(
-                    zip_path,
-                    media_type="application/zip",
-                    filename=os.path.basename(zip_path),
-                )
-            return Response(content="No code files to download", status_code=404)
 
     def _setup_file_routes(self, app: FastAPI):
         """Routes to serve and receive files scoped per session."""

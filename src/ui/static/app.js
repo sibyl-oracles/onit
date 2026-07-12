@@ -1,7 +1,7 @@
 /* OnIt web UI — vanilla JS single-page app.
  * Talks to the FastAPI backend in src/ui/api.py:
  *   GET  /api/config /api/history /api/sessions /api/logs
- *   POST /api/chat (SSE) /api/chat/stop /api/upload /api/sessions/new
+ *   POST /api/chat (SSE) /api/chat/stop /api/clear /api/upload /api/sessions/new
  * SSE events: token, phase_end, status, done, error.
  */
 (function () {
@@ -30,7 +30,7 @@
     input: $("input"), sendBtn: $("send-btn"), stopBtn: $("stop-btn"),
     attachBtn: $("attach-btn"), fileInput: $("file-input"),
     attachments: $("attachments"),
-    newChat: $("new-chat"),
+    newChat: $("new-chat"), clearChat: $("clear-chat"), clearAll: $("clear-all"),
     topbarTitle: $("topbar-title"),
     themeToggle: $("theme-toggle"),
     logsToggle: $("logs-toggle"), logsDrawer: $("logs-drawer"),
@@ -155,9 +155,8 @@
     return { root: msg, content };
   }
 
-  function addFileChips(root, files, zip) {
+  function addFileChips(root, files) {
     const all = (files || []).slice();
-    if (zip) all.push(zip);
     if (!all.length) return;
     const wrap = document.createElement("div");
     wrap.className = "file-chips";
@@ -355,6 +354,33 @@
     await switchSession(data.session_id);
   }
 
+  async function clearChat() {
+    if (state.processing) return;
+    if (!confirm("Clear this chat's history?")) return;
+    await api("/api/clear", { method: "POST" });
+    clearAttachments();
+    await loadHistory();
+    await refreshSessions();
+    el.input.focus();
+  }
+
+  async function clearAllSessions() {
+    if (state.processing) return;
+    if (!confirm("Delete all chats? This cannot be undone.")) return;
+    const res = await api("/api/sessions", { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Failed to delete chats");
+      return;
+    }
+    localStorage.removeItem("onit.sid");
+    state.sessionId = null;
+    clearAttachments();
+    await loadHistory();  // creates a fresh session
+    await refreshSessions();
+    el.input.focus();
+  }
+
   async function renameSession(s) {
     const tag = prompt("Rename chat:", s.tag || "");
     if (!tag) return;
@@ -478,7 +504,7 @@
         const final = document.createElement("div");
         turn.content.appendChild(final);
         renderMarkdown(final, d.content || "");
-        addFileChips(turn.root, d.files, d.zip);
+        addFileChips(turn.root, d.files);
         addMeta(turn.root, d.elapsed, d.tok_s);
         streamBlock = null;
       },
@@ -651,6 +677,8 @@
     el.fileInput.value = "";
   });
   el.newChat.addEventListener("click", newSession);
+  el.clearChat.addEventListener("click", clearChat);
+  el.clearAll.addEventListener("click", clearAllSessions);
   el.themeToggle.addEventListener("click", () => {
     const cur = document.documentElement.getAttribute("data-theme");
     applyTheme(cur === "dark" ? "light" : "dark");

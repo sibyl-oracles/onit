@@ -21,7 +21,10 @@
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v12M2 8h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         New chat
       </button>
-      <div class="sidebar-label">Chats</div>
+      <div class="sidebar-label">
+        <span>Chats</span>
+        <button class="clear-all-btn" id="clear-all" title="Delete all chats">Clear all</button>
+      </div>
       <nav class="session-list" id="session-list"></nav>
       <div class="sidebar-foot" id="sidebar-foot" hidden>
         <div class="user-chip">
@@ -38,6 +41,9 @@
         <button class="icon-btn" id="sidebar-open" title="Open sidebar" aria-label="Open sidebar" hidden>⟩</button>
         <div class="topbar-title" id="topbar-title"></div>
         <div class="topbar-actions">
+          <button class="icon-btn" id="clear-chat" title="Clear chat history" aria-label="Clear chat history">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M5.5 4V2.5h5V4M6.5 7v5M9.5 7v5M3.5 4l.7 9a1 1 0 001 .9h5.6a1 1 0 001-.9l.7-9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
           <button class="icon-btn" id="logs-toggle" title="Execution logs" hidden>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           </button>

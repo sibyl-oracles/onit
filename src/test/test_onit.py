@@ -12,7 +12,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.onit import OnIt, OnItA2AExecutor, ClientDisconnectMiddleware, STOP_TAG
+from src.onit import (OnIt, OnItA2AExecutor, ClientDisconnectMiddleware,
+                      STOP_TAG, StreamingAdapter, friendly_tool_status)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -47,6 +48,50 @@ def _mock_discover():
     """Patch discover_tools to return an empty registry."""
     from type.tools import ToolRegistry
     return patch("src.onit.discover_tools", return_value=ToolRegistry())
+
+
+# ── friendly_tool_status / StreamingAdapter.tool_log ────────────────────────
+
+class TestFriendlyToolStatus:
+    def test_unwraps_mcp_dict_payload(self):
+        data = {"msg": "Collecting opencv-python-headless (from easyocr)",
+                "extra": None}
+        assert friendly_tool_status("bash", data) == "Downloading required files…"
+
+    def test_common_operations_are_humanized(self):
+        assert friendly_tool_status("bash", "Installing collected packages: numpy") \
+            == "Installing components…"
+        assert friendly_tool_status("bash", "Cloning into 'repo'...") \
+            == "Downloading source code…"
+
+    def test_unrecognized_line_kept_one_line_with_tool_name(self):
+        out = friendly_tool_status("bash", "first line\nsecond line")
+        assert out == "bash: first line"
+
+    def test_long_line_truncated(self):
+        out = friendly_tool_status("bash", "x" * 200)
+        assert len(out) <= len("bash: ") + 100
+
+    def test_empty_payload_gives_empty_status(self):
+        assert friendly_tool_status("bash", "") == ""
+        assert friendly_tool_status("bash", {"msg": "", "extra": None}) == ""
+
+    def test_tool_log_updates_status_but_not_stream(self):
+        tokens, statuses = [], []
+        adapter = StreamingAdapter(
+            on_token=lambda tok, full: tokens.append(tok),
+            on_tool_status=statuses.append,
+        )
+        adapter.tool_log("bash", {"msg": "Collecting numpy", "extra": None})
+        assert statuses == ["Downloading required files…"]
+        assert tokens == []
+        assert adapter._content == ""
+
+    def test_spinner_status_is_friendly(self):
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_spinner("search_web", {"query": "very long query " * 20})
+        assert statuses == ["Running search_web…"]
 
 
 # ── OnIt.__init__ ───────────────────────────────────────────────────────────

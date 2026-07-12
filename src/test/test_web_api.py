@@ -301,6 +301,27 @@ class TestSessionsEndpoints:
         assert not os.path.exists(path)
         assert sid not in ui._web_sessions
 
+    def test_delete_all_sessions(self, client, ui):
+        sid1, s1 = ui._get_or_create_session()
+        sid2, s2 = ui._get_or_create_session()
+        with open(s1.session_path, "w") as f:
+            f.write(json.dumps({"task": "t", "response": "r", "timestamp": 0}) + "\n")
+        with open(os.path.join(s2.data_path, "f.txt"), "w") as f:
+            f.write("x")
+        res = client.request("DELETE", "/api/sessions")
+        assert res.json()["deleted"] >= 2
+        assert ui._web_sessions == {}
+        assert not os.path.exists(s1.session_path)
+        assert not os.path.isdir(s2.data_path)
+        assert client.get("/api/sessions").json()["sessions"] == []
+
+    def test_delete_all_blocked_while_processing(self, client, ui):
+        _sid, session = ui._get_or_create_session()
+        session.processing = True
+        res = client.request("DELETE", "/api/sessions")
+        assert res.status_code == 409
+        assert os.path.exists(session.session_path)
+
     def test_delete_invalid_id(self, client):
         assert client.request("DELETE", "/api/sessions/not-a-uuid").status_code == 400
 
