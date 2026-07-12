@@ -66,6 +66,7 @@ def bg_loop():
 @pytest.fixture
 def ui(tmp_path, bg_loop):
     ui = WebApiUI(
+        data_path=str(tmp_path / "data"),
         session_path=str(tmp_path / "sessions" / "current.jsonl"),
         title="Test Chat",
     )
@@ -103,6 +104,12 @@ class TestSessionManagement:
         assert sid == session.session_id
         assert os.path.isfile(session.session_path)
         assert os.path.isdir(session.data_path)
+
+    def test_session_data_dir_under_shared_data_path(self, ui):
+        # Tool writes are jailed under the shared data path, so the session
+        # dir must live there for generated files to be downloadable.
+        sid, session = ui._get_or_create_session()
+        assert session.data_path == os.path.join(ui.data_path, sid)
 
     def test_reuse_supplied_uuid(self, ui):
         want = str(uuid.uuid4())

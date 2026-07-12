@@ -223,7 +223,9 @@ textarea { font-family: var(--font); }
 
 /* ── Chat area ───────────────────────────────────────────────── */
 
-.chat-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; }
+/* overflow-anchor off: the browser's scroll anchoring fights the streaming
+   re-renders and unpins the auto-follow in app.js */
+.chat-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; }
 .chat-column {
   max-width: 760px;
   margin: 0 auto;

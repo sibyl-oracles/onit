@@ -87,17 +87,45 @@
   }
 
   // ── Scrolling ──────────────────────────────────────────────────
+  // Stay pinned to the newest content unless the user deliberately scrolls
+  // up; re-pin when they return to the bottom. Scroll events we trigger
+  // ourselves are flagged so they can't be mistaken for the user.
+  let autoScrolling = false;
+
   el.chatScroll.addEventListener("scroll", () => {
     const gap = el.chatScroll.scrollHeight - el.chatScroll.scrollTop - el.chatScroll.clientHeight;
-    state.userScrolledUp = gap > 40;
+    if (gap <= 40) {
+      state.userScrolledUp = false;
+    } else if (!autoScrolling) {
+      state.userScrolledUp = true;
+    }
+  }, { passive: true });
+
+  // Explicit upward gestures unpin immediately, even mid-stream
+  el.chatScroll.addEventListener("wheel", (ev) => {
+    if (ev.deltaY < 0) state.userScrolledUp = true;
+  }, { passive: true });
+  let touchStartY = 0;
+  el.chatScroll.addEventListener("touchstart", (ev) => {
+    touchStartY = ev.touches[0].clientY;
+  }, { passive: true });
+  el.chatScroll.addEventListener("touchmove", (ev) => {
+    if (ev.touches[0].clientY > touchStartY + 10) state.userScrolledUp = true;
   }, { passive: true });
 
   function scrollToBottom(force) {
     if (force) state.userScrolledUp = false;
-    if (!state.userScrolledUp) {
-      el.chatScroll.scrollTop = el.chatScroll.scrollHeight;
-    }
+    if (state.userScrolledUp) return;
+    autoScrolling = true;
+    el.chatScroll.scrollTop = el.chatScroll.scrollHeight;
+    requestAnimationFrame(() => { autoScrolling = false; });
   }
+
+  // Keep the view pinned when heights change without a scroll: streamed
+  // tokens, images loading, code-block decoration, the composer autosizing.
+  const pinObserver = new ResizeObserver(() => scrollToBottom());
+  pinObserver.observe(el.messages);
+  pinObserver.observe(el.chatScroll);
 
   // ── Message DOM builders ───────────────────────────────────────
   function hideWelcome() { el.welcome.hidden = true; }
