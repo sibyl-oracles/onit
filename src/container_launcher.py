@@ -298,12 +298,6 @@ def _auto_path_mounts(forwarded_args: list[str]) -> list[str]:
         if expanded.startswith("/"):
             os.makedirs(expanded, exist_ok=True)
             mounts.extend(["-v", f"{expanded}:{expanded}:rw"])
-    # documents_path is read-only (search corpus).
-    docs_path = _extract_flag_value(forwarded_args, "--documents-path")
-    if docs_path:
-        expanded = os.path.abspath(os.path.expanduser(docs_path))
-        if expanded.startswith("/"):
-            mounts.extend(["-v", f"{expanded}:{expanded}:ro"])
     return mounts
 
 

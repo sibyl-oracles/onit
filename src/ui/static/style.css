@@ -355,6 +355,13 @@ textarea { font-family: var(--font); }
 .msg-content ul, .msg-content ol { margin: 0.4em 0; padding-left: 1.4em; }
 .msg-content li { margin: 0.18em 0; }
 .msg-content a { color: var(--accent); }
+/* Links awaiting /api/verify_links: visible but not yet clickable */
+.msg-content .link-pending {
+  color: var(--accent); opacity: 0.7;
+  border-bottom: 1px dotted currentColor;
+}
+/* Links that failed verification: rendered as inert text */
+.msg-content .link-broken { color: var(--text-muted); text-decoration: line-through; }
 .msg-content blockquote {
   margin: 0.6em 0; padding: 2px 14px;
   border-left: 3px solid var(--border-strong);

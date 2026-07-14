@@ -51,8 +51,7 @@ onit --container --container-gpus all
 onit --container --container-gpus '"device=0,1"'
 
 # Mount a host documents directory read-only into the container.
-onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
-  --documents-path /home/onit/documents
+onit --container --container-mount "$HOME/docs:/home/onit/documents:ro"
 
 # Multiple mounts — flag is repeatable.
 onit --container \
@@ -126,10 +125,10 @@ docker run --name onit --rm \
   -e ONIT_HOST=<HOST> \
   -e OLLAMA_API_KEY=<TOKEN> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
+  -e ONIT_DOCUMENTS_PATH=/docs/my_topic \
   -p 18200-18204:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
-  --documents-path /docs/my_topic \
   --show-logs \
   --prompt-intro "You are a helpful assistant" \
   --topic "my topic"
@@ -142,11 +141,11 @@ docker run --name onit --rm \
   -e ONIT_HOST=<HOST> \
   -e OLLAMA_API_KEY=<TOKEN> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
+  -e ONIT_DOCUMENTS_PATH=/docs/my_topic \
   -p 9000:9000 -p 18200-18204:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
   --web --web-port 9000 \
-  --documents-path /docs/my_topic \
   --show-logs \
   --prompt-intro "You are a helpful assistant" \
   --topic "my topic"
@@ -161,11 +160,11 @@ docker run --name onit --rm \
   -e ONIT_HOST=<HOST> \
   -e OLLAMA_API_KEY=<TOKEN> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
+  -e ONIT_DOCUMENTS_PATH=/docs/my_topic \
   -p 9001:9001 -p 18200-18204:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
   --a2a --a2a-port 9001 \
-  --documents-path /docs/my_topic \
   --show-logs \
   --prompt-intro "You are a helpful assistant" \
   --topic "my topic"
@@ -185,11 +184,11 @@ docker run --name onit-telegram --rm \
   -e TELEGRAM_BOT_TOKEN=<TOKEN> \
   -e OLLAMA_API_KEY=<KEY> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
+  -e ONIT_DOCUMENTS_PATH=/docs/my_topic \
   --cap-drop ALL \
   -p 18200-18204:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
-  --documents-path /docs/my_topic \
   --show-logs \
   --prompt-intro "You are a helpful assistant" \
   --gateway telegram \
@@ -205,11 +204,11 @@ docker run --name onit-viber --rm \
   -e VIBER_WEBHOOK_URL=<WEBHOOK_URL> \
   -e OLLAMA_API_KEY=<KEY> \
   -e OPENWEATHERMAP_API_KEY=<KEY> \
+  -e ONIT_DOCUMENTS_PATH=/docs/my_topic \
   --cap-drop ALL \
   -p 8443:8443 -p 18210-18214:18200-18204 --ipc host \
   -it -v /path/to/docs:/docs:ro onit \
   --model <MODEL> \
-  --documents-path /docs/my_topic \
   --show-logs \
   --prompt-intro "You are a helpful assistant" \
   --gateway viber \

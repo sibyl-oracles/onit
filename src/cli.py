@@ -485,14 +485,11 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     """Start MCP servers if they are not already running, then wait for readiness."""
     from urllib.parse import urlparse
 
-    # Propagate data_path and documents_path to MCP servers via environment variables.
+    # Propagate data_path to MCP servers via an environment variable.
     # Fall back to OnIt's own default (~/sandbox) when unset so the MCP servers write
     # to the same absolute local path the UI displays, instead of their /tmp fallback.
     data_path = config_data.get('data_path') or str(Path.home() / "sandbox")
     os.environ['ONIT_DATA_PATH'] = str(Path(data_path).expanduser().resolve())
-    docs_path = config_data.get('documents_path', '')
-    if docs_path:
-        os.environ['ONIT_DOCUMENTS_PATH'] = docs_path
 
     # Check if locally-managed servers are already running (skip external ones)
     servers = config_data.get('mcp', {}).get('servers', [])

@@ -216,18 +216,6 @@ def test_build_run_command_auto_mounts_data_path_equals_form(tmp_path):
     assert f"{data}:{data}:rw" in cmd
 
 
-def test_build_run_command_auto_mounts_documents_path_ro(tmp_path):
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    cmd = build_run_command(
-        "docker",
-        ["--documents-path", str(docs)],
-        config_mounts=[],
-        secret_env=[],
-    )
-    assert f"{docs}:{docs}:ro" in cmd
-
-
 def test_build_run_command_no_auto_mount_without_path_flags():
     cmd = build_run_command(
         "docker", ["--web"], config_mounts=[], secret_env=[]

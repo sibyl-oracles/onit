@@ -83,6 +83,39 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 # Sentinel pushed into the event queue when a chat turn is finished
 _END = ("__end__", None)
 
+# ── Link verification ───────────────────────────────────────────────────────
+# Agents sometimes hallucinate URLs (e.g. https://ge.php, https://manual).
+# The UI keeps external links non-clickable until POST /api/verify_links
+# confirms they resolve; these limits bound that endpoint.
+_VERIFY_MAX_URLS = 20          # per request
+_VERIFY_TIMEOUT = 5            # seconds per probe
+_VERIFY_TTL = 600              # seconds a verdict stays cached
+_VERIFY_CACHE_MAX = 512        # cached verdicts kept in memory
+
+# Hosts the verifier must never probe (loopback, link-local, RFC-1918) —
+# the model's output is untrusted, so don't let it steer requests inward.
+_PRIVATE_HOST_RE = re.compile(
+    r'^(localhost$|127\.|0\.|10\.|192\.168\.|169\.254\.'
+    r'|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cde])',
+    re.IGNORECASE,
+)
+
+
+def _link_shape_ok(url: str) -> bool:
+    """Cheap structural screen before any network probe."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = parts.hostname or ""
+    # A bare word ("manual") can't be a public site; dotless hosts are
+    # either typos or internal names we refuse to probe anyway.
+    if "." not in host:
+        return False
+    return not _PRIVATE_HOST_RE.match(host)
+
 
 def _sse(event: str, payload: dict) -> str:
     """Format one server-sent event."""
@@ -177,6 +210,9 @@ class WebApiUI:
 
         # {cookie_value: {email, session_id, expires}}
         self._authenticated_cookies: dict[str, dict] = {}
+
+        # {url: (ok, expires_at)} — verdicts from /api/verify_links
+        self._link_cache: dict[str, tuple[bool, float]] = {}
 
         self.app: Optional[FastAPI] = None
 
@@ -316,7 +352,7 @@ class WebApiUI:
         cleaned = re.sub(url_pattern, r'\1', cleaned)
 
         # Strip any other absolute file paths, keeping only the basename
-        cleaned = re.sub(r'(?<![:\w])/(?:[\w\.\-]+/)+(?=[\w\.\-]+)', '', cleaned)
+        cleaned = re.sub(r'(?<![:\w/])/(?:[\w\.\-]+/)+(?=[\w\.\-]+)', '', cleaned)
 
         # 3. Check for bare filenames that exist in data_path
         if os.path.isdir(effective_data_path):
@@ -387,6 +423,46 @@ class WebApiUI:
         except Exception:
             pass
         return messages
+
+    # ------------------------------------------------------------------
+    # Link verification
+    # ------------------------------------------------------------------
+
+    def _probe_url(self, url: str) -> bool:
+        """Network reachability check: HEAD first, GET fallback (some
+        servers reject HEAD). Any 2xx/3xx final status counts as alive."""
+        import requests
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; OnIt-LinkCheck)"}
+        try:
+            resp = requests.head(url, timeout=_VERIFY_TIMEOUT,
+                                 allow_redirects=True, headers=headers)
+            if resp.status_code >= 400:
+                resp = requests.get(url, timeout=_VERIFY_TIMEOUT,
+                                    allow_redirects=True, stream=True,
+                                    headers=headers)
+                resp.close()
+            return resp.status_code < 400
+        except requests.RequestException:
+            return False
+
+    def _verify_link(self, url: str) -> bool:
+        """Verdict for one URL: structural screen, then cached network probe."""
+        if not _link_shape_ok(url):
+            return False
+        now = time.time()
+        cached = self._link_cache.get(url)
+        if cached and cached[1] > now:
+            return cached[0]
+        ok = self._probe_url(url)
+        if len(self._link_cache) >= _VERIFY_CACHE_MAX:
+            # Drop expired verdicts; if none expired, drop the oldest half
+            live = {u: v for u, v in self._link_cache.items() if v[1] > now}
+            if len(live) >= _VERIFY_CACHE_MAX:
+                live = dict(sorted(live.items(), key=lambda kv: kv[1][1])
+                            [len(live) // 2:])
+            self._link_cache = live
+        self._link_cache[url] = (ok, now + _VERIFY_TTL)
+        return ok
 
     # ------------------------------------------------------------------
     # Chat task execution (runs on the OnIt event loop)
@@ -610,6 +686,18 @@ class WebApiUI:
                 "url": f"/uploads/{sid}/{urllib.parse.quote(safe_name)}",
                 "session_id": sid,
             }
+
+        @app.post("/api/verify_links")
+        async def api_verify_links(request: Request):
+            body = await request.json()
+            urls = body.get("urls")
+            if not isinstance(urls, list):
+                return JSONResponse({"detail": "urls must be a list"}, status_code=400)
+            urls = [str(u) for u in urls[:_VERIFY_MAX_URLS]]
+            verdicts = await asyncio.gather(
+                *(asyncio.to_thread(self._verify_link, u) for u in urls)
+            )
+            return {"results": dict(zip(urls, verdicts))}
 
         @app.get("/api/logs")
         async def api_logs():

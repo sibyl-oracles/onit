@@ -55,13 +55,116 @@
       if (href.startsWith("/uploads/")) {
         a.setAttribute("download", "");
       } else {
-        a.setAttribute("target", "_blank");
-        a.setAttribute("rel", "noopener noreferrer");
+        vetLink(a, href);
       }
     });
     container.querySelectorAll("pre > code").forEach((code) => {
       try { hljs.highlightElement(code); } catch (e) { /* ignore */ }
       decorateCodeBlock(code);
+    });
+  }
+
+  // ── Link verification ──────────────────────────────────────────
+  // The agent sometimes emits malformed or hallucinated URLs
+  // (e.g. https://ge.php, https://manual). External links stay
+  // non-clickable until POST /api/verify_links confirms they resolve;
+  // failures render as plain text.
+  const linkCache = new Map();   // url -> "ok" | "bad"
+  const linkQueue = new Set();   // urls awaiting a verify request
+  let linkFlushTimer = null;
+  const VERIFY_BATCH = 20;       // must match _VERIFY_MAX_URLS server-side
+
+  function urlShapeOk(href) {
+    let u;
+    try { u = new URL(href); } catch (e) { return false; }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    return u.hostname.includes(".");
+  }
+
+  function delinkify(a, cls, title) {
+    const span = document.createElement("span");
+    span.className = cls;
+    if (title) span.title = title;
+    span.textContent = a.textContent;
+    a.replaceWith(span);
+    return span;
+  }
+
+  function activateLink(a, href) {
+    a.setAttribute("href", href);
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noopener noreferrer");
+  }
+
+  function vetLink(a, href) {
+    if (!urlShapeOk(href)) {
+      delinkify(a, "link-broken", "Link could not be verified");
+      return;
+    }
+    const verdict = linkCache.get(href);
+    if (verdict === "ok") {
+      activateLink(a, href);
+    } else if (verdict === "bad") {
+      delinkify(a, "link-broken", "Link could not be verified");
+    } else {
+      const span = delinkify(a, "link-pending", "Verifying link…");
+      span.dataset.verifyUrl = href;
+      queueLinkVerify(href);
+    }
+  }
+
+  function queueLinkVerify(url) {
+    if (linkCache.has(url) || linkQueue.has(url)) return;
+    linkQueue.add(url);
+    clearTimeout(linkFlushTimer);
+    linkFlushTimer = setTimeout(flushLinkQueue, 200);
+  }
+
+  async function flushLinkQueue() {
+    while (linkQueue.size) {
+      const urls = Array.from(linkQueue).slice(0, VERIFY_BATCH);
+      urls.forEach((u) => {
+        linkQueue.delete(u);
+        linkCache.set(u, "pending");  // suppress duplicate requests mid-flight
+      });
+      let results = {};
+      try {
+        const res = await api("/api/verify_links", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls }),
+        });
+        results = (await res.json()).results || {};
+      } catch (e) {
+        // Verification unavailable: leave links pending (visible but
+        // not clickable); a later render re-queues them.
+        urls.forEach((u) => {
+          if (linkCache.get(u) === "pending") linkCache.delete(u);
+        });
+        return;
+      }
+      for (const u of urls) {
+        if (u in results) linkCache.set(u, results[u] ? "ok" : "bad");
+        else if (linkCache.get(u) === "pending") linkCache.delete(u);
+      }
+      applyLinkVerdicts();
+    }
+  }
+
+  function applyLinkVerdicts() {
+    document.querySelectorAll("span[data-verify-url]").forEach((span) => {
+      const url = span.dataset.verifyUrl;
+      const verdict = linkCache.get(url);
+      if (verdict === "ok") {
+        const a = document.createElement("a");
+        a.textContent = span.textContent;
+        activateLink(a, url);
+        span.replaceWith(a);
+      } else if (verdict === "bad") {
+        delete span.dataset.verifyUrl;
+        span.className = "link-broken";
+        span.title = "Link could not be verified";
+      }
     });
   }
 

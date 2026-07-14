@@ -31,7 +31,6 @@ async def assistant_instruction(task: str,
                                 data_path: str = None,
                                 template_path: str = None,
                                 file_server_url: str = None,
-                                documents_path: str = None,
                                 topic: str = None,
                                 sandbox_available: str | bool = False) -> str:
    if not data_path:
@@ -42,8 +41,6 @@ async def assistant_instruction(task: str,
       topic = None
    if file_server_url and file_server_url == "null":
       file_server_url = None
-   if documents_path and documents_path == "null":
-      documents_path = None
    if isinstance(sandbox_available, str) and sandbox_available.lower() in ("false", "null", "none", "0", ""):
       sandbox_available = False
 
@@ -96,13 +93,6 @@ After creating or saving any output file, upload it back to the file server:
   curl -s -X POST -F 'file=@{data_path}/<filename>' {upload_prefix}/
 Always download before reading and upload after writing.
 When using create_presentation, create_excel, or create_document tools, always pass callback_url="{upload_prefix}" so files are automatically uploaded.
-"""
-
-   if documents_path:
-      instruction += f"""
-## Relevant Information
-Search and read related documents (PDF, TXT, DOCX, XLSX, PPTX, and Markdown (MD)) in `{documents_path}`.
-Search the web for additional information **if and only if** above documents are insufficient to complete the task.
 """
 
    # Add sandbox routing instructions when sandbox tools are available

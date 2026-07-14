@@ -141,6 +141,23 @@ class TestExtractFilePaths:
         assert f"[{fname}](/uploads/{sid}/{fname})" in cleaned
         assert files == [os.path.join(session.data_path, fname)]
 
+    def test_urls_survive_path_stripping(self, ui):
+        # Regression: the absolute-path stripper matched the second slash of
+        # "https://", turning arxiv links into "https:/2510.07979".
+        sid, session = ui._get_or_create_session()
+        text = "IntMeanFlow (ByteDance): https://arxiv.org/abs/2510.07979"
+        cleaned, files = ui._extract_file_paths(
+            text, data_path=session.data_path, session_id=sid)
+        assert cleaned == text
+        assert files == []
+
+    def test_bare_absolute_path_still_stripped(self, ui):
+        sid, session = ui._get_or_create_session()
+        cleaned, _ = ui._extract_file_paths(
+            "See /home/user/notes/report.txt for details",
+            data_path=session.data_path, session_id=sid)
+        assert cleaned == "See report.txt for details"
+
 
 # ── API endpoints ──────────────────────────────────────────────────────────
 
@@ -278,6 +295,53 @@ class TestClearEndpoint:
         assert res.json()["cleared"] is True
         assert os.path.getsize(session.session_path) == 0
         assert os.listdir(session.data_path) == []
+
+
+class TestVerifyLinks:
+    def test_malformed_urls_rejected_without_probe(self, client, ui, monkeypatch):
+        def _boom(url):
+            raise AssertionError(f"should not probe {url}")
+        monkeypatch.setattr(ui, "_probe_url", _boom)
+        urls = [
+            "https://manual",             # dotless host
+            "ftp://example.com/file",     # non-http scheme
+            "http://localhost:8080/x",    # loopback
+            "http://192.168.1.5/admin",   # private range
+            "not a url",
+        ]
+        res = client.post("/api/verify_links", json={"urls": urls})
+        assert res.status_code == 200
+        assert res.json()["results"] == {u: False for u in urls}
+
+    def test_reachable_and_dead_links(self, client, ui, monkeypatch):
+        monkeypatch.setattr(ui, "_probe_url",
+                            lambda url: url == "https://example.com/ok")
+        res = client.post("/api/verify_links", json={
+            "urls": ["https://example.com/ok", "https://ge.php"],
+        })
+        assert res.json()["results"] == {
+            "https://example.com/ok": True,
+            "https://ge.php": False,
+        }
+
+    def test_verdicts_are_cached(self, client, ui, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ui, "_probe_url",
+                            lambda url: calls.append(url) or True)
+        for _ in range(3):
+            client.post("/api/verify_links",
+                        json={"urls": ["https://example.com/"]})
+        assert calls == ["https://example.com/"]
+
+    def test_urls_capped_per_request(self, client, ui, monkeypatch):
+        monkeypatch.setattr(ui, "_probe_url", lambda url: True)
+        urls = [f"https://example.com/{i}" for i in range(30)]
+        res = client.post("/api/verify_links", json={"urls": urls})
+        assert len(res.json()["results"]) == 20
+
+    def test_non_list_body_rejected(self, client):
+        assert client.post("/api/verify_links",
+                           json={"urls": "https://example.com"}).status_code == 400
 
 
 class TestSessionsEndpoints:

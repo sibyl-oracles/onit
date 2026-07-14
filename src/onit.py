@@ -490,7 +490,6 @@ class OnIt(BaseModel):
     session_path: str = Field(default="~/.onit/sessions")
     data_path: str = Field(default="")
     template_path: str | None = Field(default=None)
-    documents_path: str | None = Field(default=None)
     topic: str | None = Field(default=None)
     prompt_intro: str | None = Field(default=None)
     timeout: int | None = Field(default=None)
@@ -739,7 +738,6 @@ class OnIt(BaseModel):
     def _setup_config_fields(self) -> None:
         """Assign remaining configuration fields from config_data."""
         self.template_path = self.config_data.get('template_path', None)
-        self.documents_path = self.config_data.get('documents_path', None)
         self.topic = self.config_data.get('topic', None)
         self.prompt_intro = self.config_data.get('prompt_intro', None)
         self.timeout = self.config_data.get('timeout', None)  # default timeout 300 seconds
@@ -869,7 +867,6 @@ class OnIt(BaseModel):
                 "data_path": effective_data_path,
                 "template_path": self.template_path,
                 "file_server_url": self.file_server_url,
-                "documents_path": self.documents_path,
                 "topic": self.topic,
                 "sandbox_available": self.sandbox_available,
             })
@@ -996,7 +993,6 @@ class OnIt(BaseModel):
                                                                                 "data_path": self.data_path,
                                                                                 "template_path": self.template_path,
                                                                                 "file_server_url": self.file_server_url,
-                                                                                "documents_path": self.documents_path,
                                                                                 "topic": self.topic,
                                                                                 "sandbox_available": self.sandbox_available})
                     instruction = instruction.messages[0]
@@ -1214,7 +1210,6 @@ class OnIt(BaseModel):
                                                                         "data_path": self.data_path,
                                                                         "template_path": self.template_path,
                                                                         "file_server_url": self.file_server_url,
-                                                                        "documents_path": self.documents_path,
                                                                         "topic": self.topic,
                                                                         "sandbox_available": self.sandbox_available})
             instruction = instruction.messages[0]

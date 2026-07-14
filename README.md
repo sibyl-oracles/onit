@@ -115,7 +115,6 @@ a2a_port: 9001
 theme: white         # or "dark"
 topic: ~             # default topic context, e.g. "machine learning"
 template_path: ~     # custom prompt template YAML
-documents_path: ~    # local documents directory
 data_path: ~         # working directory for file operations (default: system temp)
 
 mcp:
@@ -423,7 +422,7 @@ OnIt includes a local search toolkit modeled on the [Mistral Search Toolkit](htt
 pip install "onit[search]"
 
 # 2. Point OnIt at your document folder
-export ONIT_DOCUMENTS_PATH=~/company-docs     # or set documents_path in config.yaml
+export ONIT_DOCUMENTS_PATH=~/company-docs
 
 # 3. Run and ask questions about your data
 onit
@@ -466,7 +465,7 @@ Retrieval:  query → BM25 ranking ─┐
 ```
 
 - The index is a single JSON file at `data_path/local_search/index.json` (owner-only permissions). Delete it or pass `rebuild: true` to re-ingest from scratch.
-- Corpus directories must be inside `documents_path` or `data_path` — the same filesystem sandbox that governs all OnIt file tools (relaxed inside `--container`).
+- Corpus directories must be inside `ONIT_DOCUMENTS_PATH` or `data_path` — the same filesystem sandbox that governs all OnIt file tools (relaxed inside `--container`).
 - Set `ONIT_DISABLE_LOCAL_SEARCH=1` to unregister both tools.
 
 ### Adding a new document format
