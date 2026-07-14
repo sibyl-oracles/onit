@@ -90,6 +90,7 @@ class WebChatUI:
         session_path: Optional[str] = None,
         title: str = "OnIt Chat",
         verbose: bool = False,
+        require_auth: bool = True,
     ) -> None:
         self.title = title
         self.agent_cursor = agent_cursor
@@ -112,10 +113,28 @@ class WebChatUI:
 
         self.auth_enabled = bool(self.google_client_id and self.google_client_secret)
 
+        # --no-login / web_require_auth: false — run an open UI with no login
+        # step, even when OAuth credentials are configured.
+        if not require_auth:
+            if self.auth_enabled:
+                print("Login disabled (--no-login): the web UI is open to anyone who can reach it.")
+            self.auth_enabled = False
+
         # Guard against missing google-auth package
         if self.auth_enabled and not GOOGLE_AUTH_AVAILABLE:
-            print("Google OAuth credentials provided but google-auth package not installed. Authentication disabled.")
-            self.auth_enabled = False
+            raise RuntimeError(
+                "Web UI login requires the google-auth package. "
+                "Install it with: pip install google-auth requests"
+            )
+
+        # Sessions must start with a Google login: refuse to serve an open
+        # web UI unless the operator explicitly opted out (--no-login).
+        if require_auth and not self.auth_enabled:
+            raise RuntimeError(
+                "The web UI requires Google login, but no OAuth2 credentials are "
+                "configured. Set web_google_client_id and web_google_client_secret "
+                "(onit --setup), or run with --no-login / web_require_auth: false."
+            )
 
         self.session_manager = SessionManager() if self.auth_enabled else None
         self.oauth_flow_manager = OAuthFlowManager() if self.auth_enabled else None
@@ -1214,6 +1233,13 @@ class WebChatUI:
         @fastapi_app.middleware("http")
         async def session_cookie_middleware(request: Request, call_next):
             response = await call_next(request)
+            # A chat session only starts after login: never hand a session
+            # cookie to an unauthenticated visitor when auth is on.
+            if self.auth_enabled:
+                auth_cookie = request.cookies.get("onit_auth")
+                cookie_data = self._authenticated_cookies.get(auth_cookie) if auth_cookie else None
+                if not cookie_data or datetime.now() > cookie_data['expires']:
+                    return response
             if not request.cookies.get("onit_session"):
                 response.set_cookie(
                     key="onit_session",

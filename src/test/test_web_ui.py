@@ -151,13 +151,28 @@ class TestGoogleAuthenticator:
         assert auth._is_email_allowed("anyone@anywhere.com") is True
 
     def test_verify_token_valid(self, authenticator):
+        # Workspace account: hd claim present and matching the email domain
         mock_idinfo = {
             "email": "user@example.com",
             "email_verified": True,
+            "hd": "example.com",
         }
         with patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
             result = authenticator.verify_token("fake-token")
         assert result == "user@example.com"
+
+    def test_verify_token_gmail_needs_no_hd(self):
+        auth = GoogleAuthenticator("id", "secret", allowed_emails=None)
+        mock_idinfo = {"email": "user@gmail.com", "email_verified": True}
+        with patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
+            assert auth.verify_token("fake-token") == "user@gmail.com"
+
+    def test_verify_token_non_google_hosted_rejected(self):
+        # Google Account created on an outside address: verified, but no hd
+        auth = GoogleAuthenticator("id", "secret", allowed_emails=None)
+        mock_idinfo = {"email": "user@outlook.com", "email_verified": True}
+        with patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
+            assert auth.verify_token("fake-token") is None
 
     def test_verify_token_unverified_email(self, authenticator):
         mock_idinfo = {
@@ -187,7 +202,8 @@ class TestGoogleAuthenticator:
         mock_resp.json.return_value = {"id_token": "valid-id-token"}
         mock_resp.raise_for_status = MagicMock()
 
-        mock_idinfo = {"email": "user@example.com", "email_verified": True}
+        mock_idinfo = {"email": "user@example.com", "email_verified": True,
+                       "hd": "example.com"}
 
         with patch("ui.auth.http_requests.post", return_value=mock_resp), \
              patch("ui.auth.id_token.verify_oauth2_token", return_value=mock_idinfo):
@@ -241,7 +257,7 @@ class TestWebChatUISessionManagement:
     def _make_ui(self, tmp_path):
         session_path = str(tmp_path / "sessions" / "main.jsonl")
         os.makedirs(os.path.dirname(session_path), exist_ok=True)
-        ui = WebChatUI(session_path=session_path)
+        ui = WebChatUI(session_path=session_path, require_auth=False)
         return ui
 
     def test_creates_new_session(self, tmp_path):

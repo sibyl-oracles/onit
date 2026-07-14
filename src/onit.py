@@ -504,6 +504,7 @@ class OnIt(BaseModel):
     web_google_client_id: str | None = Field(default=None)
     web_google_client_secret: str | None = Field(default=None)
     web_allowed_emails: list[str] | None = Field(default=None)
+    web_require_auth: bool = Field(default=True)
     web_title: str = Field(default="OnIt Chat")
     a2a: bool = Field(default=False)
     a2a_port: int = Field(default=9001)
@@ -558,6 +559,7 @@ class OnIt(BaseModel):
                     session_path=self.session_path,
                     title=self.web_title,
                     verbose=self.verbose,
+                    require_auth=self.web_require_auth,
                 )
                 self.chat_ui._onit = self
             else:
@@ -759,6 +761,7 @@ class OnIt(BaseModel):
             if val and "YOUR_" in str(val).upper():
                 setattr(self, attr, None)
         self.web_allowed_emails = self.config_data.get('web_allowed_emails', None)
+        self.web_require_auth = bool(self.config_data.get('web_require_auth', True))
         self.web_title = self.config_data.get('web_title', 'OnIt Chat')
         self.a2a = self.config_data.get('a2a', False)
         self.a2a_port = self.config_data.get('a2a_port', 9001)

@@ -130,6 +130,12 @@ class OAuthFlowManager:
             del self.active_flows[state]
 
 
+# Consumer-Gmail domains. Workspace domains are recognised via the ID
+# token's `hd` (hosted domain) claim instead — Google only sets it for
+# accounts whose domain is managed by Google Workspace.
+_GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+
+
 class GoogleAuthenticator:
     """Handles Google OAuth2 authentication."""
     def __init__(self, client_id: str, client_secret: str, allowed_emails: Optional[list[str]] = None):
@@ -151,7 +157,11 @@ class GoogleAuthenticator:
             email = idinfo.get("email")
 
             # Check if email is verified
-            if not idinfo.get("email_verified"):
+            if not email or not idinfo.get("email_verified"):
+                return None
+
+            # Only accept Google-hosted mail: Gmail or Google Workspace
+            if not self._is_google_hosted(email, idinfo.get("hd")):
                 return None
 
             # Check if email is in allowed list (if specified)
@@ -161,6 +171,22 @@ class GoogleAuthenticator:
             return email
         except Exception:
             return None
+
+    @staticmethod
+    def _is_google_hosted(email: str, hosted_domain: Optional[str]) -> bool:
+        """Accept only Gmail accounts or accounts on a domain whose mail is
+        hosted by Google (Workspace).
+
+        Google lets people create a Google Account on an outside address
+        (e.g. user@outlook.com); those authenticate fine but carry no `hd`
+        claim, so they are rejected here. The `hd` claim must match the
+        email's domain — a bare presence check would trust a claim that
+        doesn't describe the address logging in.
+        """
+        domain = email.rsplit("@", 1)[-1].lower()
+        if domain in _GMAIL_DOMAINS:
+            return True
+        return bool(hosted_domain) and hosted_domain.lower() == domain
 
     def _is_email_allowed(self, email: str) -> bool:
         """Check if email matches allowed patterns.

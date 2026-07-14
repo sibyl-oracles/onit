@@ -69,6 +69,7 @@ def ui(tmp_path, bg_loop):
         data_path=str(tmp_path / "data"),
         session_path=str(tmp_path / "sessions" / "current.jsonl"),
         title="Test Chat",
+        require_auth=False,
     )
     ui._onit = FakeOnit()
     ui._loop = bg_loop
@@ -402,6 +403,7 @@ def auth_ui(tmp_path, bg_loop, monkeypatch):
     monkeypatch.setattr("ui.api.GOOGLE_AUTH_AVAILABLE", True)
     monkeypatch.setattr("ui.api.GoogleAuthenticator", lambda *a, **k: object())
     ui = WebApiUI(
+        data_path=str(tmp_path / "data"),
         session_path=str(tmp_path / "sessions" / "current.jsonl"),
         google_client_id="test-client-id.apps.googleusercontent.com",
         google_client_secret="test-secret",
@@ -456,6 +458,154 @@ class TestAuth:
         res = client.get("/auth/login", follow_redirects=False)
         assert res.status_code == 307 or res.status_code == 302
         assert "accounts.google.com" in res.headers["location"]
+
+
+class TestForcedLogin:
+    """Sessions must start with Google-hosted mail authentication."""
+
+    def test_web_ui_refuses_to_start_without_credentials(self, tmp_path):
+        with pytest.raises(RuntimeError, match="requires Google login"):
+            WebApiUI(session_path=str(tmp_path / "sessions" / "current.jsonl"))
+
+    def test_no_login_overrides_configured_credentials(self, tmp_path, bg_loop):
+        # --no-login must yield an open UI even when OAuth credentials are
+        # configured (e.g. stored in the keychain by 'onit setup').
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            google_client_id="test-client-id.apps.googleusercontent.com",
+            google_client_secret="test-secret",
+            require_auth=False,
+        )
+        ui._onit = FakeOnit()
+        ui._loop = bg_loop
+        ui.build_app()
+        client = TestClient(ui.app)
+        data = client.get("/api/config").json()
+        assert data["auth_enabled"] is False
+        assert data["authenticated"] is True
+        # No login gate: API is reachable without any auth cookie
+        assert client.get("/api/history").status_code == 200
+
+    def test_no_session_cookie_before_login(self, auth_ui):
+        client = TestClient(auth_ui.app)
+        res = client.get("/")
+        assert "onit_session" not in res.cookies
+        res = client.get("/api/config")
+        assert "onit_session" not in res.cookies
+
+    def test_session_cookie_issued_after_login(self, auth_ui):
+        client = _login(auth_ui, "alice@gmail.com")
+        res = client.get("/api/config")
+        assert "onit_session" in res.cookies
+
+
+# ── Google-hosted mail gate ─────────────────────────────────────────────────
+
+class TestGoogleHostedGate:
+    """Only Gmail or Google-Workspace-hosted domains may log in."""
+
+    def test_gmail_accepted(self):
+        assert ui_auth.GoogleAuthenticator._is_google_hosted("a@gmail.com", None)
+        assert ui_auth.GoogleAuthenticator._is_google_hosted("a@googlemail.com", None)
+
+    def test_workspace_domain_accepted(self):
+        assert ui_auth.GoogleAuthenticator._is_google_hosted("a@sibyl.ai", "sibyl.ai")
+
+    def test_hd_claim_is_case_insensitive(self):
+        assert ui_auth.GoogleAuthenticator._is_google_hosted("a@Sibyl.AI", "sibyl.ai")
+
+    def test_non_google_account_rejected(self):
+        # Google Account created on an outside address: no hd claim
+        assert not ui_auth.GoogleAuthenticator._is_google_hosted("a@outlook.com", None)
+
+    def test_mismatched_hd_claim_rejected(self):
+        assert not ui_auth.GoogleAuthenticator._is_google_hosted("a@outlook.com", "sibyl.ai")
+
+
+# ── Per-user session gating ─────────────────────────────────────────────────
+
+def _login(auth_ui, email):
+    """Register an auth cookie for *email* and return a client wearing it."""
+    from datetime import datetime, timedelta
+    cookie = f"cookie-{email}"
+    auth_ui._authenticated_cookies[cookie] = {
+        "email": email,
+        "session_id": f"auth-{email}",
+        "expires": datetime.now() + timedelta(hours=1),
+    }
+    return TestClient(auth_ui.app, cookies={"onit_auth": cookie})
+
+
+class TestSessionOwnership:
+    def test_session_bound_to_user(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        sid = alice.get("/api/history").json()["session_id"]
+        assert auth_ui._web_sessions[sid].owner == "alice@gmail.com"
+
+    def test_other_users_session_id_not_shared(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        bob = _login(auth_ui, "bob@gmail.com")
+        alice_sid = alice.get("/api/history").json()["session_id"]
+        res = bob.get("/api/history", headers={"X-Session-Id": alice_sid}).json()
+        assert res["session_id"] != alice_sid
+
+    def test_session_list_scoped_per_user(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        bob = _login(auth_ui, "bob@gmail.com")
+        alice_sid = alice.post("/api/sessions/new").json()["session_id"]
+        alice_ids = {s["session_id"] for s in alice.get("/api/sessions").json()["sessions"]}
+        bob_ids = {s["session_id"] for s in bob.get("/api/sessions").json()["sessions"]}
+        assert alice_sid in alice_ids
+        assert alice_sid not in bob_ids
+
+    def test_delete_other_users_session_rejected(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        bob = _login(auth_ui, "bob@gmail.com")
+        alice_sid = alice.get("/api/history").json()["session_id"]
+        res = bob.request("DELETE", f"/api/sessions/{alice_sid}")
+        assert res.status_code == 404
+        assert os.path.exists(auth_ui._web_sessions[alice_sid].session_path)
+
+    def test_rename_other_users_session_rejected(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        bob = _login(auth_ui, "bob@gmail.com")
+        alice_sid = alice.get("/api/history").json()["session_id"]
+        res = bob.patch(f"/api/sessions/{alice_sid}", json={"tag": "stolen"})
+        assert res.status_code == 404
+
+    def test_uploads_gated_by_owner(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        bob = _login(auth_ui, "bob@gmail.com")
+        alice_sid = alice.get("/api/history").json()["session_id"]
+        data_path = auth_ui._web_sessions[alice_sid].data_path
+        with open(os.path.join(data_path, "secret.txt"), "w") as f:
+            f.write("hi")
+        assert alice.get(f"/uploads/{alice_sid}/secret.txt").status_code == 200
+        assert bob.get(f"/uploads/{alice_sid}/secret.txt").status_code == 404
+
+    def test_delete_all_only_removes_own_sessions(self, auth_ui):
+        alice = _login(auth_ui, "alice@gmail.com")
+        bob = _login(auth_ui, "bob@gmail.com")
+        alice_sid = alice.get("/api/history").json()["session_id"]
+        bob_sid = bob.get("/api/history").json()["session_id"]
+        bob.request("DELETE", "/api/sessions")
+        assert alice_sid in auth_ui._web_sessions
+        assert bob_sid not in auth_ui._web_sessions
+
+    def test_unowned_session_claimed_on_access(self, auth_ui):
+        # Session created before auth was enabled has no owner; the first
+        # authenticated user to touch it claims it.
+        sid, session = auth_ui._get_or_create_session()
+        assert session.owner is None
+        alice = _login(auth_ui, "alice@gmail.com")
+        res = alice.get("/api/history", headers={"X-Session-Id": sid}).json()
+        assert res["session_id"] == sid
+        assert session.owner == "alice@gmail.com"
+        # ... and it is thereafter locked to her
+        bob = _login(auth_ui, "bob@gmail.com")
+        res = bob.get("/api/history", headers={"X-Session-Id": sid}).json()
+        assert res["session_id"] != sid
 
 
 # ── Misc ───────────────────────────────────────────────────────────────────

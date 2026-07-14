@@ -142,6 +142,31 @@ def update_session(session_id: str, task: str | None = None,
     _save_index(index, sessions_dir)
 
 
+def get_session_owner(session_id: str,
+                      sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+    """Return the owner (authenticated email) recorded for a session, if any."""
+    return _load_index(sessions_dir).get(session_id, {}).get("owner")
+
+
+def set_session_owner(session_id: str, owner: str,
+                      sessions_dir: str = DEFAULT_SESSIONS_DIR) -> None:
+    """Record the owner (authenticated email) of a session, bootstrapping
+    an index entry if the session predates the index."""
+    index = _load_index(sessions_dir)
+    meta = index.get(session_id)
+    if meta is None:
+        meta = {
+            "tag": None,
+            "created": time.time(),
+            "updated": time.time(),
+            "preview": None,
+            "turns": 0,
+        }
+    meta["owner"] = owner
+    index[session_id] = meta
+    _save_index(index, sessions_dir)
+
+
 def tag_session(session_id: str, tag: str,
                 sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool | str:
     """Set or overwrite the tag for a session.
@@ -267,10 +292,12 @@ def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
 
 
 def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                  limit: int = 20) -> list[dict]:
+                  limit: int = 20, owner: str | None = None) -> list[dict]:
     """Return a list of sessions sorted by most recently updated.
 
     Each entry has: session_id, tag, created, updated, preview, turns.
+    When *owner* is given, only sessions recorded as owned by that email are
+    returned — unowned (pre-auth) sessions stay hidden until claimed.
     """
     index = _load_index(sessions_dir)
 
@@ -280,6 +307,8 @@ def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
 
     sessions = []
     for sid, meta in index.items():
+        if owner is not None and meta.get("owner") != owner:
+            continue
         sessions.append({
             "session_id": sid,
             "tag": meta.get("tag"),

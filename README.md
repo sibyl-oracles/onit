@@ -263,6 +263,7 @@ status, session sidebar, file attachments, light/dark theme).
 ```bash
 onit serve web                 # open on port 9000 (default)
 onit serve web --port 9500     # custom port
+onit serve web --no-login      # skip Google login (open access — see below)
 onit serve web --ui gradio     # legacy Gradio UI (deprecated)
 ```
 
@@ -270,8 +271,81 @@ onit serve web --ui gradio     # legacy Gradio UI (deprecated)
 |------|-------------|---------|
 | `--port PORT` | Web UI port | `9000` (or `web_port` in config) |
 | `--ui {native,gradio}` | Web UI implementation | `native` (or `web_ui` in config) |
+| `--no-login` | Run without requiring Google login | login required |
 
-Supports optional Google OAuth2 authentication — see [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
+By default the web UI **requires Google login**: every session starts with a
+Google OAuth2 sign-in, and only Google-hosted mail accounts are accepted —
+Gmail (`@gmail.com` / `@googlemail.com`) or any Google Workspace domain
+(i.e. any domain whose mail is hosted by Google). Each chat session is
+private to the account that created it.
+
+Without configured OAuth credentials, `onit serve web` refuses to start.
+To run an open UI without login (e.g. local development on a trusted
+network), pass `--no-login` or set `web_require_auth: false` in the config.
+Anyone who can reach the port can then use the agent.
+
+##### Setting up Google OAuth2 (step by step)
+
+1. **Create a Google Cloud project.** Go to
+   [console.cloud.google.com](https://console.cloud.google.com/), open the
+   project selector (top-left) → **New Project**, give it a name (e.g.
+   "OnIt Web"), and create it. Any Google account works; no billing needed.
+
+2. **Configure the OAuth consent screen.** Navigate to **APIs & Services →
+   OAuth consent screen** (newer consoles call this **Google Auth Platform →
+   Branding**). Set the app name and support email, then choose the audience:
+   - **External** — any Google account may attempt login (OnIt still rejects
+     accounts that are not Gmail/Workspace-hosted). While the app's status is
+     *Testing*, only accounts you add under **Audience → Test users** can log
+     in; click **Publish app** to lift that limit.
+   - **Internal** — available only on Google Workspace accounts; Google
+     itself restricts login to your Workspace domain.
+
+   No scope configuration is needed — OnIt only uses the basic
+   `openid email profile` identity scopes.
+
+3. **Create the OAuth client.** Navigate to **APIs & Services → Credentials →
+   + Create credentials → OAuth client ID**. Choose application type
+   **Web application** and name it (e.g. "OnIt Web UI").
+
+4. **Add the authorized redirect URI.** Under **Authorized redirect URIs**,
+   add one entry per host you will open the UI from, exactly matching:
+
+   ```
+   http://localhost:9000/auth/callback
+   http://YOUR_SERVER_IP:9000/auth/callback
+   ```
+
+   Adjust the port if you use `--port`. Google rejects any callback not on
+   this list, character for character. Non-localhost hosts require `https`
+   URIs — put OnIt behind a TLS reverse proxy for public deployments.
+
+5. **Copy the credentials.** After clicking **Create**, Google shows the
+   **Client ID** (ends in `.apps.googleusercontent.com`) and the
+   **Client secret** (starts with `GOCSPX-`). Copy both.
+
+6. **Store them in OnIt.** Run `onit setup` and paste the values at the
+   *Google OAuth2 client ID* and *client secret* prompts — they are stored
+   in the OS keychain, not in a file. Alternatively set the
+   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` environment variables, or put
+   `web_google_client_id` / `web_google_client_secret` in the config YAML.
+   Verify with `onit setup --show`.
+
+7. **(Optional) Restrict who may log in.** Beyond the built-in
+   Gmail/Workspace gate, list exact addresses or whole domains in the config:
+
+   ```yaml
+   web_allowed_emails:
+     - alice@gmail.com
+     - "*@sibyl.ai"
+   ```
+
+8. **Launch and test.** Run `onit serve web` — the startup banner shows
+   `OAuth2 authentication enabled`. Open `http://localhost:9000`, click
+   **Sign in with Google**, and pick an account. You should land back in the
+   chat, with your email and a Logout link shown in the UI.
+
+More detail (session lifetime, troubleshooting): [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
 
 #### `onit serve gateway`
 

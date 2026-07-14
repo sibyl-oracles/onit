@@ -269,3 +269,79 @@ class TestEnsureMcpServers:
              patch("src.cli._mcp_servers_ready", return_value=True):
             _ensure_mcp_servers(config)
             mock_thread_instance.start.assert_called_once()
+
+
+# ── Web UI OAuth credential resolution ──────────────────────────────────────
+
+class TestWebOAuthCredentialResolution:
+    """Google OAuth2 credentials stored by 'onit setup' (keyring) or env vars
+    must reach the resolved config when web mode is on — the web UI refuses
+    to start without them."""
+
+    def _resolve(self, tmp_path, monkeypatch, cfg, secrets=None):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        secrets = secrets or {}
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: secrets.get(key))
+        # Keep the user's real ~/.onit/config.yaml out of the test
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        args = _build_parser().parse_args(["--config", str(path)])
+        return _parse_and_resolve_config(args)
+
+    def test_keyring_credentials_reach_web_config(self, tmp_path, monkeypatch):
+        cfg = {"web": True, "serving": {"host": "http://localhost:8000/v1"}}
+        secrets = {"web_google_client_id": "kr-id.apps.googleusercontent.com",
+                   "web_google_client_secret": "kr-secret"}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, secrets)
+        assert resolved["web_google_client_id"] == "kr-id.apps.googleusercontent.com"
+        assert resolved["web_google_client_secret"] == "kr-secret"
+
+    def test_env_credentials_reach_web_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "env-id.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "env-secret")
+        cfg = {"web": True, "serving": {"host": "http://localhost:8000/v1"}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg)
+        assert resolved["web_google_client_id"] == "env-id.apps.googleusercontent.com"
+        assert resolved["web_google_client_secret"] == "env-secret"
+
+    def test_config_file_value_wins(self, tmp_path, monkeypatch):
+        cfg = {"web": True, "serving": {"host": "http://localhost:8000/v1"},
+               "web_google_client_id": "from-config"}
+        secrets = {"web_google_client_id": "kr-id"}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, secrets)
+        assert resolved["web_google_client_id"] == "from-config"
+
+    def test_not_resolved_outside_web_mode(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://localhost:8000/v1"}}
+        secrets = {"web_google_client_id": "kr-id"}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, secrets)
+        assert "web_google_client_id" not in resolved
+
+    def test_no_login_flag_disables_required_auth(self, tmp_path, monkeypatch):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({"serving": {"host": "http://localhost:8000/v1"}}))
+        args = _build_parser().parse_args(
+            ["--config", str(path), "serve", "web", "--no-login"])
+        resolved = _parse_and_resolve_config(args)
+        assert resolved["web"] is True
+        assert resolved["web_require_auth"] is False
+
+    def test_serve_web_defaults_to_required_auth(self, tmp_path, monkeypatch):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({"serving": {"host": "http://localhost:8000/v1"}}))
+        args = _build_parser().parse_args(["--config", str(path), "serve", "web"])
+        resolved = _parse_and_resolve_config(args)
+        assert "web_require_auth" not in resolved  # falls back to default True

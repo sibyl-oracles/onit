@@ -602,6 +602,9 @@ def _build_parser() -> argparse.ArgumentParser:
     web_p.add_argument("--ui", type=str, choices=["native", "gradio"], default=None,
                        help="Web UI implementation: native FastAPI SSE UI (default) "
                             "or the legacy Gradio UI.")
+    web_p.add_argument("--no-login", action="store_true", dest="no_login",
+                       help="Run the web UI without requiring Google login "
+                            "(sessions are open to anyone who can reach the port).")
 
     # serve gateway
     gw_p = serve_sub.add_parser("gateway",
@@ -740,6 +743,8 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
                 config_data['web_port'] = args.port
             if getattr(args, 'ui', None) is not None:
                 config_data['web_ui'] = args.ui
+            if getattr(args, 'no_login', False):
+                config_data['web_require_auth'] = False
         elif serve_mode == 'gateway':
             config_data['gateway'] = args.gateway_type
             if getattr(args, 'webhook_url', None):
@@ -819,6 +824,16 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         os.environ['OPENWEATHERMAP_API_KEY'] = weather_api_key
     else:
         os.environ['ONIT_DISABLE_WEATHER'] = '1'
+
+    # Web UI login: Google OAuth2 credentials live in the keyring (stored by
+    # 'onit setup'); a value in the config file takes precedence.
+    if config_data.get('web'):
+        for key, env_var in [('web_google_client_id', 'GOOGLE_CLIENT_ID'),
+                             ('web_google_client_secret', 'GOOGLE_CLIENT_SECRET')]:
+            if not config_data.get(key):
+                val = resolve_credential(None, env_var, key)
+                if val:
+                    config_data[key] = val
 
     # Resolve gateway type and token
     gateway_type = config_data.get('gateway')

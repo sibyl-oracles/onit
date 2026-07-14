@@ -48,7 +48,9 @@ from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from src.sessions import delete_session as _delete_session_index
+from src.sessions import get_session_owner as _get_session_owner
 from src.sessions import list_sessions as _list_sessions
+from src.sessions import set_session_owner as _set_session_owner
 from src.sessions import tag_session as _tag_session
 from .auth import (
     GOOGLE_AUTH_AVAILABLE,
@@ -139,6 +141,7 @@ class ApiSession:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_path: str = ""
     data_path: str = ""
+    owner: Optional[str] = None  # authenticated email; None when auth is off
     processing: bool = False
     safety_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=10))
     created: datetime = field(default_factory=datetime.now)
@@ -162,6 +165,7 @@ class WebApiUI:
         session_path: Optional[str] = None,
         title: str = "OnIt Chat",
         verbose: bool = False,
+        require_auth: bool = True,
     ) -> None:
         self.title = title
         self.theme = theme
@@ -184,9 +188,28 @@ class WebApiUI:
                 setattr(self, attr, None)
 
         self.auth_enabled = bool(self.google_client_id and self.google_client_secret)
-        if self.auth_enabled and not GOOGLE_AUTH_AVAILABLE:
-            print("Google OAuth credentials provided but google-auth package not installed. Authentication disabled.")
+
+        # --no-login / web_require_auth: false — run an open UI with no login
+        # step, even when OAuth credentials are configured.
+        if not require_auth:
+            if self.auth_enabled:
+                print("Login disabled (--no-login): the web UI is open to anyone who can reach it.")
             self.auth_enabled = False
+
+        if self.auth_enabled and not GOOGLE_AUTH_AVAILABLE:
+            raise RuntimeError(
+                "Web UI login requires the google-auth package. "
+                "Install it with: pip install google-auth requests"
+            )
+
+        # Sessions must start with a Google login: refuse to serve an open
+        # web UI unless the operator explicitly opted out (--no-login).
+        if require_auth and not self.auth_enabled:
+            raise RuntimeError(
+                "The web UI requires Google login, but no OAuth2 credentials are "
+                "configured. Set web_google_client_id and web_google_client_secret "
+                "(onit --setup), or run with --no-login / web_require_auth: false."
+            )
 
         self.session_manager = SessionManager() if self.auth_enabled else None
         self.oauth_flow_manager = OAuthFlowManager() if self.auth_enabled else None
@@ -225,24 +248,62 @@ class WebApiUI:
             return os.path.dirname(self.session_path)
         return os.path.expanduser("~/.onit/sessions")
 
-    def _get_or_create_session(self, session_id: str | None = None) -> tuple[str, ApiSession]:
+    def _session_owner_of(self, session_id: str) -> Optional[str]:
+        """Owner recorded for a session, preferring in-memory state."""
+        mem = self._web_sessions.get(session_id)
+        if mem and mem.owner:
+            return mem.owner
+        return _get_session_owner(session_id, sessions_dir=self._sessions_dir())
+
+    def _can_access(self, session_id: str, email: Optional[str]) -> bool:
+        """True when *email* may touch *session_id*.
+
+        Unowned sessions (created before auth was enabled) are accessible —
+        the first authenticated user to use one claims it in
+        ``_get_or_create_session``.
+        """
+        if not self.auth_enabled:
+            return True
+        recorded = self._session_owner_of(session_id)
+        return recorded is None or recorded == email
+
+    def _get_or_create_session(
+        self, session_id: str | None = None, owner: Optional[str] = None
+    ) -> tuple[str, ApiSession]:
         """Get an existing session or create a new one.
 
         Restores sessions from disk (JSONL survives restarts); otherwise
         creates a new one, reusing *session_id* when supplied so the browser
         cookie and server-side record stay in sync.
+
+        When auth is enabled, sessions are gated per user: a session id that
+        belongs to a different *owner* is treated as nonexistent and the
+        caller gets a fresh session; an unowned session is claimed by (and
+        thereafter locked to) the first owner who uses it.
         """
         # Reject invalid session IDs to prevent path traversal
         if session_id and not _UUID_RE.match(session_id):
             session_id = None
 
-        if session_id and session_id in self._web_sessions:
-            return session_id, self._web_sessions[session_id]
+        # Never hand one user another user's session
+        if session_id and not self._can_access(session_id, owner):
+            session_id = None
 
         sessions_dir = self._sessions_dir()
+
+        if session_id and session_id in self._web_sessions:
+            session = self._web_sessions[session_id]
+            if self.auth_enabled and owner and not session.owner:
+                session.owner = owner
+                _set_session_owner(session_id, owner, sessions_dir=sessions_dir)
+            return session_id, session
+
         os.makedirs(sessions_dir, exist_ok=True)
 
         session = ApiSession(session_id=session_id) if session_id else ApiSession()
+        if self.auth_enabled and owner:
+            session.owner = owner
+            _set_session_owner(session.session_id, owner, sessions_dir=sessions_dir)
         session.session_path = os.path.join(sessions_dir, f"{session.session_id}.jsonl")
         if not os.path.exists(session.session_path):
             with open(session.session_path, "w", encoding="utf-8") as f:
@@ -268,9 +329,11 @@ class WebApiUI:
         return session.session_id, session
 
     def _resolve_session(self, request: Request) -> tuple[str, ApiSession]:
-        """Resolve the session from the X-Session-Id header or cookie."""
+        """Resolve the session from the X-Session-Id header or cookie,
+        scoped to the authenticated user when auth is enabled."""
         sid = request.headers.get("x-session-id") or request.cookies.get("onit_session")
-        return self._get_or_create_session(sid)
+        owner = self._auth_email(request) if self.auth_enabled else None
+        return self._get_or_create_session(sid, owner=owner)
 
     # ------------------------------------------------------------------
     # Interface methods (matching ChatUI contract)
@@ -558,6 +621,10 @@ class WebApiUI:
         @app.middleware("http")
         async def session_cookie_middleware(request: Request, call_next):
             response = await call_next(request)
+            # A chat session only starts after login: never hand a session
+            # cookie to an unauthenticated visitor when auth is on.
+            if self.auth_enabled and not self._auth_email(request):
+                return response
             if not request.cookies.get("onit_session"):
                 response.set_cookie(
                     key="onit_session",
@@ -704,28 +771,40 @@ class WebApiUI:
             return {"logs": list(self.execution_logs)[-50:]}
 
         @app.get("/api/sessions")
-        async def api_sessions():
-            sessions = _list_sessions(sessions_dir=self._sessions_dir(), limit=50)
+        async def api_sessions(request: Request):
+            owner = self._auth_email(request) if self.auth_enabled else None
+            sessions = _list_sessions(
+                sessions_dir=self._sessions_dir(), limit=50, owner=owner
+            )
             for s in sessions:
                 mem = self._web_sessions.get(s["session_id"])
                 s["processing"] = bool(mem and mem.processing)
             return {"sessions": sessions}
 
         @app.post("/api/sessions/new")
-        async def api_new_session():
-            sid, _session = self._get_or_create_session(str(uuid.uuid4()))
+        async def api_new_session(request: Request):
+            owner = self._auth_email(request) if self.auth_enabled else None
+            sid, _session = self._get_or_create_session(str(uuid.uuid4()), owner=owner)
             return {"session_id": sid}
 
         @app.delete("/api/sessions")
-        async def api_delete_all_sessions():
-            if any(s.processing for s in self._web_sessions.values()):
+        async def api_delete_all_sessions(request: Request):
+            owner = self._auth_email(request) if self.auth_enabled else None
+            if any(
+                s.processing for s in self._web_sessions.values()
+                if self._can_access(s.session_id, owner)
+            ):
                 return JSONResponse(
                     {"detail": "A task is still running; stop it first"},
                     status_code=409,
                 )
             sessions_dir = self._sessions_dir()
-            indexed = _list_sessions(sessions_dir=sessions_dir, limit=1_000_000)
-            sids = {s["session_id"] for s in indexed} | set(self._web_sessions.keys())
+            indexed = _list_sessions(sessions_dir=sessions_dir, limit=1_000_000,
+                                     owner=owner)
+            sids = {s["session_id"] for s in indexed} | {
+                sid for sid, s in self._web_sessions.items()
+                if not self.auth_enabled or s.owner == owner
+            }
             for sid in sids:
                 session = self._web_sessions.pop(sid, None)
                 data_path = (session.data_path if session and session.data_path
@@ -736,9 +815,13 @@ class WebApiUI:
             return {"deleted": len(sids)}
 
         @app.delete("/api/sessions/{session_id}")
-        async def api_delete_session(session_id: str):
+        async def api_delete_session(session_id: str, request: Request):
             if not _UUID_RE.match(session_id):
                 return JSONResponse({"detail": "Invalid session id"}, status_code=400)
+            owner = self._auth_email(request) if self.auth_enabled else None
+            if not self._can_access(session_id, owner):
+                # 404, not 403 — don't confirm someone else's session exists
+                return JSONResponse({"detail": "Session not found"}, status_code=404)
             session = self._web_sessions.pop(session_id, None)
             if session and session.data_path:
                 shutil.rmtree(session.data_path, ignore_errors=True)
@@ -750,6 +833,9 @@ class WebApiUI:
         async def api_rename_session(session_id: str, request: Request):
             if not _UUID_RE.match(session_id):
                 return JSONResponse({"detail": "Invalid session id"}, status_code=400)
+            owner = self._auth_email(request) if self.auth_enabled else None
+            if not self._can_access(session_id, owner):
+                return JSONResponse({"detail": "Session not found"}, status_code=404)
             body = await request.json()
             tag = (body.get("tag") or "").strip()
             if not tag:
@@ -764,10 +850,13 @@ class WebApiUI:
         """Routes to serve and receive files scoped per session."""
 
         @app.get("/uploads/{session_id}/{filename}")
-        async def serve_upload(session_id: str, filename: str):
+        async def serve_upload(session_id: str, filename: str, request: Request):
             # Use basename to prevent path traversal
             safe_name = os.path.basename(urllib.parse.unquote(filename))
             if session_id not in self._web_sessions:
+                return Response(content="Session not found", status_code=404)
+            owner = self._auth_email(request) if self.auth_enabled else None
+            if not self._can_access(session_id, owner):
                 return Response(content="Session not found", status_code=404)
             data_path = self._web_sessions[session_id].data_path
             filepath = os.path.join(data_path, safe_name)
