@@ -264,13 +264,11 @@ status, session sidebar, file attachments, light/dark theme).
 onit serve web                 # open on port 9000 (default)
 onit serve web --port 9500     # custom port
 onit serve web --no-login      # skip Google login (open access — see below)
-onit serve web --ui gradio     # legacy Gradio UI (deprecated)
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--port PORT` | Web UI port | `9000` (or `web_port` in config) |
-| `--ui {native,gradio}` | Web UI implementation | `native` (or `web_ui` in config) |
 | `--no-login` | Run without requiring Google login | login required |
 
 By default the web UI **requires Google login**: every session starts with a
@@ -674,7 +672,6 @@ onit/
 │   │   ├── text.py             # Rich terminal UI
 │   │   ├── api.py              # FastAPI + SSE web UI
 │   │   ├── static/             # Web UI assets (no build step)
-│   │   ├── web.py              # Legacy Gradio web UI (deprecated)
 │   │   ├── telegram.py         # Telegram bot gateway
 │   │   └── viber.py            # Viber bot gateway
 │   └── test/                   # Test suite (pytest)

@@ -599,9 +599,6 @@ def _build_parser() -> argparse.ArgumentParser:
     web_p = serve_sub.add_parser("web", help="Launch the web UI.")
     web_p.add_argument("--port", type=int, default=None,
                        help="Web UI port (default: 9000, or web_port in config).")
-    web_p.add_argument("--ui", type=str, choices=["native", "gradio"], default=None,
-                       help="Web UI implementation: native FastAPI SSE UI (default) "
-                            "or the legacy Gradio UI.")
     web_p.add_argument("--no-login", action="store_true", dest="no_login",
                        help="Run the web UI without requiring Google login "
                             "(sessions are open to anyone who can reach the port).")
@@ -741,8 +738,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             config_data['web'] = True
             if args.port is not None:
                 config_data['web_port'] = args.port
-            if getattr(args, 'ui', None) is not None:
-                config_data['web_ui'] = args.ui
             if getattr(args, 'no_login', False):
                 config_data['web_require_auth'] = False
         elif serve_mode == 'gateway':

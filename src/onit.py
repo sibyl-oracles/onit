@@ -499,7 +499,6 @@ class OnIt(BaseModel):
     period: float = Field(default=10.0)
     task: str | None = Field(default=None)
     web: bool = Field(default=False)
-    web_ui: str = Field(default="native")
     web_port: int = Field(default=9000)
     web_google_client_id: str | None = Field(default=None)
     web_google_client_secret: str | None = Field(default=None)
@@ -542,13 +541,8 @@ class OnIt(BaseModel):
         self.initialize()
         if not self.loop:
             if self.web:
-                if self.web_ui == "gradio":
-                    # Legacy Gradio UI, kept as a fallback during the bake-in
-                    # period of the native FastAPI web UI.
-                    from .ui.web import WebChatUI
-                else:
-                    from .ui.api import WebApiUI as WebChatUI
-                self.chat_ui = WebChatUI(
+                from .ui.api import WebApiUI
+                self.chat_ui = WebApiUI(
                     theme=self.theme,
                     data_path=self.data_path,
                     show_logs=self.show_logs,
@@ -751,7 +745,6 @@ class OnIt(BaseModel):
         self.period = float(self.config_data.get('period', 20.0))
         self.task = self.config_data.get('task', None)
         self.web = self.config_data.get('web', False)
-        self.web_ui = self.config_data.get('web_ui', 'native')
         self.web_port = self.config_data.get('web_port', 9000)
         self.web_google_client_id = self.config_data.get('web_google_client_id', None)
         self.web_google_client_secret = self.config_data.get('web_google_client_secret', None)

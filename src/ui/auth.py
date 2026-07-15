@@ -15,8 +15,8 @@
 
 Shared authentication helpers for the OnIt web UIs.
 
-Google OAuth2 (PKCE) session and flow management used by both the
-FastAPI SSE web UI (api.py) and the legacy Gradio UI (web.py).
+Google OAuth2 (PKCE) session and flow management used by the
+FastAPI SSE web UI (api.py).
 """
 
 import base64

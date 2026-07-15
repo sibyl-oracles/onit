@@ -77,10 +77,9 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # WebSocket support (required for Gradio live updates)
+        # SSE support: disable buffering so streamed tokens arrive live
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
 
         # Timeout settings for long-running LLM responses
         proxy_read_timeout 300s;

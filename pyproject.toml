@@ -49,7 +49,6 @@ search = [
     "openpyxl",
 ]
 web = [
-    "gradio",
     "google-auth",
 ]
 gateway = [

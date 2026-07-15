@@ -134,7 +134,7 @@ docker run --name onit --rm \
   --topic "my topic"
 ```
 
-### Web mode (Gradio UI)
+### Web mode
 
 ```bash
 docker run --name onit --rm \

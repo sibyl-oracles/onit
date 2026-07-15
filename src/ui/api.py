@@ -15,10 +15,10 @@
 
 FastAPI + SSE web chat UI for OnIt.
 
-Replaces the Gradio UI (web.py) with a plain FastAPI backend that streams
-agent output over Server-Sent Events and serves a static single-page app
-from src/ui/static/.  Implements the same interface as ChatUI (text.py)
-so chat.py and onit.py work without changes.
+A plain FastAPI backend that streams agent output over Server-Sent Events
+and serves a static single-page app from src/ui/static/.  Implements the
+same interface as ChatUI (text.py) so chat.py and onit.py work without
+changes.
 
 SSE event schema (see docs/web-ui-plan.md):
     token         {"delta": str}

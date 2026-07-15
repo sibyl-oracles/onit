@@ -33,9 +33,6 @@ timeout: -1
 web_title: "OnIt Chat"
 web: false
 web_port: 9000
-# Custom favicon URL or path (e.g. "https://example.com/icon.png").
-# Leave empty to suppress the default Gradio favicon.
-# web_favicon:
 
 # Google OAuth2 Authentication (Full Redirect Flow)
 # To set up Google OAuth2, follow these steps:
