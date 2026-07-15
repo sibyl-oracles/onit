@@ -17,12 +17,20 @@ On first run, the launcher builds the `onit:local` image from the repository
 
 The container is started with hardening flags:
 
-- `--read-only` root filesystem (writes confined to `/home/onit/data` named volume and a `/tmp` tmpfs)
+- `--read-only` root filesystem. Writes land only on RAM-backed tmpfs mounts
+  (`/tmp`, `~/.cache`, `~/.onit`) or the `onit-data` named volume
+  (`/home/onit/data` — pip installs via `PIP_TARGET`, HF caches, sessions).
 - `--cap-drop=ALL` (no Linux capabilities beyond what the Python process strictly needs)
-- `--security-opt=no-new-privileges`
-- `--pids-limit=256`, `--memory=2g`
+- `--security-opt no-new-privileges:true` (no sudo/setuid escalation; the
+  image ships without sudo or sudoers rules)
+- `--pids-limit=4096`; memory unlimited by default (clamp with `--container-memory`)
 - Runs as non-root `onit` user (uid 1000)
 - No host filesystem mounts by default
+- AST-based command allowlisting is enforced by default inside the container
+  (`ONIT_COMMAND_ALLOWLIST`), package managers are blocked unless
+  `--container-allow-installs` is passed, and installs must then be
+  version-pinned (`pip install name==1.2.3`). Repeated policy violations
+  auto-contain the bash MCP server (see README "Auto-Containment").
 
 ### What crosses the boundary
 

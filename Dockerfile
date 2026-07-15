@@ -95,7 +95,6 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
         libespeak-ng1 \
         git \
         openssh-client \
-        sudo \
         build-essential \
         curl \
         wget \
@@ -104,15 +103,11 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
     && (userdel -r ubuntu 2>/dev/null || true) \
     && groupadd --gid 1000 onit \
     && useradd --uid 1000 --gid 1000 --home /home/onit --shell /bin/bash onit \
-    # Passwordless sudo for the in-container user. The agent uses this to
-    # `apt install` extra system packages at runtime. Note: when the launcher
-    # runs the container as the host user's UID/GID, that user isn't `onit`,
-    # so sudoers is widened via %sudo and the user is added by the launcher's
-    # runtime bootstrap if needed. The NOPASSWD rule below matches by uid 1000
-    # which is the default non-bind-mount path.
-    && echo 'onit ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-onit \
-    && echo 'ALL ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-any \
-    && chmod 0440 /etc/sudoers.d/99-onit /etc/sudoers.d/99-any \
+    # No sudo: the container runs with a read-only rootfs, cap-drop=ALL and
+    # no-new-privileges, so runtime `apt install` is impossible by design.
+    # System packages belong in this image; Python packages install to the
+    # persistent data volume via PIP_TARGET (gated by the command policy —
+    # pinned versions only, and only when ONIT_ALLOW_PACKAGE_INSTALL=1).
     && mkdir -p /home/onit/app /home/onit/data /home/onit/documents /home/onit/.onit \
     # World-writable on the directories the container process writes to. This
     # lets the launcher run the container as the host user's UID/GID (to match

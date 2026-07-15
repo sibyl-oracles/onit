@@ -71,10 +71,41 @@ def test_build_run_command_applies_runtime_args():
     assert any(t.startswith("/tmp:rw,size=") for t in cmd)
     # Memory is unlimited by default so long training runs don't OOM at 2g.
     assert "--memory" not in cmd
-    # Hardening flags that block `sudo apt` are off by default.
-    assert "--read-only" not in cmd
-    assert "--cap-drop=ALL" not in cmd
-    assert "--security-opt=no-new-privileges" not in cmd
+
+
+def test_build_run_command_hardening_flags_on_by_default():
+    cmd = build_run_command(
+        "docker", [], config_mounts=[], secret_env=[]
+    )
+    # Read-only rootfs with tmpfs for writes, no capabilities, no privilege
+    # escalation (setuid sudo cannot elevate).
+    assert "--read-only" in cmd
+    i = cmd.index("--cap-drop"); assert cmd[i + 1] == "ALL"
+    i = cmd.index("--security-opt"); assert cmd[i + 1] == "no-new-privileges:true"
+    # Writable runtime paths are RAM-backed tmpfs mounts.
+    assert any(t.startswith("/home/onit/.onit:rw,size=") for t in cmd)
+    assert any(t.startswith("/home/onit/.cache:rw,size=") for t in cmd)
+
+
+def test_build_run_command_no_install_env_by_default():
+    cmd = build_run_command(
+        "docker", [], config_mounts=[], secret_env=[]
+    )
+    assert "ONIT_ALLOW_PACKAGE_INSTALL=1" not in cmd
+
+
+def test_build_run_command_allow_installs_sets_env():
+    cmd = build_run_command(
+        "docker", [], config_mounts=[], secret_env=[], allow_installs=True
+    )
+    i = cmd.index("ONIT_ALLOW_PACKAGE_INSTALL=1")
+    assert cmd[i - 1] == "-e"
+    assert i < cmd.index(IMAGE_TAG)
+
+
+def test_strip_launcher_args_removes_allow_installs():
+    argv = ["--container", "--container-allow-installs", "--web"]
+    assert strip_launcher_args(argv) == ["--web"]
 
 
 def test_build_run_command_respects_resource_overrides():

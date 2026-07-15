@@ -14,10 +14,13 @@ filesystem / apt / pip operations stay off the host. The launcher:
     container as ephemeral env vars, never baked into the image.
   * Proxies signals so Ctrl-C tears the container down cleanly.
 
-The container keeps namespace / filesystem isolation from the host but does
-not drop capabilities or mount the rootfs read-only — the agent can run
-``sudo apt install`` and build native extensions. For per-tool sandboxing
-(stricter isolation with no sudo), use ``--sandbox`` instead.
+The container runs hardened: read-only rootfs, all capabilities dropped,
+``no-new-privileges``, and tmpfs mounts for every writable path (state that
+must persist — pip installs via PIP_TARGET, HF caches — lives on the named
+data volume). ``apt``/``sudo`` are unavailable; language package managers are
+gated by the in-container command policy and require pinned versions when
+enabled via ``--container-allow-installs``. For per-tool sandboxing on the
+host, use ``--sandbox`` instead.
 """
 
 from __future__ import annotations
@@ -200,16 +203,23 @@ def _runtime_args(
 ) -> list[str]:
     """Runtime flags for the container.
 
-    We keep namespace/filesystem isolation (separate rootfs, pid/net
-    namespaces) but relax the defense-in-depth flags (--read-only, cap-drop,
-    no-new-privileges) so the agent can run `sudo apt install` and ordinary
-    build tooling without fighting the sandbox. For stricter isolation use
-    ``--sandbox`` (tool-level MCP sandbox) instead.
+    Defense-in-depth on top of namespace isolation: the rootfs is mounted
+    read-only, all capabilities are dropped, and privilege escalation is
+    disabled (setuid binaries like sudo cannot elevate). Every path the
+    runtime writes is either a RAM-backed tmpfs (ephemeral) or the named
+    data volume (persistent — PIP_TARGET, HF caches, session artifacts).
     """
     args: list[str] = []
-    # Session transcripts tmpfs — small, still useful since sessions are
-    # ephemeral within a container run and persistent ones live on the volume.
-    args.extend(["--tmpfs", "/home/onit/.onit/sessions:rw,size=64m"])
+    # Read-only rootfs: writes only land on tmpfs mounts or the data volume.
+    args.append("--read-only")
+    args.extend(["--cap-drop", "ALL"])
+    args.extend(["--security-opt", "no-new-privileges:true"])
+    # Runtime state (settings, session transcripts). config.yaml/secrets.yaml
+    # bind mounts nest inside this tmpfs (docker mounts by path depth).
+    args.extend(["--tmpfs", "/home/onit/.onit:rw,size=128m"])
+    # ~/.cache for tools that ignore XDG_CACHE_HOME (which points at the
+    # persistent data volume for the big ML caches).
+    args.extend(["--tmpfs", "/home/onit/.cache:rw,size=256m"])
     # /tmp sized generously for ML scratch (wheel extraction, dataset shards).
     args.extend(["--tmpfs", f"/tmp:rw,size={tmp_size or DEFAULT_TMP_SIZE}"])
     # /dev/shm for DataLoader workers — default 64m breaks multiprocess IPC.
@@ -351,6 +361,7 @@ def _run_docker(
     memory: str | None = None,
     shm_size: str | None = None,
     tmp_size: str | None = None,
+    allow_installs: bool = False,
 ) -> int:
     """Run a single containerised onit process via ``docker run``."""
     cmd = [docker, "run", "--rm"]
@@ -389,6 +400,8 @@ def _run_docker(
     total_bind_mounts = (len(auto_mounts) // 2) + len(mounts or [])
     cmd.extend(_host_user_args(total_bind_mounts))
     cmd.extend(_collect_secret_env())
+    if allow_installs:
+        cmd.extend(["-e", "ONIT_ALLOW_PACKAGE_INSTALL=1"])
     cmd.append(IMAGE_TAG)
     cmd.extend(forwarded_args)
 
@@ -421,6 +434,7 @@ def build_run_command(
     memory: str | None = None,
     shm_size: str | None = None,
     tmp_size: str | None = None,
+    allow_installs: bool = False,
 ) -> list[str]:
     """Assemble the ``docker run`` argv. Extracted for unit testing."""
     cmd = [docker, "run", "--rm"]
@@ -442,6 +456,8 @@ def build_run_command(
     total_bind_mounts = (len(auto_mounts) // 2) + len(mounts or [])
     cmd.extend(_host_user_args(total_bind_mounts))
     cmd.extend(secret_env if secret_env is not None else _collect_secret_env())
+    if allow_installs:
+        cmd.extend(["-e", "ONIT_ALLOW_PACKAGE_INSTALL=1"])
     cmd.append(IMAGE_TAG)
     cmd.extend(forwarded_args)
     return cmd
@@ -455,6 +471,7 @@ def run(
     memory: str | None = None,
     shm_size: str | None = None,
     tmp_size: str | None = None,
+    allow_installs: bool = False,
 ) -> int:
     """Entry point called from ``cli.main`` when ``--container`` is passed.
 
@@ -462,6 +479,7 @@ def run(
     already stripped) that should be handed to the in-container ``onit``
     entrypoint. ``gpus`` and ``mounts`` are launcher-only pass-throughs.
     ``memory``/``shm_size``/``tmp_size`` override the resource defaults.
+    ``allow_installs`` permits version-pinned package installs in-container.
     """
     docker = _check_docker()
     if not _image_exists(docker):
@@ -471,6 +489,7 @@ def run(
         docker, forwarded_args,
         gpus=gpus, mounts=mounts,
         memory=memory, shm_size=shm_size, tmp_size=tmp_size,
+        allow_installs=allow_installs,
     )
 
 
@@ -479,6 +498,7 @@ _LAUNCHER_VALUE_FLAGS = frozenset({
     "--container-gpus", "--container-mount",
     "--container-memory", "--container-shm-size", "--container-tmp-size",
 })
+_LAUNCHER_BOOL_FLAGS = frozenset({"--container", "--container-allow-installs"})
 
 
 def strip_launcher_args(argv: list[str]) -> list[str]:
@@ -487,7 +507,7 @@ def strip_launcher_args(argv: list[str]) -> list[str]:
     i = 0
     while i < len(argv):
         tok = argv[i]
-        if tok == "--container":
+        if tok in _LAUNCHER_BOOL_FLAGS:
             i += 1
             continue
         if tok in _LAUNCHER_VALUE_FLAGS:

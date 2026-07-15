@@ -37,6 +37,7 @@ Requires:
 
 import asyncio
 import base64
+import fnmatch
 import json
 import os
 import platform
@@ -64,6 +65,10 @@ from src.mcp.servers.tasks.shared import (
     find_files_impl,
     transform_text_impl,
     get_document_context_impl,
+)
+from src.mcp.servers.tasks.os.bash.command_policy import (
+    DEFAULT_ALLOWED_COMMANDS,
+    check_command as _check_command_policy,
 )
 
 import logging
@@ -561,18 +566,328 @@ def _strip_heredoc_bodies(command: str) -> str:
     return _HEREDOC_RE.sub(r"<< '\1'", command)
 
 
+# User-configured permission rules (Claude Code-style settings file).
+# Default location is ~/.onit/settings.json (same directory as config.yaml and
+# secrets.yaml); override with options['settings_path'] in run() or the
+# ONIT_SETTINGS env var. Format:
+#   {"permissions": {"allow": ["Bash(*)"], "deny": ["Bash(sudo *)", "Bash(pip install*)"]}}
+# Rules use glob patterns matched against the command. Deny always wins.
+# When the allow list is non-empty, every command must match an allow rule.
+# The default settings file is enforced only for the web UI ('onit serve web'
+# sets ONIT_WEB_UI=1): web sessions are reachable by other users, so the
+# configured restrictions must hold there. The local text UI is a trusted
+# terminal session and ignores the default file — it runs with full
+# privileges under the built-in policy. Explicitly pointing at a settings
+# file (ONIT_SETTINGS env var or options['settings_path']) opts in to
+# enforcement in every mode, including --unrestricted and container mode.
+DEFAULT_SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".onit", "settings.json")
+SETTINGS_PATH = None  # set via run() options; falls back to env var / default
+
+# Cache: ((path, mtime), allow_patterns, deny_patterns, allowed_commands)
+_PERMISSIONS_CACHE = None
+
+_PERMISSION_RULE_RE = re.compile(r'^Bash\((.*)\)$', re.DOTALL)
+
+# Splits compound commands on shell sequencing operators so a denied command
+# embedded in a chain (e.g. "ls && sudo rm") is still caught. Naive with
+# respect to quoting — a quoted "&&" splits too — which can only over-block,
+# never under-block a deny rule.
+_SHELL_SEQUENCE_RE = re.compile(r'\|\||&&|[;|\n]')
+
+
+def _settings_path() -> str:
+    return SETTINGS_PATH or os.environ.get("ONIT_SETTINGS") or DEFAULT_SETTINGS_PATH
+
+
+def _settings_rules_active() -> bool:
+    """True when settings-file permission rules should be enforced.
+
+    The default ~/.onit/settings.json applies only to the web UI (ONIT_WEB_UI=1,
+    set by 'onit serve web'). The text UI runs privileged and ignores it.
+    An explicit ONIT_SETTINGS env var or settings_path option enforces the
+    rules in any mode.
+    """
+    if os.environ.get("ONIT_WEB_UI") == "1":
+        return True
+    return bool(SETTINGS_PATH or os.environ.get("ONIT_SETTINGS"))
+
+
+def _load_permissions() -> tuple[list[str], list[str], list[str]]:
+    """Load Bash(...) allow/deny glob patterns and the allowedCommands list
+    from the settings file.
+
+    Returns ([], [], []) when settings rules are inactive for this mode (see
+    _settings_rules_active) or the file is absent; an unreadable/malformed
+    file logs an error and disables rule enforcement rather than blocking all
+    commands (the built-in _BLOCKED_PATTERNS still apply).
+    Cached by (path, mtime) so edits take effect without a server restart.
+    Non-Bash rules (e.g. "WebFetch(...)") are ignored.
+    """
+    global _PERMISSIONS_CACHE
+    if not _settings_rules_active():
+        return [], [], []
+    path = _settings_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return [], [], []
+    if _PERMISSIONS_CACHE and _PERMISSIONS_CACHE[0] == (path, mtime):
+        return _PERMISSIONS_CACHE[1], _PERMISSIONS_CACHE[2], _PERMISSIONS_CACHE[3]
+
+    allow: list[str] = []
+    deny: list[str] = []
+    allowed_commands: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+        perms = settings.get("permissions", {})
+        for key, patterns in (("allow", allow), ("deny", deny)):
+            rules = perms.get(key, [])
+            if not isinstance(rules, list):
+                raise ValueError(f"permissions.{key} must be a list")
+            for rule in rules:
+                m = _PERMISSION_RULE_RE.match(str(rule).strip())
+                if m:
+                    patterns.append(m.group(1))
+        extra = perms.get("allowedCommands", [])
+        if not isinstance(extra, list):
+            raise ValueError("permissions.allowedCommands must be a list")
+        allowed_commands = [str(c).strip() for c in extra if str(c).strip()]
+    except Exception as e:
+        logger.error(f"Ignoring permission rules — failed to parse {path}: {e}")
+        return [], [], []
+
+    _PERMISSIONS_CACHE = ((path, mtime), allow, deny, allowed_commands)
+    return allow, deny, allowed_commands
+
+
+# Leading environment-variable assignments (FOO=bar cmd) and transparent
+# wrappers that would otherwise defeat prefix-style rules
+# ("PIP_TIMEOUT=60 pip install x", "nohup pip install x").
+_ENV_ASSIGN_RE = re.compile(r'^(?:\w+=\S*\s+)+')
+_WRAPPER_WORDS = ("command", "exec", "nohup", "time", "builtin")
+
+
+def _normalize_segment(seg: str) -> str:
+    """Strip env-var assignments and transparent wrapper words from the front
+    of a command segment so rules match the effective command."""
+    prev = None
+    while seg != prev:
+        prev = seg
+        seg = _ENV_ASSIGN_RE.sub("", seg).lstrip()
+        first, _, rest = seg.partition(" ")
+        if first in _WRAPPER_WORDS and rest:
+            seg = rest.lstrip()
+    return seg
+
+
+def _split_shell_segments(command: str) -> list[str]:
+    """Split a command on sequencing operators (&&, ||, ;, |, newline) and
+    normalize each segment. The full command is included as the first segment
+    so patterns that span operators can still match."""
+    segments = [command.strip()]
+    for seg in _SHELL_SEQUENCE_RE.split(command):
+        seg = _normalize_segment(seg.strip())
+        if seg and seg not in segments:
+            segments.append(seg)
+    return segments
+
+
+def _check_permission_rules(command: str) -> str | None:
+    """Evaluate the command against user-configured allow/deny rules.
+    Returns an error message when blocked, else None."""
+    allow, deny, _ = _load_permissions()
+    if not allow and not deny:
+        return None
+
+    segments = _split_shell_segments(command)
+    for seg in segments:
+        for pattern in deny:
+            if fnmatch.fnmatchcase(seg, pattern):
+                return (f"Command blocked by permissions deny rule "
+                        f"'Bash({pattern})' in {_settings_path()}.")
+
+    if allow:
+        # Skip the full-command segment when it chains multiple commands;
+        # each individual segment must be allowed on its own.
+        check = segments[1:] if len(segments) > 1 else segments
+        for seg in check:
+            if not any(fnmatch.fnmatchcase(seg, pattern) for pattern in allow):
+                return (f"Command blocked: '{seg}' does not match any "
+                        f"permissions allow rule in {_settings_path()}.")
+
+    return None
+
+
+# =============================================================================
+# AST COMMAND ALLOWLIST + PACKAGE POLICY + AUTO-CONTAINMENT
+# =============================================================================
+
+# The AST-based command allowlist is enforced by default inside the onit
+# container (ONIT_CONTAINER=1). Override per environment:
+#   ONIT_COMMAND_ALLOWLIST=1  enforce everywhere (including host mode)
+#   ONIT_COMMAND_ALLOWLIST=0  disable (even inside the container)
+# Package managers are blocked under allowlist enforcement unless
+# ONIT_ALLOW_PACKAGE_INSTALL=1, and then only version-pinned installs pass.
+
+
+def _allowlist_enforced() -> bool:
+    v = os.environ.get("ONIT_COMMAND_ALLOWLIST")
+    if v == "1":
+        return True
+    if v == "0":
+        return False
+    return _in_container()
+
+
+def _package_installs_allowed() -> bool:
+    return os.environ.get("ONIT_ALLOW_PACKAGE_INSTALL") == "1"
+
+
+def _allowed_commands() -> frozenset:
+    """Default allowlist extended by ONIT_ALLOWED_COMMANDS (comma-separated)
+    and permissions.allowedCommands in the settings file."""
+    extra = set()
+    env_extra = os.environ.get("ONIT_ALLOWED_COMMANDS", "")
+    extra.update(c.strip() for c in env_extra.split(",") if c.strip())
+    _, _, settings_extra = _load_permissions()
+    extra.update(settings_extra)
+    if _package_installs_allowed():
+        # Curated installer for heavy ML packages (see Dockerfile). Exempt
+        # from pinning: it selects CUDA-matched wheels from a fixed index.
+        extra.add("onit-install-ml")
+    return DEFAULT_ALLOWED_COMMANDS | frozenset(extra)
+
+
+def _check_command_allowlist(check_command: str) -> str | None:
+    return _check_command_policy(
+        check_command, _allowed_commands(),
+        allow_installs=_package_installs_allowed())
+
+
+# ── Auto-containment ─────────────────────────────────────────────────────
+# After ONIT_CONTAIN_THRESHOLD blocked commands (default 5, 0 disables) the
+# server enters containment: all execution/write/send tools refuse to run and
+# managed background processes are stopped. Containment persists across
+# restarts via a marker file in DATA_PATH; delete it to lift containment.
+
+_DEFAULT_CONTAIN_THRESHOLD = 5
+_CONTAINMENT_MARKER = ".onit-containment.json"
+_VIOLATIONS: list = []
+_CONTAINED = False
+
+
+def _contain_threshold() -> int:
+    try:
+        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD",
+                                  _DEFAULT_CONTAIN_THRESHOLD))
+    except ValueError:
+        return _DEFAULT_CONTAIN_THRESHOLD
+
+
+def _containment_marker_path() -> str:
+    return os.path.join(os.path.realpath(os.path.expanduser(DATA_PATH)),
+                        _CONTAINMENT_MARKER)
+
+
+def _is_contained() -> bool:
+    global _CONTAINED
+    if _CONTAINED:
+        return True
+    if os.path.isfile(_containment_marker_path()):
+        _CONTAINED = True
+        return True
+    return False
+
+
+def _containment_error(context: str = "") -> str:
+    return json.dumps({
+        "error": ("Server is contained after repeated policy violations. "
+                  "Command execution, file writes, and file transfers are "
+                  "disabled. To lift containment, remove "
+                  f"{_containment_marker_path()} and restart the MCP server."),
+        "status": "contained",
+        **({"command": context} if context else {}),
+    })
+
+
+def _enter_containment() -> None:
+    """Lock down the server: persist the marker and stop managed processes."""
+    global _CONTAINED
+    _CONTAINED = True
+    try:
+        marker = _containment_marker_path()
+        _secure_makedirs(os.path.dirname(marker))
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({
+                "contained_at": datetime.now().isoformat(),
+                "violations": _VIOLATIONS[-20:],
+            }, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to persist containment marker: {e}")
+    # Stop everything the serve tool has launched.
+    try:
+        registry = _load_serve_registry()
+        for entry in registry.values():
+            if _process_running(entry["pid"]):
+                try:
+                    _kill_process(entry["pid"])
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Failed to stop managed processes on containment: {e}")
+    logger.error(
+        f"AUTO-CONTAINMENT: {len(_VIOLATIONS)} policy violations reached the "
+        f"threshold ({_contain_threshold()}). Execution disabled; managed "
+        "processes stopped.")
+
+
+def _record_violation(reason: str, command: str) -> None:
+    """Count a blocked command; trip containment at the threshold."""
+    threshold = _contain_threshold()
+    if threshold <= 0:
+        return
+    _VIOLATIONS.append({
+        "time": datetime.now().isoformat(),
+        "reason": reason[:500],
+        "command": (command or "")[:500],
+    })
+    logger.error(
+        f"Policy violation {len(_VIOLATIONS)}/{threshold}: {reason}")
+    if len(_VIOLATIONS) >= threshold and not _CONTAINED:
+        _enter_containment()
+
+
 def _validate_bash_command(command: str) -> str | None:
     """Check command for blocked patterns and path references outside allowed dirs.
     Returns error message or None if command is allowed."""
     check_command = _strip_heredoc_bodies(command)
 
+    # User-configured settings rules: enforced for the web UI (and when the
+    # settings path is explicitly set), in every mode including the
+    # relaxations below. The text UI skips them (see _settings_rules_active).
+    if err := _check_permission_rules(check_command):
+        return err
+
     # In unrestricted mode only the catastrophic always-blocked ops are checked;
-    # path restrictions and package-manager/env blocks are lifted.
+    # path restrictions and package-manager/env blocks are lifted. An explicit
+    # ONIT_COMMAND_ALLOWLIST=1 still enforces the allowlist.
     if _in_unrestricted():
+        if os.environ.get("ONIT_COMMAND_ALLOWLIST") == "1":
+            if err := _check_command_allowlist(check_command):
+                return err
         for pattern, description in _ALWAYS_BLOCKED_PATTERNS:
             if pattern.search(check_command):
                 return f"Command blocked: {description} is not allowed."
         return None
+
+    # AST-based allowlist: every executable in the command (including inside
+    # $(...), pipelines, loops, and shell -c payloads) must be allowlisted;
+    # package-manager installs are gated and must be version-pinned.
+    if _allowlist_enforced():
+        if err := _check_command_allowlist(check_command):
+            return err
 
     # Check blocked command patterns
     for pattern, description in _BLOCKED_PATTERNS:
@@ -670,9 +985,12 @@ async def bash(
 ) -> str:
     if err := _validate_required(command=command):
         return err
+    if _is_contained():
+        return _containment_error(command)
     try:
         # Validate command against blocklist and path restrictions
         if err_msg := _validate_bash_command(command):
+            _record_violation(err_msg, command)
             return json.dumps({
                 "error": err_msg,
                 "command": command,
@@ -971,6 +1289,8 @@ def write_file(
 ) -> str:
     if err := _validate_required(path=path, content=content):
         return err
+    if _is_contained():
+        return _containment_error()
     try:
         file_path = _validate_write_path(_normalize_to_data_path(path))
 
@@ -1067,6 +1387,8 @@ def edit_file(
 ) -> str:
     if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
         return err
+    if _is_contained():
+        return _containment_error()
     try:
         file_path = _validate_write_path(_normalize_to_data_path(path))
 
@@ -1222,6 +1544,22 @@ def serve(
     if action == "start":
         if err := _validate_required(command=command):
             return err
+        if _is_contained():
+            return _containment_error(command)
+
+        # serve skips the path-based bash validation by design (servers live
+        # outside DATA_PATH), but user-configured permission rules and the
+        # AST command allowlist still apply so serve cannot bypass them.
+        err_msg = _check_permission_rules(_strip_heredoc_bodies(command))
+        if not err_msg and _allowlist_enforced() and not _in_unrestricted():
+            err_msg = _check_command_allowlist(_strip_heredoc_bodies(command))
+        if err_msg:
+            _record_violation(err_msg, command)
+            return json.dumps({
+                "error": err_msg,
+                "command": command,
+                "status": "blocked"
+            })
 
         registry = _load_serve_registry()
 
@@ -1462,6 +1800,8 @@ def send_file(
 ) -> str:
     if err := _validate_required(path=path):
         return err
+    if _is_contained():
+        return _containment_error()
     try:
         # Validate path is within allowed directories
         # (relative paths are resolved against DATA_PATH by _validate_read_path)
@@ -1725,6 +2065,9 @@ def transform_text(
     expression: Optional[str] = None,
     is_file: bool = False
 ) -> str:
+    if _is_contained():
+        return _containment_error()
+
     # Pre-resolve file path before validation (bash server convention)
     def _bash_validate_read_path(p: str) -> str:
         return _validate_read_path(os.path.abspath(os.path.expanduser(p)))
@@ -1782,7 +2125,7 @@ def run(
     options: dict = {}
 ) -> None:
     """Run the MCP server."""
-    global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV
+    global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV, SETTINGS_PATH, _PERMISSIONS_CACHE
 
     if 'verbose' in options:
         logger.setLevel(logging.INFO)
@@ -1799,6 +2142,25 @@ def run(
         DOCUMENTS_PATH = options['documents_path']
     elif os.environ.get('ONIT_DOCUMENTS_PATH'):
         DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
+
+    if 'settings_path' in options:
+        SETTINGS_PATH = options['settings_path']
+    _PERMISSIONS_CACHE = None
+    if os.path.isfile(_settings_path()):
+        if _settings_rules_active():
+            allow, deny, allowed_cmds = _load_permissions()
+            logger.info(f"Loaded permission rules from {_settings_path()}: "
+                        f"{len(allow)} allow, {len(deny)} deny, "
+                        f"{len(allowed_cmds)} extra allowed commands")
+        else:
+            logger.info(f"Ignoring permission rules in {_settings_path()}: "
+                        "settings-file rules apply only to the web UI "
+                        "(text UI runs privileged).")
+    if _is_contained():
+        logger.error(
+            f"Server is CONTAINED after prior policy violations. Command "
+            f"execution and file writes are disabled. Remove "
+            f"{_containment_marker_path()} and restart to lift containment.")
 
     # Reset sandbox env cache so it picks up new DATA_PATH/DOCUMENTS_PATH
     _SANDBOX_ENV = None

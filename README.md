@@ -425,8 +425,9 @@ The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Sub
 | `--container-memory SIZE` | Hard memory cap (e.g. `16g`). Default: unlimited. |
 | `--container-shm-size SIZE` | `/dev/shm` size (default: `4g`). Raise for PyTorch DataLoader. |
 | `--container-tmp-size SIZE` | `/tmp` tmpfs size (default: `16g`). Backed by host RAM. |
+| `--container-allow-installs` | Permit package installs in-container. Installs must still be version-pinned (`pip install name==1.2.3`). |
 
-**Isolation posture:** non-root user, read-only rootfs, `--cap-drop=ALL`, no host mounts by default, outbound network allowed.
+**Isolation posture:** non-root user, read-only rootfs (`--read-only`), `--cap-drop=ALL`, `no-new-privileges` (no sudo/setuid escalation), RAM-backed tmpfs for all ephemeral writes (`/tmp`, `~/.cache`, `~/.onit`), no host mounts by default, outbound network allowed. Persistent state (pip installs via `PIP_TARGET`, Hugging Face caches, session artifacts) lives on the named `onit-data` volume — never the rootfs. The AST command allowlist (below) is enforced by default inside the container.
 
 **What crosses the boundary:**
 
@@ -457,7 +458,73 @@ Runs OnIt with lifted filesystem restrictions on the host — the agent can read
 onit --unrestricted
 ```
 
-Catastrophic commands (disk wipe, reboot, kernel module loading) are always blocked regardless of this flag.
+Catastrophic commands (disk wipe, reboot, kernel module loading) are always blocked regardless of this flag, and an explicit `ONIT_COMMAND_ALLOWLIST=1` still enforces the AST command allowlist.
+
+### Command Permission Rules
+
+The bash tool honors optional allow/deny rules from `~/.onit/settings.json` (override the path with the `ONIT_SETTINGS` env var). **These rules apply to the web UI only** (`onit serve web`) — web sessions may be reachable by other users, so the configured restrictions must hold there. The local text UI is a trusted terminal session and ignores the default settings file, running with full privileges under the built-in policy. To enforce the rules in the text UI too, point `ONIT_SETTINGS` at the file explicitly. Rules use glob patterns matched against the command; deny always wins, and compound commands (`&&`, `;`, `|`) are checked segment by segment:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(*)"],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(npm install*)",
+      "Bash(pip install*)",
+      "Bash(brew install*)"
+    ]
+  }
+}
+```
+
+- **deny** — commands matching any rule are refused.
+- **allow** — when non-empty, every command (and each segment of a compound command) must match an allow rule. Leave it as `["Bash(*)"]` (or omit it) to only use the deny list.
+
+When active (web UI, or explicit `ONIT_SETTINGS`), rules apply in **all** modes, including `--container` and `--unrestricted`, and file edits take effect without a restart. Non-`Bash(...)` rules are ignored.
+
+### Command Allowlisting (AST-based)
+
+On top of the glob rules, the bash tool can enforce a **command allowlist backed by real shell parsing**: every command string is parsed into an AST (pipelines, `&&`/`||`/`;` lists, loops, subshells, `$(...)`/backtick substitutions, `bash -c` payloads, `find -exec` targets), and **every executable found anywhere in the tree** must be on the allowlist. Wrapper commands (`env`, `nohup`, `timeout`, `nice`, `stdbuf`, `xargs`) are peeled off so they can't hide a payload, and dynamic command names (`$CMD`, `$(which x)`) are rejected outright. The parser **fails closed**: anything it cannot statically analyze (`case` statements, function definitions, arithmetic commands) is blocked.
+
+| Env var | Effect |
+|---|---|
+| `ONIT_COMMAND_ALLOWLIST` | `1` = enforce everywhere, `0` = disable. Unset: enforced inside `--container`, off on the host. |
+| `ONIT_ALLOWED_COMMANDS` | Comma-separated extra executables to allow (e.g. `mytool,deno`). |
+| `ONIT_ALLOW_PACKAGE_INSTALL` | `1` = permit package-manager installs (pinned versions only). Set by `--container-allow-installs`. |
+| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment (default `5`, `0` disables). |
+
+The allowlist can also be extended in `settings.json` (read in the web UI, or when `ONIT_SETTINGS` is set explicitly):
+
+```json
+{
+  "permissions": {
+    "allowedCommands": ["mytool", "deno"]
+  }
+}
+```
+
+**Package managers are blocked by default** under allowlist enforcement. System package managers (`apt`, `yum`, `dnf`, `pacman`, `brew`, `apk`, `snap`) are never allowlisted — in-container the rootfs is read-only anyway. Language package managers (`pip`, `npm`, `gem`, `cargo`, `go`, `uv`, `pipx`) may run non-mutating subcommands (`pip list`, `npm ls`), but `install` requires `ONIT_ALLOW_PACKAGE_INSTALL=1` **and pinned versions**:
+
+```bash
+pip install requests==2.31.0     # OK (with installs enabled)
+pip install requests             # blocked: not pinned
+pip install -r requirements.txt  # blocked: cannot pin-verify
+npm install left-pad@1.3.0       # OK
+npx cowsay@1.5.0                 # OK (pinned one-off execution)
+```
+
+Lockfile-driven installs (`npm ci`, bare `npm install`) are allowed since versions come from the lockfile. `onit-install-ml` (the curated CUDA-matched ML installer) is allowlisted only when installs are enabled.
+
+### Auto-Containment
+
+Policy violations (blocked commands) are counted per server process. When the count reaches `ONIT_CONTAIN_THRESHOLD` (default 5), the bash MCP server **auto-contains**:
+
+- `bash`, `serve start`, `write_file`, `edit_file`, `transform_text`, and `send_file` refuse all further calls;
+- every `serve`-managed background process is stopped;
+- a marker file (`.onit-containment.json`, containing the violation log) is written to the data directory so containment **survives restarts**.
+
+Read-only tools (`read_file`, `search_*`) keep working so the session can be diagnosed. To lift containment, delete the marker file and restart the MCP server.
 
 ## MCP Tool Integration
 

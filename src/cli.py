@@ -676,6 +676,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--container-tmp-size", type=str, default=None,
                         dest="container_tmp_size",
                         help="/tmp tmpfs size inside the container (default: 16g).")
+    parser.add_argument("--container-allow-installs", action="store_true",
+                        default=False, dest="container_allow_installs",
+                        help="Permit package installs inside the container. "
+                             "Installs are still restricted to version-pinned "
+                             "packages (e.g. pip install name==1.2.3).")
 
     # ── External MCP servers ─────────────────────────────────────────────────
     parser.add_argument("--mcp-sse", type=str, action="append", default=None,
@@ -918,6 +923,7 @@ def main():
             memory=getattr(args, 'container_memory', None),
             shm_size=getattr(args, 'container_shm_size', None),
             tmp_size=getattr(args, 'container_tmp_size', None),
+            allow_installs=getattr(args, 'container_allow_installs', False),
         ))
 
     # Setup wizard
@@ -1010,6 +1016,12 @@ def main():
         os.environ['ONIT_UNRESTRICTED'] = '1'
         print("Warning: running in unrestricted mode — agent has full host filesystem access.",
               file=sys.stderr)
+
+    # Web UI mode: enforce ~/.onit/settings.json permission rules in the bash
+    # MCP server. The text UI ignores the default settings file and runs
+    # privileged. Must be set before MCP servers are spawned.
+    if config_data.get('web'):
+        os.environ['ONIT_WEB_UI'] = '1'
 
     if args.target_env:
         bin_path = _resolve_env_bin(args.target_env)

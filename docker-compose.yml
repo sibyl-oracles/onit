@@ -4,10 +4,17 @@ x-onit-hardening: &onit-hardening
   security_opt:
     - no-new-privileges:true
   pids_limit: 256
-  mem_limit: 2g
+  # tmpfs pages are RAM-backed and count against this limit — sized to leave
+  # ~2.5g of headroom for processes with the data tmpfs at its 1g cap.
+  mem_limit: 4g
+  # Read-only rootfs: every writable path is an ephemeral RAM-backed tmpfs.
+  # Session transcripts that must persist are mounted as named volumes per
+  # service (nested inside the /home/onit/.onit tmpfs).
   tmpfs:
     - /tmp:size=64m
     - /home/onit/.cache:size=64m
+    - /home/onit/.onit:size=64m
+    - /home/onit/data:size=1g
 
 x-gpu: &gpu
   deploy:
