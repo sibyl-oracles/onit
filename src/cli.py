@@ -633,6 +633,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=str, default=None,
                         help="Model name to use (e.g. Qwen/Qwen3-30B-A3B-Instruct-2507). "
                              "Skips auto-detection from endpoint.")
+    parser.add_argument("--host2", type=str, default=None,
+                        help="Second LLM serving host URL for load balancing "
+                             "(e.g. another vLLM instance or Ollama cloud). "
+                             "Overrides config and ONIT_HOST2 env var.")
+    parser.add_argument("--model2", type=str, default=None,
+                        help="Model name on the second host. "
+                             "Skips auto-detection from that endpoint.")
+    parser.add_argument("--load-balancer", type=str, default=None,
+                        dest="load_balancer",
+                        choices=["sticky", "round_robin", "random", "least_busy"],
+                        help="Load balancing algorithm across the two hosts "
+                             "(default: sticky — new sessions are assigned "
+                             "round-robin, then each session stays on its "
+                             "host unless a timeout/error fails it over).")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
     parser.add_argument("--think", action="store_true", default=None,
@@ -766,6 +780,12 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         config_data.setdefault('serving', {})['host'] = args.host
     if args.model:
         config_data.setdefault('serving', {})['model'] = args.model
+    if getattr(args, 'host2', None):
+        config_data.setdefault('serving', {})['host2'] = args.host2
+    if getattr(args, 'model2', None):
+        config_data.setdefault('serving', {})['model2'] = args.model2
+    if getattr(args, 'load_balancer', None):
+        config_data.setdefault('serving', {})['load_balancer'] = args.load_balancer
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
     if args.data_path:

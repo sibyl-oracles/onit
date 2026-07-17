@@ -104,6 +104,14 @@ serving:
   # top_k: 20
   # presence_penalty: 1.5
   # repetition_penalty: 1.0
+  # Optional second model server (any mix of vLLM / OpenRouter / Ollama cloud).
+  # By default new sessions are spread across hosts round-robin, then each
+  # session's inference sticks to its host and fails over to the other
+  # only on timeout/error (the failed host cools down for 60s):
+  # host2: http://localhost:8001/v1
+  # host2_key: sk-...              # or ONIT_HOST2_KEY env var / keychain
+  # model2: auto-detected from host2 unless set
+  # load_balancer: sticky          # or: round_robin, random, least_busy
 
 verbose: false
 timeout: 600
@@ -170,7 +178,9 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 
 ### `onit setup`
 
-Interactive setup wizard. Configures the LLM endpoint, API keys, and preferences. Stores settings in `~/.onit/config.yaml` and secrets in the OS keychain.
+Interactive setup wizard. Configures the LLM endpoint (vLLM, OpenRouter, or Ollama — cloud or local), model name, an optional second model server with a load balancing algorithm, API keys, and preferences. Stores settings in `~/.onit/config.yaml` and secrets in the OS keychain.
+
+Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.1:cloud`) or OpenRouter (e.g. `google/gemini-2.5-pro`), where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
 
 ```bash
 onit setup           # run the wizard

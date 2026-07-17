@@ -46,6 +46,7 @@ from .lib.text import remove_tags
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
 from .model.serving.chat import chat
+from .model.serving.balancer import LoadBalancer, ServerEndpoint
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -517,6 +518,7 @@ class OnIt(BaseModel):
     prompt_url: str | None = Field(default=None, exclude=True)
     file_server_url: str | None = Field(default=None, exclude=True)
     chat_ui: Any | None = Field(default=None, exclude=True)
+    load_balancer: Any | None = Field(default=None, exclude=True)
 
     @property
     def sandbox_available(self) -> bool:
@@ -651,6 +653,7 @@ class OnIt(BaseModel):
                     "  - --host CLI flag\n"
                     "  - serving.host in the config YAML"
                 )
+        self._setup_load_balancer()
         self.user_id = self.config_data.get('user_id', 'default_user')
         self.status = "initialized"
         self.verbose = self.config_data.get('verbose', False)
@@ -661,6 +664,46 @@ class OnIt(BaseModel):
             logging.getLogger("type.tools").setLevel(logging.WARNING)
             logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
             logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
+    def _setup_load_balancer(self) -> None:
+        """Build the endpoint load balancer from serving config.
+
+        A single configured host yields a one-endpoint balancer (identical
+        behavior to before). Configuring ``serving.host2`` (or ONIT_HOST2)
+        adds a second model server — any mix of vLLM, OpenRouter, or Ollama
+        cloud — and requests are distributed per ``serving.load_balancer``
+        (round_robin, random, or least_busy). A failing endpoint is cooled
+        down so the other server takes over automatically.
+        """
+        serving = self.model_serving
+        endpoints = [ServerEndpoint(
+            host=serving['host'],
+            host_key=serving.get('host_key', 'EMPTY'),
+            model=serving.get('model'),
+            name='server1',
+        )]
+        host2 = serving.get('host2') or os.environ.get('ONIT_HOST2')
+        if host2 and host2 != serving['host']:
+            host2_key = serving.get('host2_key')
+            if not host2_key:
+                # Env var ONIT_HOST2_KEY or OS keychain; chat() falls back to
+                # provider-specific keys (e.g. OLLAMA_API_KEY) when "EMPTY".
+                try:
+                    from .setup import get_secret
+                    host2_key = get_secret('host2_key')
+                except Exception:
+                    host2_key = None
+            endpoints.append(ServerEndpoint(
+                host=host2,
+                host_key=host2_key or 'EMPTY',
+                model=serving.get('model2'),
+                name='server2',
+            ))
+        self.load_balancer = LoadBalancer(
+            endpoints, serving.get('load_balancer', 'sticky'))
+        if len(endpoints) > 1:
+            print(f"  Load balancing ({self.load_balancer.algorithm}) across: "
+                  f"{', '.join(self.load_balancer.hosts)}")
 
     def _setup_session(self) -> None:
         """Create session ID, session file, and data directory.
@@ -902,19 +945,27 @@ class OnIt(BaseModel):
         for _pt_attempt in range(1, MAX_PROCESS_RETRIES + 1):
             if not effective_safety_queue.empty():
                 break
-            last_response = await chat(
-                host=self.model_serving["host"],
-                host_key=self.model_serving.get("host_key", "EMPTY"),
-                model=self.model_serving.get("model"),
-                instruction=instruction,
-                images=images,
-                tool_registry=self.tool_registry,
-                safety_queue=effective_safety_queue,
-                think=self.model_serving.get("think", False),
-                timeout=self.timeout,
-                **kwargs,
-            )
-            _usable = last_response and remove_tags(last_response).strip()
+            endpoint = self.load_balancer.acquire(key=effective_session_id)
+            _usable = None
+            try:
+                last_response = await chat(
+                    host=endpoint.host,
+                    host_key=endpoint.host_key,
+                    model=endpoint.model,
+                    instruction=instruction,
+                    images=images,
+                    tool_registry=self.tool_registry,
+                    safety_queue=effective_safety_queue,
+                    think=self.model_serving.get("think", False),
+                    timeout=self.timeout,
+                    **kwargs,
+                )
+                _usable = last_response and remove_tags(last_response).strip()
+            finally:
+                # A stop request is not an endpoint failure — don't cool down.
+                self.load_balancer.release(
+                    endpoint,
+                    success=bool(_usable) or not effective_safety_queue.empty())
             if _usable:
                 break
             if _pt_attempt < MAX_PROCESS_RETRIES and effective_safety_queue.empty():
@@ -939,8 +990,8 @@ class OnIt(BaseModel):
 
         if not last_response or not remove_tags(last_response).strip():
             logger.error("chat() returned empty/None after %d retries. "
-                         "Host: %s, Model: auto-detected",
-                         MAX_PROCESS_RETRIES, self.model_serving["host"])
+                         "Hosts: %s, Model: auto-detected",
+                         MAX_PROCESS_RETRIES, ", ".join(self.load_balancer.hosts))
             return "I am sorry \U0001f614. Could you please rephrase your question?"
 
         response = remove_tags(last_response)
@@ -1008,15 +1059,21 @@ class OnIt(BaseModel):
                 for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]
-                last_response = await chat(host=self.model_serving["host"],
-                                            host_key=self.model_serving.get("host_key", "EMPTY"),
-                                            model=self.model_serving.get("model"),
-                                            instruction=instruction,
-                                            tool_registry=self.tool_registry,
-                                            safety_queue=self.safety_queue,
-                                            think=self.model_serving.get("think", False),
-                                            timeout=self.timeout,
-                                            **kwargs)
+                endpoint = self.load_balancer.acquire(key=self.session_id)
+                last_response = None
+                try:
+                    last_response = await chat(host=endpoint.host,
+                                                host_key=endpoint.host_key,
+                                                model=endpoint.model,
+                                                instruction=instruction,
+                                                tool_registry=self.tool_registry,
+                                                safety_queue=self.safety_queue,
+                                                think=self.model_serving.get("think", False),
+                                                timeout=self.timeout,
+                                                **kwargs)
+                finally:
+                    self.load_balancer.release(
+                        endpoint, success=last_response is not None)
 
                 if last_response is not None:
                     elapsed_time = asyncio.get_event_loop().time() - start_time
@@ -1484,18 +1541,26 @@ class OnIt(BaseModel):
                 for attempt in range(1, MAX_AGENT_RETRIES + 1):
                     if not self.safety_queue.empty():
                         break
-                    last_response = await chat(
-                        host=self.model_serving["host"],
-                        host_key=self.model_serving.get("host_key", "EMPTY"),
-                        model=self.model_serving.get("model"),
-                        instruction=instruction,
-                        tool_registry=self.tool_registry,
-                        safety_queue=self.safety_queue,
-                        think=self.model_serving.get("think", False),
-                        timeout=self.timeout,
-                        **kwargs)
-                    # Treat empty/whitespace-only responses as failures too
-                    _usable = last_response and remove_tags(last_response).strip()
+                    endpoint = self.load_balancer.acquire(key=self.session_id)
+                    _usable = None
+                    try:
+                        last_response = await chat(
+                            host=endpoint.host,
+                            host_key=endpoint.host_key,
+                            model=endpoint.model,
+                            instruction=instruction,
+                            tool_registry=self.tool_registry,
+                            safety_queue=self.safety_queue,
+                            think=self.model_serving.get("think", False),
+                            timeout=self.timeout,
+                            **kwargs)
+                        # Treat empty/whitespace-only responses as failures too
+                        _usable = last_response and remove_tags(last_response).strip()
+                    finally:
+                        # A stop request is not an endpoint failure — don't cool down.
+                        self.load_balancer.release(
+                            endpoint,
+                            success=bool(_usable) or not self.safety_queue.empty())
                     if _usable:
                         break
                     if attempt < MAX_AGENT_RETRIES and self.safety_queue.empty():

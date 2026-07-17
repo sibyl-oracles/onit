@@ -20,6 +20,7 @@ Provider is auto-detected from the host URL.
 import asyncio
 import base64
 import logging
+import mimetypes
 import os
 import json
 import re
@@ -452,15 +453,21 @@ def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str |
         return tool_response, None, None
 
     file_data_b64 = data.pop("file_data_base64")
-    mime_type = data.get("mime_type", "application/octet-stream")
+    # Tools are inconsistent about the key: vlm_web uses 'file_name',
+    # bash send_file uses 'filename'.
+    file_name = data.get("file_name") or data.get("filename")
+    mime_type = data.get("mime_type") \
+        or (mimetypes.guess_type(file_name)[0] if file_name else None) \
+        or "application/octet-stream"
 
-    # Pick a sensible extension from the mime type
-    _ext_map = {
-        "image/jpeg": ".jpg", "image/png": ".png",
-        "image/gif": ".gif", "image/webp": ".webp",
-    }
-    ext = _ext_map.get(mime_type, ".bin")
-    file_name = data.get("file_name", f"{uuid.uuid4()}{ext}")
+    if not file_name:
+        # Pick a sensible extension from the mime type
+        _ext_map = {
+            "image/jpeg": ".jpg", "image/png": ".png",
+            "image/gif": ".gif", "image/webp": ".webp",
+        }
+        ext = _ext_map.get(mime_type, ".bin")
+        file_name = f"{uuid.uuid4()}{ext}"
     safe_name = os.path.basename(file_name)
     filepath = os.path.join(data_path, safe_name)
     os.makedirs(data_path, exist_ok=True)

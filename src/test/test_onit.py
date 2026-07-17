@@ -160,6 +160,43 @@ class TestOnItInitialize:
             onit = OnIt(config=cfg)
         assert onit.model_serving["host"] == "http://env-host:8000/v1"
 
+    def test_single_host_yields_one_endpoint_balancer(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.hosts == ["http://localhost:8000/v1"]
+        assert onit.load_balancer.acquire().host == "http://localhost:8000/v1"
+
+    def test_host2_enables_load_balancing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_HOST2_KEY", "sk-second-key")
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["host2"] = "https://api.ollama.com"
+        cfg["serving"]["model2"] = "glm-5.1:cloud"
+        cfg["serving"]["load_balancer"] = "least_busy"
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        lb = onit.load_balancer
+        assert lb.algorithm == "least_busy"
+        assert lb.hosts == ["http://localhost:8000/v1", "https://api.ollama.com"]
+        second = lb.endpoints[1]
+        assert second.host_key == "sk-second-key"
+        assert second.model == "glm-5.1:cloud"
+
+    def test_host2_from_env_var(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_HOST2", "http://gpu2:8000/v1")
+        cfg = _make_config(tmp_path)
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.hosts == [
+            "http://localhost:8000/v1", "http://gpu2:8000/v1"]
+
+    def test_duplicate_host2_ignored(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["host2"] = cfg["serving"]["host"]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert len(onit.load_balancer.endpoints) == 1
+
     def test_session_path_created(self, tmp_path):
         cfg = _make_config(tmp_path)
         with _mock_discover():
