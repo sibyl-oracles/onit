@@ -547,11 +547,13 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     """
     # Inject session_id / data_path into tool calls whose schema declares
     # these parameters, so callers (e.g. sandbox MCP servers) receive them
-    # automatically without hardcoding tool names.
+    # automatically without hardcoding tool names. These are trust boundaries:
+    # servers scope filesystem access to the session's data_path, so the
+    # harness value must always win over anything the model put in the call.
     if session_id and tool_registry.tool_accepts_param(function_name, "session_id"):
-        function_arguments.setdefault("session_id", session_id)
+        function_arguments["session_id"] = session_id
     if data_path and tool_registry.tool_accepts_param(function_name, "data_path"):
-        function_arguments.setdefault("data_path", data_path)
+        function_arguments["data_path"] = data_path
     # Intercept sandbox_download_file for /workspace/ paths.  The container
     # volume-mounts data_path as /workspace, so those files already exist on
     # the host — no need to call the remote server (which may be containerized

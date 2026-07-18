@@ -55,8 +55,9 @@ DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
 # Optional read-only documents directory (set via options['documents_path'])
 DOCUMENTS_PATH = None
 
-# Cached index instance, keyed by its directory so DATA_PATH changes take effect
-_INDEX: Optional[LocalSearchIndex] = None
+# Cached index instances, keyed by index directory so DATA_PATH changes and
+# per-session jail roots each get their own index
+_INDEXES: dict[str, LocalSearchIndex] = {}
 
 
 def _validate_required(**kwargs) -> str:
@@ -77,13 +78,35 @@ def _in_container() -> bool:
     return os.environ.get("ONIT_CONTAINER") == "1"
 
 
-def _validate_corpus_path(dir_path: str) -> str:
-    """Validate that the corpus directory is within DATA_PATH or DOCUMENTS_PATH.
+def _session_base(data_path: str | None = None) -> str:
+    """Resolve the jail root for a tool call.
+
+    ``data_path`` is the session working directory injected by the OnIt
+    harness (it overwrites any model-supplied value, so it is trusted). It
+    must live inside the server-wide DATA_PATH so one session cannot index or
+    search a sibling session's folder. Falls back to DATA_PATH when absent."""
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not data_path:
+        return abs_data
+    base = os.path.realpath(os.path.expanduser(data_path))
+    if _in_container():
+        return base
+    if base != abs_data and not base.startswith(abs_data + os.sep):
+        raise ValueError(
+            f"data_path must be within the server data directory {abs_data}. "
+            f"Got: {base}"
+        )
+    return base
+
+
+def _validate_corpus_path(dir_path: str, base: str | None = None) -> str:
+    """Validate that the corpus directory is within the jail root (the
+    per-session ``base`` when given, else DATA_PATH) or DOCUMENTS_PATH.
     Returns absolute path. Raises ValueError if outside allowed directories."""
     abs_path = os.path.realpath(os.path.expanduser(dir_path))
     if _in_container():
         return abs_path
-    allowed = [os.path.realpath(os.path.expanduser(DATA_PATH))]
+    allowed = [base or os.path.realpath(os.path.expanduser(DATA_PATH))]
     if DOCUMENTS_PATH:
         allowed.append(os.path.realpath(os.path.expanduser(DOCUMENTS_PATH)))
     for root in allowed:
@@ -94,21 +117,23 @@ def _validate_corpus_path(dir_path: str) -> str:
     )
 
 
-def _index_dir() -> str:
-    return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "local_search")
+def _index_dir(base: str | None = None) -> str:
+    root = base or os.path.abspath(os.path.expanduser(DATA_PATH))
+    return os.path.join(root, "local_search")
 
 
-def _get_index() -> LocalSearchIndex:
-    global _INDEX
-    index_dir = _index_dir()
-    if _INDEX is None or _INDEX.index_dir != index_dir:
-        _INDEX = LocalSearchIndex(index_dir)
-    return _INDEX
+def _get_index(base: str | None = None) -> LocalSearchIndex:
+    # One cached index per directory so interleaved sessions don't evict
+    # each other's in-memory index.
+    index_dir = _index_dir(base)
+    if index_dir not in _INDEXES:
+        _INDEXES[index_dir] = LocalSearchIndex(index_dir)
+    return _INDEXES[index_dir]
 
 
-def _default_corpus() -> Optional[str]:
-    """Default corpus directory: DOCUMENTS_PATH when set, else DATA_PATH."""
-    root = DOCUMENTS_PATH or DATA_PATH
+def _default_corpus(base: str | None = None) -> Optional[str]:
+    """Default corpus directory: DOCUMENTS_PATH when set, else the jail root."""
+    root = DOCUMENTS_PATH or base or DATA_PATH
     root = os.path.realpath(os.path.expanduser(root))
     return root if os.path.isdir(root) else None
 
@@ -120,15 +145,17 @@ def _index_documents_impl(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     status_only: bool = False,
+    data_path: str = "",
 ) -> str:
     """Core index_documents implementation."""
     try:
-        index = _get_index()
+        base = _session_base(data_path)
+        index = _get_index(base)
 
         if status_only:
             return json.dumps({**index.status(), "status": "success"}, indent=2)
 
-        corpus = _validate_corpus_path(path) if path else _default_corpus()
+        corpus = _validate_corpus_path(path, base=base) if path else _default_corpus(base)
         if not corpus or not os.path.isdir(corpus):
             return json.dumps({
                 "error": f"Corpus directory not found: {path or corpus}. "
@@ -151,6 +178,7 @@ def _local_search_impl(
     top_k: int = 5,
     method: str = "hybrid",
     path: Optional[str] = None,
+    data_path: str = "",
 ) -> str:
     """Core local_search implementation."""
     if err := _validate_required(query=query):
@@ -161,11 +189,12 @@ def _local_search_impl(
             "status": "error"
         })
     try:
-        index = _get_index()
+        base = _session_base(data_path)
+        index = _get_index(base)
 
         # Auto-ingest on first use (or refresh an explicit corpus path)
         if path or not index.chunks:
-            corpus = _validate_corpus_path(path) if path else _default_corpus()
+            corpus = _validate_corpus_path(path, base=base) if path else _default_corpus(base)
             if corpus and os.path.isdir(corpus):
                 index.index_directory(corpus, recursive=True)
 
@@ -220,11 +249,12 @@ total_documents, total_chunks, embedding_model, status}"""
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         status_only: bool = False,
+        data_path: str = "",
     ) -> str:
         return _index_documents_impl(
             path=path, recursive=recursive, rebuild=rebuild,
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-            status_only=status_only,
+            status_only=status_only, data_path=data_path,
         )
 
     @mcp.tool(
@@ -249,8 +279,10 @@ total_results, total_documents, total_chunks, status}"""
         top_k: int = 5,
         method: str = "hybrid",
         path: Optional[str] = None,
+        data_path: str = "",
     ) -> str:
-        return _local_search_impl(query=query, top_k=top_k, method=method, path=path)
+        return _local_search_impl(query=query, top_k=top_k, method=method, path=path,
+                                  data_path=data_path)
 else:
     # Provide plain function aliases so imports (e.g. from tools/mcp_server.py) still work
     index_documents = _index_documents_impl
@@ -269,7 +301,7 @@ def run(
     options: dict = {}
 ) -> None:
     """Run the MCP server."""
-    global DATA_PATH, DOCUMENTS_PATH, _INDEX
+    global DATA_PATH, DOCUMENTS_PATH
 
     if 'verbose' in options:
         logger.setLevel(logging.INFO)
@@ -286,7 +318,7 @@ def run(
     elif os.environ.get('ONIT_DOCUMENTS_PATH'):
         DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
 
-    _INDEX = None  # Reset cached index in case DATA_PATH changed
+    _INDEXES.clear()  # Reset cached indexes in case DATA_PATH changed
 
     logger.info(f"Starting Local Search MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")

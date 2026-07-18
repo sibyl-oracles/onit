@@ -123,13 +123,35 @@ def _in_container() -> bool:
     return os.environ.get("ONIT_CONTAINER") == "1"
 
 
-def _validate_write_path(file_path: str) -> str:
-    """Validate that the write path is within DATA_PATH. Returns absolute path.
+def _session_base(data_path: str | None = None) -> str:
+    """Resolve the jail root for a tool call.
+
+    ``data_path`` is the session working directory injected by the OnIt
+    harness (it overwrites any model-supplied value, so it is trusted). It
+    must live inside the server-wide DATA_PATH so one session cannot reach a
+    sibling session's folder. Falls back to DATA_PATH when absent."""
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not data_path:
+        return abs_data
+    base = os.path.realpath(os.path.expanduser(data_path))
+    if _in_container():
+        return base
+    if base != abs_data and not base.startswith(abs_data + os.sep):
+        raise ValueError(
+            f"data_path must be within the server data directory {abs_data}. "
+            f"Got: {base}"
+        )
+    return base
+
+
+def _validate_write_path(file_path: str, base: str | None = None) -> str:
+    """Validate that the write path is within the jail root (the per-session
+    ``base`` when given, else DATA_PATH). Returns absolute path.
     Raises ValueError if outside allowed directory."""
     abs_path = os.path.realpath(os.path.expanduser(file_path))
     if _in_container():
         return abs_path
-    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
             f"Write path must be within: {abs_data}. Got: {abs_path}"
@@ -137,13 +159,14 @@ def _validate_write_path(file_path: str) -> str:
     return abs_path
 
 
-def _validate_read_path(file_path: str) -> str:
-    """Validate that the read path is within DATA_PATH. Returns absolute path.
+def _validate_read_path(file_path: str, base: str | None = None) -> str:
+    """Validate that the read path is within the jail root (the per-session
+    ``base`` when given, else DATA_PATH). Returns absolute path.
     Raises ValueError if outside allowed directory."""
     abs_path = os.path.realpath(os.path.expanduser(file_path))
     if _in_container():
         return abs_path
-    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
             f"Read access denied. Path must be within: {abs_data}. Got: {abs_path}"
@@ -151,9 +174,10 @@ def _validate_read_path(file_path: str) -> str:
     return abs_path
 
 
-def _get_media_dir() -> str:
-    """Get the media directory path within DATA_PATH."""
-    return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "media")
+def _get_media_dir(base: str | None = None) -> str:
+    """Get the media directory path within the jail root."""
+    root = base or os.path.abspath(os.path.expanduser(DATA_PATH))
+    return os.path.join(root, "media")
 
 
 def _get_session():
@@ -424,6 +448,7 @@ Args:
 - download_media: Download media files locally (default: False)
 - output_dir: Save location for downloads within data_path folder (default: data_path/media)
 - media_limit: Max files to download (default: 10)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {title, url, content, images, videos, downloaded}"""
 )
@@ -432,7 +457,8 @@ def fetch_content(
     extract_media: bool = True,
     download_media: bool = False,
     output_dir: str = "",
-    media_limit: int = 10
+    media_limit: int = 10,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(url=url):
         return err
@@ -544,7 +570,8 @@ def fetch_content(
 
         # Download media if requested
         if download_media and media["images"]:
-            output_path = _validate_write_path(output_dir) if output_dir else _get_media_dir()
+            base = _session_base(data_path)
+            output_path = _validate_write_path(output_dir, base=base) if output_dir else _get_media_dir(base)
             downloaded = []
             for img_url in media["images"][:media_limit]:
                 dl_result = _download_file(img_url, output_path)
@@ -676,13 +703,15 @@ Args:
 - pdf_path: Path to PDF file within data_path folder or URL (required)
 - output_dir: Directory within data_path folder to save extracted images (default: data_path/pdf_images)
 - min_size: Minimum image dimension in pixels to extract (default: 100)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}"""
 )
 def extract_pdf_images(
     pdf_path: str = None,
     output_dir: str = "",
-    min_size: int = 100
+    min_size: int = 100,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(pdf_path=pdf_path):
         return err
@@ -695,11 +724,12 @@ def extract_pdf_images(
         })
 
     try:
-        # Normalize output directory (default to DATA_PATH/pdf_images)
+        base = _session_base(data_path)
+        # Normalize output directory (default to <jail root>/pdf_images)
         if output_dir:
-            output_path = _validate_write_path(output_dir)
+            output_path = _validate_write_path(output_dir, base=base)
         else:
-            output_path = os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "pdf_images")
+            output_path = os.path.join(base, "pdf_images")
         _secure_makedirs(output_path)
 
         # Handle URL or local path

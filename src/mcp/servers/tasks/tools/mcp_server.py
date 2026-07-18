@@ -77,7 +77,7 @@ def _init_submodules(data_path: str, documents_path: str = None, verbose: bool =
     )
     local_mod.DATA_PATH = data_path
     local_mod.DOCUMENTS_PATH = documents_path
-    local_mod._INDEX = None  # Reset cached index
+    local_mod._INDEXES.clear()  # Reset cached indexes
 
     level = logging.INFO if verbose else logging.ERROR
     bash_mod.logger.setLevel(level)
@@ -125,6 +125,7 @@ Args:
 - download_media: Download media files locally (default: False)
 - output_dir: Save location for downloads within data_path folder (default: data_path/media)
 - media_limit: Max files to download (default: 10)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {title, url, content, images, videos, downloaded}"""
 )
@@ -134,6 +135,7 @@ def fetch_content(
     download_media: bool = False,
     output_dir: str = "",
     media_limit: int = 10,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(url=url):
         return err
@@ -143,6 +145,7 @@ def fetch_content(
         download_media=download_media,
         output_dir=output_dir,
         media_limit=media_limit,
+        data_path=data_path,
     )
 
 
@@ -191,13 +194,15 @@ Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
 - cwd: Working directory — must be within data_path (default: data_path)
 - timeout: Max seconds to wait (default: 300)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}"""
 )
-async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300, ctx: Context = None) -> str:
+async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300,
+               data_path: str = "", ctx: Context = None) -> str:
     if err := _validate_required(command=command):
         return err
-    return await _bash(command=command, cwd=cwd, timeout=timeout, ctx=ctx)
+    return await _bash(command=command, cwd=cwd, timeout=timeout, data_path=data_path, ctx=ctx)
 
 
 @mcp.tool(
@@ -216,6 +221,7 @@ Args:
 - output_format: For "tables" — "json" or "markdown" (default: "json")
 - output_dir: For "images" — directory to save extracted images (default: data_path/pdf_images)
 - min_size: For "images" — minimum image dimension in pixels to extract (default: 100)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON varies by mode:
   text:   {content, path, size_bytes, format, status}
@@ -231,15 +237,18 @@ def read_file(
     output_format: str = "json",
     output_dir: str = "",
     min_size: int = 100,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path):
         return err
     if mode == "text":
-        return _read_file(path=path, encoding=encoding, max_chars=max_chars)
+        return _read_file(path=path, encoding=encoding, max_chars=max_chars, data_path=data_path)
     elif mode == "tables":
-        return _extract_tables(path=path, table_index=table_index, output_format=output_format)
+        return _extract_tables(path=path, table_index=table_index, output_format=output_format,
+                               data_path=data_path)
     elif mode == "images":
-        return _extract_pdf_images(pdf_path=path, output_dir=output_dir, min_size=min_size)
+        return _extract_pdf_images(pdf_path=path, output_dir=output_dir, min_size=min_size,
+                                   data_path=data_path)
     else:
         return json.dumps({"error": f"Unknown mode '{mode}'. Use: text, tables, images", "status": "error"})
 
@@ -263,10 +272,12 @@ def write_file(
     content: Optional[str] = None,
     mode: str = "write",
     encoding: str = "utf-8",
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path, content=content):
         return err
-    return _write_file(path=path, content=content, mode=mode, encoding=encoding)
+    return _write_file(path=path, content=content, mode=mode, encoding=encoding,
+                       data_path=data_path)
 
 
 @mcp.tool(
@@ -288,10 +299,11 @@ def edit_file(
     new_string: Optional[str] = None,
     replace_all: bool = False,
     encoding: str = "utf-8",
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
         return err
-    return _edit_file(path=path, old_string=old_string, new_string=new_string, replace_all=replace_all, encoding=encoding)
+    return _edit_file(path=path, old_string=old_string, new_string=new_string, replace_all=replace_all, encoding=encoding, data_path=data_path)
 
 
 @mcp.tool(
@@ -323,10 +335,12 @@ def serve(
     pid: Optional[int] = None,
     cwd: Optional[str] = None,
     lines: int = 50,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(action=action):
         return err
-    return _serve(action=action, command=command, name=name, pid=pid, cwd=cwd, lines=lines)
+    return _serve(action=action, command=command, name=name, pid=pid, cwd=cwd, lines=lines,
+                  data_path=data_path)
 
 
 
@@ -353,13 +367,14 @@ def grep(
     case_sensitive: bool = False,
     include_hidden: bool = False,
     max_results: int = 100,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path, pattern=pattern):
         return err
     return _search_directory(
         directory=path, pattern=pattern, file_pattern=file_pattern,
         case_sensitive=case_sensitive, include_hidden=include_hidden,
-        max_results=max_results,
+        max_results=max_results, data_path=data_path,
     )
 
 
@@ -376,10 +391,11 @@ Args:
 
 Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}"""
 )
-def send_file(path: Optional[str] = None, callback_url: Optional[str] = None) -> str:
+def send_file(path: Optional[str] = None, callback_url: Optional[str] = None,
+              data_path: str = "") -> str:
     if err := _validate_required(path=path):
         return err
-    return _send_file(path=path, callback_url=callback_url)
+    return _send_file(path=path, callback_url=callback_url, data_path=data_path)
 
 
 # -- GitHub tools --------------------------------------------------------------
@@ -474,6 +490,7 @@ def search_document(
     max_matches: int = 50,
     context_chars: int = 500,
     max_sections: int = 5,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path):
         return err
@@ -483,6 +500,7 @@ def search_document(
         return _search_document(
             path=path, pattern=pattern, case_sensitive=case_sensitive,
             context_lines=context_lines, max_matches=max_matches,
+            data_path=data_path,
         )
     elif mode == "context":
         effective_query = query or pattern
@@ -491,6 +509,7 @@ def search_document(
         return _get_document_context(
             path=path, query=effective_query, keywords=keywords,
             context_chars=context_chars, max_sections=max_sections,
+            data_path=data_path,
         )
     else:
         return json.dumps({"error": f"Unknown mode '{mode}'. Use: pattern, context", "status": "error"})
@@ -531,11 +550,12 @@ total_documents, total_chunks, embedding_model, status}"""
         chunk_size: int = 1600,
         chunk_overlap: int = 200,
         status_only: bool = False,
+        data_path: str = "",
     ) -> str:
         return _index_documents(
             path=path, recursive=recursive, rebuild=rebuild,
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-            status_only=status_only,
+            status_only=status_only, data_path=data_path,
         )
 
     @mcp.tool(
@@ -560,10 +580,12 @@ total_results, total_documents, total_chunks, status}"""
         top_k: int = 5,
         method: str = "hybrid",
         path: Optional[str] = None,
+        data_path: str = "",
     ) -> str:
         if err := _validate_required(query=query):
             return err
-        return _local_search(query=query, top_k=top_k, method=method, path=path)
+        return _local_search(query=query, top_k=top_k, method=method, path=path,
+                             data_path=data_path)
 
 
 # =============================================================================

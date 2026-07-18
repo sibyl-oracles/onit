@@ -151,15 +151,39 @@ def _path_restrictions_relaxed() -> bool:
     return _in_container() or _in_unrestricted()
 
 
-def _validate_write_path(file_path: str) -> str:
-    """Validate that the write path is within DATA_PATH. Returns absolute path.
-    Relative paths are resolved against DATA_PATH (not CWD)."""
+def _session_base(data_path: str | None = None) -> str:
+    """Resolve the jail root for a tool call.
+
+    ``data_path`` is the session working directory injected by the OnIt
+    harness (it overwrites any model-supplied value, so it is trusted). It
+    must live inside the server-wide DATA_PATH; the returned path becomes the
+    boundary for all read/write validation, so one session cannot reach a
+    sibling session's folder. Falls back to the server-wide DATA_PATH when
+    absent (single-user text UI, direct server use)."""
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not data_path:
+        return abs_data
+    base = os.path.realpath(os.path.expanduser(data_path))
+    if _path_restrictions_relaxed():
+        return base
+    if base != abs_data and not base.startswith(abs_data + os.sep):
+        raise ValueError(
+            f"data_path must be within the server data directory {abs_data}. "
+            f"Got: {base}"
+        )
+    return base
+
+
+def _validate_write_path(file_path: str, base: str | None = None) -> str:
+    """Validate that the write path is within the jail root (the per-session
+    ``base`` when given, else DATA_PATH). Returns absolute path.
+    Relative paths are resolved against the jail root (not CWD)."""
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not os.path.isabs(os.path.expanduser(file_path)):
-        file_path = os.path.join(DATA_PATH, file_path)
+        file_path = os.path.join(abs_data, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
     if _path_restrictions_relaxed():
         return abs_path
-    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
             f"Write path must be within the designated data directory: {abs_data}. "
@@ -168,16 +192,17 @@ def _validate_write_path(file_path: str) -> str:
     return abs_path
 
 
-def _validate_read_path(file_path: str) -> str:
-    """Validate that the read path is within DATA_PATH or DOCUMENTS_PATH.
-    Relative paths are resolved against DATA_PATH (not CWD).
+def _validate_read_path(file_path: str, base: str | None = None) -> str:
+    """Validate that the read path is within the jail root (the per-session
+    ``base`` when given, else DATA_PATH) or DOCUMENTS_PATH.
+    Relative paths are resolved against the jail root (not CWD).
     Returns the resolved absolute path. Raises ValueError if outside allowed directories."""
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not os.path.isabs(os.path.expanduser(file_path)):
-        file_path = os.path.join(DATA_PATH, file_path)
+        file_path = os.path.join(abs_data, file_path)
     abs_path = os.path.realpath(os.path.expanduser(file_path))
     if _path_restrictions_relaxed():
         return abs_path
-    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
     if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
         return abs_path
@@ -195,16 +220,17 @@ def _validate_read_path(file_path: str) -> str:
     )
 
 
-def _validate_dir_path(dir_path: str) -> str:
-    """Validate a directory path is within allowed directories.
-    Relative paths are resolved against DATA_PATH (not CWD).
+def _validate_dir_path(dir_path: str, base: str | None = None) -> str:
+    """Validate a directory path is within allowed directories (the
+    per-session ``base`` when given, else DATA_PATH; plus DOCUMENTS_PATH).
+    Relative paths are resolved against the jail root (not CWD).
     Returns resolved absolute path."""
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not os.path.isabs(os.path.expanduser(dir_path)):
-        dir_path = os.path.join(DATA_PATH, dir_path)
+        dir_path = os.path.join(abs_data, dir_path)
     abs_path = os.path.realpath(os.path.expanduser(dir_path))
     if _path_restrictions_relaxed():
         return abs_path
-    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
 
     if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
         return abs_path
@@ -255,10 +281,13 @@ def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
         env["GIT_TERMINAL_PROMPT"] = "0"
 
 
-def _get_sandbox_env() -> dict:
+def _get_sandbox_env(base: str | None = None) -> dict:
     """Build a minimal environment dict for sandboxed shell execution.
     Strips most inherited env vars but preserves HOME and credential-related
     variables so that keyring/keychain tools and credential helpers work.
+
+    When ``base`` (the per-session jail root) is given, TMPDIR and DATA_PATH
+    point inside it so commands scratch in the session's own folder.
 
     In container mode (``ONIT_CONTAINER=1``, set by the Dockerfile) the full
     container env is forwarded — the Dockerfile curates that env (PIP_TARGET,
@@ -268,7 +297,7 @@ def _get_sandbox_env() -> dict:
     """
     global _SANDBOX_ENV
     if _SANDBOX_ENV is not None:
-        return dict(_SANDBOX_ENV)
+        return _apply_session_env(dict(_SANDBOX_ENV), base)
 
     abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
     tmp_dir = os.path.join(abs_data, "tmp")
@@ -292,7 +321,7 @@ def _get_sandbox_env() -> dict:
             env["PATH"] = target_env_bin + os.pathsep + env.get("PATH", "")
         _inject_github_credentials(env, tmp_dir)
         _SANDBOX_ENV = env
-        return dict(env)
+        return _apply_session_env(dict(env), base)
 
     env = {
         "TERM": "dumb",
@@ -361,7 +390,25 @@ def _get_sandbox_env() -> dict:
 
     _inject_github_credentials(env, tmp_dir)
     _SANDBOX_ENV = env
-    return dict(env)
+    return _apply_session_env(dict(env), base)
+
+
+def _apply_session_env(env: dict, base: str | None) -> dict:
+    """Point TMPDIR/DATA_PATH (and Windows TEMP/TMP) at the session jail root
+    so shell scratch files land in the session's own folder."""
+    if not base:
+        return env
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if base == abs_data:
+        return env
+    tmp_dir = os.path.join(base, "tmp")
+    _secure_makedirs(tmp_dir)
+    env["TMPDIR"] = tmp_dir
+    env["DATA_PATH"] = base
+    if IS_WINDOWS:
+        env["TEMP"] = tmp_dir
+        env["TMP"] = tmp_dir
+    return env
 
 
 # Patterns blocked even in unrestricted/container modes (catastrophic ops only).
@@ -467,37 +514,39 @@ _BLOCKED_PATTERNS = [
 _HEREDOC_RE = re.compile(r"""<<-?\s*['"]?(\w+)['"]?\n(?:[^\n]*\n)*?\1\b""")
 
 
-def _exec_shell(command: str, cwd: str, timeout: int) -> subprocess.CompletedProcess:
+def _exec_shell(command: str, cwd: str, timeout: int,
+                base: str | None = None) -> subprocess.CompletedProcess:
     """Run a command in a sandboxed shell, routing through Git Bash on Windows."""
     if IS_WINDOWS and _BASH_EXE:
         return subprocess.run(
             [_BASH_EXE, "-c", command],
             capture_output=True, text=True,
-            cwd=cwd, timeout=timeout, env=_get_sandbox_env()
+            cwd=cwd, timeout=timeout, env=_get_sandbox_env(base)
         )
     return subprocess.run(
         command, shell=True,
         capture_output=True, text=True,
-        cwd=cwd, timeout=timeout, env=_get_sandbox_env()
+        cwd=cwd, timeout=timeout, env=_get_sandbox_env(base)
     )
 
 
 async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
-                                ctx: Context | None = None) -> dict:
+                                ctx: Context | None = None,
+                                base: str | None = None) -> dict:
     """Run a command asynchronously, streaming stdout/stderr lines via ctx.log().
 
     Returns a dict with stdout, stderr, and returncode.
     Falls back to synchronous _exec_shell if ctx is None.
     """
     if ctx is None:
-        result = _exec_shell(command, cwd, timeout)
+        result = _exec_shell(command, cwd, timeout, base=base)
         return {
             "stdout": result.stdout.strip(),
             "stderr": result.stderr.strip(),
             "returncode": result.returncode,
         }
 
-    env = _get_sandbox_env()
+    env = _get_sandbox_env(base)
     if IS_WINDOWS and _BASH_EXE:
         proc = await asyncio.create_subprocess_exec(
             _BASH_EXE, "-c", command,
@@ -828,7 +877,7 @@ def _enter_containment() -> None:
         logger.error(f"Failed to persist containment marker: {e}")
     # Stop everything the serve tool has launched.
     try:
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
         for entry in registry.values():
             if _process_running(entry["pid"]):
                 try:
@@ -859,8 +908,9 @@ def _record_violation(reason: str, command: str) -> None:
         _enter_containment()
 
 
-def _validate_bash_command(command: str) -> str | None:
-    """Check command for blocked patterns and path references outside allowed dirs.
+def _validate_bash_command(command: str, base: str | None = None) -> str | None:
+    """Check command for blocked patterns and path references outside allowed dirs
+    (the per-session ``base`` when given, else DATA_PATH).
     Returns error message or None if command is allowed."""
     check_command = _strip_heredoc_bodies(command)
 
@@ -901,7 +951,7 @@ def _validate_bash_command(command: str) -> str | None:
         return None
 
     # Check for absolute path references outside allowed directories
-    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH)) if DOCUMENTS_PATH else None
 
     # Normalize for comparison (on Windows, realpath uses backslashes)
@@ -972,6 +1022,7 @@ Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
 - cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
 - timeout: Max seconds to wait (default: 300)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
 
@@ -981,6 +1032,7 @@ async def bash(
     command: Optional[str] = None,
     cwd: str = ".",
     timeout: int = DEFAULT_TIMEOUT,
+    data_path: str = "",
     ctx: Context = None,
 ) -> str:
     if err := _validate_required(command=command):
@@ -988,8 +1040,10 @@ async def bash(
     if _is_contained():
         return _containment_error(command)
     try:
+        base = _session_base(data_path)
+
         # Validate command against blocklist and path restrictions
-        if err_msg := _validate_bash_command(command):
+        if err_msg := _validate_bash_command(command, base=base):
             _record_violation(err_msg, command)
             return json.dumps({
                 "error": err_msg,
@@ -998,13 +1052,13 @@ async def bash(
             })
 
         # Validate and normalize working directory
-        # Default to DATA_PATH when cwd is "." (default) to avoid
+        # Default to the session jail root when cwd is "." (default) to avoid
         # rejecting commands when process cwd is outside allowed dirs
         if cwd == ".":
-            cwd = DATA_PATH
+            cwd = base
         work_dir = os.path.abspath(os.path.expanduser(cwd))
         try:
-            work_dir = _validate_dir_path(work_dir)
+            work_dir = _validate_dir_path(work_dir, base=base)
         except ValueError as e:
             return json.dumps({
                 "error": str(e),
@@ -1021,7 +1075,7 @@ async def bash(
         timeout = min(timeout, 300)
 
         # Execute command with streaming output via ctx.log()
-        result = await _exec_shell_streaming(command, work_dir, timeout, ctx=ctx)
+        result = await _exec_shell_streaming(command, work_dir, timeout, ctx=ctx, base=base)
 
         stdout = _truncate_output(result["stdout"])
         stderr = result["stderr"]
@@ -1070,20 +1124,22 @@ Args:
 - path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/report.pdf"). Always use the complete working directory path from your system prompt - never use relative paths.
 - encoding: Text encoding (default: utf-8)
 - max_chars: Max characters to read (default: 100000)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {content, path, size_bytes, format, status} or {path, size_bytes, format, type} for binary files"""
 )
 def read_file(
     path: Optional[str] = None,
     encoding: str = "utf-8",
-    max_chars: int = 100000
+    max_chars: int = 100000,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path):
         return err
     try:
         # Validate path is within allowed directories
-        # (relative paths are resolved against DATA_PATH by _validate_read_path)
-        file_path = _validate_read_path(path)
+        # (relative paths are resolved against the session jail root)
+        file_path = _validate_read_path(path, base=_session_base(data_path))
 
         # Check if file exists
         if not os.path.isfile(file_path):
@@ -1278,6 +1334,7 @@ Args:
 - content: Text content to write (required)
 - mode: "write" (overwrite) or "append" (add to end) (default: "write")
 - encoding: Text encoding (default: utf-8)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {path, size_bytes, mode, status}"""
 )
@@ -1285,14 +1342,16 @@ def write_file(
     path: Optional[str] = None,
     content: Optional[str] = None,
     mode: str = "write",
-    encoding: str = "utf-8"
+    encoding: str = "utf-8",
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path, content=content):
         return err
     if _is_contained():
         return _containment_error()
     try:
-        file_path = _validate_write_path(_normalize_to_data_path(path))
+        base = _session_base(data_path)
+        file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
 
         # Create directory with owner-only permissions
         _secure_makedirs(os.path.dirname(file_path))
@@ -1324,19 +1383,20 @@ def write_file(
         })
 
 
-def _normalize_to_data_path(path: str) -> str:
-    """Resolve path into DATA_PATH: relative paths are placed under it; absolute
-    paths outside it are re-rooted under it (strips leading separator).
+def _normalize_to_data_path(path: str, base: str | None = None) -> str:
+    """Resolve path into the jail root (the per-session ``base`` when given,
+    else DATA_PATH): relative paths are placed under it; absolute paths
+    outside it are re-rooted under it (strips leading separator).
 
     In container/unrestricted mode we don't re-root — absolute paths are
     honored as-is so the agent can reach any visible location.
     """
     expanded = os.path.expanduser(path)
+    abs_data = base or os.path.abspath(os.path.expanduser(DATA_PATH))
     if _path_restrictions_relaxed():
         if os.path.isabs(expanded):
             return os.path.abspath(expanded)
-        return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), expanded)
-    abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
+        return os.path.join(abs_data, expanded)
     if not os.path.isabs(expanded) or not os.path.abspath(expanded).startswith(abs_data):
         return os.path.join(abs_data, expanded.lstrip(os.sep))
     return os.path.abspath(expanded)
@@ -1375,6 +1435,7 @@ Args:
 - new_string: The replacement string
 - replace_all: Replace every occurrence of old_string (default: false, replaces first occurrence only)
 - encoding: Text encoding (default: utf-8)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {path, replacements, status}"""
 )
@@ -1384,13 +1445,15 @@ def edit_file(
     new_string: Optional[str] = None,
     replace_all: bool = False,
     encoding: str = "utf-8",
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
         return err
     if _is_contained():
         return _containment_error()
     try:
-        file_path = _validate_write_path(_normalize_to_data_path(path))
+        base = _session_base(data_path)
+        file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
 
         if not os.path.isfile(file_path):
             return json.dumps({"error": f"File not found: {file_path}", "path": path, "status": "error"})
@@ -1426,12 +1489,15 @@ def edit_file(
 _SERVE_REGISTRY_FILE = "serve_registry.json"
 
 
-def _serve_registry_path() -> str:
-    return os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), _SERVE_REGISTRY_FILE)
+def _serve_registry_path(base: str | None = None) -> str:
+    # The registry lives in the session jail root so one session cannot see
+    # or stop another session's processes.
+    root = base or os.path.abspath(os.path.expanduser(DATA_PATH))
+    return os.path.join(root, _SERVE_REGISTRY_FILE)
 
 
-def _load_serve_registry() -> dict:
-    path = _serve_registry_path()
+def _load_serve_registry(base: str | None = None) -> dict:
+    path = _serve_registry_path(base)
     if os.path.isfile(path):
         try:
             with open(path, "r") as f:
@@ -1441,8 +1507,8 @@ def _load_serve_registry() -> dict:
     return {}
 
 
-def _save_serve_registry(registry: dict):
-    path = _serve_registry_path()
+def _save_serve_registry(registry: dict, base: str | None = None):
+    path = _serve_registry_path(base)
     _secure_makedirs(os.path.dirname(path))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -1524,6 +1590,7 @@ Args:
 - pid     : Process ID — alternative to name for stop/status/logs
 - cwd     : Working directory for the process (default: DATA_PATH). Can be any accessible directory.
 - lines   : Number of log lines to return for "logs" action (default: 50)
+- data_path : Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON with process details and, for "logs", stdout/stderr tail."""
 )
@@ -1534,9 +1601,15 @@ def serve(
     pid: Optional[int] = None,
     cwd: Optional[str] = None,
     lines: int = 50,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(action=action):
         return err
+
+    try:
+        base = _session_base(data_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e), "status": "error"})
 
     action = action.lower().strip()
 
@@ -1561,12 +1634,12 @@ def serve(
                 "status": "blocked"
             })
 
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
 
         # Auto-generate name from command if not provided
         if not name:
-            base = command.split()[0].split("/")[-1]
-            name = f"{base}-{int(time.time())}"
+            cmd_word = command.split()[0].split("/")[-1]
+            name = f"{cmd_word}-{int(time.time())}"
 
         # Reject if already running
         if name in registry and _process_running(registry[name]["pid"]):
@@ -1578,12 +1651,12 @@ def serve(
             })
 
         # Resolve cwd — allow any accessible directory (servers live outside DATA_PATH)
-        work_dir = os.path.abspath(os.path.expanduser(cwd)) if cwd else os.path.abspath(os.path.expanduser(DATA_PATH))
+        work_dir = os.path.abspath(os.path.expanduser(cwd)) if cwd else base
         if not os.path.isdir(work_dir):
             return json.dumps({"error": f"Working directory not found: {work_dir}", "status": "error"})
 
-        # Create log directory under DATA_PATH
-        log_dir = os.path.join(os.path.abspath(os.path.expanduser(DATA_PATH)), "serve_logs", name)
+        # Create log directory under the session jail root
+        log_dir = os.path.join(base, "serve_logs", name)
         _secure_makedirs(log_dir)
         stdout_log = os.path.join(log_dir, "stdout.log")
         stderr_log = os.path.join(log_dir, "stderr.log")
@@ -1617,7 +1690,7 @@ def serve(
                 "stdout_log": stdout_log,
                 "stderr_log": stderr_log,
             }
-            _save_serve_registry(registry)
+            _save_serve_registry(registry, base)
 
             return json.dumps({
                 "name": name,
@@ -1634,7 +1707,7 @@ def serve(
 
     # ── STOP ───────────────────────────────────────────────────────────
     elif action == "stop":
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
         entry = None
 
         if name and name in registry:
@@ -1660,7 +1733,7 @@ def serve(
 
     # ── STATUS ─────────────────────────────────────────────────────────
     elif action == "status":
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
         entry = None
 
         if name and name in registry:
@@ -1686,7 +1759,7 @@ def serve(
 
     # ── LOGS ───────────────────────────────────────────────────────────
     elif action == "logs":
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
         entry = None
 
         if name and name in registry:
@@ -1712,7 +1785,7 @@ def serve(
 
     # ── LIST ───────────────────────────────────────────────────────────
     elif action == "list":
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
         if not registry:
             return json.dumps({"processes": [], "total": 0, "status": "ok"})
 
@@ -1733,13 +1806,13 @@ def serve(
                 dirty = True
 
         if dirty:
-            _save_serve_registry(registry)
+            _save_serve_registry(registry, base)
 
         return json.dumps({"processes": processes, "total": len(processes), "status": "ok"}, indent=2)
 
     # ── RESTART ────────────────────────────────────────────────────────
     elif action == "restart":
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(base)
 
         if not name:
             return json.dumps({"error": "name is required for restart.", "status": "error"})
@@ -1766,6 +1839,7 @@ def serve(
             name=name,
             cwd=cwd or saved_cwd,
             lines=lines,
+            data_path=data_path,
         )
 
     else:
@@ -1791,12 +1865,14 @@ Otherwise, returns the file content as base64-encoded data (max 10MB).
 Args:
 - path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/file.pdf"). Always use the complete working directory path - never use relative paths. (required)
 - callback_url: Full upload URL prefix (e.g., "http://host:9000/uploads/session_id"). File is POSTed to {callback_url}/ (optional)
+- data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}"""
 )
 def send_file(
     path: Optional[str] = None,
-    callback_url: Optional[str] = None
+    callback_url: Optional[str] = None,
+    data_path: str = "",
 ) -> str:
     if err := _validate_required(path=path):
         return err
@@ -1804,8 +1880,8 @@ def send_file(
         return _containment_error()
     try:
         # Validate path is within allowed directories
-        # (relative paths are resolved against DATA_PATH by _validate_read_path)
-        file_path = _validate_read_path(path)
+        # (relative paths are resolved against the session jail root)
+        file_path = _validate_read_path(path, base=_session_base(data_path))
 
         if not os.path.isfile(file_path):
             return json.dumps({"error": f"File not found: {file_path}", "path": path})
@@ -1871,14 +1947,15 @@ def send_file(
 MAX_CONTEXT_LINES = 5
 
 
-def _run_command(command: str, cwd: str = ".", timeout: int = 60) -> Dict[str, Any]:
+def _run_command(command: str, cwd: str = ".", timeout: int = 60,
+                 base: str | None = None) -> Dict[str, Any]:
     """Execute a shell command and return results."""
     try:
         work_dir = os.path.abspath(os.path.expanduser(cwd))
         if not os.path.isdir(work_dir):
             return {"error": f"Directory does not exist: {work_dir}", "status": "error"}
 
-        result = _exec_shell(command, work_dir, timeout)
+        result = _exec_shell(command, work_dir, timeout, base=base)
 
         return {
             "stdout": result.stdout.strip(),
@@ -1923,12 +2000,14 @@ def search_document(
     pattern: Annotated[Optional[str], Field(description="Regex search pattern to find in the document (e.g., 'error.*timeout', 'subjects')")] = None,
     case_sensitive: Annotated[bool, Field(description="Whether search is case-sensitive")] = False,
     context_lines: Annotated[int, Field(description="Number of lines of context before/after each match")] = 3,
-    max_matches: Annotated[int, Field(description="Maximum number of matches to return")] = 50
+    max_matches: Annotated[int, Field(description="Maximum number of matches to return")] = 50,
+    data_path: Annotated[str, Field(description="Session working directory — set automatically by the harness; leave unset")] = ""
 ) -> str:
+    base = _session_base(data_path)
     return search_document_impl(
         path=path, pattern=pattern, case_sensitive=case_sensitive,
         context_lines=context_lines, max_matches=max_matches,
-        validate_read_path=_validate_read_path,
+        validate_read_path=lambda p: _validate_read_path(p, base=base),
     )
 
 
@@ -1958,16 +2037,18 @@ def search_directory(
     file_pattern: str = "*",
     case_sensitive: bool = False,
     include_hidden: bool = False,
-    max_results: int = 100
+    max_results: int = 100,
+    data_path: str = "",
 ) -> str:
+    base = _session_base(data_path)
     # Pre-resolve before validation (bash server convention)
     resolved = os.path.abspath(os.path.expanduser(directory)) if directory else directory
     return search_directory_impl(
         directory=resolved, pattern=pattern, file_pattern=file_pattern,
         case_sensitive=case_sensitive, include_hidden=include_hidden,
         max_results=max_results,
-        validate_dir_path=_validate_dir_path,
-        run_command=_run_command,
+        validate_dir_path=lambda p: _validate_dir_path(p, base=base),
+        run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
     )
 
 
@@ -1991,11 +2072,13 @@ Each table includes: {headers, rows, row_count, page (for PDF)}"""
 def extract_tables(
     path: Optional[str] = None,
     table_index: Optional[int] = None,
-    output_format: str = "json"
+    output_format: str = "json",
+    data_path: str = "",
 ) -> str:
+    base = _session_base(data_path)
     return extract_tables_impl(
         path=path, table_index=table_index, output_format=output_format,
-        validate_read_path=_validate_read_path,
+        validate_read_path=lambda p: _validate_read_path(p, base=base),
     )
 
 
@@ -2026,16 +2109,19 @@ def find_files(
     max_depth: Optional[int] = None,
     size_filter: Optional[str] = None,
     modified_days: Optional[int] = None,
-    max_results: int = 100
+    max_results: int = 100,
+    data_path: str = "",
 ) -> str:
-    # Pre-resolve before validation (bash server convention)
-    resolved = os.path.abspath(os.path.expanduser(directory))
+    base = _session_base(data_path)
+    # Default "." to the session jail root, then pre-resolve before
+    # validation (bash server convention)
+    resolved = base if directory == "." else os.path.abspath(os.path.expanduser(directory))
     return find_files_impl(
         directory=resolved, name_pattern=name_pattern, file_type=file_type,
         max_depth=max_depth, size_filter=size_filter, modified_days=modified_days,
         max_results=max_results,
-        validate_dir_path=_validate_dir_path,
-        run_command=_run_command,
+        validate_dir_path=lambda p: _validate_dir_path(p, base=base),
+        run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
     )
 
 
@@ -2063,20 +2149,23 @@ def transform_text(
     input_text: Optional[str] = None,
     operation: Optional[str] = None,
     expression: Optional[str] = None,
-    is_file: bool = False
+    is_file: bool = False,
+    data_path: str = "",
 ) -> str:
     if _is_contained():
         return _containment_error()
 
+    base = _session_base(data_path)
+
     # Pre-resolve file path before validation (bash server convention)
     def _bash_validate_read_path(p: str) -> str:
-        return _validate_read_path(os.path.abspath(os.path.expanduser(p)))
+        return _validate_read_path(os.path.abspath(os.path.expanduser(p)), base=base)
 
     return transform_text_impl(
         input_text=input_text, operation=operation, expression=expression,
-        is_file=is_file, data_path=DATA_PATH,
+        is_file=is_file, data_path=base,
         validate_read_path=_bash_validate_read_path,
-        run_command=_run_command,
+        run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
     )
 
 
@@ -2104,12 +2193,14 @@ def get_document_context(
     query: Optional[str] = None,
     keywords: Optional[str] = None,
     context_chars: int = 500,
-    max_sections: int = 5
+    max_sections: int = 5,
+    data_path: str = "",
 ) -> str:
+    base = _session_base(data_path)
     return get_document_context_impl(
         path=path, query=query, keywords=keywords,
         context_chars=context_chars, max_sections=max_sections,
-        validate_read_path=_validate_read_path,
+        validate_read_path=lambda p: _validate_read_path(p, base=base),
     )
 
 

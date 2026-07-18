@@ -671,3 +671,143 @@ class TestAutoContainment:
             else bash_mod.read_file
         result = json.loads(read_fn(path=str(tmp_path / "readable.txt")))
         assert result["status"] == "success"
+
+
+# ── per-session data_path jail ─────────────────────────────────────────────
+
+
+def _fn(tool):
+    """Unwrap a FastMCP tool to its plain function (newer fastmcp wraps it)."""
+    return tool.fn if hasattr(tool, "fn") else tool
+
+
+class TestSessionIsolation:
+    """A per-call data_path (injected by the harness) confines every tool to
+    that session's folder — one session can never reach a sibling session."""
+
+    @pytest.fixture
+    def sessions(self, tmp_path):
+        a = tmp_path / "session-a"
+        b = tmp_path / "session-b"
+        a.mkdir()
+        b.mkdir()
+        (b / "secret.txt").write_text("s3cret\n")
+        return a, b
+
+    def test_session_base_falls_back_to_data_path(self, tmp_path):
+        assert bash_mod._session_base("") == os.path.realpath(str(tmp_path))
+
+    def test_session_base_accepts_subdir(self, sessions):
+        a, _ = sessions
+        assert bash_mod._session_base(str(a)) == os.path.realpath(str(a))
+
+    def test_session_base_rejects_outside_data_path(self):
+        with pytest.raises(ValueError):
+            bash_mod._session_base("/etc")
+
+    def test_read_path_blocked_across_sessions(self, sessions):
+        a, b = sessions
+        base = bash_mod._session_base(str(a))
+        with pytest.raises(ValueError):
+            _validate_read_path(str(b / "secret.txt"), base=base)
+
+    def test_read_path_allowed_within_own_session(self, sessions):
+        a, _ = sessions
+        (a / "mine.txt").write_text("mine\n")
+        base = bash_mod._session_base(str(a))
+        assert _validate_read_path(str(a / "mine.txt"), base=base)
+
+    def test_read_file_tool_blocked_across_sessions(self, sessions):
+        a, b = sessions
+        result = json.loads(
+            _fn(bash_mod.read_file)(path=str(b / "secret.txt"), data_path=str(a))
+        )
+        assert "content" not in result
+        assert "error" in result
+
+    def test_write_file_tool_cannot_write_into_sibling_session(self, sessions):
+        a, b = sessions
+        result = json.loads(
+            _fn(bash_mod.write_file)(path=str(b / "evil.txt"), content="x", data_path=str(a))
+        )
+        # The sibling path is re-rooted into the caller's own session (or
+        # rejected) — it must never land in session-b.
+        assert not (b / "evil.txt").exists()
+        if result.get("status") == "success":
+            assert result["path"].startswith(os.path.realpath(str(a)) + os.sep)
+
+    def test_find_files_cannot_enumerate_sibling_sessions(self, sessions, tmp_path):
+        a, _ = sessions
+        result = json.loads(
+            _fn(bash_mod.find_files)(directory=str(tmp_path), data_path=str(a))
+        )
+        assert result["status"] == "error"
+
+    def test_search_directory_blocked_across_sessions(self, sessions):
+        a, b = sessions
+        result = json.loads(
+            _fn(bash_mod.search_directory)(directory=str(b), pattern="s3cret", data_path=str(a))
+        )
+        assert result["status"] == "error"
+
+    def test_bash_command_blocked_on_sibling_path(self, sessions):
+        a, b = sessions
+        base = bash_mod._session_base(str(a))
+        err = _validate_bash_command(f"cat {b}/secret.txt", base=base)
+        assert err is not None
+
+    def test_bash_command_allowed_on_own_path(self, sessions):
+        a, _ = sessions
+        base = bash_mod._session_base(str(a))
+        assert _validate_bash_command(f"cat {a}/mine.txt", base=base) is None
+
+    def test_serve_registry_scoped_to_session(self, sessions):
+        a, b = sessions
+        path_a = bash_mod._serve_registry_path(bash_mod._session_base(str(a)))
+        path_b = bash_mod._serve_registry_path(bash_mod._session_base(str(b)))
+        assert path_a != path_b
+        assert path_a.startswith(os.path.realpath(str(a)) + os.sep)
+
+    def test_sandbox_env_scratch_scoped_to_session(self, sessions):
+        a, _ = sessions
+        base = bash_mod._session_base(str(a))
+        env = _get_sandbox_env(base)
+        assert env["TMPDIR"].startswith(os.path.realpath(str(a)) + os.sep)
+        assert env["DATA_PATH"] == os.path.realpath(str(a))
+
+
+class TestHarnessInjectionOverwrite:
+    """The harness-injected data_path/session_id must overwrite any value the
+    model put in the tool call — otherwise a session could name a sibling's
+    folder and bypass the jail."""
+
+    class _Registry:
+        def __init__(self):
+            self.tools = {"write_file": True}
+            self.received = None
+
+        def tool_accepts_param(self, tool_name, param_name):
+            return param_name in ("data_path", "session_id")
+
+        def __getitem__(self, name):
+            async def handler(log_handler=None, **kwargs):
+                self.received = dict(kwargs)
+                return "ok"
+            return handler
+
+    def test_injected_values_overwrite_model_supplied(self):
+        import asyncio
+        from src.model.serving.chat import _execute_tool
+
+        registry = self._Registry()
+        args = {"path": "x.txt", "data_path": "/tmp/other-users-session",
+                "session_id": "someone-else"}
+        asyncio.run(_execute_tool(
+            "write_file", args, "call-1", registry,
+            timeout=5, data_path="/tmp/trusted-session",
+            chat_ui=None, verbose=False, messages=[],
+            tool_call_history=[], max_repeated=5,
+            session_id="trusted-session",
+        ))
+        assert registry.received["data_path"] == "/tmp/trusted-session"
+        assert registry.received["session_id"] == "trusted-session"

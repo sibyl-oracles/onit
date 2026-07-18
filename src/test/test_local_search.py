@@ -61,7 +61,7 @@ def search_env(tmp_path, corpus, monkeypatch):
     data.mkdir()
     monkeypatch.setattr(local_mod, "DATA_PATH", str(data))
     monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(corpus))
-    monkeypatch.setattr(local_mod, "_INDEX", None)
+    monkeypatch.setattr(local_mod, "_INDEXES", {})
     monkeypatch.delenv("ONIT_EMBEDDING_HOST", raising=False)
     monkeypatch.delenv("ONIT_EMBEDDING_MODEL", raising=False)
     return data
