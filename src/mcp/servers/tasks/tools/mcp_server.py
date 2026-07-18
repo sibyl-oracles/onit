@@ -94,6 +94,7 @@ def _init_submodules(data_path: str, documents_path: str = None, verbose: bool =
 # -- Web Search tools (4) --------------------------------------------------
 
 from src.mcp.servers.tasks.web.search.mcp_server import (
+    SEARCH_TOOL_DESCRIPTION,
     search as _search,
     fetch_content as _fetch_content,
     get_weather as _get_weather,
@@ -106,15 +107,7 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
 if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
     @mcp.tool(
         title="Search the Web",
-        description="""Search the web for news or general information. Web search uses the
-    Ollama web search API with DuckDuckGo fallback; news search uses DuckDuckGo.
-
-    Args:
-    - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
-    - type: "news" for recent news, "web" for general search (default: "web")
-    - max_results: Number of results (default: 5, max: 10)
-
-    Returns JSON: [{title, snippet, url, source, date}]"""
+        description=SEARCH_TOOL_DESCRIPTION
     )
     def search(query: Optional[str] = None, type: str = "web", max_results: int = 5) -> str:
         if err := _validate_required(query=query):

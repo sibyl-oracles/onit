@@ -385,19 +385,23 @@ def _search_impl(
         return json.dumps({"error": f"Search failed: {str(e)}"})
 
 
+# Shared with the unified ToolsMCPServer re-registration (tools/mcp_server.py)
+SEARCH_TOOL_DESCRIPTION = """Search the web for news or general information. Web search uses the
+Ollama web search API with DuckDuckGo fallback; news search uses DuckDuckGo.
+
+Args:
+- query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
+- type: "news" for recent news, "web" for general search (default: "web")
+- max_results: Number of results (default: 5, max: 10)
+
+Returns JSON: [{title, snippet, url, source, date}]"""
+
+
 # Register as MCP tool only when search is not disabled
 if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
     @mcp.tool(
         title="Search the Web",
-        description="""Search the web for news or general information. Web search uses the
-    Ollama web search API with DuckDuckGo fallback; news search uses DuckDuckGo.
-
-    Args:
-    - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
-    - type: "news" for recent news, "web" for general search (default: "web")
-    - max_results: Number of results (default: 5, max: 10)
-
-    Returns JSON: [{title, snippet, url, source, date}]"""
+        description=SEARCH_TOOL_DESCRIPTION
     )
     def search(query: str = None, type: str = "web", max_results: int = 5) -> str:
         return _search_impl(query=query, type=type, max_results=max_results)
