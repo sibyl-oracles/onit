@@ -27,7 +27,7 @@ import re
 import types
 import uuid
 import httpx
-from openai import AsyncOpenAI, OpenAIError, APITimeoutError
+from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
 try:
@@ -167,6 +167,24 @@ async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
     model_id = models.data[0].id
     logger.info("Auto-detected model: %s from %s", model_id, host)
     return model_id
+
+
+async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
+                                     host: str, current_model: str) -> Optional[str]:
+    """After a 404 for the configured model, auto-detect what the host serves.
+
+    A stale ``serving.model``/``model2`` (e.g. after the server was redeployed
+    with a different model) 404s on every request even though the host is up.
+    Returns the detected model name, or None if detection failed or it matches
+    the name that already 404'd.
+    """
+    try:
+        detected = (await _ollama_resolve_model_id(ollama_client, host) if is_ollama
+                    else await _resolve_model_id(client, host))
+    except Exception as e:
+        logger.error("Model fallback auto-detection failed for %s: %s", host, e)
+        return None
+    return detected if detected != current_model else None
 
 
 async def _get_model_max_context(host: str, api_key: str, model: str) -> Optional[int]:
@@ -1542,7 +1560,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         model=model,
                         messages=messages,
                         stream=stream,
-                        tool_choice="required" if (_force_tool_call and tools) else "auto",
                         temperature=temperature,
                         top_p=top_p,
                         max_tokens=_api_max_tokens,
@@ -1550,6 +1567,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     )
                     if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
                         completion_kwargs["tools"] = tools
+                        # vLLM rejects tool_choice when tools is unset, so only
+                        # send it alongside tools.
+                        completion_kwargs["tool_choice"] = "required" if _force_tool_call else "auto"
                     if stream:
                         completion_kwargs["stream_options"] = {"include_usage": True}
                     chat_completion = await _await_with_safety(
@@ -1647,6 +1667,19 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         "Dropping tool_choice=required for retry (possible guided-decoding stall).",
                         chat_ui, verbose, level="warning",
                     )
+            except NotFoundError as e:
+                api_error = f"Model {model!r} not found at {host}: {e}."
+                logger.error(api_error)
+                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
+                _detected = await _autodetect_fallback_model(
+                    client, ollama_client, is_ollama, host, model)
+                if _detected:
+                    model = _detected
+                    if chat_ui:
+                        chat_ui.model_name = model
+                    _log_to_ui_or_verbose(
+                        f"Falling back to auto-detected model: {model}",
+                        chat_ui, verbose, level="warning")
             except OpenAIError as e:
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)

@@ -970,7 +970,8 @@ class OnIt(BaseModel):
                 break
             if _pt_attempt < MAX_PROCESS_RETRIES and effective_safety_queue.empty():
                 kind = "Empty" if last_response is not None else "No"
-                retry_msg = f"{kind} response from model, retrying ({_pt_attempt}/{MAX_PROCESS_RETRIES})..."
+                retry_msg = (f"{kind} response from {endpoint.name or endpoint.host}, "
+                             f"retrying ({_pt_attempt}/{MAX_PROCESS_RETRIES})...")
                 logger.warning(retry_msg)
                 if hasattr(self, 'chat_ui') and self.chat_ui and hasattr(self.chat_ui, 'add_log'):
                     self.chat_ui.add_log(retry_msg, level="warning")
@@ -989,8 +990,8 @@ class OnIt(BaseModel):
                 stats["tokens_per_second"] = _adapter.tokens_per_second
 
         if not last_response or not remove_tags(last_response).strip():
-            logger.error("chat() returned empty/None after %d retries. "
-                         "Hosts: %s, Model: auto-detected",
+            logger.error("chat() returned empty/None after %d retries "
+                         "across hosts: %s",
                          MAX_PROCESS_RETRIES, ", ".join(self.load_balancer.hosts))
             return "I am sorry \U0001f614. Could you please rephrase your question?"
 

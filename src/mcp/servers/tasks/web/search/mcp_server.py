@@ -35,6 +35,7 @@ import re
 import json
 import time
 import hashlib
+import mimetypes
 import tempfile
 import requests
 from typing import Optional
@@ -87,6 +88,16 @@ DEFAULT_MEDIA_DIR = None  # Set in run() based on DATA_PATH
 # Common image extensions
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico'}
 VIDEO_EXTENSIONS = {'.mp4', '.webm', '.ogg', '.mov', '.avi'}
+
+# Preferred extensions for common Content-Types (mimetypes.guess_extension can
+# return oddities like '.jpe' for image/jpeg depending on the platform)
+CONTENT_TYPE_EXTENSIONS = {
+    'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+    'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
+    'application/pdf': '.pdf', 'video/mp4': '.mp4', 'video/webm': '.webm',
+    'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'text/html': '.html',
+    'text/plain': '.txt',
+}
 
 
 def _secure_makedirs(dir_path: str) -> None:
@@ -281,15 +292,6 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
         # Generate filename from URL
         parsed = urlparse(url)
         filename = os.path.basename(parsed.path) or "download"
-        if not os.path.splitext(filename)[1]:
-            # No extension, try to determine from content-type later
-            filename += ".bin"
-
-        # Make filename unique using hash
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-        name, ext = os.path.splitext(filename)
-        filename = f"{name}_{url_hash}{ext}"
-        filepath = os.path.join(output_dir, filename)
 
         # Download
         response = requests.get(url, timeout=timeout, stream=True, headers={
@@ -300,6 +302,18 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
         # Check content type and size
         content_type = response.headers.get('Content-Type', '')
         content_length = response.headers.get('Content-Length')
+
+        if not os.path.splitext(filename)[1]:
+            # No extension in the URL — derive one from the Content-Type
+            ct = content_type.split(';')[0].strip().lower()
+            ext = CONTENT_TYPE_EXTENSIONS.get(ct) or mimetypes.guess_extension(ct) or ".bin"
+            filename += ext
+
+        # Make filename unique using hash
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+        name, ext = os.path.splitext(filename)
+        filename = f"{name}_{url_hash}{ext}"
+        filepath = os.path.join(output_dir, filename)
 
         if content_length and int(content_length) > MAX_SIZE:
             return {"error": f"File too large: {content_length} bytes"}

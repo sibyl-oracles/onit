@@ -545,6 +545,29 @@ MCP servers start automatically. Tools are auto-discovered and available to the 
 | PromptsMCPServer | Prompt templates for instruction generation |
 | ToolsMCPServer | Web search, local search, bash commands, file operations, and document tools |
 
+### Default tools
+
+The ToolsMCPServer registers these tools by default (required parameters in **bold**; defaults in parentheses):
+
+| Tool | Parameters | Purpose |
+|------|------------|---------|
+| `search` | **`query`**, `type` (`web`\|`news`, `web`), `max_results` (5) | Search the web or recent news via DuckDuckGo. Returns title, snippet, URL, source, and date per result. |
+| `fetch_content` | **`url`**, `extract_media` (true), `download_media` (false), `output_dir` (`data_path/media`), `media_limit` (10) | Fetch a URL and extract text, image, and video links. Handles PDFs. Optionally downloads media locally. |
+| `get_weather` | `place` (auto-detect from IP), `forecast` (false) | Current weather and optional 5-day forecast. Requires `OPENWEATHER_API_KEY`. |
+| `bash` | **`command`**, `cwd` (`data_path`), `timeout` (300) | Execute a shell command and capture stdout, stderr, and return code. |
+| `read_file` | **`path`**, `mode` (`text`\|`tables`\|`images`, `text`), `encoding` (utf-8), `max_chars` (100000), `table_index`, `output_format` (`json`), `output_dir`, `min_size` (100) | Read a file, or extract structured tables (PDF/markdown) or embedded images (PDF). |
+| `write_file` | **`path`**, **`content`**, `mode` (`write`\|`append`, `write`), `encoding` (utf-8) | Write content to a file, creating directories as needed. Files get owner-only access. |
+| `edit_file` | **`path`**, **`old_string`**, **`new_string`**, `replace_all` (false), `encoding` (utf-8) | Edit a file by replacing an exact string with new content. |
+| `serve` | **`action`** (`start`\|`stop`\|`status`\|`logs`\|`list`\|`restart`), `command`, `name`, `pid`, `cwd`, `lines` (50) | Manage long-running background processes such as web servers, with log tailing. |
+| `grep` | **`directory`**, **`pattern`**, `file_pattern` (`*`), `case_sensitive` (false), `include_hidden` (false), `max_results` (100) | Recursive regex search across files in a directory. Returns file, line number, and matching content. |
+| `send_file` | **`path`**, `callback_url` | Send a file to a remote client — via HTTP POST when `callback_url` is given, otherwise as base64 (max 10MB). |
+| `github_repo` | **`action`** (`create`\|`get`\|`list`\|`fork`\|`delete`), `name`, `description`, `private` (false), `auto_init` (true), `gitignore_template`, `license_template`, `org`, `per_page` (30) | Create, inspect, list, fork, or delete GitHub repositories. Requires `GITHUB_TOKEN`. |
+| `search_document` | **`path`**, `mode` (`pattern`\|`context`, `pattern`), `pattern`, `query`, `keywords`, `case_sensitive` (false), `context_lines` (3), `max_matches` (50), `context_chars` (500), `max_sections` (5) | Search within a single document (text, PDF, markdown) by regex or by keyword/query relevance. |
+| `index_documents` | `path` (`documents_path`, else `data_path`), `recursive` (true), `rebuild` (false), `chunk_size` (1600), `chunk_overlap` (200), `status_only` (false) | Ingest in-house documents (pdf, md, txt, csv, docx, xlsx) into the local search index. Incremental. |
+| `local_search` | **`query`**, `top_k` (5), `method` (`hybrid`\|`bm25`\|`dense`, `hybrid`), `path` | Search indexed in-house documents. Auto-ingests the default corpus on first use. |
+
+Some tools can be switched off via environment variables: `ONIT_DISABLE_WEB_SEARCH` (removes `search`), `ONIT_DISABLE_WEATHER` (removes `get_weather`), and `ONIT_DISABLE_LOCAL_SEARCH` (removes `index_documents` and `local_search`).
+
 Connect to additional external MCP servers:
 
 ```bash
