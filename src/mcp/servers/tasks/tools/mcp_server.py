@@ -19,7 +19,7 @@ Combines web search, content fetching, weather, bash commands, file I/O,
 document search, and GitHub repository management into a single MCP server.
 
 14 Core Tools:
- 1. search          - Web/news search via DuckDuckGo
+ 1. search          - Web/news search via Ollama web search API (DuckDuckGo fallback)
  2. fetch_content   - Extract text, images, videos from URLs
  3. get_weather     - Weather with auto location detection
  4. bash            - Execute shell commands
@@ -106,7 +106,8 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
 if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
     @mcp.tool(
         title="Search the Web",
-        description="""Search the web for news or general information using DuckDuckGo.
+        description="""Search the web for news or general information. Web search uses the
+    Ollama web search API with DuckDuckGo fallback; news search uses DuckDuckGo.
 
     Args:
     - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
@@ -342,7 +343,7 @@ def serve(
 Returns structured results with file path, line number, and matching content.
 
 Args:
-- directory: Directory to search in (required)
+- path: Directory to search in (required)
 - pattern: Regex search pattern (required, e.g., "def train", "TODO", "import.*torch")
 - file_pattern: Glob to filter files (default: "*" for all, e.g., "*.py", "*.md")
 - case_sensitive: Case-sensitive matching (default: false)
@@ -353,17 +354,17 @@ Returns JSON: {results, total_matches, pattern, directory, file_pattern, status}
 Each result includes: {file, line_number, content}"""
 )
 def grep(
-    directory: Optional[str] = None,
+    path: Optional[str] = None,
     pattern: Optional[str] = None,
     file_pattern: str = "*",
     case_sensitive: bool = False,
     include_hidden: bool = False,
     max_results: int = 100,
 ) -> str:
-    if err := _validate_required(directory=directory, pattern=pattern):
+    if err := _validate_required(path=path, pattern=pattern):
         return err
     return _search_directory(
-        directory=directory, pattern=pattern, file_pattern=file_pattern,
+        directory=path, pattern=pattern, file_pattern=file_pattern,
         case_sensitive=case_sensitive, include_hidden=include_hidden,
         max_results=max_results,
     )

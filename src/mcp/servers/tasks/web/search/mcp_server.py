@@ -389,7 +389,8 @@ def _search_impl(
 if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
     @mcp.tool(
         title="Search the Web",
-        description="""Search the web for news or general information using DuckDuckGo.
+        description="""Search the web for news or general information. Web search uses the
+    Ollama web search API with DuckDuckGo fallback; news search uses DuckDuckGo.
 
     Args:
     - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
