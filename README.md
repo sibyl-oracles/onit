@@ -6,7 +6,29 @@ OnIt is an intelligent agent for task automation and assistance. It connects to 
 
 ## Getting Started
 
-### 1. Install
+### 1. Create an environment
+
+OnIt requires **Python 3.10–3.12** (3.12 recommended — it is what the Docker image uses). Install into a dedicated virtual environment so all dependencies resolve to mutually compatible versions, isolated from your system Python and other projects.
+
+**With conda:**
+
+```bash
+conda create -n onit python=3.12 -y
+conda activate onit
+```
+
+**With uv:**
+
+```bash
+uv venv ~/.venvs/onit --python 3.12
+source ~/.venvs/onit/bin/activate
+```
+
+(uv downloads the requested Python automatically if it is not installed. With uv, you can also prefix the pip commands below as `uv pip install ...` for much faster resolution.)
+
+Activate the environment before every `pip install` and `onit` command below, and whenever you return to OnIt in a new shell.
+
+### 2. Install
 
 ```bash
 pip install onit
@@ -26,7 +48,9 @@ To update an existing source install and upgrade all dependencies to their lates
 pip install -e '.[all]' -U --upgrade-strategy eager
 ```
 
-### 2. Setup
+If dependencies ever end up in a conflicting state (e.g. after many upgrades), the clean fix is to recreate the environment: `conda remove -n onit --all` (or delete the uv venv directory), then repeat steps 1–2.
+
+### 3. Setup
 
 ```bash
 onit setup
@@ -40,13 +64,17 @@ To review your configuration at any time:
 onit setup --show
 ```
 
-### 3. Run
+### 4. Run
 
 ```bash
 onit
 ```
 
 That's it. MCP tools start automatically, and you get an interactive chat with tool access.
+
+### Prefer Docker?
+
+Add `--container` to any command to run OnIt inside a hardened Docker container (`onit --container`, `onit --container serve web`, …) — the image is built automatically on first use. To skip the host install entirely, build and run the image directly, or bring up the full HTTPS-terminated stack with `docker compose up -d --build`. See [docs/DOCKER.md](docs/DOCKER.md) for prerequisites, `docker run` examples, GPU pass-through, and persistence.
 
 ## CLI at a Glance
 
@@ -827,7 +855,7 @@ onit/
 
 - [Gateway Quick Start](docs/GATEWAY_QUICK_START.md) — Telegram and Viber bot setup
 - [Testing](docs/TESTING.md) — Running the test suite
-- [Docker](docs/DOCKER.md) — Docker and Docker Compose setup
+- [Docker](docs/DOCKER.md) — Container setup: `--container` launcher, manual `docker run`, Compose stack, GPU pass-through, troubleshooting
 - [Web Authentication](docs/WEB_AUTHENTICATION.md) — Web UI authentication reference
 - [Web Deployment](docs/DEPLOYMENT_WEB.md) — Production deployment with HTTP/HTTPS
 - [HTTPS with docker-compose](docs/HTTPS_DEPLOYMENT.md) — Built-in Caddy TLS, free Let's Encrypt certificates, persistent data path, post-install smoke tests
