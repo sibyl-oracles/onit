@@ -823,9 +823,10 @@ class WebApiUI:
                 # 404, not 403 — don't confirm someone else's session exists
                 return JSONResponse({"detail": "Session not found"}, status_code=404)
             session = self._web_sessions.pop(session_id, None)
-            if session and session.data_path:
-                shutil.rmtree(session.data_path, ignore_errors=True)
-                _remove_session_zip(session.data_path)
+            data_path = (session.data_path if session and session.data_path
+                         else os.path.join(self.data_path, session_id))
+            shutil.rmtree(data_path, ignore_errors=True)
+            _remove_session_zip(data_path)
             _delete_session_index(session_id, sessions_dir=self._sessions_dir())
             return {"deleted": True}
 

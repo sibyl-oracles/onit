@@ -361,10 +361,21 @@ class TestSessionsEndpoints:
     def test_delete_session(self, client, ui):
         sid, session = ui._get_or_create_session()
         path = session.session_path
+        data_path = session.data_path
         res = client.request("DELETE", f"/api/sessions/{sid}")
         assert res.json()["deleted"] is True
         assert not os.path.exists(path)
+        assert not os.path.isdir(data_path)
         assert sid not in ui._web_sessions
+
+    def test_delete_session_not_in_memory(self, client, ui):
+        # Simulate a server restart: session exists on disk but not in memory
+        sid, session = ui._get_or_create_session()
+        data_path = session.data_path
+        ui._web_sessions.pop(sid)
+        res = client.request("DELETE", f"/api/sessions/{sid}")
+        assert res.json()["deleted"] is True
+        assert not os.path.isdir(data_path)
 
     def test_delete_all_sessions(self, client, ui):
         sid1, s1 = ui._get_or_create_session()
