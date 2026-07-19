@@ -330,7 +330,7 @@
     }
     state.config = config;
     document.title = config.title || "OnIt Chat";
-    el.brandTitle.textContent = "OnIt";
+    el.brandTitle.textContent = config.brand || "OnIt";
     el.topbarTitle.textContent = config.title || "";
     el.loginTitle.textContent = config.title || "OnIt Chat";
 

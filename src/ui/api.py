@@ -79,6 +79,12 @@ except ImportError:
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+# Default web UI branding. Inside the docker deployment (ONIT_CONTAINER=1)
+# the serving domain replaces it unless the operator set a custom web_title.
+DEFAULT_TITLE = "OnIt Chat"
+DEFAULT_BRAND = "OnIt"
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+
 # Pattern for validating session IDs (UUIDs only)
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
@@ -163,7 +169,7 @@ class WebApiUI:
         google_client_secret: Optional[str] = None,
         allowed_emails: Optional[list[str]] = None,
         session_path: Optional[str] = None,
-        title: str = "OnIt Chat",
+        title: str = DEFAULT_TITLE,
         verbose: bool = False,
         require_auth: bool = True,
     ) -> None:
@@ -661,8 +667,10 @@ class WebApiUI:
         @app.get("/api/config")
         async def api_config(request: Request):
             email = self._auth_email(request) if self.auth_enabled else None
+            title, brand = self._branding(request)
             return {
-                "title": self.title,
+                "title": title,
+                "brand": brand,
                 "agent": self.agent_cursor,
                 "auth_enabled": self.auth_enabled,
                 "authenticated": bool(email) or not self.auth_enabled,
@@ -893,6 +901,25 @@ class WebApiUI:
 
         if os.path.isdir(STATIC_DIR):
             app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    def _branding(self, request: Request) -> tuple[str, str]:
+        """(title, brand) shown by the SPA — page/login title and the sidebar
+        name. In the docker deployment (ONIT_CONTAINER=1) the serving domain
+        (e.g. mychat.ai) replaces the default OnIt branding, unless the
+        operator set a custom web_title, which always wins. The domain comes
+        from ONIT_DOMAIN (docker-compose .env), then ONIT_PUBLIC_URL, then the
+        Host header the browser actually used."""
+        if self.title != DEFAULT_TITLE or os.environ.get("ONIT_CONTAINER") != "1":
+            return self.title, DEFAULT_BRAND
+        domain = os.environ.get("ONIT_DOMAIN", "").strip()
+        if not domain:
+            public = os.environ.get("ONIT_PUBLIC_URL", "")
+            domain = urllib.parse.urlparse(public).hostname or "" if public else ""
+        if not domain:
+            domain = request.url.hostname or ""
+        if not domain or domain.lower() in _LOCAL_HOSTS:
+            return self.title, DEFAULT_BRAND
+        return domain, domain
 
     def _external_base_url(self, request: Request) -> str:
         """Base URL as seen by the browser, for OAuth redirect URIs.

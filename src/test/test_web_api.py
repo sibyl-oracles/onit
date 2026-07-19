@@ -179,6 +179,67 @@ class TestConfigEndpoint:
         assert client.get("/static/style.css").status_code == 200
 
 
+class TestDomainBranding:
+    """In the docker deployment (ONIT_CONTAINER=1) the serving domain replaces
+    the default OnIt title/brand shown by the SPA."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in ("ONIT_CONTAINER", "ONIT_DOMAIN", "ONIT_PUBLIC_URL"):
+            monkeypatch.delenv(var, raising=False)
+
+    def _client(self, tmp_path, base_url="http://testserver", **kwargs):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            require_auth=False,
+            **kwargs,
+        )
+        ui.build_app()
+        return TestClient(ui.app, base_url=base_url)
+
+    def test_default_branding_outside_container(self, tmp_path):
+        data = self._client(tmp_path).get("/api/config").json()
+        assert data["title"] == "OnIt Chat"
+        assert data["brand"] == "OnIt"
+
+    def test_onit_domain_wins_in_container(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_DOMAIN", "mychat.ai")
+        data = self._client(tmp_path).get("/api/config").json()
+        assert data["title"] == "mychat.ai"
+        assert data["brand"] == "mychat.ai"
+
+    def test_public_url_fallback_in_container(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_PUBLIC_URL", "https://mychat.ai")
+        data = self._client(tmp_path).get("/api/config").json()
+        assert data["title"] == "mychat.ai"
+        assert data["brand"] == "mychat.ai"
+
+    def test_host_header_fallback_in_container(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        data = self._client(
+            tmp_path, base_url="http://mychat.ai").get("/api/config").json()
+        assert data["title"] == "mychat.ai"
+        assert data["brand"] == "mychat.ai"
+
+    def test_localhost_keeps_default_branding(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        data = self._client(
+            tmp_path, base_url="http://localhost").get("/api/config").json()
+        assert data["title"] == "OnIt Chat"
+        assert data["brand"] == "OnIt"
+
+    def test_custom_web_title_beats_domain(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_DOMAIN", "mychat.ai")
+        data = self._client(
+            tmp_path, title="My Assistant").get("/api/config").json()
+        assert data["title"] == "My Assistant"
+        assert data["brand"] == "OnIt"
+
+
 class TestHistoryEndpoint:
     def test_history_creates_session(self, client):
         data = client.get("/api/history").json()
