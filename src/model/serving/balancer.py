@@ -23,6 +23,11 @@ downstream by chat(), which auto-detects the provider from each host URL.
 All algorithms double as automatic failover: an endpoint that produced a
 failed request is put on a cooldown and skipped while any healthy endpoint
 remains available.
+
+Ollama endpoints (cloud or local) are fallback-only: whenever at least one
+non-Ollama endpoint (vLLM, OpenRouter, ...) is healthy, Ollama endpoints are
+kept out of rotation and only serve requests while every non-Ollama endpoint
+is cooling down.
 """
 
 import logging
@@ -45,6 +50,11 @@ DEFAULT_ALGORITHM = "sticky"
 MAX_STICKY_KEYS = 1024
 
 
+def _is_ollama_host(host: str) -> bool:
+    """True for Ollama endpoints: cloud (ollama.com/.ai) or local (:11434)."""
+    return "ollama.com" in host or "ollama.ai" in host or ":11434" in host
+
+
 @dataclass
 class ServerEndpoint:
     """One model server: host URL plus its API key and optional model name."""
@@ -55,6 +65,10 @@ class ServerEndpoint:
     # Runtime state managed by LoadBalancer
     in_flight: int = field(default=0, repr=False)
     failed_at: float = field(default=0.0, repr=False)
+
+    @property
+    def is_ollama(self) -> bool:
+        return _is_ollama_host(self.host)
 
     def is_healthy(self, now: float | None = None) -> bool:
         if not self.failed_at:
@@ -67,9 +81,9 @@ class LoadBalancer:
     """Selects a ServerEndpoint per request using a configurable algorithm.
 
     Algorithms:
-      - sticky:      each session's first request is assigned an endpoint
-                     round-robin (so load spreads across hosts), then all of
-                     that session's inference stays on the same endpoint for
+      - sticky:      each session's first request is assigned an endpoint at
+                     random (so load spreads across hosts), then all of that
+                     session's inference stays on the same endpoint for
                      locality; a timeout/error fails it over to the alternate,
                      where it stays (default)
       - round_robin: alternate between endpoints in order
@@ -128,26 +142,35 @@ class LoadBalancer:
         Unhealthy endpoints (recent failure, still in cooldown) are skipped
         unless every endpoint is unhealthy, in which case all are considered
         so the caller can still make progress.
+
+        Ollama endpoints are fallback-only: while any healthy non-Ollama
+        endpoint exists, Ollama ones are excluded from the candidates. A
+        sticky session that failed over to Ollama therefore moves back to a
+        vLLM/OpenRouter endpoint as soon as one recovers.
         """
         with self._lock:
             now = time.monotonic()
             candidates = [ep for ep in self.endpoints if ep.is_healthy(now)]
             if not candidates:
                 candidates = self.endpoints
+            preferred = [ep for ep in candidates if not ep.is_ollama]
+            if preferred:
+                candidates = preferred
 
             if self.algorithm == "sticky":
                 # Locality: keep a session's inference on its assigned
                 # endpoint. Only a timeout/error (cooldown) moves it to the
                 # next healthy endpoint, which then becomes the session's new
                 # sticky target — no switching back when the failed one
-                # recovers. First-time keys are assigned round-robin so load
-                # stays balanced across hosts.
+                # recovers (except back to a recovered non-Ollama endpoint,
+                # since Ollama is fallback-only). First-time keys are
+                # assigned a random candidate so load spreads across hosts.
                 key = key or ""
                 idx = self._sticky_map.get(key)
                 if idx is not None and self.endpoints[idx] in candidates:
                     chosen = self.endpoints[idx]
                 else:
-                    chosen = self._rr_pick(candidates)
+                    chosen = random.choice(candidates)
                     if idx is not None:
                         logger.warning("Sticky failover (%s) → %s",
                                        key or "default",

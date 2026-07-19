@@ -14,6 +14,13 @@ from model.serving.balancer import LoadBalancer, ServerEndpoint
 def _two_endpoints():
     return [
         ServerEndpoint(host="http://vllm:8000/v1", name="server1"),
+        ServerEndpoint(host="http://vllm2:8000/v1", name="server2"),
+    ]
+
+
+def _vllm_and_ollama():
+    return [
+        ServerEndpoint(host="http://vllm:8000/v1", name="server1"),
         ServerEndpoint(host="https://ollama.com", host_key="key2",
                        model="qwen3", name="server2"),
     ]
@@ -33,7 +40,7 @@ class TestLoadBalancerConstruction:
 
     def test_hosts_property(self):
         lb = LoadBalancer(_two_endpoints())
-        assert lb.hosts == ["http://vllm:8000/v1", "https://ollama.com"]
+        assert lb.hosts == ["http://vllm:8000/v1", "http://vllm2:8000/v1"]
 
 
 class TestSingleEndpoint:
@@ -56,81 +63,96 @@ class TestSticky:
     def test_stays_on_one_endpoint(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
+        first = lb.acquire()
+        assert first in eps
+        lb.release(first, success=True)
         for _ in range(10):
             ep = lb.acquire()
-            assert ep is eps[0]
+            assert ep is first
             lb.release(ep, success=True)
 
     def test_fails_over_on_error_and_sticks_to_alt(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
-        lb.release(lb.acquire(), success=False)  # server1 errors/times out
+        first = lb.acquire()
+        lb.release(first, success=False)  # errors/times out
+        alt = next(e for e in eps if e is not first)
         for _ in range(10):
             ep = lb.acquire()
-            assert ep is eps[1]
+            assert ep is alt
             lb.release(ep, success=True)
 
     def test_no_switch_back_after_failed_endpoint_recovers(self, monkeypatch):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
-        lb.release(lb.acquire(), success=False)
-        failover = lb.acquire()  # moves to server2
-        assert failover is eps[1]
+        first = lb.acquire()
+        lb.release(first, success=False)
+        failover = lb.acquire()  # moves to the alternate
+        assert failover is not first
         lb.release(failover, success=True)
-        # Cooldown of 0 means server1 is immediately healthy again, but
-        # inference must stay on server2 for locality.
+        # Cooldown of 0 means the failed endpoint is immediately healthy
+        # again, but inference must stay on the failover target for locality.
         monkeypatch.setattr(balancer_mod, "FAILURE_COOLDOWN", 0.0)
         for _ in range(10):
             ep = lb.acquire()
-            assert ep is eps[1]
+            assert ep is failover
             lb.release(ep, success=True)
 
-    def test_all_unhealthy_stays_on_current(self):
+    def test_all_unhealthy_still_serves_and_sticks(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
         for e in eps:
             lb.release(e, success=False)
-        assert lb.acquire() is eps[0]
+        first = lb.acquire()
+        assert first in eps
+        assert lb.acquire() is first
 
     def test_concurrent_requests_share_the_sticky_endpoint(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
         first = lb.acquire()
         second = lb.acquire()  # first still in flight — same host anyway
-        assert first is second is eps[0]
+        assert first is second
+        assert first in eps
 
-    def test_new_sessions_assigned_round_robin(self):
+    def test_new_sessions_assigned_randomly_across_hosts(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
-        assert lb.acquire(key="a") is eps[0]
-        assert lb.acquire(key="b") is eps[1]
-        assert lb.acquire(key="c") is eps[0]
+        seen = set()
+        for i in range(100):
+            ep = lb.acquire(key=f"session-{i}")
+            seen.add(ep.name)
+            lb.release(ep, success=True)
+        assert seen == {"server1", "server2"}
 
     def test_each_session_sticks_to_its_host(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
-        lb.release(lb.acquire(key="a"), success=True)  # a → server1
-        lb.release(lb.acquire(key="b"), success=True)  # b → server2
+        a_ep = lb.acquire(key="a")
+        lb.release(a_ep, success=True)
+        b_ep = lb.acquire(key="b")
+        lb.release(b_ep, success=True)
         for _ in range(5):
             a = lb.acquire(key="a")
             b = lb.acquire(key="b")
-            assert a is eps[0]
-            assert b is eps[1]
+            assert a is a_ep
+            assert b is b_ep
             lb.release(a, success=True)
             lb.release(b, success=True)
 
     def test_failover_moves_only_affected_sessions(self, monkeypatch):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="sticky")
-        a = lb.acquire(key="a")  # a → server1
-        lb.release(a, success=False)  # server1 errors/times out
-        lb.release(lb.acquire(key="b"), success=True)  # b → server2
-        assert lb.acquire(key="a") is eps[1]  # a failed over
-        # server1 recovers, but a stays on server2 for locality; new
-        # sessions can be assigned to server1 again.
+        a = lb.acquire(key="a")
+        lb.release(a, success=False)  # a's endpoint errors/times out
+        alt = next(e for e in eps if e is not a)
+        lb.release(lb.acquire(key="b"), success=True)  # b → healthy host
+        assert lb.acquire(key="a") is alt  # a failed over
+        # a's original endpoint recovers, but a stays on the failover
+        # target for locality; new sessions may use either host again.
         monkeypatch.setattr(balancer_mod, "FAILURE_COOLDOWN", 0.0)
-        assert lb.acquire(key="a") is eps[1]
-        assert lb.acquire(key="c") is eps[0]
+        assert lb.acquire(key="a") is alt
+        assert lb.acquire(key="c") in eps
 
 
 class TestRoundRobin:
@@ -214,3 +236,50 @@ class TestFailover:
         for e in eps:
             lb.release(e, success=False)
         assert lb.acquire() in eps
+
+
+class TestOllamaFallback:
+    def test_is_ollama_detection(self):
+        assert ServerEndpoint(host="https://ollama.com").is_ollama
+        assert ServerEndpoint(host="https://api.ollama.ai/v1").is_ollama
+        assert ServerEndpoint(host="http://localhost:11434/v1").is_ollama
+        assert not ServerEndpoint(host="http://vllm:8000/v1").is_ollama
+        assert not ServerEndpoint(host="https://openrouter.ai/api/v1").is_ollama
+
+    def test_new_sessions_always_prefer_vllm(self):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky")
+        for i in range(20):
+            ep = lb.acquire(key=f"session-{i}")
+            assert ep is eps[0]
+            lb.release(ep, success=True)
+
+    def test_round_robin_skips_ollama_while_vllm_healthy(self):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        for _ in range(6):
+            ep = lb.acquire()
+            assert ep is eps[0]
+            lb.release(ep, success=True)
+
+    def test_ollama_serves_while_vllm_cooling_down(self):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky")
+        lb.release(lb.acquire(), success=False)  # vLLM errors/times out
+        assert lb.acquire() is eps[1]
+
+    def test_session_returns_to_vllm_after_recovery(self, monkeypatch):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky")
+        lb.release(lb.acquire(key="a"), success=False)  # vLLM fails
+        failover = lb.acquire(key="a")  # a → ollama fallback
+        assert failover is eps[1]
+        lb.release(failover, success=True)
+        # vLLM comes back — the session leaves the fallback immediately.
+        monkeypatch.setattr(balancer_mod, "FAILURE_COOLDOWN", 0.0)
+        assert lb.acquire(key="a") is eps[0]
+
+    def test_ollama_only_setup_uses_ollama(self):
+        ep = ServerEndpoint(host="https://ollama.com", model="qwen3")
+        lb = LoadBalancer([ep])
+        assert lb.acquire() is ep

@@ -674,8 +674,11 @@ class OnIt(BaseModel):
         behavior to before). Configuring ``serving.host2`` (or ONIT_HOST2)
         adds a second model server — any mix of vLLM, OpenRouter, or Ollama
         cloud — and requests are distributed per ``serving.load_balancer``
-        (round_robin, random, or least_busy). A failing endpoint is cooled
-        down so the other server takes over automatically.
+        (sticky assigns each new session a random host; round_robin, random,
+        or least_busy distribute per request). Ollama endpoints are
+        fallback-only: they serve requests only while no vLLM/OpenRouter
+        endpoint is healthy. A failing endpoint is cooled down so the other
+        server takes over automatically.
         """
         serving = self.model_serving
         endpoints = [ServerEndpoint(
