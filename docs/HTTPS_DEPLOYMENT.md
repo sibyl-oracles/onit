@@ -59,6 +59,12 @@ ONIT_DOMAIN=mychat.ai
 # containers at /home/onit/data. Default: /data/sandbox
 ONIT_DATA_DIR=/data/sandbox
 
+# Optional: document corpus for the local_search tool, mounted read-only
+# into the containers at /home/onit/documents (the containers see it via
+# ONIT_DOCUMENTS_PATH automatically). Absolute path — ~ is not expanded.
+# Files must be readable by UID 1000. Default: /data/documents
+ONIT_DOCUMENTS_DIR=/home/me/internal-data
+
 # Optional. Only needed if the public URL cannot be derived from the request
 # (e.g. an extra proxy in front of Caddy rewrites the Host header).
 # ONIT_PUBLIC_URL=https://mychat.ai
@@ -137,7 +143,7 @@ And on the server, verify persistence:
 ```bash
 # 8. Agent files land on the SSD and survive a restart
 ls /data/sandbox                 # one subfolder per chat session
-docker compose restart onit-web onit-mcp
+docker compose restart onit-web
 ls /data/sandbox                 # still there
 
 # 9. uvicorn is NOT reachable from outside (run from another machine; must

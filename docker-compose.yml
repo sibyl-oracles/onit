@@ -20,6 +20,17 @@ x-onit-hardening: &onit-hardening
 # ONIT_DATA_DIR at a host folder on persistent storage (e.g. an SSD mount).
 x-data-volume: &data-volume ${ONIT_DATA_DIR:-/data/sandbox}:/home/onit/data
 
+# Read-only corpus for the local_search tool. Point ONIT_DOCUMENTS_DIR at the
+# host folder holding your documents (absolute path — ~ is not expanded). The
+# search index itself is written under the data volume, so :ro is safe.
+x-documents-volume: &documents-volume ${ONIT_DOCUMENTS_DIR:-/data/documents}:/home/onit/documents:ro
+
+# Tells the local_search MCP server (running inside each service) where the
+# mounted corpus lives; equivalent to `export ONIT_DOCUMENTS_PATH=...` in a
+# bare-metal install.
+x-documents-env: &documents-env
+  ONIT_DOCUMENTS_PATH: /home/onit/documents
+
 x-gpu: &gpu
   deploy:
     resources:
@@ -51,59 +62,51 @@ services:
     depends_on:
       - onit-web
 
-  onit-mcp:
-    build: .
-    <<: [*onit-hardening, *gpu]
-    ports:
-      - "18200:18200"
-      - "18201:18201"
-      - "18202:18202"
-      - "18203:18203"
-      - "18204:18204"
-    env_file: .env
-    volumes:
-      - *data-volume
-    command: ["--mcp", "--data-path", "/home/onit/data"]
-
+  # Each service runs its own MCP servers in-process (`onit serve <mode>`
+  # starts them automatically); they stay private to the container's network
+  # namespace and are never published.
   onit-web:
     build: .
     <<: [*onit-hardening, *gpu]
+    restart: unless-stopped
     ports:
       # Loopback only: public traffic must come through Caddy (TLS), and
       # uvicorn trusts X-Forwarded-* headers so it must not be reachable
       # directly from outside the host.
       - "127.0.0.1:9000:9000"
     env_file: .env
-    depends_on:
-      - onit-mcp
+    environment: *documents-env
     volumes:
       - web-sessions:/home/onit/.onit/sessions
       - *data-volume
-    command: ["--web", "--web-port", "9000", "--mcp-host", "onit-mcp", "--data-path", "/home/onit/data"]
+      - *documents-volume
+    command: ["--data-path", "/home/onit/data", "serve", "web", "--port", "9000"]
 
   onit-a2a:
     build: .
     <<: [*onit-hardening, *gpu]
+    restart: unless-stopped
     ports:
       - "9001:9001"
     env_file: .env
-    depends_on:
-      - onit-mcp
+    environment: *documents-env
     volumes:
       - a2a-sessions:/home/onit/.onit/sessions
       - *data-volume
-    command: ["--a2a", "--a2a-port", "9001", "--mcp-host", "onit-mcp", "--data-path", "/home/onit/data"]
+      - *documents-volume
+    command: ["--data-path", "/home/onit/data", "serve", "a2a", "--port", "9001"]
 
   onit-gateway:
     build: .
     <<: [*onit-hardening, *gpu]
+    restart: unless-stopped
     env_file: .env
-    depends_on:
-      - onit-mcp
+    environment: *documents-env
     volumes:
       - gateway-sessions:/home/onit/.onit/sessions
       - *data-volume
-    command: ["--gateway", "--mcp-host", "onit-mcp", "--data-path", "/home/onit/data"]
+      - *documents-volume
+    command: ["--data-path", "/home/onit/data", "serve", "gateway"]
 
   onit-terminal:
     build: .
@@ -111,9 +114,11 @@ services:
     env_file: .env
     stdin_open: true
     tty: true
+    environment: *documents-env
     volumes:
       - terminal-sessions:/home/onit/.onit/sessions
       - *data-volume
+      - *documents-volume
     profiles: ["terminal"]
     command: ["--data-path", "/home/onit/data"]
 
