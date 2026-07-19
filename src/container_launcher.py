@@ -38,6 +38,7 @@ from pathlib import Path
 _SECRET_ENV_KEYS = [
     ("host_key", "OPENROUTER_API_KEY"),
     ("ollama_api_key", "OLLAMA_API_KEY"),
+    ("vllm_api_key", "VLLM_API_KEY"),
     ("openweathermap_api_key", "OPENWEATHERMAP_API_KEY"),
     ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
     ("viber_bot_token", "VIBER_BOT_TOKEN"),

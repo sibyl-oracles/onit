@@ -92,7 +92,9 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
 
     For OpenRouter hosts, use host_key param or OPENROUTER_API_KEY env var
     or OS keychain. For Ollama cloud hosts, use OLLAMA_API_KEY env var or
-    keychain. For vLLM and other local hosts, default to "EMPTY".
+    keychain. For vLLM and other hosts, use host_key param or VLLM_API_KEY
+    env var or keychain, defaulting to "EMPTY" (vLLM without --api-key
+    accepts any bearer token).
     """
     if "openrouter.ai" in host:
         if host_key and host_key != "EMPTY":
@@ -131,7 +133,16 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
                 "  - OLLAMA_API_KEY environment variable"
             )
         return key
-    return host_key
+    if host_key and host_key != "EMPTY":
+        return host_key
+    key = os.environ.get("VLLM_API_KEY", "")
+    if not key:
+        try:
+            from src.setup import get_secret
+            key = get_secret("vllm_api_key") or ""
+        except Exception:
+            pass
+    return key or host_key
 
 
 def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True):

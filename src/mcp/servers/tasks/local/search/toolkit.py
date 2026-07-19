@@ -258,6 +258,7 @@ def embedding_config() -> Optional[Dict[str, str]]:
     if not host or not model:
         return None
     key = (os.environ.get('ONIT_EMBEDDING_API_KEY')
+           or os.environ.get('VLLM_API_KEY')
            or os.environ.get('OPENROUTER_API_KEY')
            or 'none')
     return {"host": host, "model": model, "key": key}

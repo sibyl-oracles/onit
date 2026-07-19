@@ -94,6 +94,8 @@ Priority order: CLI flags > environment variables > `~/.onit/config.yaml` > proj
 serving:
   host: https://openrouter.ai/api/v1
   host_key: sk-or-v1-your-key-here   # or set OPENROUTER_API_KEY env var
+  # For a vLLM host started with --api-key, put the key here or set the
+  # VLLM_API_KEY env var / keychain entry (via onit setup) instead:
   # model: auto-detected from endpoint. Set explicitly for OpenRouter:
   # model: google/gemini-2.5-pro
   think: true
@@ -645,6 +647,7 @@ Dense and hybrid retrieval use any **OpenAI-compatible** `/embeddings` endpoint 
 export ONIT_EMBEDDING_HOST=http://localhost:8000/v1   # vLLM, Ollama, etc.
 export ONIT_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
 export ONIT_EMBEDDING_API_KEY=...                     # only if the endpoint needs one
+                                                      # (falls back to VLLM_API_KEY)
 ```
 
 When these are set, `index_documents` embeds chunks during ingestion and `local_search` embeds the query at search time. Without them, everything still works with BM25 — no network calls are made.
@@ -682,6 +685,28 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
 ```bash
 onit --host http://localhost:8000/v1
 ```
+
+To restrict the vLLM server to authorized clients, start it with one or more
+API keys — **space-separated, not comma-separated** (`--api-key` is parsed
+with `nargs="+"`; a comma-joined string becomes one literal key):
+
+```bash
+vllm serve ... --api-key key1 key2 key3
+```
+
+Then give OnIt one of those keys (the others are for your other clients):
+
+```bash
+onit setup   # enter it at the "vLLM API key" prompt (stored in the OS keychain)
+```
+
+Or set the environment variable:
+
+```bash
+export VLLM_API_KEY=key1
+```
+
+Resolution order: `serving.host_key` in the config YAML > `VLLM_API_KEY` env var > keychain. Without `--api-key` on the vLLM side, no key is needed and OnIt connects as before.
 
 ### OpenRouter.ai
 

@@ -30,10 +30,12 @@ _SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.yaml")
 # ── Configurable secrets ────────────────────────────────────────────
 # (keyring_key, prompt_label, env_var_name)
 SECRETS = [
-    ("host_key",               "LLM API key (for OpenRouter or remote vLLM)",
+    ("host_key",               "OpenRouter API key",
      "OPENROUTER_API_KEY"),
     ("ollama_api_key",         "Ollama API key (enables web search and cloud LLM access)",
      "OLLAMA_API_KEY"),
+    ("vllm_api_key",           "vLLM API key (required if vLLM is started with --api-key)",
+     "VLLM_API_KEY"),
     ("openweathermap_api_key", "OpenWeatherMap API key (enables weather tool)",
      "OPENWEATHERMAP_API_KEY"),
     ("telegram_bot_token",     "Telegram bot token (for gateway mode)",
@@ -158,6 +160,26 @@ def store_secret(key: str, value: str):
         except Exception:
             pass
     _file_store_secret(key, value)
+
+
+def delete_secret(key: str):
+    """Remove a secret from the OS keychain and the file fallback."""
+    if KEYRING_AVAILABLE:
+        try:
+            keyring.delete_password(SERVICE_NAME, key)
+        except Exception:
+            pass
+    if os.path.isfile(_SECRETS_PATH):
+        try:
+            with open(_SECRETS_PATH, "r") as f:
+                data = yaml.safe_load(f) or {}
+            if key in data:
+                del data[key]
+                with open(_SECRETS_PATH, "w") as f:
+                    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+                os.chmod(_SECRETS_PATH, 0o600)
+        except OSError:
+            pass
 
 
 def get_secret(key: str) -> str | None:
@@ -333,12 +355,10 @@ def run_setup(show_only: bool = False):
             hint = "not set"
 
         value = getpass.getpass(f"  {label} [{hint}]: ").strip()
-        if value:
-            if KEYRING_AVAILABLE:
-                store_secret(key, value)
-            else:
-                # Fallback: store in config file (plaintext)
-                _set_nested(config, f"_secrets.{key}", value)
+        if value == "-":
+            delete_secret(key)
+        elif value:
+            store_secret(key, value)
 
     _save_config(config)
 

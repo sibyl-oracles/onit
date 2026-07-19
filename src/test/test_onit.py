@@ -376,6 +376,7 @@ class TestOnItA2AExecutor:
         mock_onit = MagicMock()
         mock_onit.process_task = AsyncMock(return_value="result text")
         mock_onit.session_path = str(tmp_path / "sessions" / "test.jsonl")
+        mock_onit.config_data = {"data_path": str(tmp_path / "data")}
         os.makedirs(os.path.dirname(mock_onit.session_path), exist_ok=True)
 
         executor = OnItA2AExecutor(mock_onit)
@@ -416,6 +417,7 @@ class TestOnItA2AExecutor:
     async def test_cancel_signals_safety_queue(self, tmp_path):
         mock_onit = MagicMock()
         mock_onit.session_path = str(tmp_path / "sessions" / "test.jsonl")
+        mock_onit.config_data = {"data_path": str(tmp_path / "data")}
         os.makedirs(os.path.dirname(mock_onit.session_path), exist_ok=True)
 
         executor = OnItA2AExecutor(mock_onit)
@@ -436,7 +438,7 @@ class TestOnItA2AExecutor:
         """Different context_ids get different sessions."""
         mock_onit = MagicMock()
         mock_onit.session_path = str(tmp_path / "sessions" / "test.jsonl")
-        mock_onit.config_data.get.return_value = None
+        mock_onit.config_data = {"data_path": str(tmp_path / "data")}
         os.makedirs(os.path.dirname(mock_onit.session_path), exist_ok=True)
 
         executor = OnItA2AExecutor(mock_onit)
@@ -461,6 +463,7 @@ class TestOnItA2AExecutor:
         """Same context_id returns the same session."""
         mock_onit = MagicMock()
         mock_onit.session_path = str(tmp_path / "sessions" / "test.jsonl")
+        mock_onit.config_data = {"data_path": str(tmp_path / "data")}
         os.makedirs(os.path.dirname(mock_onit.session_path), exist_ok=True)
 
         executor = OnItA2AExecutor(mock_onit)

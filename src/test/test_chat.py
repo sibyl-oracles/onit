@@ -16,8 +16,25 @@ from model.serving.chat import _resolve_api_key, _parse_tool_call_from_content, 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
 
 class TestResolveApiKey:
+    @pytest.fixture(autouse=True)
+    def _isolate_credentials(self, monkeypatch):
+        """Keep tests hermetic: ignore real env vars and the OS keychain."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("VLLM_API_KEY", raising=False)
+        import src.setup
+        monkeypatch.setattr(src.setup, "get_secret", lambda key: None)
+
     def test_vllm_returns_host_key(self):
         assert _resolve_api_key("http://localhost:8000/v1", "EMPTY") == "EMPTY"
+
+    def test_vllm_explicit_host_key_wins(self, monkeypatch):
+        monkeypatch.setenv("VLLM_API_KEY", "env-key")
+        assert _resolve_api_key("http://localhost:8000/v1", "yaml-key") == "yaml-key"
+
+    def test_vllm_from_env(self, monkeypatch):
+        monkeypatch.setenv("VLLM_API_KEY", "env-key")
+        assert _resolve_api_key("http://localhost:8000/v1") == "env-key"
 
     def test_openrouter_with_host_key(self):
         assert _resolve_api_key("https://openrouter.ai/api/v1", "sk-or-abc") == "sk-or-abc"
@@ -26,8 +43,7 @@ class TestResolveApiKey:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env-key")
         assert _resolve_api_key("https://openrouter.ai/api/v1") == "sk-env-key"
 
-    def test_openrouter_missing_key_raises(self, monkeypatch):
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    def test_openrouter_missing_key_raises(self):
         with pytest.raises(ValueError, match="OpenRouter requires"):
             _resolve_api_key("https://openrouter.ai/api/v1")
 

@@ -808,8 +808,11 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     host = serving.get('host') or os.environ.get('ONIT_HOST')
     host_key = serving.get('host_key', '')
 
-    # Resolve host_key from keyring if not set via config/env
-    if not host_key or host_key == 'EMPTY':
+    # Resolve host_key from keyring if not set via config/env. Only for
+    # OpenRouter hosts — the stored host_key is an OpenRouter key, and
+    # injecting it into serving.host_key for a vLLM host would shadow
+    # VLLM_API_KEY / the vllm_api_key keychain entry with the wrong key.
+    if (not host_key or host_key == 'EMPTY') and 'openrouter' in (host or '').lower():
         kr_key = resolve_credential(None, 'OPENROUTER_API_KEY', 'host_key')
         if kr_key:
             host_key = kr_key
