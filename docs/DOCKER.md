@@ -343,6 +343,17 @@ OPENROUTER_API_KEY=sk-or-v1-your-key-here
 # VLLM_API_KEY=...                  # if your vLLM server was started with --api-key
 # OLLAMA_API_KEY=...                # Ollama cloud + web search tool
 
+# Second LLM endpoint (optional, enables load balancing). The model name is
+# auto-detected from each endpoint; the load-balancing algorithm is set with
+# the --load-balancer flag in the service command, not an env var.
+# ONIT_HOST2=https://ollama.com
+# ONIT_HOST2_KEY=...                # API key for the second endpoint
+
+# Embedding endpoint for local_search dense/hybrid retrieval (optional)
+# ONIT_EMBEDDING_HOST=http://host.docker.internal:8001/v1
+# ONIT_EMBEDDING_MODEL=BAAI/bge-m3
+# ONIT_EMBEDDING_API_KEY=...
+
 # Optional tools
 OPENWEATHERMAP_API_KEY=...          # weather tool
 # GITHUB_TOKEN=...                  # github_repo tool + git credential helper

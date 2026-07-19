@@ -1,6 +1,11 @@
 x-onit-hardening: &onit-hardening
   read_only: true
   cap_drop: [ALL]
+  # Make host.docker.internal resolve on Linux, so ONIT_HOST can point at a
+  # vLLM server running on the same machine (localhost inside a container is
+  # the container itself).
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   security_opt:
     - no-new-privileges:true
   pids_limit: 256

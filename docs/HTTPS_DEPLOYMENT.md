@@ -48,10 +48,15 @@ certificates per week).
 
 ## Configuration
 
-Everything is driven by `.env` in the repo root (the same file that holds the
-model/API settings):
+Everything is driven by `.env` in the repo root. **`onit setup` does not
+apply here**: the wizard writes to `~/.onit/config.yaml` and the OS keychain
+on the host, but inside the containers `~/.onit` is an ephemeral tmpfs and
+there is no keychain — so every model endpoint and API key must be provided
+via `.env` (each setup secret has an env-var equivalent, checked before the
+keychain).
 
 ```bash
+# ── Stack ────────────────────────────────────────────────────────────
 # Public domain — this is the only variable required for HTTPS.
 ONIT_DOMAIN=mychat.ai
 
@@ -68,7 +73,41 @@ ONIT_DOCUMENTS_DIR=/home/me/internal-data
 # Optional. Only needed if the public URL cannot be derived from the request
 # (e.g. an extra proxy in front of Caddy rewrites the Host header).
 # ONIT_PUBLIC_URL=https://mychat.ai
+
+# ── Model endpoint (required) ────────────────────────────────────────
+# For a vLLM/Ollama server running on the SAME machine, use
+# host.docker.internal — localhost inside a container is the container
+# itself. The model name is auto-detected from the endpoint.
+ONIT_HOST=http://host.docker.internal:8000/v1
+# VLLM_API_KEY=...              # if vLLM was started with --api-key
+# OPENROUTER_API_KEY=...        # if ONIT_HOST is OpenRouter
+
+# Optional second endpoint — enables load balancing across two servers.
+# Algorithm: add --load-balancer to the service command in docker-compose.yml
+# (sticky / round_robin / random / least_busy; default sticky).
+# ONIT_HOST2=https://ollama.com
+# ONIT_HOST2_KEY=...            # API key for the second endpoint
+
+# ── Web UI login (required unless started with --no-login) ───────────
+GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-...
+
+# ── Optional tools ───────────────────────────────────────────────────
+# OLLAMA_API_KEY=...            # enables the web_search tool
+# OPENWEATHERMAP_API_KEY=...    # enables the weather tool
+# GITHUB_TOKEN=...              # github_repo tool + git credential helper
+# HF_TOKEN=...                  # Hugging Face model downloads
+# TELEGRAM_BOT_TOKEN=...        # onit-gateway service (Telegram)
+# VIBER_BOT_TOKEN=...           # onit-gateway service (Viber)
+
+# Embedding endpoint for local_search dense/hybrid retrieval
+# ONIT_EMBEDDING_HOST=http://host.docker.internal:8001/v1
+# ONIT_EMBEDDING_MODEL=BAAI/bge-m3
+# ONIT_EMBEDDING_API_KEY=...
 ```
+
+Changes to `.env` take effect on the next `docker compose up -d` (containers
+are recreated with the new environment).
 
 Leave `ONIT_DOMAIN` unset for local testing: Caddy then serves `localhost`
 with a self-signed certificate (your browser will warn — expected).
@@ -76,6 +115,25 @@ with a self-signed certificate (your browser will warn — expected).
 **Google OAuth**: in the Google Cloud Console, set the authorized redirect URI
 to `https://<your-domain>/auth/callback` (no port). The app builds the same
 URI from the forwarded headers, so login works unchanged.
+
+**Alternative: reuse `onit setup` output.** If you already ran `onit setup`
+on the server, you can mount its files instead of copying values into `.env`.
+On a headless Linux host the wizard stores secrets in `~/.onit/secrets.yaml`
+(no keychain available), so both files can be bind-mounted via a
+`docker-compose.override.yml` (auto-merged by compose):
+
+```yaml
+services:
+  onit-web:
+    volumes:
+      - ~/.onit/config.yaml:/home/onit/.onit/config.yaml:ro
+      - ~/.onit/secrets.yaml:/home/onit/.onit/secrets.yaml:ro
+```
+
+Both files must exist before starting (Docker replaces a missing bind-mount
+file with a root-owned directory, which then breaks `onit setup` on the host)
+and be readable by UID 1000. Precedence: `config.yaml` beats `ONIT_HOST` from
+`.env`, while env vars beat the mounted `secrets.yaml`.
 
 Optional: to get certificate-expiry notices from Let's Encrypt, add a global
 options block at the top of the `Caddyfile`:
