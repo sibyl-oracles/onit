@@ -632,6 +632,7 @@ class WebApiUI:
                     max_age=86400 * 7,   # 7 days
                     httponly=True,
                     samesite="lax",
+                    secure=request.url.scheme == "https",
                 )
             return response
 
@@ -893,6 +894,20 @@ class WebApiUI:
         if os.path.isdir(STATIC_DIR):
             app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    def _external_base_url(self, request: Request) -> str:
+        """Base URL as seen by the browser, for OAuth redirect URIs.
+
+        ONIT_PUBLIC_URL (e.g. https://mychat.ai) wins when set. Otherwise the
+        URL comes from the request itself, which reflects X-Forwarded-Proto and
+        the original Host header when uvicorn runs with proxy_headers behind a
+        TLS-terminating reverse proxy — so redirects stay https:// instead of
+        leaking the internal http://host:port address.
+        """
+        configured = os.environ.get("ONIT_PUBLIC_URL", "").rstrip("/")
+        if configured:
+            return configured
+        return str(request.base_url).rstrip("/")
+
     def _setup_oauth_routes(self, app: FastAPI):
         """Add OAuth2 login/callback/logout routes."""
         if not self.auth_enabled:
@@ -901,7 +916,7 @@ class WebApiUI:
         @app.get("/auth/login")
         async def oauth_login(request: Request):
             state, _code_verifier, code_challenge = self.oauth_flow_manager.create_flow()
-            redirect_uri = f"http://{request.url.hostname}:{self.server_port}/auth/callback"
+            redirect_uri = self._external_base_url(request) + "/auth/callback"
             auth_url = (
                 "https://accounts.google.com/o/oauth2/v2/auth?"
                 + urllib.parse.urlencode({
@@ -948,7 +963,9 @@ class WebApiUI:
             if not code_verifier:
                 return _error_page("Invalid or Expired Session", "The authentication session has expired or is invalid.", 400)
 
-            redirect_uri = f"http://{request.url.hostname}:{self.server_port}/auth/callback"
+            # Must match the redirect_uri sent at /auth/login exactly, or
+            # Google rejects the token exchange.
+            redirect_uri = self._external_base_url(request) + "/auth/callback"
             email = self.authenticator.exchange_code_for_token(code, code_verifier, redirect_uri)
             if not email:
                 return _error_page("Authentication Failed", "Could not verify your Google account or you are not authorized.", 403)
@@ -968,6 +985,7 @@ class WebApiUI:
                 max_age=86400,  # 24 hours
                 httponly=True,
                 samesite="lax",
+                secure=request.url.scheme == "https",
             )
             return response
 
@@ -1002,11 +1020,14 @@ class WebApiUI:
         if self.app is None:
             self.build_app()
 
+        public_url = os.environ.get("ONIT_PUBLIC_URL", "").rstrip("/")
         print(f"\n{'='*60}")
         print(f"🚀 Launching OnIt Web UI on http://0.0.0.0:{self.server_port}")
+        if public_url:
+            print(f"   Public URL: {public_url}")
         if self.auth_enabled:
             print(f"   OAuth2 Authentication: ENABLED")
-            print(f"   Login URL: http://localhost:{self.server_port}/auth/login")
+            print(f"   Login URL: {public_url or f'http://localhost:{self.server_port}'}/auth/login")
         else:
             print(f"   Authentication: off (no Google OAuth credentials configured)")
         print(f"{'='*60}\n")
@@ -1019,6 +1040,11 @@ class WebApiUI:
                 port=self.server_port,
                 log_level="info" if self.verbose else "warning",
                 access_log=self.verbose,
+                # Honor X-Forwarded-Proto/For from a TLS-terminating reverse
+                # proxy so request.base_url is https://. The port must not be
+                # exposed publicly, or clients could spoof these headers.
+                proxy_headers=True,
+                forwarded_allow_ips="*",
             )
 
         thread = threading.Thread(target=_run, daemon=True)

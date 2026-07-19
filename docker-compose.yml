@@ -4,17 +4,21 @@ x-onit-hardening: &onit-hardening
   security_opt:
     - no-new-privileges:true
   pids_limit: 256
-  # tmpfs pages are RAM-backed and count against this limit — sized to leave
-  # ~2.5g of headroom for processes with the data tmpfs at its 1g cap.
+  # tmpfs pages are RAM-backed and count against this limit.
   mem_limit: 4g
-  # Read-only rootfs: every writable path is an ephemeral RAM-backed tmpfs.
-  # Session transcripts that must persist are mounted as named volumes per
-  # service (nested inside the /home/onit/.onit tmpfs).
+  # Read-only rootfs: every writable path is an ephemeral RAM-backed tmpfs,
+  # except /home/onit/data which is a host bind mount (see x-data-volume) so
+  # agent files survive restarts. Session transcripts that must persist are
+  # mounted as named volumes per service (nested inside the /home/onit/.onit
+  # tmpfs).
   tmpfs:
     - /tmp:size=64m
     - /home/onit/.cache:size=64m
     - /home/onit/.onit:size=64m
-    - /home/onit/data:size=1g
+
+# Agent working directory (data_path) on a permanent filesystem. Point
+# ONIT_DATA_DIR at a host folder on persistent storage (e.g. an SSD mount).
+x-data-volume: &data-volume ${ONIT_DATA_DIR:-/data/sandbox}:/home/onit/data
 
 x-gpu: &gpu
   deploy:
@@ -26,6 +30,27 @@ x-gpu: &gpu
             capabilities: [gpu]
 
 services:
+  # TLS termination and automatic Let's Encrypt certificates. Set ONIT_DOMAIN
+  # in .env (e.g. mychat.ai); with the default "localhost" Caddy serves a
+  # self-signed certificate for local testing.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ONIT_DOMAIN: ${ONIT_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys — must persist across restarts or
+      # Caddy re-requests certs and hits Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - onit-web
+
   onit-mcp:
     build: .
     <<: [*onit-hardening, *gpu]
@@ -36,19 +61,25 @@ services:
       - "18203:18203"
       - "18204:18204"
     env_file: .env
-    command: ["--mcp"]
+    volumes:
+      - *data-volume
+    command: ["--mcp", "--data-path", "/home/onit/data"]
 
   onit-web:
     build: .
     <<: [*onit-hardening, *gpu]
     ports:
-      - "9000:9000"
+      # Loopback only: public traffic must come through Caddy (TLS), and
+      # uvicorn trusts X-Forwarded-* headers so it must not be reachable
+      # directly from outside the host.
+      - "127.0.0.1:9000:9000"
     env_file: .env
     depends_on:
       - onit-mcp
     volumes:
       - web-sessions:/home/onit/.onit/sessions
-    command: ["--web", "--web-port", "9000", "--mcp-host", "onit-mcp"]
+      - *data-volume
+    command: ["--web", "--web-port", "9000", "--mcp-host", "onit-mcp", "--data-path", "/home/onit/data"]
 
   onit-a2a:
     build: .
@@ -60,7 +91,8 @@ services:
       - onit-mcp
     volumes:
       - a2a-sessions:/home/onit/.onit/sessions
-    command: ["--a2a", "--a2a-port", "9001", "--mcp-host", "onit-mcp"]
+      - *data-volume
+    command: ["--a2a", "--a2a-port", "9001", "--mcp-host", "onit-mcp", "--data-path", "/home/onit/data"]
 
   onit-gateway:
     build: .
@@ -70,7 +102,8 @@ services:
       - onit-mcp
     volumes:
       - gateway-sessions:/home/onit/.onit/sessions
-    command: ["--gateway", "--mcp-host", "onit-mcp"]
+      - *data-volume
+    command: ["--gateway", "--mcp-host", "onit-mcp", "--data-path", "/home/onit/data"]
 
   onit-terminal:
     build: .
@@ -80,11 +113,14 @@ services:
     tty: true
     volumes:
       - terminal-sessions:/home/onit/.onit/sessions
+      - *data-volume
     profiles: ["terminal"]
-    command: []
+    command: ["--data-path", "/home/onit/data"]
 
 volumes:
   web-sessions:
   a2a-sessions:
   gateway-sessions:
   terminal-sessions:
+  caddy-data:
+  caddy-config:

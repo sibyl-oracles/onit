@@ -1,0 +1,23 @@
+# TLS front-end for the OnIt web UI.
+#
+# The site address comes from ONIT_DOMAIN in .env (e.g. mychat.ai). Caddy then
+# obtains and renews a free Let's Encrypt/ZeroSSL certificate automatically —
+# no certbot, no cron. With the default "localhost" it instead serves a
+# self-signed certificate so `docker compose up` works before DNS is set up.
+# Requests to port 80 are redirected to https:// automatically.
+#
+# To receive certificate expiry/problem notices from Let's Encrypt, add a
+# global options block at the top:
+#
+#     {
+#         email you@example.com
+#     }
+
+{$ONIT_DOMAIN:localhost} {
+	encode gzip
+
+	reverse_proxy onit-web:9000 {
+		# Chat output streams over SSE — never buffer responses.
+		flush_interval -1
+	}
+}

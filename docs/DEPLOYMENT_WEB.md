@@ -2,6 +2,12 @@
 
 This guide covers deploying the OnIt web UI for production use, transitioning from the default development port (9000) to standard HTTP (80) and HTTPS (443) ports.
 
+> **Running with docker-compose?** HTTPS is already built into the stack — a
+> Caddy service terminates TLS and fetches free Let's Encrypt certificates
+> automatically. Set `ONIT_DOMAIN` in `.env` and see
+> [HTTPS_DEPLOYMENT.md](HTTPS_DEPLOYMENT.md). This guide is for manual
+> (non-compose) deployments.
+
 ## Overview
 
 By default, OnIt's web UI runs on port 9000 via Uvicorn. For production, you should:
