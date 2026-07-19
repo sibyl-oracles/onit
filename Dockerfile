@@ -108,12 +108,15 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
     # System packages belong in this image; Python packages install to the
     # persistent data volume via PIP_TARGET (gated by the command policy —
     # pinned versions only, and only when ONIT_ALLOW_PACKAGE_INSTALL=1).
-    && mkdir -p /home/onit/app /home/onit/data /home/onit/documents /home/onit/.onit \
+    # .onit/sessions must exist in the image: the compose stack mounts a named
+    # volume there, and Docker seeds a new volume's ownership from the image
+    # path — without it the volume comes up root-owned and session writes fail.
+    && mkdir -p /home/onit/app /home/onit/data /home/onit/documents /home/onit/.onit/sessions \
     # World-writable on the directories the container process writes to. This
     # lets the launcher run the container as the host user's UID/GID (to match
     # bind-mount ownership) without losing write access to the named data
     # volume, which inherits perms from this image's mount points on first use.
-    && chmod 0777 /home/onit /home/onit/data /home/onit/documents /home/onit/.onit \
+    && chmod 0777 /home/onit /home/onit/data /home/onit/documents /home/onit/.onit /home/onit/.onit/sessions \
     # Install a git credential helper that uses $GITHUB_TOKEN (bridged in from
     # the host keychain by container_launcher) instead of prompting at the TTY.
     # Falls through silently when the token is absent, so public clones still
