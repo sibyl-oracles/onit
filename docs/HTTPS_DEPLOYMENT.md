@@ -163,6 +163,35 @@ seconds. Common failures:
 Nothing else on the host may bind ports 80/443 (stop any existing
 nginx/apache first).
 
+## Operating the stack
+
+Day-to-day the server is driven with three commands, all from the repo root:
+
+```bash
+# Compose and run all services in the background. Also the way to APPLY
+# changes: it recreates only the containers whose .env, image, or
+# docker-compose.yml entries changed. Add --build after pulling code
+# changes so images are rebuilt first.
+docker compose up -d
+
+# Debug a service: dump its recent log lines (uvicorn startup, Python
+# tracebacks, missing-configuration errors all land here). Use -f instead
+# of --tail to follow live, and `caddy` instead of `onit-web` for
+# TLS/certificate problems. A 502 from the browser almost always means
+# onit-web exited — its log tail shows why.
+docker compose logs --tail 100 onit-web
+
+# Stop all containers (site goes offline). Volumes, certificates, and agent
+# files are kept; resume with `docker compose up -d`. Don't leave the stack
+# stopped for weeks: Caddy can only renew the TLS certificate (~30 days
+# before expiry) while it is running.
+docker compose stop
+```
+
+`docker compose ps` shows what is running — a service missing from the list
+has exited; check its log. `docker compose restart onit-web` bounces one
+service without touching the rest.
+
 ## Smoke tests after install
 
 Run these from any machine (replace `mychat.ai` with your domain):
