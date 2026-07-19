@@ -323,6 +323,11 @@ To run an open UI without login (e.g. local development on a trusted
 network), pass `--no-login` or set `web_require_auth: false` in the config.
 Anyone who can reach the port can then use the agent.
 
+**Google Analytics (optional).** Set `web_ga_measurement_id: G-XXXXXXXXXX`
+in the config (or the `ONIT_GA_MEASUREMENT_ID` env var — handy in the
+docker-compose `.env`) and the web UI loads the GA4 gtag snippet on every
+page view, including the login page. Analytics is off when unset.
+
 ##### Setting up Google OAuth2 (step by step)
 
 1. **Create a Google Cloud project.** Go to

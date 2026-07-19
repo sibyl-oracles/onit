@@ -313,6 +313,22 @@
     return res;
   }
 
+  // ── Analytics ──────────────────────────────────────────────────
+  // Standard GA4 gtag snippet, injected only when the server config carries
+  // a measurement ID (web_ga_measurement_id / ONIT_GA_MEASUREMENT_ID). The
+  // SPA never rewrites the URL, so the initial page_view is the whole story.
+  function initAnalytics(gaId) {
+    if (!gaId || !/^G-[A-Z0-9]{4,16}$/.test(gaId)) return;
+    const s = document.createElement("script");
+    s.async = true;
+    s.src = "https://www.googletagmanager.com/gtag/js?id=" + encodeURIComponent(gaId);
+    document.head.appendChild(s);
+    window.dataLayer = window.dataLayer || [];
+    window.gtag = function () { window.dataLayer.push(arguments); };
+    window.gtag("js", new Date());
+    window.gtag("config", gaId);
+  }
+
   // ── Boot / config ──────────────────────────────────────────────
   function showLogin() {
     el.app.hidden = true;
@@ -329,6 +345,7 @@
       return;
     }
     state.config = config;
+    initAnalytics(config.ga_id);
     document.title = config.title || "OnIt Chat";
     el.brandTitle.textContent = config.brand || "OnIt";
     el.topbarTitle.textContent = config.title || "";

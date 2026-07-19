@@ -240,6 +240,48 @@ class TestDomainBranding:
         assert data["brand"] == "OnIt"
 
 
+class TestGoogleAnalytics:
+    """web_ga_measurement_id / ONIT_GA_MEASUREMENT_ID flow through
+    /api/config as ga_id; malformed IDs are dropped, never echoed."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("ONIT_GA_MEASUREMENT_ID", raising=False)
+
+    def _client(self, tmp_path, **kwargs):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            require_auth=False,
+            **kwargs,
+        )
+        ui.build_app()
+        return TestClient(ui.app)
+
+    def test_analytics_off_by_default(self, tmp_path):
+        assert self._client(tmp_path).get("/api/config").json()["ga_id"] is None
+
+    def test_config_id_exposed(self, tmp_path):
+        data = self._client(
+            tmp_path, ga_measurement_id="G-ABC123XYZ0").get("/api/config").json()
+        assert data["ga_id"] == "G-ABC123XYZ0"
+
+    def test_env_id_exposed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_GA_MEASUREMENT_ID", "G-ENVID12345")
+        assert self._client(tmp_path).get("/api/config").json()["ga_id"] == "G-ENVID12345"
+
+    def test_config_id_beats_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_GA_MEASUREMENT_ID", "G-ENVID12345")
+        data = self._client(
+            tmp_path, ga_measurement_id="G-CFGID12345").get("/api/config").json()
+        assert data["ga_id"] == "G-CFGID12345"
+
+    def test_malformed_id_dropped(self, tmp_path):
+        bad = '"><script>alert(1)</script>'
+        assert self._client(
+            tmp_path, ga_measurement_id=bad).get("/api/config").json()["ga_id"] is None
+
+
 class TestHistoryEndpoint:
     def test_history_creates_session(self, client):
         data = client.get("/api/history").json()

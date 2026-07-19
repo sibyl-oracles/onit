@@ -85,6 +85,10 @@ DEFAULT_TITLE = "OnIt Chat"
 DEFAULT_BRAND = "OnIt"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
 
+# GA4 measurement IDs look like G-XXXXXXXXXX. The ID is echoed to the browser
+# and interpolated into a script URL, so anything else is dropped.
+_GA_ID_RE = re.compile(r'^G-[A-Z0-9]{4,16}$', re.IGNORECASE)
+
 # Pattern for validating session IDs (UUIDs only)
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
@@ -170,10 +174,12 @@ class WebApiUI:
         allowed_emails: Optional[list[str]] = None,
         session_path: Optional[str] = None,
         title: str = DEFAULT_TITLE,
+        ga_measurement_id: Optional[str] = None,
         verbose: bool = False,
         require_auth: bool = True,
     ) -> None:
         self.title = title
+        self.ga_measurement_id = self._resolve_ga_id(ga_measurement_id)
         self.theme = theme
         self.agent_cursor = agent_cursor
         self.data_path = os.path.expanduser(data_path)
@@ -671,6 +677,7 @@ class WebApiUI:
             return {
                 "title": title,
                 "brand": brand,
+                "ga_id": self.ga_measurement_id,
                 "agent": self.agent_cursor,
                 "auth_enabled": self.auth_enabled,
                 "authenticated": bool(email) or not self.auth_enabled,
@@ -901,6 +908,21 @@ class WebApiUI:
 
         if os.path.isdir(STATIC_DIR):
             app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @staticmethod
+    def _resolve_ga_id(configured: Optional[str]) -> Optional[str]:
+        """Google Analytics 4 measurement ID, or None when analytics is off.
+        web_ga_measurement_id in the config wins; the ONIT_GA_MEASUREMENT_ID
+        env var covers the docker deployment (set it in .env next to
+        ONIT_DOMAIN). Malformed IDs are dropped with a warning rather than
+        echoed into the page."""
+        ga_id = (configured or os.environ.get("ONIT_GA_MEASUREMENT_ID", "")).strip()
+        if not ga_id:
+            return None
+        if not _GA_ID_RE.match(ga_id):
+            print(f"Ignoring malformed GA measurement ID: {ga_id!r} (expected G-XXXXXXXXXX)")
+            return None
+        return ga_id.upper()
 
     def _branding(self, request: Request) -> tuple[str, str]:
         """(title, brand) shown by the SPA — page/login title and the sidebar

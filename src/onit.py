@@ -506,6 +506,7 @@ class OnIt(BaseModel):
     web_allowed_emails: list[str] | None = Field(default=None)
     web_require_auth: bool = Field(default=True)
     web_title: str = Field(default="OnIt Chat")
+    web_ga_measurement_id: str | None = Field(default=None)
     a2a: bool = Field(default=False)
     a2a_port: int = Field(default=9001)
     a2a_name: str = Field(default="OnIt")
@@ -554,6 +555,7 @@ class OnIt(BaseModel):
                     allowed_emails=self.web_allowed_emails,
                     session_path=self.session_path,
                     title=self.web_title,
+                    ga_measurement_id=self.web_ga_measurement_id,
                     verbose=self.verbose,
                     require_auth=self.web_require_auth,
                 )
@@ -799,6 +801,7 @@ class OnIt(BaseModel):
         self.web_allowed_emails = self.config_data.get('web_allowed_emails', None)
         self.web_require_auth = bool(self.config_data.get('web_require_auth', True))
         self.web_title = self.config_data.get('web_title', 'OnIt Chat')
+        self.web_ga_measurement_id = self.config_data.get('web_ga_measurement_id', None)
         self.a2a = self.config_data.get('a2a', False)
         self.a2a_port = self.config_data.get('a2a_port', 9001)
         self.a2a_name = self.config_data.get('a2a_name', 'OnIt')

@@ -74,6 +74,11 @@ ONIT_DOCUMENTS_DIR=/home/me/internal-data
 # (e.g. an extra proxy in front of Caddy rewrites the Host header).
 # ONIT_PUBLIC_URL=https://mychat.ai
 
+# Optional: Google Analytics. Set a GA4 measurement ID (Admin → Data
+# streams → Web in analytics.google.com) and the web UI loads the gtag
+# snippet on every page view, including the login page. Off when unset.
+# ONIT_GA_MEASUREMENT_ID=G-XXXXXXXXXX
+
 # ── Model endpoint (required) ────────────────────────────────────────
 # For a vLLM/Ollama server running on the SAME machine, use
 # host.docker.internal — localhost inside a container is the container
