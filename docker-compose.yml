@@ -85,7 +85,7 @@ services:
       - web-sessions:/home/onit/.onit/sessions
       - *data-volume
       - *documents-volume
-    command: ["--data-path", "/home/onit/data", "serve", "web", "--port", "9000"]
+    command: ["--data-path", "/home/onit/data", "--think", "serve", "web", "--port", "9000"]
 
   onit-a2a:
     build: .
@@ -99,7 +99,7 @@ services:
       - a2a-sessions:/home/onit/.onit/sessions
       - *data-volume
       - *documents-volume
-    command: ["--data-path", "/home/onit/data", "serve", "a2a", "--port", "9001"]
+    command: ["--data-path", "/home/onit/data", "--think", "serve", "a2a", "--port", "9001"]
 
   onit-gateway:
     build: .
@@ -111,7 +111,7 @@ services:
       - gateway-sessions:/home/onit/.onit/sessions
       - *data-volume
       - *documents-volume
-    command: ["--data-path", "/home/onit/data", "serve", "gateway"]
+    command: ["--data-path", "/home/onit/data", "--think", "serve", "gateway"]
 
   onit-terminal:
     build: .
@@ -125,7 +125,7 @@ services:
       - *data-volume
       - *documents-volume
     profiles: ["terminal"]
-    command: ["--data-path", "/home/onit/data"]
+    command: ["--data-path", "/home/onit/data", "--think"]
 
 volumes:
   web-sessions:
