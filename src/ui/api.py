@@ -30,6 +30,7 @@ SSE event schema (see docs/web-ui-plan.md):
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -79,11 +80,20 @@ except ImportError:
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
-# Default web UI branding. Inside the docker deployment (ONIT_CONTAINER=1)
-# the serving domain replaces it unless the operator set a custom web_title.
+# Default web UI branding. When the UI is served through a real domain name
+# the domain replaces the brand; a custom web_title still wins for the title.
 DEFAULT_TITLE = "OnIt Chat"
 DEFAULT_BRAND = "OnIt"
-_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+def _is_local_host(host: str) -> bool:
+    """True for hostnames that should keep the default OnIt branding:
+    localhost and bare IP addresses (an IP is not a brand)."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
 
 # GA4 measurement IDs look like G-XXXXXXXXXX. The ID is echoed to the browser
 # and interpolated into a script URL, so anything else is dropped.
@@ -925,23 +935,24 @@ class WebApiUI:
         return ga_id.upper()
 
     def _branding(self, request: Request) -> tuple[str, str]:
-        """(title, brand) shown by the SPA — page/login title and the sidebar
-        name. In the docker deployment (ONIT_CONTAINER=1) the serving domain
-        (e.g. mychat.ai) replaces the default OnIt branding, unless the
-        operator set a custom web_title, which always wins. The domain comes
-        from ONIT_DOMAIN (docker-compose .env), then ONIT_PUBLIC_URL, then the
+        """(title, brand) shown by the SPA — page/login title, and the name
+        used in the sidebar and the composer hint ("<brand> can make
+        mistakes"). Whenever the UI is served through a real domain name
+        (e.g. mychat.ai) the domain becomes the brand; localhost and bare-IP
+        access keep the default OnIt. A custom web_title always wins for the
+        title but does not stop the brand swap. The domain comes from
+        ONIT_DOMAIN (docker-compose .env), then ONIT_PUBLIC_URL, then the
         Host header the browser actually used."""
-        if self.title != DEFAULT_TITLE or os.environ.get("ONIT_CONTAINER") != "1":
-            return self.title, DEFAULT_BRAND
         domain = os.environ.get("ONIT_DOMAIN", "").strip()
         if not domain:
             public = os.environ.get("ONIT_PUBLIC_URL", "")
             domain = urllib.parse.urlparse(public).hostname or "" if public else ""
         if not domain:
             domain = request.url.hostname or ""
-        if not domain or domain.lower() in _LOCAL_HOSTS:
+        if not domain or _is_local_host(domain):
             return self.title, DEFAULT_BRAND
-        return domain, domain
+        title = self.title if self.title != DEFAULT_TITLE else domain
+        return title, domain
 
     def _external_base_url(self, request: Request) -> str:
         """Base URL as seen by the browser, for OAuth redirect URIs.
