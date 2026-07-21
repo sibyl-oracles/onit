@@ -80,6 +80,17 @@ except ImportError:
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+
+class _NoCacheStaticFiles(StaticFiles):
+    """Static assets served with no-cache so browsers revalidate on every
+    load (cheap 304s via ETag) — otherwise a heuristically cached app.js
+    survives deploys and keeps rendering stale branding."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
 # Default web UI branding. When the UI is served through a real domain name
 # the domain replaces the brand; a custom web_title still wins for the title.
 DEFAULT_TITLE = "OnIt Chat"
@@ -917,7 +928,7 @@ class WebApiUI:
             return HTMLResponse("<h1>OnIt web UI assets missing</h1>", status_code=500)
 
         if os.path.isdir(STATIC_DIR):
-            app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+            app.mount("/static", _NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 
     @staticmethod
     def _resolve_ga_id(configured: Optional[str]) -> Optional[str]:

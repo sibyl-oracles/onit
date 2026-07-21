@@ -206,16 +206,7 @@ textarea { font-family: var(--font); }
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
-.topbar-title {
-  flex: 1;
-  font-size: 13.5px;
-  font-weight: 550;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar-actions { display: flex; gap: 4px; }
+.topbar-actions { display: flex; gap: 4px; margin-left: auto; }
 
 .icon-btn {
   border: none;

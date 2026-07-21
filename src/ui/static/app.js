@@ -31,7 +31,6 @@
     attachBtn: $("attach-btn"), fileInput: $("file-input"),
     attachments: $("attachments"),
     newChat: $("new-chat"), clearChat: $("clear-chat"), clearAll: $("clear-all"),
-    topbarTitle: $("topbar-title"),
     themeToggle: $("theme-toggle"),
     logsToggle: $("logs-toggle"), logsDrawer: $("logs-drawer"),
     logsBody: $("logs-body"), logsClose: $("logs-close"),
@@ -349,7 +348,6 @@
     document.title = config.title || "OnIt Chat";
     el.brandTitle.textContent = config.brand || "OnIt";
     el.composerHint.textContent = `${config.brand || "OnIt"} can make mistakes. Verify important results.`;
-    el.topbarTitle.textContent = config.title || "";
     el.loginTitle.textContent = config.title || "OnIt Chat";
 
     if (config.auth_enabled && !config.authenticated) {
