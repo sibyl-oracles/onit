@@ -637,6 +637,35 @@ class TestAutoContainment:
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
+    async def test_container_mode_disables_containment(self, enforced, monkeypatch,
+                                                       tmp_path, bash_tool):
+        """In container mode the container is the isolation boundary: blocked
+        commands never trip containment (web UI in docker keeps executing)."""
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.delenv("ONIT_CONTAIN_THRESHOLD", raising=False)
+        for _ in range(10):
+            r = json.loads(await bash_tool(command="evilbin"))
+            assert r["status"] == "blocked"
+        r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
+        assert r["status"] in ("success", "failed")
+
+    def test_container_mode_ignores_stale_marker(self, monkeypatch, tmp_path):
+        """A marker persisted on the mounted data volume must not lock a
+        containerized server on restart."""
+        (tmp_path / bash_mod._CONTAINMENT_MARKER).write_text("{}")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.delenv("ONIT_CONTAIN_THRESHOLD", raising=False)
+        assert bash_mod._is_contained() is False
+
+    async def test_container_explicit_threshold_still_contains(
+            self, enforced, monkeypatch, tmp_path, bash_tool):
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
+        for _ in range(2):
+            await bash_tool(command="evilbin")
+        r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
+        assert r["status"] == "contained"
+
     def test_containment_gates_write_tools(self, tmp_path):
         bash_mod._CONTAINED = True
         write_fn = bash_mod.write_file.fn if hasattr(bash_mod.write_file, "fn") \

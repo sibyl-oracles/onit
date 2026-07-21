@@ -819,6 +819,9 @@ def _check_command_allowlist(check_command: str) -> str | None:
 # server enters containment: all execution/write/send tools refuse to run and
 # managed background processes are stopped. Containment persists across
 # restarts via a marker file in DATA_PATH; delete it to lift containment.
+# In container mode the container itself is the isolation boundary, so the
+# default is 0 (disabled) and any marker left behind (DATA_PATH is a mounted
+# volume) is ignored; set ONIT_CONTAIN_THRESHOLD explicitly to re-enable.
 
 _DEFAULT_CONTAIN_THRESHOLD = 5
 _CONTAINMENT_MARKER = ".onit-containment.json"
@@ -827,11 +830,11 @@ _CONTAINED = False
 
 
 def _contain_threshold() -> int:
+    default = 0 if _in_container() else _DEFAULT_CONTAIN_THRESHOLD
     try:
-        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD",
-                                  _DEFAULT_CONTAIN_THRESHOLD))
+        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD", default))
     except ValueError:
-        return _DEFAULT_CONTAIN_THRESHOLD
+        return default
 
 
 def _containment_marker_path() -> str:
@@ -841,6 +844,8 @@ def _containment_marker_path() -> str:
 
 def _is_contained() -> bool:
     global _CONTAINED
+    if _contain_threshold() <= 0:
+        return False
     if _CONTAINED:
         return True
     if os.path.isfile(_containment_marker_path()):

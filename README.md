@@ -538,7 +538,7 @@ On top of the glob rules, the bash tool can enforce a **command allowlist backed
 | `ONIT_COMMAND_ALLOWLIST` | `1` = enforce everywhere, `0` = disable. Unset: enforced inside `--container`, off on the host. |
 | `ONIT_ALLOWED_COMMANDS` | Comma-separated extra executables to allow (e.g. `mytool,deno`). |
 | `ONIT_ALLOW_PACKAGE_INSTALL` | `1` = permit package-manager installs (pinned versions only). Set by `--container-allow-installs`. |
-| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment (default `5`, `0` disables). |
+| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment (default `5` on the host, `0` = disabled inside `--container`). |
 
 The allowlist can also be extended in `settings.json` (read in the web UI, or when `ONIT_SETTINGS` is set explicitly):
 
@@ -571,6 +571,8 @@ Policy violations (blocked commands) are counted per server process. When the co
 - a marker file (`.onit-containment.json`, containing the violation log) is written to the data directory so containment **survives restarts**.
 
 Read-only tools (`read_file`, `search_*`) keep working so the session can be diagnosed. To lift containment, delete the marker file and restart the MCP server.
+
+Inside `--container` the container itself is the isolation boundary, so auto-containment is **disabled by default** and any stale marker file on the mounted data volume is ignored — the web UI keeps executing (allowlisted) commands even after blocked ones. Set `ONIT_CONTAIN_THRESHOLD` explicitly to re-enable containment in the container.
 
 ## MCP Tool Integration
 
