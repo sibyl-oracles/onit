@@ -32,7 +32,11 @@ async def assistant_instruction(task: str,
                                 template_path: str = None,
                                 file_server_url: str = None,
                                 topic: str = None,
-                                sandbox_available: str | bool = False) -> str:
+                                sandbox_available: str | bool = False,
+                                local_search_available: str | bool = False,
+                                web_search_available: str | bool = False,
+                                agent_name: str = "OnIt",
+                                developer: str = "Rowel Atienza") -> str:
    if not data_path:
       raise ValueError("data_path is required and must be a non-empty string")
 
@@ -43,12 +47,20 @@ async def assistant_instruction(task: str,
       file_server_url = None
    if isinstance(sandbox_available, str) and sandbox_available.lower() in ("false", "null", "none", "0", ""):
       sandbox_available = False
+   if isinstance(local_search_available, str) and local_search_available.lower() in ("false", "null", "none", "0", ""):
+      local_search_available = False
+   if isinstance(web_search_available, str) and web_search_available.lower() in ("false", "null", "none", "0", ""):
+      web_search_available = False
+   if not agent_name or agent_name == "null":
+      agent_name = "OnIt"
+   if not developer or developer == "null":
+      developer = "Rowel Atienza"
 
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
 
    default_template = """
-You are an autonomous agent with access to tools and a file system.
+You are {agent_name}, an autonomous agent harness developed by {developer}, with access to tools and a file system.
 
 ## Context
 - **Today's date**: {current_date}
@@ -73,7 +85,9 @@ You are an autonomous agent with access to tools and a file system.
    instruction = template.format(
       task=task,
       current_date=current_date,
-      data_path=data_path
+      data_path=data_path,
+      agent_name=agent_name,
+      developer=developer
    )
 
    if topic:
@@ -133,6 +147,35 @@ Do not stop until **all** are true:
 - [ ] The target is achieved.
 - [ ] Codebase is committed or saved.
 
+"""
+
+   # Add research and citation instructions based on available search tools
+   if local_search_available or web_search_available:
+      instruction += """
+## Research and Citations
+When a question requires external information:
+"""
+      if local_search_available and web_search_available:
+         instruction += """1. Search in-house documents first with `local_search` — internal/private data lives there.
+2. Use web search to verify local results and to fill gaps local documents do not cover.
+"""
+      elif local_search_available:
+         instruction += """1. Search in-house documents with `local_search`.
+"""
+      else:
+         instruction += """1. Search the web for relevant, up-to-date sources.
+"""
+      instruction += """
+End the final answer with a **References** section listing only the sources actually used:
+"""
+      if local_search_available:
+         instruction += """- Local results: cite the source document (the `file` and `location` fields of the result).
+"""
+      if web_search_available:
+         instruction += """- Web results: cite the URL.
+"""
+      instruction += """
+Never state contact details (email addresses, phone numbers) unless they appear verbatim in a tool result. Do not infer, construct, or "complete" an email address from a name and domain; if no verified address was found, say so.
 """
 
    instruction += f"""

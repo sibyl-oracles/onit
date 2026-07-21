@@ -507,6 +507,8 @@ class OnIt(BaseModel):
     web_require_auth: bool = Field(default=True)
     web_title: str = Field(default="OnIt Chat")
     web_ga_measurement_id: str | None = Field(default=None)
+    agent_name: str = Field(default="OnIt")
+    developer: str = Field(default="Rowel Atienza")
     a2a: bool = Field(default=False)
     a2a_port: int = Field(default=9001)
     a2a_name: str = Field(default="OnIt")
@@ -525,6 +527,16 @@ class OnIt(BaseModel):
     def sandbox_available(self) -> bool:
         """Check if sandbox mode is enabled."""
         return self.sandbox
+
+    @property
+    def local_search_available(self) -> bool:
+        """Check if the local document search tool was discovered."""
+        return self.tool_registry is not None and "local_search" in self.tool_registry.tools
+
+    @property
+    def web_search_available(self) -> bool:
+        """Check if the web search tool was discovered."""
+        return self.tool_registry is not None and "search" in self.tool_registry.tools
 
     def __init__(self, config: Union[str, os.PathLike[str], dict[str, Any], None] = None) -> None :
         super().__init__()
@@ -805,6 +817,8 @@ class OnIt(BaseModel):
         self.web_require_auth = bool(self.config_data.get('web_require_auth', True))
         self.web_title = self.config_data.get('web_title', 'OnIt Chat')
         self.web_ga_measurement_id = self.config_data.get('web_ga_measurement_id', None)
+        self.agent_name = self.config_data.get('agent_name', 'OnIt')
+        self.developer = self.config_data.get('developer', 'Rowel Atienza')
         self.a2a = self.config_data.get('a2a', False)
         self.a2a_port = self.config_data.get('a2a_port', 9001)
         self.a2a_name = self.config_data.get('a2a_name', 'OnIt')
@@ -914,6 +928,10 @@ class OnIt(BaseModel):
                 "file_server_url": self.file_server_url,
                 "topic": self.topic,
                 "sandbox_available": self.sandbox_available,
+                "local_search_available": self.local_search_available,
+                "web_search_available": self.web_search_available,
+                "agent_name": self.agent_name,
+                "developer": self.developer,
             })
             instruction = instruction.messages[0].content.text
 
@@ -1048,7 +1066,11 @@ class OnIt(BaseModel):
                                                                                 "template_path": self.template_path,
                                                                                 "file_server_url": self.file_server_url,
                                                                                 "topic": self.topic,
-                                                                                "sandbox_available": self.sandbox_available})
+                                                                                "sandbox_available": self.sandbox_available,
+                                                                                "local_search_available": self.local_search_available,
+                                                                                "web_search_available": self.web_search_available,
+                                                                                "agent_name": self.agent_name,
+                                                                                "developer": self.developer})
                     instruction = instruction.messages[0]
                     instruction = instruction.content.text
 
@@ -1271,7 +1293,11 @@ class OnIt(BaseModel):
                                                                         "template_path": self.template_path,
                                                                         "file_server_url": self.file_server_url,
                                                                         "topic": self.topic,
-                                                                        "sandbox_available": self.sandbox_available})
+                                                                        "sandbox_available": self.sandbox_available,
+                                                                        "local_search_available": self.local_search_available,
+                                                                        "web_search_available": self.web_search_available,
+                                                                        "agent_name": self.agent_name,
+                                                                        "developer": self.developer})
             instruction = instruction.messages[0]
             instruction = instruction.content.text
         return instruction

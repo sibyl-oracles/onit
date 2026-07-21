@@ -39,7 +39,7 @@
     sidebarFoot: $("sidebar-foot"), userEmail: $("user-email"),
     userAvatar: $("user-avatar"),
     brandTitle: $("brand-title"), welcomeTitle: $("welcome-title"),
-    loginTitle: $("login-title"),
+    loginTitle: $("login-title"), composerHint: $("composer-hint"),
   };
 
   // ── Markdown rendering ─────────────────────────────────────────
@@ -348,6 +348,7 @@
     initAnalytics(config.ga_id);
     document.title = config.title || "OnIt Chat";
     el.brandTitle.textContent = config.brand || "OnIt";
+    el.composerHint.textContent = `${config.brand || "OnIt"} can make mistakes. Verify important results.`;
     el.topbarTitle.textContent = config.title || "";
     el.loginTitle.textContent = config.title || "OnIt Chat";
 
