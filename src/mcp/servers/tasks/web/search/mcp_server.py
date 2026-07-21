@@ -412,7 +412,10 @@ def _search_impl(
 # Shared with the unified ToolsMCPServer re-registration (tools/mcp_server.py)
 SEARCH_TOOL_DESCRIPTION = """Search the web for news or general information. Web search uses the
 Ollama web search API with DuckDuckGo fallback; news search uses DuckDuckGo.
-For questions about internal or private documents, prefer local_search over web search.
+Do NOT use this for internal, company, or private documents — when a
+local_search tool is available, call local_search first and use web search
+only for information the local documents cannot answer (news, public facts,
+verification of local results).
 
 Args:
 - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")

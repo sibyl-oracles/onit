@@ -1207,11 +1207,16 @@ async def _compact_context(
     messages: list, client, model: str,
     max_tokens: int, chat_ui, verbose: bool,
     is_ollama: bool = False,
+    instruction: str = "",
 ) -> list:
     """Summarize the conversation and return a compacted messages list.
 
     Keeps the system message, generates a dense LLM summary of all other
     messages, and returns [system_msg, compacted_user_msg, ack_assistant_msg].
+    When ``instruction`` is given it is restated verbatim in the compacted
+    user message — the system message is only the short prompt_intro, so any
+    rules in the instruction (tool routing, citations, sandbox) would
+    otherwise be lost to the lossy summary.
     Falls back to the original messages list if the summarization call fails.
     """
     system_msg = (
@@ -1286,13 +1291,27 @@ async def _compact_context(
     new_messages: list = []
     if system_msg:
         new_messages.append(system_msg)
-    new_messages.append({
-        "role": "user",
-        "content": (
+    if instruction:
+        compacted_content = (
+            "[CONTEXT COMPACTED]\n"
+            "The original task instruction is restated below and all of its "
+            "rules remain in effect, followed by a summary of prior work.\n\n"
+            "## Original instruction\n"
+            + instruction
+            + "\n\n## Summary of prior work\n"
+            + summary
+            + "\n\n[Continue the task, following the original instruction and "
+            "building on the summary above.]"
+        )
+    else:
+        compacted_content = (
             "[CONTEXT COMPACTED]\nThe following is a summary of prior work:\n\n"
             + summary
             + "\n\n[Continue the task based on the summary above.]"
-        ),
+        )
+    new_messages.append({
+        "role": "user",
+        "content": compacted_content,
     })
     new_messages.append({
         "role": "assistant",
@@ -1449,7 +1468,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 messages,
                 ollama_client if is_ollama else client,
                 model, max_tokens, chat_ui, verbose,
-                is_ollama=is_ollama,
+                is_ollama=is_ollama, instruction=instruction,
             )
             _last_prompt_tokens = 0
 
@@ -1467,7 +1486,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     messages,
                     ollama_client if is_ollama else client,
                     model, max_tokens, chat_ui, verbose,
-                    is_ollama=is_ollama,
+                    is_ollama=is_ollama, instruction=instruction,
                 )
                 _last_prompt_tokens = 0
 
@@ -1495,6 +1514,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 messages = await _compact_context(
                     messages, ollama_client if is_ollama else client,
                     model, max_tokens, chat_ui, verbose, is_ollama=is_ollama,
+                    instruction=instruction,
                 )
                 _last_prompt_tokens = 0
 

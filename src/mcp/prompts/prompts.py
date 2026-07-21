@@ -156,8 +156,8 @@ Do not stop until **all** are true:
 When a question requires external information:
 """
       if local_search_available and web_search_available:
-         instruction += """1. Search in-house documents first with `local_search` — internal/private data lives there.
-2. Use web search to verify local results and to fill gaps local documents do not cover.
+         instruction += """1. ALWAYS call `local_search` before any web search — internal/private data lives there and never appears on the web.
+2. Only after `local_search` returns, use web search to verify local results and to fill gaps local documents do not cover.
 """
       elif local_search_available:
          instruction += """1. Search in-house documents with `local_search`.
