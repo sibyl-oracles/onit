@@ -210,3 +210,125 @@ def test_mcp_rebuild(search_env):
     result = json.loads(local_mod._index_documents_impl(rebuild=True))
     assert result["status"] == "success"
     assert len(result["indexed"]) == 3
+
+
+# -- shared corpus index across sessions ---------------------------------------
+
+def _make_session(data, name):
+    session = data / name
+    session.mkdir()
+    return str(session)
+
+
+def test_shared_corpus_indexed_once_across_sessions(search_env):
+    session_a = _make_session(search_env, "session-a")
+    session_b = _make_session(search_env, "session-b")
+
+    result_a = json.loads(local_mod._index_documents_impl(data_path=session_a))
+    assert result_a["scope"] == "shared"
+    assert len(result_a["indexed"]) == 3
+
+    # Second session reuses the shared index: nothing is re-parsed
+    result_b = json.loads(local_mod._index_documents_impl(data_path=session_b))
+    assert result_b["scope"] == "shared"
+    assert result_b["indexed"] == []
+    assert result_b["skipped_unchanged"] == 3
+
+    # Only one shared index directory exists, none inside the session jails
+    assert (search_env / "local_search" / "shared" / "index.json").is_file()
+    assert not (search_env / "session-a" / "local_search").exists()
+    assert not (search_env / "session-b" / "local_search").exists()
+
+
+def test_search_uses_shared_index_across_sessions(search_env):
+    session_a = _make_session(search_env, "session-a")
+    session_b = _make_session(search_env, "session-b")
+
+    result_a = json.loads(local_mod._local_search_impl(
+        query="vacation days", data_path=session_a))
+    assert result_a["status"] == "success"
+    assert result_a["results"][0]["file"].endswith("vacation.md")
+
+    # Session B searches the same shared index without re-ingesting
+    shared_index = local_mod._get_index(local_mod._shared_index_dir())
+    docs_before = dict(shared_index.documents)
+    result_b = json.loads(local_mod._local_search_impl(
+        query="vacation days", data_path=session_b))
+    assert result_b["status"] == "success"
+    assert result_b["results"][0]["file"].endswith("vacation.md")
+    assert shared_index.documents == docs_before
+
+
+def test_session_files_stay_isolated_and_merge_with_shared(search_env):
+    session_a = _make_session(search_env, "session-a")
+    session_b = _make_session(search_env, "session-b")
+
+    private = search_env / "session-a" / "notes"
+    private.mkdir()
+    (private / "secret.md").write_text(
+        "# Project Zebra\n\nProject Zebra launches in October with a 2M budget.\n"
+    )
+    result = json.loads(local_mod._index_documents_impl(
+        path=str(private), data_path=session_a))
+    assert result["scope"] == "session"
+    assert len(result["indexed"]) == 1
+
+    # Session A sees its private doc merged with the shared corpus
+    found = json.loads(local_mod._local_search_impl(
+        query="Project Zebra launch budget", data_path=session_a))
+    assert found["results"][0]["file"].endswith("secret.md")
+    assert found["total_documents"] == 4  # 3 shared + 1 session
+
+    # Session B cannot see session A's private doc
+    hidden = json.loads(local_mod._local_search_impl(
+        query="Project Zebra launch budget", data_path=session_b))
+    assert all(not r["file"].endswith("secret.md") for r in hidden["results"])
+    assert hidden["total_documents"] == 3
+
+
+def test_cleanup_removes_legacy_session_indexes(search_env, corpus):
+    # Legacy layout: a full copy of the shared corpus index inside a session jail
+    legacy = search_env / "old-session" / "local_search"
+    LocalSearchIndex(str(legacy)).index_directory(str(corpus))
+    assert (legacy / "index.json").is_file()
+
+    # New-style session index holding only session-local documents
+    private = search_env / "live-session" / "notes"
+    private.mkdir(parents=True)
+    (private / "own.md").write_text("Session-local notes about project alpha.\n")
+    kept = search_env / "live-session" / "local_search"
+    LocalSearchIndex(str(kept)).index_directory(str(private))
+
+    # Legacy server-level fallback index, next to the new shared subdir
+    fallback = search_env / "local_search"
+    LocalSearchIndex(str(fallback)).index_directory(str(corpus))
+    shared = search_env / "local_search" / "shared"
+    LocalSearchIndex(str(shared)).index_directory(str(corpus))
+
+    removed = local_mod._cleanup_legacy_session_indexes()
+    assert removed == 2
+    assert not legacy.exists()
+    assert not (fallback / "index.json").exists()
+    assert (kept / "index.json").is_file()       # session-only index kept
+    assert (shared / "index.json").is_file()     # shared index untouched
+
+
+def test_cleanup_noop_without_documents_path(search_env, corpus, monkeypatch):
+    monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", None)
+    legacy = search_env / "old-session" / "local_search"
+    LocalSearchIndex(str(legacy)).index_directory(str(corpus))
+
+    assert local_mod._cleanup_legacy_session_indexes() == 0
+    assert (legacy / "index.json").is_file()
+
+
+def test_status_only_combines_shared_and_session(search_env):
+    session_a = _make_session(search_env, "session-a")
+    local_mod._index_documents_impl(data_path=session_a)
+
+    status = json.loads(local_mod._index_documents_impl(
+        status_only=True, data_path=session_a))
+    assert status["status"] == "success"
+    assert status["total_documents"] == 3
+    assert status["shared_index"]["total_documents"] == 3
+    assert status["session_index"]["total_documents"] == 0
