@@ -76,8 +76,14 @@ ONIT_DOCUMENTS_DIR=/home/me/internal-data
 
 # Optional: Google Analytics. Set a GA4 measurement ID (Admin → Data
 # streams → Web in analytics.google.com) and the web UI loads the gtag
-# snippet on every page view, including the login page. Off when unset.
+# snippet for authenticated users. The ID is withheld from the pre-login
+# /api/config so it isn't exposed to anonymous visitors. Off when unset.
 # ONIT_GA_MEASUREMENT_ID=G-XXXXXXXXXX
+
+# Optional: responsible-disclosure contact published at
+# /.well-known/security.txt (RFC 9116). A mailto: or https: URL. When unset
+# the endpoint returns 404 rather than inventing a contact.
+# ONIT_SECURITY_CONTACT=mailto:security@example.com
 
 # ── Model endpoint (required) ────────────────────────────────────────
 # For a vLLM/Ollama server running on the SAME machine, use

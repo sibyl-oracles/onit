@@ -325,8 +325,10 @@ Anyone who can reach the port can then use the agent.
 
 **Google Analytics (optional).** Set `web_ga_measurement_id: G-XXXXXXXXXX`
 in the config (or the `ONIT_GA_MEASUREMENT_ID` env var — handy in the
-docker-compose `.env`) and the web UI loads the GA4 gtag snippet on every
-page view, including the login page. Analytics is off when unset.
+docker-compose `.env`) and the web UI loads the GA4 gtag snippet for
+authenticated users. The measurement ID is withheld from the public,
+pre-login `/api/config` so it isn't exposed to anonymous visitors.
+Analytics is off when unset.
 
 ##### Setting up Google OAuth2 (step by step)
 

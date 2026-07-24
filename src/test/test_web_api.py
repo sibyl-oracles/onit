@@ -178,6 +178,55 @@ class TestConfigEndpoint:
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/style.css").status_code == 200
 
+    def test_ga_id_served_on_open_ui(self, tmp_path, bg_loop):
+        # No login required → every client is effectively authenticated, so
+        # analytics is available.
+        u = WebApiUI(
+            data_path=str(tmp_path / "d"),
+            session_path=str(tmp_path / "s" / "c.jsonl"),
+            require_auth=False,
+            ga_measurement_id="G-ABCD1234",
+        )
+        u._loop = bg_loop
+        u.build_app()
+        assert TestClient(u.app).get("/api/config").json()["ga_id"] == "G-ABCD1234"
+
+
+class TestGaIdNotLeakedPreLogin:
+    """The GA measurement ID must not appear in the public /api/config for an
+    unauthenticated visitor; it's handed over only after login."""
+
+    @pytest.fixture
+    def auth_ga_ui(self, tmp_path, bg_loop, monkeypatch):
+        monkeypatch.setattr(ui_auth, "GOOGLE_AUTH_AVAILABLE", True)
+        monkeypatch.setattr("ui.api.GOOGLE_AUTH_AVAILABLE", True)
+        monkeypatch.setattr("ui.api.GoogleAuthenticator", lambda *a, **k: object())
+        u = WebApiUI(
+            data_path=str(tmp_path / "d"),
+            session_path=str(tmp_path / "s" / "c.jsonl"),
+            google_client_id="test-client-id.apps.googleusercontent.com",
+            google_client_secret="test-secret",
+            ga_measurement_id="G-ABCD1234",
+        )
+        u._loop = bg_loop
+        u.build_app()
+        return u
+
+    def test_ga_id_withheld_when_unauthenticated(self, auth_ga_ui):
+        data = TestClient(auth_ga_ui.app).get("/api/config").json()
+        assert data["authenticated"] is False
+        assert data["ga_id"] is None
+
+    def test_ga_id_present_after_auth(self, auth_ga_ui):
+        from datetime import datetime, timedelta
+        auth_ga_ui._authenticated_cookies["c"] = {
+            "email": "user@test.com",
+            "session_id": "s1",
+            "expires": datetime.now() + timedelta(hours=1),
+        }
+        client = TestClient(auth_ga_ui.app, cookies={"onit_auth": "c"})
+        assert client.get("/api/config").json()["ga_id"] == "G-ABCD1234"
+
 
 class TestDomainBranding:
     """When the web UI is served through a real domain name the domain

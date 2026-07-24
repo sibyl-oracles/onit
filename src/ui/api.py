@@ -787,14 +787,20 @@ class WebApiUI:
         @app.get("/api/config")
         async def api_config(request: Request):
             email = self._auth_email(request) if self.auth_enabled else None
+            authenticated = bool(email) or not self.auth_enabled
             title, brand = self._branding(request)
             return {
                 "title": title,
                 "brand": brand,
-                "ga_id": self.ga_measurement_id,
+                # The analytics ID is only handed to authenticated clients (or
+                # an open, no-login UI). /api/config is reachable pre-login so
+                # the SPA can render the login view; withholding ga_id there
+                # keeps it out of anonymous responses. The SPA re-fetches config
+                # after the OAuth redirect, so analytics still loads once in.
+                "ga_id": self.ga_measurement_id if authenticated else None,
                 "agent": self.agent_cursor,
                 "auth_enabled": self.auth_enabled,
-                "authenticated": bool(email) or not self.auth_enabled,
+                "authenticated": authenticated,
                 "email": email,
                 "show_logs": self.show_logs,
             }
