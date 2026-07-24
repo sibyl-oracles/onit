@@ -737,3 +737,108 @@ def test_delete_session_helper(tmp_path):
     assert delete_session(sid, sessions_dir=sessions_dir) is True
     assert not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl"))
     assert delete_session(sid, sessions_dir=sessions_dir) is False
+
+
+# ── Security hardening ─────────────────────────────────────────────────────
+
+class TestSecurityHeaders:
+    def test_openapi_spec_disabled(self, client):
+        # The full API surface must not be published to anonymous callers.
+        assert client.get("/openapi.json").status_code == 404
+        assert client.get("/docs").status_code == 404
+
+    def test_security_headers_present(self, client):
+        r = client.get("/api/config")
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert r.headers["X-Frame-Options"] == "DENY"
+        assert "Content-Security-Policy" in r.headers
+        assert r.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+        assert "Permissions-Policy" in r.headers
+
+    def test_server_header_generic(self, client):
+        # No "uvicorn" advertised.
+        assert "uvicorn" not in client.get("/api/config").headers.get("server", "").lower()
+
+    def test_csp_omits_ga_when_analytics_off(self, ui, client):
+        assert ui.ga_measurement_id is None
+        csp = client.get("/api/config").headers["Content-Security-Policy"]
+        assert "googletagmanager" not in csp
+        assert "script-src 'self'" in csp
+
+    def test_csp_includes_ga_when_configured(self, tmp_path, bg_loop):
+        u = WebApiUI(
+            data_path=str(tmp_path / "d"),
+            session_path=str(tmp_path / "s" / "c.jsonl"),
+            require_auth=False,
+            ga_measurement_id="G-ABCD1234",
+        )
+        u._loop = bg_loop
+        u.build_app()
+        csp = TestClient(u.app).get("/api/config").headers["Content-Security-Policy"]
+        assert "https://www.googletagmanager.com" in csp
+
+    def test_hsts_only_on_https(self, client):
+        # Plain-http test client must not receive an HSTS pin.
+        assert "Strict-Transport-Security" not in client.get("/api/config").headers
+        r = client.get("/api/config", headers={"X-Forwarded-Proto": "https"})
+        assert "max-age=" in r.headers.get("Strict-Transport-Security", "")
+
+
+class TestWellKnown:
+    def test_robots_disallows_sensitive_paths(self, client):
+        body = client.get("/robots.txt").text
+        assert "Disallow: /api/" in body
+        assert "Disallow: /auth/" in body
+
+    def test_security_txt_absent_without_contact(self, client, monkeypatch):
+        monkeypatch.delenv("ONIT_SECURITY_CONTACT", raising=False)
+        assert client.get("/.well-known/security.txt").status_code == 404
+
+    def test_security_txt_served_with_contact(self, client, monkeypatch):
+        monkeypatch.setenv("ONIT_SECURITY_CONTACT", "mailto:sec@example.com")
+        r = client.get("/.well-known/security.txt")
+        assert r.status_code == 200
+        assert "Contact: mailto:sec@example.com" in r.text
+        assert "Expires:" in r.text
+
+
+class TestUploadLimit:
+    def test_oversized_upload_rejected(self, client, monkeypatch):
+        import ui.api as api_mod
+        monkeypatch.setattr(api_mod, "_MAX_UPLOAD_BYTES", 1024)
+        big = b"x" * 4096
+        r = client.post("/api/upload", files={"file": ("big.bin", big, "application/octet-stream")})
+        assert r.status_code == 413
+
+    def test_normal_upload_accepted(self, client):
+        r = client.post("/api/upload", files={"file": ("ok.txt", b"hello", "text/plain")})
+        assert r.status_code == 200
+        assert r.json()["name"] == "ok.txt"
+
+
+class TestVerifyLinksSSRF:
+    def test_private_host_screened(self, ui):
+        # Literal private/loopback hosts fail the structural screen.
+        assert ui._verify_link("http://169.254.169.254/latest/meta-data/") is False
+        assert ui._verify_link("http://127.0.0.1/") is False
+        assert ui._verify_link("http://localhost/") is False
+
+    def test_public_looking_host_resolving_private_rejected(self, ui, monkeypatch):
+        # A public-looking name that resolves to a private/reserved address
+        # must be rejected before any network probe (DNS-rebinding SSRF).
+        import ui.api as api_mod
+
+        def fake_getaddrinfo(host, *a, **k):
+            return [(2, 1, 6, "", ("169.254.169.254", 0))]
+
+        monkeypatch.setattr(api_mod.socket, "getaddrinfo", fake_getaddrinfo)
+        # Bypass the structural screen so we exercise the resolution check.
+        monkeypatch.setattr(api_mod, "_link_shape_ok", lambda url: True)
+        called = {"probed": False}
+
+        def fake_head(*a, **k):
+            called["probed"] = True
+            raise AssertionError("should not probe a private-resolving host")
+
+        assert ui._probe_url("http://evil.example.com/") is False
+        assert called["probed"] is False

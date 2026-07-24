@@ -39,6 +39,7 @@ import queue
 import re
 import secrets
 import shutil
+import socket
 import threading
 import time
 import urllib.parse
@@ -116,6 +117,28 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 # Sentinel pushed into the event queue when a chat turn is finished
 _END = ("__end__", None)
 
+# Cap on a single uploaded file. Uploads are read fully into memory before
+# being written, so an unbounded body is a trivial memory-exhaustion DoS;
+# reject anything larger. Override with ONIT_MAX_UPLOAD_MB.
+try:
+    _MAX_UPLOAD_BYTES = int(float(os.environ.get("ONIT_MAX_UPLOAD_MB", "25")) * 1024 * 1024)
+except ValueError:
+    _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+# Response headers applied to every response — defence in depth alongside the
+# reverse proxy. These don't depend on the request, so they're a module const;
+# HSTS and CSP (which do vary) are added per-request in the middleware.
+_STATIC_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=(), interest-cohort=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    # Replace uvicorn's "server: uvicorn" so the ASGI stack/version isn't
+    # advertised. uvicorn is launched with server_header=False (see launch()).
+    "Server": "OnIt",
+}
+
 # ── Link verification ───────────────────────────────────────────────────────
 # Agents sometimes hallucinate URLs (e.g. https://ge.php, https://manual).
 # The UI keeps external links non-clickable until POST /api/verify_links
@@ -153,6 +176,49 @@ def _link_shape_ok(url: str) -> bool:
 def _sse(event: str, payload: dict) -> str:
     """Format one server-sent event."""
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _read_capped(file, limit: Optional[int] = None) -> Optional[bytes]:
+    """Read an UploadFile into memory, aborting once *limit* bytes are
+    exceeded. Returns None when the file is too large so callers can reject it
+    without having buffered the whole (possibly huge) body."""
+    if limit is None:
+        limit = _MAX_UPLOAD_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _host_resolves_public(host: str) -> bool:
+    """True only if *host* resolves exclusively to public IP addresses.
+
+    The structural screen (_link_shape_ok) rejects literal private hosts, but a
+    public-looking name can still resolve to a loopback, RFC-1918, link-local
+    or otherwise reserved address (e.g. cloud metadata at 169.254.169.254).
+    Resolving here and rejecting any non-global result closes that SSRF gap."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, ValueError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%")[0])
+        except ValueError:
+            return False
+        if not ip.is_global or ip.is_reserved:
+            return False
+    return True
 
 
 def _remove_session_zip(data_path: str) -> None:
@@ -528,6 +594,12 @@ class WebApiUI:
         """Network reachability check: HEAD first, GET fallback (some
         servers reject HEAD). Any 2xx/3xx final status counts as alive."""
         import requests
+        # Re-check after DNS resolution: a public-looking host that resolves to
+        # a private/reserved address (cloud metadata, intranet) must not be
+        # probed. The structural screen only catches literal private hosts.
+        host = urllib.parse.urlsplit(url).hostname or ""
+        if not _host_resolves_public(host):
+            return False
         headers = {"User-Agent": "Mozilla/5.0 (compatible; OnIt-LinkCheck)"}
         try:
             resp = requests.head(url, timeout=_VERIFY_TIMEOUT,
@@ -649,7 +721,28 @@ class WebApiUI:
     # ------------------------------------------------------------------
 
     def build_app(self) -> FastAPI:
-        app = FastAPI(title=self.title, docs_url=None, redoc_url=None)
+        # openapi_url=None removes /openapi.json (and the interactive docs,
+        # already disabled) so the full API surface — every route, schema and
+        # parameter — isn't published to anonymous callers in production.
+        app = FastAPI(
+            title=self.title, docs_url=None, redoc_url=None, openapi_url=None
+        )
+
+        @app.middleware("http")
+        async def security_headers_middleware(request: Request, call_next):
+            response = await call_next(request)
+            for name, value in _STATIC_SECURITY_HEADERS.items():
+                response.headers[name] = value
+            response.headers["Content-Security-Policy"] = self._csp_header()
+            # Only advertise HSTS over a secure connection (behind the TLS
+            # proxy request.url.scheme is https via proxy_headers); sending it
+            # on plain-http dev/localhost would wrongly pin those hosts.
+            proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+            if proto == "https":
+                response.headers["Strict-Transport-Security"] = (
+                    "max-age=63072000; includeSubDomains"
+                )
+            return response
 
         @app.middleware("http")
         async def session_cookie_middleware(request: Request, call_next):
@@ -782,7 +875,12 @@ class WebApiUI:
             os.makedirs(session.data_path, exist_ok=True)
             safe_name = os.path.basename(file.filename or "upload")
             dest = os.path.join(session.data_path, safe_name)
-            content = await file.read()
+            content = await _read_capped(file)
+            if content is None:
+                return JSONResponse(
+                    {"detail": f"File exceeds the {_MAX_UPLOAD_BYTES // (1024*1024)} MB limit"},
+                    status_code=413,
+                )
             with open(dest, "wb") as f:
                 f.write(content)
             return {
@@ -912,7 +1010,9 @@ class WebApiUI:
             os.makedirs(data_path, exist_ok=True)
             safe_name = os.path.basename(file.filename)
             filepath = os.path.join(data_path, safe_name)
-            content = await file.read()
+            content = await _read_capped(file)
+            if content is None:
+                return Response(content="File too large", status_code=413)
             with open(filepath, "wb") as f:
                 f.write(content)
             return {"filename": safe_name, "status": "ok"}
@@ -927,8 +1027,70 @@ class WebApiUI:
                 return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
             return HTMLResponse("<h1>OnIt web UI assets missing</h1>", status_code=500)
 
+        @app.get("/robots.txt")
+        async def robots_txt():
+            # Keep the API, auth and per-session upload paths out of crawler
+            # indexes. This is guidance for well-behaved bots, not access
+            # control (those paths are already auth-gated).
+            body = (
+                "User-agent: *\n"
+                "Disallow: /api/\n"
+                "Disallow: /auth/\n"
+                "Disallow: /uploads/\n"
+            )
+            return Response(content=body, media_type="text/plain")
+
+        @app.get("/.well-known/security.txt")
+        async def security_txt():
+            # Publish a disclosure channel only when the operator has set a
+            # contact (ONIT_SECURITY_CONTACT, e.g. "mailto:security@example.com"
+            # or an https URL); otherwise stay 404 rather than invent one.
+            contact = os.environ.get("ONIT_SECURITY_CONTACT", "").strip()
+            if not contact:
+                return Response(content='{"detail":"Not Found"}',
+                                media_type="application/json", status_code=404)
+            expires = (datetime.now() + timedelta(days=365)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            body = f"Contact: {contact}\nExpires: {expires}\n"
+            return Response(content=body, media_type="text/plain")
+
         if os.path.isdir(STATIC_DIR):
             app.mount("/static", _NoCacheStaticFiles(directory=STATIC_DIR), name="static")
+
+    def _csp_header(self) -> str:
+        """Content-Security-Policy for the SPA.
+
+        Scripts and styles are same-origin (served from /static); markdown is
+        rendered client-side and sanitised with DOMPurify. Google Analytics,
+        when configured, injects gtag from googletagmanager.com and beacons to
+        google-analytics.com — those hosts are whitelisted only when analytics
+        is on. 'unsafe-inline' is allowed for styles (highlight.js themes and
+        rendered-markdown styling) but never for scripts."""
+        script_src = ["'self'"]
+        connect_src = ["'self'"]
+        img_src = ["'self'", "data:", "blob:"]
+        if self.ga_measurement_id:
+            script_src.append("https://www.googletagmanager.com")
+            connect_src += [
+                "https://www.google-analytics.com",
+                "https://*.google-analytics.com",
+                "https://*.googletagmanager.com",
+            ]
+            img_src.append("https://www.google-analytics.com")
+        directives = [
+            "default-src 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "form-action 'self'",
+            "script-src " + " ".join(script_src),
+            "style-src 'self' 'unsafe-inline'",
+            "img-src " + " ".join(img_src),
+            "connect-src " + " ".join(connect_src),
+            "font-src 'self' data:",
+        ]
+        return "; ".join(directives)
 
     @staticmethod
     def _resolve_ga_id(configured: Optional[str]) -> Optional[str]:
@@ -1111,6 +1273,10 @@ class WebApiUI:
                 port=self.server_port,
                 log_level="info" if self.verbose else "warning",
                 access_log=self.verbose,
+                # Don't emit uvicorn's "server: uvicorn" header; the security
+                # middleware sets a generic Server value instead so the ASGI
+                # stack isn't advertised.
+                server_header=False,
                 # Honor X-Forwarded-Proto/For from a TLS-terminating reverse
                 # proxy so request.base_url is https://. The port must not be
                 # exposed publicly, or clients could spoof these headers.

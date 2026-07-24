@@ -16,6 +16,14 @@
 {$ONIT_DOMAIN:localhost} {
 	encode gzip
 
+	# Don't advertise the proxy/backend stack in responses. The app sets its
+	# own security headers (CSP, HSTS, X-Frame-Options, …); here we only strip
+	# the identifying headers the proxy itself would otherwise add.
+	header {
+		-Server
+		-Via
+	}
+
 	reverse_proxy onit-web:9000 {
 		# Chat output streams over SSE — never buffer responses.
 		flush_interval -1

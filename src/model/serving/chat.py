@@ -1407,7 +1407,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         if num_ctx is None:
             _native_ctx = await _get_ollama_max_context(ollama_client, model)
             # Ceiling keeps auto-sizing safe; raise serving.num_ctx to go higher.
-            _ctx_ceiling = max(max_tokens * 2, 32768)
+            _ctx_ceiling = max(max_tokens * 2, 262144)
             if _native_ctx:
                 num_ctx = min(_native_ctx, _ctx_ceiling)
             else:
