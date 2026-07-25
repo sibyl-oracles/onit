@@ -197,6 +197,25 @@ class TestOnItInitialize:
             onit = OnIt(config=cfg)
         assert len(onit.load_balancer.endpoints) == 1
 
+    def test_ollama_fallback_only_defaults_true(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["host2"] = "https://api.ollama.com"
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.ollama_fallback_only is True
+
+    def test_ollama_fallback_only_config_reaches_balancer(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["host2"] = "https://api.ollama.com"
+        cfg["serving"]["ollama_fallback_only"] = False
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        lb = onit.load_balancer
+        assert lb.ollama_fallback_only is False
+        # Ollama is now a normal rotation member, not a fallback.
+        seen = {lb.acquire(key=f"s{i}").host for i in range(50)}
+        assert seen == {"http://localhost:8000/v1", "https://api.ollama.com"}
+
     def test_session_path_created(self, tmp_path):
         cfg = _make_config(tmp_path)
         with _mock_discover():

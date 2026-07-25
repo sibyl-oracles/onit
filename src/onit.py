@@ -688,9 +688,11 @@ class OnIt(BaseModel):
         cloud — and requests are distributed per ``serving.load_balancer``
         (sticky assigns each new session a random host; round_robin, random,
         or least_busy distribute per request). Ollama endpoints are
-        fallback-only: they serve requests only while no vLLM/OpenRouter
-        endpoint is healthy. A failing endpoint is cooled down so the other
-        server takes over automatically.
+        fallback-only by default: they serve requests only while no
+        vLLM/OpenRouter endpoint is healthy. Set
+        ``serving.ollama_fallback_only: false`` to put Ollama endpoints in
+        normal rotation instead. A failing endpoint is cooled down so the
+        other server takes over automatically.
         """
         serving = self.model_serving
         endpoints = [ServerEndpoint(
@@ -717,7 +719,8 @@ class OnIt(BaseModel):
                 name='server2',
             ))
         self.load_balancer = LoadBalancer(
-            endpoints, serving.get('load_balancer', 'sticky'))
+            endpoints, serving.get('load_balancer', 'sticky'),
+            ollama_fallback_only=serving.get('ollama_fallback_only', True))
         if len(endpoints) > 1:
             print(f"  Load balancing ({self.load_balancer.algorithm}) across: "
                   f"{', '.join(self.load_balancer.hosts)}")

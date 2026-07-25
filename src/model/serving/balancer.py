@@ -24,10 +24,12 @@ All algorithms double as automatic failover: an endpoint that produced a
 failed request is put on a cooldown and skipped while any healthy endpoint
 remains available.
 
-Ollama endpoints (cloud or local) are fallback-only: whenever at least one
-non-Ollama endpoint (vLLM, OpenRouter, ...) is healthy, Ollama endpoints are
-kept out of rotation and only serve requests while every non-Ollama endpoint
-is cooling down.
+Ollama endpoints (cloud or local) are fallback-only by default: whenever at
+least one non-Ollama endpoint (vLLM, OpenRouter, ...) is healthy, Ollama
+endpoints are kept out of rotation and only serve requests while every
+non-Ollama endpoint is cooling down. Constructing the balancer with
+``ollama_fallback_only=False`` (config: ``serving.ollama_fallback_only``)
+makes Ollama endpoints first-class rotation members instead.
 """
 
 import logging
@@ -99,7 +101,8 @@ class LoadBalancer:
     """
 
     def __init__(self, endpoints: list[ServerEndpoint],
-                 algorithm: str = DEFAULT_ALGORITHM):
+                 algorithm: str = DEFAULT_ALGORITHM,
+                 ollama_fallback_only: bool = True):
         if not endpoints:
             raise ValueError("LoadBalancer requires at least one endpoint")
         if algorithm not in ALGORITHMS:
@@ -109,6 +112,7 @@ class LoadBalancer:
             algorithm = DEFAULT_ALGORITHM
         self.endpoints = list(endpoints)
         self.algorithm = algorithm
+        self.ollama_fallback_only = ollama_fallback_only
         self._lock = threading.Lock()
         self._rr_index = 0
         # sticky: session key → index of its assigned endpoint
@@ -143,19 +147,21 @@ class LoadBalancer:
         unless every endpoint is unhealthy, in which case all are considered
         so the caller can still make progress.
 
-        Ollama endpoints are fallback-only: while any healthy non-Ollama
-        endpoint exists, Ollama ones are excluded from the candidates. A
-        sticky session that failed over to Ollama therefore moves back to a
-        vLLM/OpenRouter endpoint as soon as one recovers.
+        Unless ``ollama_fallback_only`` was disabled, Ollama endpoints are
+        fallback-only: while any healthy non-Ollama endpoint exists, Ollama
+        ones are excluded from the candidates. A sticky session that failed
+        over to Ollama therefore moves back to a vLLM/OpenRouter endpoint as
+        soon as one recovers.
         """
         with self._lock:
             now = time.monotonic()
             candidates = [ep for ep in self.endpoints if ep.is_healthy(now)]
             if not candidates:
                 candidates = self.endpoints
-            preferred = [ep for ep in candidates if not ep.is_ollama]
-            if preferred:
-                candidates = preferred
+            if self.ollama_fallback_only:
+                preferred = [ep for ep in candidates if not ep.is_ollama]
+                if preferred:
+                    candidates = preferred
 
             if self.algorithm == "sticky":
                 # Locality: keep a session's inference on its assigned

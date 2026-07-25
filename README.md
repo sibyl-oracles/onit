@@ -142,6 +142,10 @@ serving:
   # host2_key: sk-...              # or ONIT_HOST2_KEY env var / keychain
   # model2: auto-detected from host2 unless set
   # load_balancer: sticky          # or: round_robin, random, least_busy
+  # Ollama endpoints (cloud or local) are fallback-only: while any
+  # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
+  # (or pass --no-ollama-fallback-only) to load-balance across them equally:
+  # ollama_fallback_only: true
 
 verbose: false
 timeout: 600

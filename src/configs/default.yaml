@@ -11,6 +11,12 @@ serving:
   # num_ctx: 32768  # Ollama only: context window (prompt+output). Ollama defaults this
   #                 # to 2048, which truncates long answers. Auto-sized from the model's
   #                 # native window (capped at max(max_tokens*2, 32768)) when unset.
+  # host2: http://localhost:8001/v1  # second server for load balancing (or ONIT_HOST2)
+  # model2:  # model on host2; auto-detected when unset
+  # load_balancer: sticky  # sticky | round_robin | random | least_busy
+  # Ollama endpoints only serve while no vLLM/OpenRouter endpoint is healthy.
+  # Set false (or pass --no-ollama-fallback-only) to load-balance across them.
+  # ollama_fallback_only: true
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."

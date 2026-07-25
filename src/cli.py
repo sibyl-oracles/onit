@@ -647,6 +647,15 @@ def _build_parser() -> argparse.ArgumentParser:
                              "(default: sticky — new sessions are assigned "
                              "round-robin, then each session stays on its "
                              "host unless a timeout/error fails it over).")
+    parser.add_argument("--ollama-fallback-only", default=None,
+                        dest="ollama_fallback_only",
+                        action=argparse.BooleanOptionalAction,
+                        help="Whether Ollama endpoints only serve while no "
+                             "vLLM/OpenRouter endpoint is healthy (default: "
+                             "true). Use --no-ollama-fallback-only to put "
+                             "Ollama endpoints in normal load-balancing "
+                             "rotation. Overrides serving.ollama_fallback_only "
+                             "in the config YAML.")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
     parser.add_argument("--think", action="store_true", default=None,
@@ -777,7 +786,16 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
 
     # --host, --model, --think override serving config
     if args.host:
-        config_data.setdefault('serving', {})['host'] = args.host
+        serving_cfg = config_data.setdefault('serving', {})
+        serving_cfg['host'] = args.host
+        # An explicit --host without --host2 means a single endpoint: drop any
+        # second host from config/env so the load balancer can't route
+        # requests to a leftover server (e.g. a vLLM host2 shadowing an
+        # explicitly requested Ollama host, which is fallback-only).
+        if not getattr(args, 'host2', None):
+            for key in ('host2', 'model2', 'host2_key'):
+                serving_cfg.pop(key, None)
+            os.environ.pop('ONIT_HOST2', None)
     if args.model:
         config_data.setdefault('serving', {})['model'] = args.model
     if getattr(args, 'host2', None):
@@ -786,6 +804,9 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         config_data.setdefault('serving', {})['model2'] = args.model2
     if getattr(args, 'load_balancer', None):
         config_data.setdefault('serving', {})['load_balancer'] = args.load_balancer
+    if getattr(args, 'ollama_fallback_only', None) is not None:
+        config_data.setdefault('serving', {})['ollama_fallback_only'] = \
+            args.ollama_fallback_only
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
     if args.data_path:

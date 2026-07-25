@@ -345,3 +345,76 @@ class TestWebOAuthCredentialResolution:
         args = _build_parser().parse_args(["--config", str(path), "serve", "web"])
         resolved = _parse_and_resolve_config(args)
         assert "web_require_auth" not in resolved  # falls back to default True
+
+
+# ── --host / --host2 serving overrides ──────────────────────────────────────
+
+class TestHostOverrides:
+    """An explicit --host without --host2 must yield a single endpoint: any
+    host2 left over from config or env would keep the load balancer routing
+    to the old server (Ollama endpoints are fallback-only, so a healthy vLLM
+    host2 would shadow an explicitly requested Ollama --host entirely)."""
+
+    _CFG = {"serving": {"host": "http://vllm1:8001/v1",
+                        "host2": "http://vllm2:8000/v1",
+                        "model2": "some/vllm-model",
+                        "host2_key": "k2"}}
+
+    def _resolve(self, tmp_path, monkeypatch, cfg, cli_args):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        args = _build_parser().parse_args(["--config", str(path)] + cli_args)
+        return _parse_and_resolve_config(args)
+
+    def test_host_alone_drops_config_host2(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--host", "https://api.ollama.com"])
+        serving = resolved["serving"]
+        assert serving["host"] == "https://api.ollama.com"
+        assert "host2" not in serving
+        assert "model2" not in serving
+        assert "host2_key" not in serving
+
+    def test_host_alone_clears_env_host2(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_HOST2", "http://vllm2:8000/v1")
+        self._resolve(tmp_path, monkeypatch, self._CFG,
+                      ["--host", "https://api.ollama.com"])
+        assert "ONIT_HOST2" not in os.environ
+
+    def test_host_with_host2_keeps_both(self, tmp_path, monkeypatch):
+        resolved = self._resolve(
+            tmp_path, monkeypatch, self._CFG,
+            ["--host", "https://api.ollama.com",
+             "--host2", "http://other:8002/v1"])
+        serving = resolved["serving"]
+        assert serving["host"] == "https://api.ollama.com"
+        assert serving["host2"] == "http://other:8002/v1"
+
+    def test_no_host_flag_keeps_config_host2(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG, [])
+        serving = resolved["serving"]
+        assert serving["host"] == "http://vllm1:8001/v1"
+        assert serving["host2"] == "http://vllm2:8000/v1"
+
+    def test_no_ollama_fallback_only_flag(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--no-ollama-fallback-only"])
+        assert resolved["serving"]["ollama_fallback_only"] is False
+
+    def test_ollama_fallback_only_flag_overrides_config(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://vllm1:8001/v1",
+                           "ollama_fallback_only": False}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg,
+                                 ["--ollama-fallback-only"])
+        assert resolved["serving"]["ollama_fallback_only"] is True
+
+    def test_flag_absent_leaves_config_value(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://vllm1:8001/v1",
+                           "ollama_fallback_only": False}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, [])
+        assert resolved["serving"]["ollama_fallback_only"] is False

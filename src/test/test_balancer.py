@@ -283,3 +283,53 @@ class TestOllamaFallback:
         ep = ServerEndpoint(host="https://ollama.com", model="qwen3")
         lb = LoadBalancer([ep])
         assert lb.acquire() is ep
+
+
+class TestOllamaFallbackDisabled:
+    """ollama_fallback_only=False puts Ollama endpoints in normal rotation."""
+
+    def test_default_is_fallback_only(self):
+        assert LoadBalancer(_vllm_and_ollama()).ollama_fallback_only is True
+
+    def test_round_robin_includes_ollama(self):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="round_robin",
+                          ollama_fallback_only=False)
+        seen = set()
+        for _ in range(4):
+            ep = lb.acquire()
+            seen.add(ep.name)
+            lb.release(ep, success=True)
+        assert seen == {"server1", "server2"}
+
+    def test_sticky_sessions_spread_across_both(self):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky", ollama_fallback_only=False)
+        seen = set()
+        for i in range(50):
+            ep = lb.acquire(key=f"session-{i}")
+            seen.add(ep.name)
+            lb.release(ep, success=True)
+        assert seen == {"server1", "server2"}
+
+    def test_sticky_session_stays_put_after_recovery(self, monkeypatch):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky", ollama_fallback_only=False)
+        first = lb.acquire(key="a")
+        lb.release(first, success=False)
+        failover = lb.acquire(key="a")
+        assert failover is not first
+        lb.release(failover, success=True)
+        # The failed endpoint recovers, but with Ollama first-class there is
+        # no forced move back — even when the failover target is Ollama.
+        monkeypatch.setattr(balancer_mod, "FAILURE_COOLDOWN", 0.0)
+        assert lb.acquire(key="a") is failover
+
+    def test_cooldown_failover_still_works(self):
+        eps = _vllm_and_ollama()
+        lb = LoadBalancer(eps, algorithm="round_robin",
+                          ollama_fallback_only=False)
+        lb.release(lb.acquire(), success=False)  # whichever was picked fails
+        failed = [ep for ep in eps if ep.failed_at][0]
+        other = eps[0] if failed is eps[1] else eps[1]
+        assert lb.acquire() is other
