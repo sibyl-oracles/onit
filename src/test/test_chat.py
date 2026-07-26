@@ -551,3 +551,93 @@ class TestHangPrevention:
 
         with pytest.raises(APITimeoutError):
             await _await_with_safety(boom(), asyncio.Queue(), poll=0.05)
+
+
+# ── answer text written alongside tool calls ────────────────────────────────
+
+class TestProseAlongsideToolCalls:
+    """A model that answers and then calls one last tool must not lose the answer."""
+
+    def test_streaming_history_keeps_prose(self):
+        from model.serving.chat import _unify_streaming_result
+
+        tool_calls = {0: {"id": "call_1", "name": "save", "arguments": "{}"}}
+        _, _, message = _unify_streaming_result("Here is the report.", tool_calls)
+        assert message["content"] == "Here is the report."
+        assert message["tool_calls"][0]["function"]["name"] == "save"
+
+    def test_streaming_history_drops_think_block(self):
+        from model.serving.chat import _unify_streaming_result
+
+        tool_calls = {0: {"id": "call_1", "name": "save", "arguments": "{}"}}
+        _, _, message = _unify_streaming_result(
+            "<think>plan it</think>The answer is 42.", tool_calls
+        )
+        assert message["content"] == "The answer is 42."
+
+    def test_streaming_history_content_none_when_silent(self):
+        from model.serving.chat import _unify_streaming_result
+
+        tool_calls = {0: {"id": "call_1", "name": "save", "arguments": "{}"}}
+        _, _, message = _unify_streaming_result("", tool_calls)
+        assert message["content"] is None
+
+    def test_bare_acknowledgment_restores_answer(self):
+        from model.serving.chat import _recover_dropped_answer
+
+        prose = "The quarterly figures are up 12%. " * 10
+        assert _recover_dropped_answer("Done.", prose) == f"{prose.strip()}\n\nDone."
+
+    def test_empty_final_restores_answer(self):
+        from model.serving.chat import _recover_dropped_answer
+
+        prose = "The quarterly figures are up 12%. " * 10
+        assert _recover_dropped_answer("", prose) == prose.strip()
+
+    def test_substantial_final_is_kept_alone(self):
+        from model.serving.chat import _recover_dropped_answer
+
+        prose = "Let me look that up. " * 10
+        final = "Here is the full answer you asked for. " * 20
+        assert _recover_dropped_answer(final, prose) == final
+
+    def test_short_prose_is_not_restored(self):
+        from model.serving.chat import _recover_dropped_answer
+
+        assert _recover_dropped_answer("Done.", "I'll delete report.pdf.") == "Done."
+
+    def test_no_prose_is_a_no_op(self):
+        from model.serving.chat import _recover_dropped_answer
+
+        assert _recover_dropped_answer("Done.", "") == "Done."
+
+    @pytest.mark.asyncio
+    async def test_chat_returns_answer_not_acknowledgment(self):
+        """End to end: prose, then a tool call, then "Done." — the prose wins."""
+        answer = "The quarterly figures are up 12% year over year. " * 8
+        tc = _mock_tool_call("save", '{"path": "report.md"}')
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion(content=answer, tool_calls=[tc]),
+            _mock_completion("Done."),
+        ])
+
+        mock_handler = AsyncMock(return_value="saved")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "save"}}
+        ]
+        mock_registry.tools = {"save"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Summarize the quarter and save it.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert answer.strip() in result
+        assert result.endswith("Done.")

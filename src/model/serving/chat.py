@@ -937,6 +937,22 @@ async def _ollama_process_streaming_response(
     return full_content, full_thinking, tool_calls, ui_streaming, prompt_eval_count, done_reason
 
 
+def _prose_alongside_tool_calls(full_content: str) -> str:
+    """Return the answer text a model wrote before emitting tool calls.
+
+    Streaming shows this text to the user (it arrives before the tool-call
+    deltas), so it must survive into the conversation history — otherwise the
+    model has no record of what it already said and follows the tool result
+    with a bare "Done.", which is all the caller gets back.
+    """
+    if not full_content:
+        return ""
+    text = full_content.split("</think>", 1)[1] if "</think>" in full_content else full_content
+    if "<think>" in text:  # unterminated think block — nothing was said out loud
+        text = text.split("<think>", 1)[0]
+    return text.strip()
+
+
 def _unify_streaming_result(
     full_content: str, full_tool_calls: dict,
 ) -> tuple[str | None, list | None, dict]:
@@ -951,7 +967,7 @@ def _unify_streaming_result(
         ]
         message_for_history = {
             "role": "assistant",
-            "content": None,
+            "content": _prose_alongside_tool_calls(full_content) or None,
             "tool_calls": [
                 {"id": v["id"], "type": "function",
                  "function": {"name": v["name"], "arguments": v["arguments"]}}
@@ -1078,6 +1094,36 @@ def _extract_final_response(content: str | None, full_reasoning: str, full_conte
             if think_body:
                 last_response = think_body
     return last_response
+
+
+# A post-tool reply no longer than this is an acknowledgment, not an answer.
+_ACK_MAX_CHARS = 200
+# Prose only counts as the dropped answer if it dwarfs that acknowledgment.
+_ANSWER_MIN_CHARS = 200
+
+
+def _message_content(message) -> str:
+    """Read the content of a history message, dict or SDK object alike."""
+    if isinstance(message, dict):
+        return message.get("content") or ""
+    return getattr(message, "content", None) or ""
+
+
+def _recover_dropped_answer(final: str, prose: str) -> str:
+    """Restore answer text the model wrote before its last tool call.
+
+    Models routinely write out the whole answer, call one more tool (save the
+    file, verify a link), then close with "Done." — leaving the caller holding
+    only the acknowledgment while the answer scrolls away.  When the earlier
+    prose is substantial and the closing line is not, return both.
+    """
+    prose = (prose or "").strip()
+    if len(prose) < _ANSWER_MIN_CHARS:
+        return final
+    closing = (final or "").strip()
+    if len(closing) > _ACK_MAX_CHARS or len(closing) * 3 > len(prose):
+        return final
+    return f"{prose}\n\n{closing}" if closing else prose
 
 
 async def _handle_raw_tool_call(
@@ -1448,6 +1494,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     _force_compact: bool = False  # set when finish_reason=length to compact on next iteration
     _final_continuation_count = 0  # times the final answer was resumed after truncation
     _final_answer_prefix = ""      # accumulated text from prior truncated final-answer turns
+    _prose_before_tools = ""       # answer text written just before the last tool call
 
     while True:
         iteration_count += 1
@@ -1638,7 +1685,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             # arguments must be dict in the history message (Ollama validates this)
                             _message_for_history = {
                                 "role": "assistant",
-                                "content": None,
+                                "content": _prose_alongside_tool_calls(_full_content),
                                 "tool_calls": [
                                     {"id": tc.id, "type": "function",
                                      "function": {"name": tc.function.name,
@@ -1872,7 +1919,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # Stitch on any text from earlier turns that were truncated and resumed.
             if _final_answer_prefix:
                 _final = _final_answer_prefix + _final
-            return _final
+            return _recover_dropped_answer(_final, _prose_before_tools)
+
+        # Keep the answer text written ahead of this tool call.  A model that
+        # answers and then calls one last tool often signs off with "Done." —
+        # the user already saw the real answer stream by, so don't lose it.
+        _prose = _prose_alongside_tool_calls(_message_content(_message_for_history))
+        if _prose and not _is_planning_response(_prose):
+            _prose_before_tools = _prose
 
         # Structured tool calls: execute them and loop back.
         # Reset force/token/planning flags — the model successfully called a tool.

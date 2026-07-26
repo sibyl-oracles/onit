@@ -618,11 +618,16 @@
       },
       done(d) {
         chip.remove();
-        // Final response supersedes streamed phases
-        turn.content.innerHTML = "";
-        const final = document.createElement("div");
-        turn.content.appendChild(final);
-        renderMarkdown(final, d.content || "");
+        // Final response supersedes streamed phases — unless it is empty, in
+        // which case wiping would leave the turn blank. Keep what streamed.
+        if ((d.content || "").trim()) {
+          turn.content.innerHTML = "";
+          const final = document.createElement("div");
+          turn.content.appendChild(final);
+          renderMarkdown(final, d.content);
+        } else if (streamBlock) {
+          renderMarkdown(streamBlock, streamText);
+        }
         addFileChips(turn.root, d.files);
         addMeta(turn.root, d.elapsed, d.tok_s);
         streamBlock = null;
