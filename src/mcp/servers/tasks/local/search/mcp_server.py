@@ -28,6 +28,9 @@ embeddings from any OpenAI-compatible endpoint.
 The read-only DOCUMENTS_PATH corpus is indexed once into a shared server-level
 index reused by all sessions; files a session indexes from its own jail go
 into a per-session index. local_search queries both and merges the results.
+Every server start discards the indexes persisted under DATA_PATH and rebuilds
+the shared one, so a restart always picks up corpus changes made while the
+server was down.
 
 Optional environment variables for dense/hybrid retrieval:
     ONIT_EMBEDDING_HOST    - OpenAI-compatible base URL (e.g. vLLM, Ollama)
@@ -47,10 +50,10 @@ from fastmcp import FastMCP
 
 try:
     from .toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                          DEFAULT_CHUNK_OVERLAP, INDEX_FILENAME)
+                          DEFAULT_CHUNK_OVERLAP)
 except ImportError:
     from toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                         DEFAULT_CHUNK_OVERLAP, INDEX_FILENAME)
+                         DEFAULT_CHUNK_OVERLAP)
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -161,57 +164,68 @@ def _get_index(index_dir: str) -> LocalSearchIndex:
     return _INDEXES[index_dir]
 
 
-def _contains_shared_documents(index_path: str, docs_root: str) -> bool:
-    """True when an index file holds documents from the shared corpus, or is
-    unreadable/empty (junk either way — the index is derived data)."""
-    try:
-        with open(index_path, 'r', encoding='utf-8') as f:
-            documents = json.load(f).get("documents", {})
-    except Exception:
-        return True
-    if not documents:
-        return True
-    return any(p == docs_root or p.startswith(docs_root + os.sep)
-               for p in documents)
+def _purge_persisted_indexes() -> int:
+    """Delete every persisted local_search index under DATA_PATH.
 
-
-def _cleanup_legacy_session_indexes() -> int:
-    """Delete legacy per-session copies of the shared corpus index.
-
-    Before the shared index existed, every session jail under DATA_PATH (and
-    the server-level fallback index) held its own full copy of the
-    DOCUMENTS_PATH corpus index. Those copies waste disk and would duplicate
-    shared results in merged searches. Session indexes holding only
-    session-local documents are kept. Returns the number of indexes removed;
-    affected sessions simply re-ingest on next use.
+    The index is derived data, and ingestion only re-parses files whose
+    mtime/size changed — documents added, edited, or deleted while the server
+    was down are never noticed by a corpus nobody re-ingests. Discarding what
+    is on disk is what makes the startup rebuild authoritative. Covers the
+    shared index, the server-level fallback index, and leftover per-session
+    indexes. Returns the number of index directories removed.
     """
-    docs_root = _documents_root()
-    if not docs_root:
-        return 0
     root = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not os.path.isdir(root):
+        return 0
     removed = 0
-
-    # Server-level fallback index: remove just its index file, since the
-    # shared index lives in a subdirectory of the same local_search dir
-    fallback = os.path.join(root, "local_search", INDEX_FILENAME)
-    if os.path.isfile(fallback) and _contains_shared_documents(fallback, docs_root):
-        with contextlib.suppress(OSError):
-            os.remove(fallback)
-            removed += 1
-
-    try:
-        children = os.listdir(root)
-    except OSError:
-        return removed
-    for child in children:
-        if child == "local_search":
+    for dirpath, dirnames, _ in os.walk(root):
+        if "local_search" not in dirnames:
             continue
-        index_dir = os.path.join(root, child, "local_search")
-        index_path = os.path.join(index_dir, INDEX_FILENAME)
-        if os.path.isfile(index_path) and _contains_shared_documents(index_path, docs_root):
-            shutil.rmtree(index_dir, ignore_errors=True)
-            removed += 1
+        dirnames.remove("local_search")  # do not descend into what we delete
+        shutil.rmtree(os.path.join(dirpath, "local_search"), ignore_errors=True)
+        removed += 1
     return removed
+
+
+def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
+    """Discard the persisted indexes and re-ingest the shared corpus.
+
+    Called once per server start so every run serves an index that matches the
+    corpus as it exists now. The re-ingest runs in a daemon thread holding
+    _SHARED_LOCK: binding the server port is not delayed by parsing and
+    embedding a large corpus, and searches arriving mid-rebuild block on the
+    lock instead of reading a half-built index. Returns the thread (None when
+    the rebuild ran inline or there is no shared corpus to rebuild).
+    """
+    _INDEXES.clear()
+    removed = _purge_persisted_indexes()
+    if removed:
+        logger.info(f"Discarded {removed} persisted local_search index(es) under {DATA_PATH}")
+
+    docs_root = _documents_root()
+    if not docs_root or not os.path.isdir(docs_root):
+        return None
+
+    def _build() -> None:
+        try:
+            with _SHARED_LOCK:
+                index = _get_index(_shared_index_dir())
+                if index.chunks:
+                    return  # a search that arrived first already rebuilt it
+                result = index.index_directory(docs_root, recursive=True, rebuild=True)
+            logger.info(
+                f"Rebuilt shared local_search index from {docs_root}: "
+                f"{result['total_documents']} document(s), {result['total_chunks']} chunk(s)"
+            )
+        except Exception as e:
+            logger.error(f"Failed to rebuild shared local_search index: {e}")
+
+    if not background:
+        _build()
+        return None
+    thread = threading.Thread(target=_build, name="local-search-rebuild", daemon=True)
+    thread.start()
+    return thread
 
 
 def _session_indexes(base: str) -> tuple[LocalSearchIndex, Optional[LocalSearchIndex]]:
@@ -330,11 +344,12 @@ def _local_search_impl(
                     session_index.index_directory(corpus, recursive=True)
         elif shared_index is not None:
             # Auto-ingest the shared corpus on first use — one build serves
-            # every session (double-checked under the lock)
-            if not shared_index.chunks and os.path.isdir(docs_root):
-                with _SHARED_LOCK:
-                    if not shared_index.chunks:
-                        shared_index.index_directory(docs_root, recursive=True)
+            # every session. Taking the lock before testing for chunks also
+            # parks the search behind an in-flight startup rebuild, so it
+            # never reads a partially populated index.
+            with _SHARED_LOCK:
+                if not shared_index.chunks and os.path.isdir(docs_root):
+                    shared_index.index_directory(docs_root, recursive=True)
         elif not session_index.chunks:
             corpus = _default_corpus(base)
             if corpus and os.path.isdir(corpus):
@@ -473,11 +488,8 @@ def run(
     elif os.environ.get('ONIT_DOCUMENTS_PATH'):
         DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
 
-    _INDEXES.clear()  # Reset cached indexes in case DATA_PATH changed
-
-    removed = _cleanup_legacy_session_indexes()
-    if removed:
-        logger.info(f"Removed {removed} legacy per-session local_search index(es)")
+    # Every start serves a freshly built index of the corpus as it is now
+    rebuild_indexes()
 
     logger.info(f"Starting Local Search MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")

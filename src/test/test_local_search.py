@@ -286,40 +286,57 @@ def test_session_files_stay_isolated_and_merge_with_shared(search_env):
     assert hidden["total_documents"] == 3
 
 
-def test_cleanup_removes_legacy_session_indexes(search_env, corpus):
-    # Legacy layout: a full copy of the shared corpus index inside a session jail
-    legacy = search_env / "old-session" / "local_search"
-    LocalSearchIndex(str(legacy)).index_directory(str(corpus))
-    assert (legacy / "index.json").is_file()
+# -- startup rebuild ------------------------------------------------------------
 
-    # New-style session index holding only session-local documents
-    private = search_env / "live-session" / "notes"
-    private.mkdir(parents=True)
-    (private / "own.md").write_text("Session-local notes about project alpha.\n")
-    kept = search_env / "live-session" / "local_search"
-    LocalSearchIndex(str(kept)).index_directory(str(private))
+def test_rebuild_reflects_corpus_changed_while_server_was_down(search_env, corpus):
+    local_mod._index_documents_impl()  # index built by the "previous run"
+    assert (search_env / "local_search" / "shared" / "index.json").is_file()
 
-    # Legacy server-level fallback index, next to the new shared subdir
+    os.unlink(corpus / "onboarding.md")
+    (corpus / "parking.md").write_text(
+        "# Parking\n\nParking permits are issued by facilities on the second floor.\n"
+    )
+    local_mod._INDEXES.clear()  # a restart starts with no in-memory index
+
+    local_mod.rebuild_indexes(background=False)
+
+    status = json.loads(local_mod._index_documents_impl(status_only=True))
+    assert status["total_documents"] == 3
+    found = json.loads(local_mod._local_search_impl(query="parking permits"))
+    assert found["results"][0]["file"].endswith("parking.md")
+    dropped = json.loads(local_mod._local_search_impl(query="security training laptop"))
+    assert all(not r["file"].endswith("onboarding.md") for r in dropped["results"])
+
+
+def test_rebuild_discards_persisted_session_indexes(search_env, corpus):
+    stale = search_env / "old-session" / "local_search"
+    LocalSearchIndex(str(stale)).index_directory(str(corpus))
     fallback = search_env / "local_search"
     LocalSearchIndex(str(fallback)).index_directory(str(corpus))
-    shared = search_env / "local_search" / "shared"
-    LocalSearchIndex(str(shared)).index_directory(str(corpus))
 
-    removed = local_mod._cleanup_legacy_session_indexes()
-    assert removed == 2
-    assert not legacy.exists()
+    local_mod.rebuild_indexes(background=False)
+
+    assert not stale.exists()
     assert not (fallback / "index.json").exists()
-    assert (kept / "index.json").is_file()       # session-only index kept
-    assert (shared / "index.json").is_file()     # shared index untouched
+    # Only the freshly rebuilt shared index survives
+    assert (fallback / "shared" / "index.json").is_file()
 
 
-def test_cleanup_noop_without_documents_path(search_env, corpus, monkeypatch):
+def test_rebuild_without_documents_path_only_purges(search_env, corpus, monkeypatch):
     monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", None)
-    legacy = search_env / "old-session" / "local_search"
-    LocalSearchIndex(str(legacy)).index_directory(str(corpus))
+    stale = search_env / "old-session" / "local_search"
+    LocalSearchIndex(str(stale)).index_directory(str(corpus))
 
-    assert local_mod._cleanup_legacy_session_indexes() == 0
-    assert (legacy / "index.json").is_file()
+    assert local_mod.rebuild_indexes(background=False) is None
+    assert not stale.exists()
+
+
+def test_rebuild_in_background_completes(search_env):
+    thread = local_mod.rebuild_indexes()
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    status = json.loads(local_mod._index_documents_impl(status_only=True))
+    assert status["shared_index"]["total_documents"] == 3
 
 
 def test_status_only_combines_shared_and_session(search_env):

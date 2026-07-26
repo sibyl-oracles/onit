@@ -77,12 +77,15 @@ def _init_submodules(data_path: str, documents_path: str = None, verbose: bool =
     )
     local_mod.DATA_PATH = data_path
     local_mod.DOCUMENTS_PATH = documents_path
-    local_mod._INDEXES.clear()  # Reset cached indexes
 
     level = logging.INFO if verbose else logging.ERROR
     bash_mod.logger.setLevel(level)
     search_mod.logger.setLevel(level)
     local_mod.logger.setLevel(level)
+
+    # Drop any index persisted by a previous run and re-ingest the corpus in
+    # the background, so this server never serves a stale local_search index
+    local_mod.rebuild_indexes()
 
 
 # ---------------------------------------------------------------------------
