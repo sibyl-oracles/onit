@@ -483,3 +483,84 @@ def test_status_only_combines_shared_and_session(search_env):
     assert status["total_documents"] == 3
     assert status["shared_index"]["total_documents"] == 3
     assert status["session_index"]["total_documents"] == 0
+
+
+# -- searches keep their corpora current ---------------------------------------
+
+def test_search_auto_indexes_session_file_alongside_shared_corpus(search_env):
+    """A file dropped into the session's own folder is searchable without an
+    explicit index_documents call, even though a shared corpus also exists."""
+    session = _make_session(search_env, "session-a")
+    (search_env / "session-a" / "uploaded.md").write_text(
+        "# Project Falcon\n\nProject Falcon ships in November 2026.\n"
+    )
+
+    found = json.loads(local_mod._local_search_impl(
+        query="Project Falcon November", data_path=session))
+    assert found["status"] == "success"
+    assert found["results"][0]["file"].endswith("uploaded.md")
+    assert os.path.isfile(
+        os.path.join(session, "local_search", "index.json"))
+
+
+def test_search_picks_up_shared_corpus_file_added_while_server_runs(
+        search_env, corpus):
+    """The shared index refreshes on search, so a document added to the corpus
+    after the startup rebuild does not wait for a restart to become visible."""
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    (corpus / "falcon.md").write_text(
+        "# Project Falcon\n\nProject Falcon ships in November 2026.\n"
+    )
+
+    found = json.loads(local_mod._local_search_impl(
+        query="Project Falcon November", data_path=session))
+    assert found["results"][0]["file"].endswith("falcon.md")
+    assert found["total_documents"] == 4
+
+
+def test_search_drops_shared_corpus_file_deleted_while_server_runs(
+        search_env, corpus):
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    (corpus / "vacation.md").unlink()
+
+    found = json.loads(local_mod._local_search_impl(
+        query="vacation policy accrue days", data_path=session))
+    assert all(not r["file"].endswith("vacation.md") for r in found["results"])
+    assert found["total_documents"] == 2
+
+
+def test_search_reflects_edited_shared_document(search_env, corpus):
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    (corpus / "vacation.md").write_text(
+        "# Vacation Policy\n\nEmployees accrue 25 days of sabbatical leave.\n"
+    )
+
+    found = json.loads(local_mod._local_search_impl(
+        query="sabbatical leave", data_path=session))
+    assert found["results"][0]["file"].endswith("vacation.md")
+    assert "sabbatical" in found["results"][0]["text"]
+
+
+def test_session_refresh_does_not_leak_into_other_sessions(search_env):
+    """Refreshing on search must not widen a session's jail: session A's file
+    is still invisible to session B."""
+    session_a = _make_session(search_env, "session-a")
+    session_b = _make_session(search_env, "session-b")
+    (search_env / "session-a" / "secret.md").write_text(
+        "# Project Zebra\n\nProject Zebra launches in October with a 2M budget.\n"
+    )
+
+    seen = json.loads(local_mod._local_search_impl(
+        query="Project Zebra October budget", data_path=session_a))
+    assert seen["results"][0]["file"].endswith("secret.md")
+
+    hidden = json.loads(local_mod._local_search_impl(
+        query="Project Zebra October budget", data_path=session_b))
+    assert all(not r["file"].endswith("secret.md") for r in hidden["results"])
+    assert hidden["total_documents"] == 3

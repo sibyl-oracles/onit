@@ -31,7 +31,9 @@ into a per-session index. local_search queries both, fuses the results by rank,
 and collapses a document held by both indexes into a single hit.
 Every server start discards the indexes persisted under DATA_PATH and rebuilds
 the shared one, so a restart always picks up corpus changes made while the
-server was down.
+server was down. While the server is up, every search incrementally re-ingests
+the corpora it queries, so documents added, edited, or deleted mid-run are
+picked up without an explicit index_documents call.
 
 Optional environment variables for dense/hybrid retrieval:
     ONIT_EMBEDDING_HOST    - OpenAI-compatible base URL (e.g. vLLM, Ollama)
@@ -237,6 +239,27 @@ def _session_indexes(base: str) -> tuple[LocalSearchIndex, Optional[LocalSearchI
     return session_index, shared_index
 
 
+def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
+                    shared_index: Optional[LocalSearchIndex]) -> None:
+    """Incrementally re-ingest ``corpus`` into whichever index owns it.
+
+    Cheap enough to run on every query: ``index_directory`` re-parses only the
+    files whose mtime or size changed and rewrites index.json only when one
+    did, so an unchanged corpus costs a single stat-per-file walk — well under
+    the BM25 pass the search itself runs. Ingestion into the shared index is
+    serialized: taking the lock also parks a search behind an in-flight startup
+    rebuild, so it never reads a partially populated index.
+    """
+    if not corpus or not os.path.isdir(corpus):
+        return
+    shared = _is_shared_corpus(corpus)
+    index = shared_index if shared else session_index
+    if index is None:
+        return
+    with _SHARED_LOCK if shared else contextlib.nullcontext():
+        index.index_directory(corpus, recursive=True)
+
+
 def _document_key(index: LocalSearchIndex, file_path: str) -> str:
     """Identity of a document, stable across indexes.
 
@@ -361,26 +384,17 @@ def _local_search_impl(
         docs_root = _documents_root()
 
         if path:
-            # Refresh an explicit corpus path in whichever index owns it
-            corpus = _validate_corpus_path(path, base=base)
-            if os.path.isdir(corpus):
-                if _is_shared_corpus(corpus):
-                    with _SHARED_LOCK:
-                        shared_index.index_directory(corpus, recursive=True)
-                else:
-                    session_index.index_directory(corpus, recursive=True)
-        elif shared_index is not None:
-            # Auto-ingest the shared corpus on first use — one build serves
-            # every session. Taking the lock before testing for chunks also
-            # parks the search behind an in-flight startup rebuild, so it
-            # never reads a partially populated index.
-            with _SHARED_LOCK:
-                if not shared_index.chunks and os.path.isdir(docs_root):
-                    shared_index.index_directory(docs_root, recursive=True)
-        elif not session_index.chunks:
-            corpus = _default_corpus(base)
-            if corpus and os.path.isdir(corpus):
-                session_index.index_directory(corpus, recursive=True)
+            _refresh_corpus(_validate_corpus_path(path, base=base),
+                            session_index, shared_index)
+        else:
+            # Both corpora a query can reach are refreshed, not just whichever
+            # one happens to be empty: a document added to the shared corpus or
+            # dropped into the session's own folder after the server started is
+            # otherwise invisible until a restart.
+            if docs_root:
+                _refresh_corpus(docs_root, session_index, shared_index)
+            if not _is_shared_corpus(base):
+                _refresh_corpus(base, session_index, shared_index)
 
         indexes = [i for i in (shared_index, session_index) if i is not None and i.chunks]
         if not indexes:
