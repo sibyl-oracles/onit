@@ -27,7 +27,8 @@ embeddings from any OpenAI-compatible endpoint.
 
 The read-only DOCUMENTS_PATH corpus is indexed once into a shared server-level
 index reused by all sessions; files a session indexes from its own jail go
-into a per-session index. local_search queries both and merges the results.
+into a per-session index. local_search queries both, fuses the results by rank,
+and collapses a document held by both indexes into a single hit.
 Every server start discards the indexes persisted under DATA_PATH and rebuilds
 the shared one, so a restart always picks up corpus changes made while the
 server was down.
@@ -44,16 +45,16 @@ import os
 import shutil
 import tempfile
 import threading
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastmcp import FastMCP
 
 try:
     from .toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                          DEFAULT_CHUNK_OVERLAP)
+                          DEFAULT_CHUNK_OVERLAP, RRF_K, file_content_hash)
 except ImportError:
     from toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                         DEFAULT_CHUNK_OVERLAP)
+                         DEFAULT_CHUNK_OVERLAP, RRF_K, file_content_hash)
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -236,6 +237,32 @@ def _session_indexes(base: str) -> tuple[LocalSearchIndex, Optional[LocalSearchI
     return session_index, shared_index
 
 
+def _document_key(index: LocalSearchIndex, file_path: str) -> str:
+    """Identity of a document, stable across indexes.
+
+    The absolute path cannot identify a document during a cross-index merge:
+    the shared corpus file and a session's copy of it are the same document
+    under two paths, and returning both would hand the agent the same text
+    twice. The content hash recorded at ingest is path-independent, so the
+    copies collapse to one entry.
+
+    An index persisted before hashes were recorded has none to key on, and
+    reading the filename off the other index's entry would not match it, so
+    the hash is computed on the spot and memoized. Only a file that has since
+    been deleted or become unreadable falls through to its normalized name.
+    """
+    info = index.documents.get(file_path)
+    content_hash = info.get("hash") if info else None
+    if not content_hash:
+        try:
+            content_hash = file_content_hash(file_path)
+        except OSError:
+            return os.path.basename(file_path).casefold()
+        if info is not None:
+            info["hash"] = content_hash  # memoize, but never invent an entry
+    return content_hash
+
+
 def _default_corpus(base: str | None = None) -> Optional[str]:
     """Default corpus directory: DOCUMENTS_PATH when set, else the jail root."""
     root = DOCUMENTS_PATH or base or DATA_PATH
@@ -363,17 +390,29 @@ def _local_search_impl(
                 "status": "error"
             })
 
-        # Query the shared corpus index and the session index, then merge by
-        # score. Hybrid scores are rank-based (RRF) and bm25 scores share a
-        # scale, so cross-index comparison is reasonable.
+        # Query the shared corpus index and the session index, then fuse the
+        # two result lists by reciprocal rank. Raw scores are not comparable
+        # across indexes — BM25 idf depends on the corpus statistics of the
+        # index that produced it, and hybrid scores are already per-index RRF
+        # sums — but ranks are. Passages are keyed by document content rather
+        # than by path, so a session copy of a shared file is one result that
+        # accumulates both indexes' contributions instead of two identical
+        # ones. Equal ranks fuse to equal scores, so the merge interleaves the
+        # two indexes, with the shared index taking ties on stable-sort order
+        # (and its path, the canonical one, labelling any deduplicated pair).
         top_k = max(1, min(int(top_k), 20))
-        merged = []
+        fused: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for index in indexes:
-            merged.extend(index.search(query, top_k=top_k, method=method))
-        merged.sort(key=lambda r: -r["score"])
-        merged = merged[:top_k]
+            for rank, result in enumerate(
+                    index.search(query, top_k=top_k, method=method)):
+                key = (_document_key(index, result["file"]), result["location"])
+                entry = fused.setdefault(key, {**result, "score": 0.0})
+                entry["score"] += 1.0 / (RRF_K + rank + 1)
+
+        merged = sorted(fused.values(), key=lambda r: -r["score"])[:top_k]
         for rank, result in enumerate(merged, 1):
             result["rank"] = rank
+            result["score"] = round(result["score"], 6)
 
         return json.dumps({
             "query": query,
@@ -442,7 +481,13 @@ Args:
 - path: Optional corpus directory to (re)index before searching
 
 Returns JSON: {query, method, results: [{rank, score, file, location, text}],
-total_results, total_documents, total_chunks, status}"""
+total_results, total_documents, total_chunks, status}
+
+Each result is a chunk, not a whole document, so one long document can fill
+several slots. Group results by `file` and judge each document by how well its
+name and text answer the query — repeated hits measure document length, not
+relevance. If every top hit comes from the same document and none of them
+answer the question, re-query with different terms."""
     )
     def local_search(
         query: Optional[str] = None,

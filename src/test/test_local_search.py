@@ -23,6 +23,7 @@ import pytest
 
 from src.mcp.servers.tasks.local.search.toolkit import (
     BM25,
+    RRF_K,
     LocalSearchIndex,
     chunk_text,
     parse_document,
@@ -143,6 +144,26 @@ def test_index_skips_unchanged_and_drops_deleted(tmp_path, corpus):
     result = index.index_directory(str(corpus))
     assert len(result["removed"]) == 1
     assert result["total_documents"] == 2
+
+
+def test_index_records_path_independent_content_hash(tmp_path, corpus):
+    copy = tmp_path / "copies"
+    copy.mkdir()
+    (copy / "vacation-copy.md").write_text((corpus / "vacation.md").read_text())
+    (copy / "edited.md").write_text(
+        (corpus / "vacation.md").read_text() + "Sabbaticals are unpaid.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(corpus))
+    index.index_directory(str(copy))
+
+    hashes = {os.path.basename(p): info["hash"]
+              for p, info in index.documents.items()}
+    # Same bytes under a different name and directory hash alike; edited
+    # content does not.
+    assert hashes["vacation.md"] == hashes["vacation-copy.md"]
+    assert hashes["vacation.md"] != hashes["edited.md"]
+    assert hashes["vacation.md"] != hashes["expenses.txt"]
 
 
 def test_hybrid_falls_back_to_bm25_without_embeddings(tmp_path, corpus, monkeypatch):
@@ -284,6 +305,119 @@ def test_session_files_stay_isolated_and_merge_with_shared(search_env):
         query="Project Zebra launch budget", data_path=session_b))
     assert all(not r["file"].endswith("secret.md") for r in hidden["results"])
     assert hidden["total_documents"] == 3
+
+
+def test_cross_index_merge_uses_reciprocal_rank_fusion(search_env):
+    session_a = _make_session(search_env, "session-a")
+
+    private = search_env / "session-a" / "notes"
+    private.mkdir()
+    (private / "travel.md").write_text(
+        "# Travel\n\nBusiness travel meals are capped at 50 USD per day.\n"
+    )
+    local_mod._index_documents_impl(path=str(private), data_path=session_a)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="business travel meals per day", data_path=session_a))
+    results = found["results"]
+    assert len(results) > 1
+
+    # Scores are rank-derived, not raw BM25, so they are comparable across
+    # the shared and session indexes.
+    assert results[0]["score"] == pytest.approx(1.0 / (RRF_K + 1), abs=1e-6)
+    assert [r["score"] for r in results] == sorted(
+        (r["score"] for r in results), reverse=True)
+    assert [r["rank"] for r in results] == list(range(1, len(results) + 1))
+
+    # Both indexes are represented: each contributes its own rank-1 hit, and
+    # equal ranks fuse to equal scores.
+    files = [os.path.basename(r["file"]) for r in results]
+    assert "travel.md" in files and "expenses.txt" in files
+    assert results[0]["score"] == results[1]["score"]
+
+    # One entry per (file, location) — chunks are fused, not concatenated
+    keys = [(r["file"], r["location"]) for r in results]
+    assert len(keys) == len(set(keys))
+
+
+def test_cross_index_merge_boosts_chunks_ranked_by_both_indexes(
+        search_env, monkeypatch):
+    session_a = _make_session(search_env, "session-a")
+    local_mod._index_documents_impl(data_path=session_a)
+
+    # Hand the merge the same index twice: every chunk is then ranked by both
+    # "indexes" at the same rank and must accumulate both RRF contributions.
+    index = local_mod._get_index(local_mod._shared_index_dir())
+    monkeypatch.setattr(local_mod, "_session_indexes", lambda base: (index, index))
+
+    found = json.loads(local_mod._local_search_impl(
+        query="vacation days", data_path=session_a))
+    top = found["results"][0]
+    assert top["file"].endswith("vacation.md")
+    assert top["score"] == pytest.approx(2.0 / (RRF_K + 1), abs=1e-6)
+    keys = [(r["file"], r["location"]) for r in found["results"]]
+    assert len(keys) == len(set(keys))
+
+
+def test_duplicate_document_across_indexes_returned_once(search_env, corpus):
+    session_a = _make_session(search_env, "session-a")
+
+    # The session keeps its own copy of a shared corpus file, under a
+    # different name, so only the content marks the two as the same document.
+    private = search_env / "session-a" / "notes"
+    private.mkdir()
+    (private / "vacation-copy.md").write_text((corpus / "vacation.md").read_text())
+    local_mod._index_documents_impl(path=str(private), data_path=session_a)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="vacation days roll over", data_path=session_a))
+    results = found["results"]
+
+    # The copy is not a second result: it merges into the shared corpus entry,
+    # which keeps the canonical path and both indexes' RRF contributions.
+    names = [os.path.basename(r["file"]) for r in results]
+    assert names.count("vacation.md") == 1
+    assert "vacation-copy.md" not in names
+    assert results[0]["file"].endswith("vacation.md")
+    assert results[0]["score"] == pytest.approx(2.0 / (RRF_K + 1), abs=1e-6)
+
+    # Distinct documents still come back separately.
+    assert "expenses.txt" in names or "onboarding.md" in names
+
+
+def test_duplicate_document_dedup_survives_an_index_without_hashes(
+        search_env, corpus):
+    session_a = _make_session(search_env, "session-a")
+
+    private = search_env / "session-a" / "notes"
+    private.mkdir()
+    (private / "vacation-copy.md").write_text((corpus / "vacation.md").read_text())
+    local_mod._index_documents_impl(path=str(private), data_path=session_a)
+    local_mod._index_documents_impl(data_path=session_a)  # shared corpus
+
+    # An index persisted before hashes were recorded has none to key on, and
+    # the filenames differ, so the hash has to be recomputed at merge time.
+    session_index, _ = local_mod._session_indexes(local_mod._session_base(session_a))
+    for info in session_index.documents.values():
+        info.pop("hash", None)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="vacation days roll over", data_path=session_a))
+    names = [os.path.basename(r["file"]) for r in found["results"]]
+    assert names.count("vacation.md") == 1
+    assert "vacation-copy.md" not in names
+
+    # The recomputed hash is memoized on the index entry, not re-read per query
+    assert all(info.get("hash") for info in session_index.documents.values())
+
+
+def test_document_key_falls_back_to_filename_for_unreadable_file(search_env):
+    index = local_mod._get_index(local_mod._shared_index_dir())
+    missing = os.path.join(str(search_env), "gone", "Vacation.MD")
+    index.documents[missing] = {"size": 1}
+
+    assert local_mod._document_key(index, missing) == "vacation.md"
+    assert "hash" not in index.documents[missing]
 
 
 # -- startup rebuild ------------------------------------------------------------

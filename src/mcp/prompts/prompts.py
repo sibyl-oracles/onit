@@ -165,6 +165,25 @@ When a question requires external information:
       else:
          instruction += """1. Search the web for relevant, up-to-date sources.
 """
+      if local_search_available:
+         instruction += """
+### Reading `local_search` results
+Each result is one chunk of a document, not one document. A long document is split
+into many chunks, so it can occupy several result slots while a short but perfectly
+matching document occupies only one.
+- Judge a document by how well its `file` name and chunk `text` answer the question,
+  never by how many results it contributed. Repetition is a property of document
+  length, not of relevance.
+- Before answering, group the results by `file` and treat each distinct document as a
+  single candidate source. Many hits in one document mean the query terms are spread
+  across it — that is one source, not corroboration by several.
+- A filename that names the queried entity, topic, or period is strong evidence; prefer
+  it over a document that merely mentions the query terms in passing, even when the
+  latter returned more chunks.
+- If the top-ranked chunks all come from one document and none of them actually answer
+  the question, search again with different terms rather than answering from the
+  closest chunk.
+"""
       instruction += """
 End the final answer with a **References** section listing only the sources actually used:
 """

@@ -33,6 +33,7 @@ Optional dependencies:
     pip install python-docx openpyxl   # .docx and .xlsx ingestion
 '''
 
+import hashlib
 import json
 import math
 import os
@@ -53,6 +54,8 @@ SUPPORTED_EXTENSIONS = {
     '.docx', '.xlsx', '.xlsm',
 }
 
+CONTENT_HASH_CHARS = 16           # sha256 prefix kept as the document identity
+
 MAX_FILE_SIZE = 20 * 1024 * 1024  # skip files larger than 20MB
 MAX_SHEET_ROWS = 5000             # cap rows read per spreadsheet sheet
 EMBED_BATCH_SIZE = 64
@@ -60,6 +63,18 @@ RRF_K = 60                        # reciprocal rank fusion constant
 
 DEFAULT_CHUNK_SIZE = 1600         # characters per chunk
 DEFAULT_CHUNK_OVERLAP = 200       # character overlap between chunks
+
+
+def file_content_hash(file_path: str, block_size: int = 1 << 20) -> str:
+    """Hash of the file's bytes — an identity that does not depend on where
+    the file lives. Two copies of the same document (the shared corpus file
+    and a session's copy of it) hash alike, which is what lets search results
+    from separate indexes be recognized as the same document."""
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for block in iter(lambda: f.read(block_size), b""):
+            digest.update(block)
+    return digest.hexdigest()[:CONTENT_HASH_CHARS]
 
 
 # =============================================================================
@@ -435,6 +450,7 @@ class LocalSearchIndex:
         self.documents[file_path] = {
             "mtime": stat.st_mtime,
             "size": stat.st_size,
+            "hash": file_content_hash(file_path),
             "format": Path(file_path).suffix.lstrip('.').lower(),
             "num_chunks": count,
         }
