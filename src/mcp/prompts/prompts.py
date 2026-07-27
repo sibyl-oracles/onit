@@ -157,17 +157,23 @@ When a question needs external information:
 """
       if local_search_available and web_search_available:
          instruction += """1. Call `local_search` first — internal data never appears on the web.
-2. Read the local results and decide what they already answer. Whatever they answer
-   is settled; do not re-open it with a web search.
-3. Search the web only for what the local results leave unanswered, or for public
-   facts that change over time. Name the specific gap you are filling before searching.
+2. Before any web search, list by `file` the local documents that answer the question.
+   That list is the backbone of the answer. A document whose name matches the query is
+   a primary source: read it in full and report what it says.
+3. Search the web only for what those documents leave unanswered, or for public facts
+   that change over time. Name the gap you are filling before you search.
 4. The in-house documents are the authority on internal matters — people, projects,
    customers, policies, internal numbers and dates. If a web source disagrees with a
    local result, keep the local answer and note the discrepancy. Never drop, overwrite,
    or water down a local fact because a web page says otherwise, ranks higher, or is
    written more confidently.
-5. Build the answer from the local results, then add web material as clearly
-   attributed supplement. A web source may extend a local finding, never replace it.
+5. Web material is supplement. It may extend or corroborate the local findings; it
+   never replaces them and never sets the structure of the answer.
+6. When the question asks what exists — options, programs, offerings, policies,
+   contacts — every qualifying local document becomes its own item in the answer.
+   Adding items found on the web is welcome; omitting a local one is not.
+7. Before writing the final answer, re-check the list from step 2. If a local document
+   that answers the question is missing from your draft, add it.
 """
          references = "local results by `file` and `location`, web results by URL"
       elif local_search_available:
@@ -181,12 +187,12 @@ When a question needs external information:
 
       if local_search_available:
          if web_search_available:
-            no_hit = """re-query once with
-different terms before turning to the web, and say plainly that the answer came from
-the web and not from the in-house documents."""
+            no_hit = ("re-query once with different terms before turning to the web, "
+                      "and say plainly that the answer came from the web and not from "
+                      "the in-house documents.")
          else:
-            no_hit = """re-query once with
-different terms, then say the local documents do not cover it."""
+            no_hit = ("re-query once with different terms, then say the local documents "
+                      "do not cover it.")
          instruction += f"""
 `local_search` returns chunks, not documents. Group results by `file` and judge
 each document by whether its name and text answer the question; many hits mean
