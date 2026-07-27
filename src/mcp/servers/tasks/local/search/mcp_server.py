@@ -508,8 +508,12 @@ total_results, total_documents, total_chunks, status}
 Each result is a chunk, not a whole document, so one long document can fill
 several slots. Group results by `file` and judge each document by how well its
 name and text answer the query — repeated hits measure document length, not
-relevance. If every top hit comes from the same document and none of them
-answer the question, re-query with different terms."""
+relevance. A chunk is an excerpt: when a result's file name matches the query,
+read the whole file (`read_file` on its `file` path) before concluding the
+document lacks the answer. A README or other index file names every topic in
+the corpus and so ranks high on any query; follow it to the document it points
+at instead of answering from it. If every top hit comes from the same document
+and none of them answer the question, re-query with different terms."""
 
 
 # Register as MCP tools only when local search is not disabled
