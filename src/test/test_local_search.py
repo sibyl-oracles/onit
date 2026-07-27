@@ -197,6 +197,62 @@ def test_index_records_path_independent_content_hash(tmp_path, corpus):
     assert hashes["vacation.md"] != hashes["expenses.txt"]
 
 
+def test_filename_terms_make_document_discoverable(tmp_path):
+    # A document named for its topic whose prose never states that topic: with
+    # only the content indexed it scores zero and drops out of the ranking.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "06-ayala-scholarship-ai-data-science.md").write_text(
+        "# Ayala Foundation Grant\n\n"
+        "Covers full tuition for two years of graduate study, plus a monthly "
+        "stipend for living costs.\n"
+    )
+    (docs / "parking.md").write_text("Parking permits are issued quarterly.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("scholarship ai", method="bm25")
+    assert results
+    assert (os.path.basename(results[0]["file"])
+            == "06-ayala-scholarship-ai-data-science.md")
+
+
+def test_folder_terms_make_document_discoverable(tmp_path):
+    # The topic is named by the folder, not by the filename or the prose.
+    docs = tmp_path / "docs"
+    (docs / "AI-Program").mkdir(parents=True)
+    (docs / "AI-Program" / "06-ayala-grant.md").write_text(
+        "# Ayala Foundation Grant\n\n"
+        "Covers full tuition for two years of graduate study.\n"
+    )
+    (docs / "parking.md").write_text("Parking permits are issued quarterly.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("ai program", method="bm25")
+    assert results
+    assert os.path.basename(results[0]["file"]) == "06-ayala-grant.md"
+
+
+def test_name_label_backfilled_on_load_of_older_index(tmp_path, corpus):
+    index_dir = tmp_path / "idx"
+    LocalSearchIndex(str(index_dir)).index_directory(str(corpus))
+    persisted = index_dir / "index.json"
+    data = json.loads(persisted.read_text())
+    # Same index version, written before name_label existed.
+    for chunk in data["chunks"]:
+        chunk.pop("name_label")
+    persisted.write_text(json.dumps(data))
+
+    reloaded = LocalSearchIndex(str(index_dir))
+    assert all(c["name_label"] for c in reloaded.chunks)
+    # "expenses" appears only in the filename — the prose says "Expense reports".
+    results = reloaded.search("expenses", method="bm25")
+    assert results and os.path.basename(results[0]["file"]) == "expenses.txt"
+
+
 def test_hybrid_falls_back_to_bm25_without_embeddings(tmp_path, corpus, monkeypatch):
     monkeypatch.delenv("ONIT_EMBEDDING_HOST", raising=False)
     monkeypatch.delenv("ONIT_EMBEDDING_MODEL", raising=False)

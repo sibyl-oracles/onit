@@ -220,6 +220,31 @@ def tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
+def _name_label(file_path: str) -> str:
+    """The filename and its folder as searchable words.
+
+    Documents are often named for what they are about — a query naming the
+    topic can otherwise score zero against every chunk of the file whose name
+    matches it, and a zero-scoring chunk is dropped from the ranking entirely.
+    The containing folder carries the same kind of signal one level up
+    ("AI-Program/" for a query about the AI program).
+
+    Only the immediate parent is used. Deeper ancestors are mostly generic
+    ("docs", "Documents", a home directory) and would put the same tokens on
+    every chunk in the index; the folder name is shared by its own files
+    either way, so within a folder the filename stem still does the ranking.
+    """
+    path = Path(file_path)
+    parts = [path.parent.name, path.stem]
+    return " ".join(p.replace('-', ' ').replace('_', ' ') for p in parts if p)
+
+
+def _labelled(chunk: Dict[str, Any]) -> str:
+    """Chunk text with its folder and filename words prepended, as indexed."""
+    label = chunk.get("name_label", "")
+    return f"{label} {chunk['text']}" if label else chunk["text"]
+
+
 class BM25:
     """Okapi BM25 over a tokenized corpus. Pure Python, no dependencies."""
 
@@ -368,6 +393,12 @@ class LocalSearchIndex:
         self.embedding_model = data.get("embedding_model")
         self.documents = data.get("documents", {})
         self.chunks = data.get("chunks", [])
+        # name_label was added after this index version shipped, so chunks
+        # written by an earlier build carry none. Backfilling it here keeps
+        # filename terms searchable without discarding embeddings to a rebuild.
+        for chunk in self.chunks:
+            if "name_label" not in chunk:
+                chunk["name_label"] = _name_label(chunk["path"])
         self._bm25 = None
 
     def save(self) -> None:
@@ -466,12 +497,14 @@ class LocalSearchIndex:
     def _index_file(self, file_path: str, stat: os.stat_result) -> None:
         blocks = parse_document(file_path)
         self._remove_document(file_path)
+        name_label = _name_label(file_path)
         count = 0
         for location, text in blocks:
             for piece in chunk_text(text, self.chunk_size, self.chunk_overlap):
                 self.chunks.append({
                     "path": file_path,
                     "location": location,
+                    "name_label": name_label,
                     "text": piece,
                 })
                 count += 1
@@ -495,7 +528,7 @@ class LocalSearchIndex:
         pending = [c for c in self.chunks if "embedding" not in c]
         if not pending:
             return
-        vectors = embed_texts([c["text"] for c in pending])
+        vectors = embed_texts([_labelled(c) for c in pending])
         if vectors is None:
             return
         for chunk, vector in zip(pending, vectors):
@@ -549,7 +582,7 @@ class LocalSearchIndex:
 
     def _bm25_ranking(self, query: str) -> List[Tuple[int, float]]:
         if self._bm25 is None:
-            self._bm25 = BM25([tokenize(c["text"]) for c in self.chunks])
+            self._bm25 = BM25([tokenize(_labelled(c)) for c in self.chunks])
         scores = self._bm25.scores(tokenize(query))
         ranking = [(i, s) for i, s in enumerate(scores) if s > 0]
         ranking.sort(key=lambda item: -item[1])
