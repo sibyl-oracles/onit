@@ -42,7 +42,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import logging
 
@@ -67,6 +67,38 @@ DEFAULT_CHUNK_SIZE = 1600         # characters per chunk
 DEFAULT_CHUNK_OVERLAP = 200       # character overlap between chunks
 
 NAME_LABEL_WEIGHT = 1.0           # weight of the filename/folder field in BM25
+MAX_CHUNKS_PER_FILE = 2           # chunks one document may fill in a result page
+
+
+def cap_per_file(ordered: List[Any], top_k: int,
+                 file_of: Callable[[Any], str]) -> List[Any]:
+    """Take the top_k best-ranked items, letting no one document supply more
+    than MAX_CHUNKS_PER_FILE of them while other documents are still waiting.
+
+    Ranking is per chunk, so a long document that matches the query in many
+    places wins many of the slots the caller sees. A corpus README cataloguing
+    every file mentions every topic, in a hundred chunks, and took nearly the
+    whole page for queries the documents it catalogues answer directly — the
+    document that actually held the answer was ranked, but below the fold.
+
+    Items past a document's cap are not dropped, only deferred: if there are
+    not enough distinct documents to fill top_k, they backfill in rank order,
+    so a corpus where one file genuinely holds every match still returns a
+    full page.
+    """
+    kept: List[Any] = []
+    overflow: List[Any] = []
+    counts: Dict[str, int] = {}
+    for item in ordered:
+        path = file_of(item)
+        if counts.get(path, 0) < MAX_CHUNKS_PER_FILE:
+            counts[path] = counts.get(path, 0) + 1
+            kept.append(item)
+            if len(kept) == top_k:
+                return kept
+        else:
+            overflow.append(item)
+    return kept + overflow[:top_k - len(kept)]
 
 
 def file_content_hash(file_path: str, block_size: int = 1 << 20) -> str:
@@ -616,8 +648,11 @@ class LocalSearchIndex:
             ranked = sorted(fused.items(), key=lambda item: -item[1])
             method_used = "hybrid"
 
+        ranked = cap_per_file(ranked, top_k,
+                              lambda item: self.chunks[item[0]]["path"])
+
         results = []
-        for rank, (idx, score) in enumerate(ranked[:top_k], 1):
+        for rank, (idx, score) in enumerate(ranked, 1):
             chunk = self.chunks[idx]
             results.append({
                 "rank": rank,

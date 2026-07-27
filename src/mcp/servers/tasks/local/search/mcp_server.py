@@ -54,10 +54,12 @@ from fastmcp import FastMCP
 
 try:
     from .toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                          DEFAULT_CHUNK_OVERLAP, RRF_K, file_content_hash)
+                          DEFAULT_CHUNK_OVERLAP, RRF_K, cap_per_file,
+                          file_content_hash)
 except ImportError:
     from toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                         DEFAULT_CHUNK_OVERLAP, RRF_K, file_content_hash)
+                         DEFAULT_CHUNK_OVERLAP, RRF_K, cap_per_file,
+                         file_content_hash)
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -442,7 +444,10 @@ def _local_search_impl(
                 entry = fused.setdefault(key, {**result, "score": 0.0})
                 entry["score"] += 1.0 / (RRF_K + rank + 1)
 
-        merged = sorted(fused.values(), key=lambda r: -r["score"])[:top_k]
+        # Each index capped its own page at MAX_CHUNKS_PER_FILE, but the two
+        # pages fuse into one, so the cap is re-applied to the merged order.
+        merged = cap_per_file(sorted(fused.values(), key=lambda r: -r["score"]),
+                              top_k, lambda r: r["file"])
         for rank, result in enumerate(merged, 1):
             result["rank"] = rank
             result["score"] = round(result["score"], 6)
@@ -461,11 +466,11 @@ def _local_search_impl(
         return json.dumps({"error": str(e), "query": query, "status": "error"})
 
 
-# Register as MCP tools only when local search is not disabled
-if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
-    @mcp.tool(
-        title="Index Local Documents",
-        description="""Ingest in-house documents into the local search index.
+# Tool descriptions live here as constants because tools/mcp_server.py re-registers
+# the same two tools on the consolidated server the web UI talks to. Duplicated
+# prose drifts: the retrieval guidance below was added here and the copy over
+# there kept serving the older text, so the UI's model never saw it.
+INDEX_DOCUMENTS_DESCRIPTION = """Ingest in-house documents into the local search index.
 Parses, chunks, and indexes files for BM25 and (when an embedding endpoint is
 configured) dense retrieval. Unchanged files are skipped; deleted files are
 dropped from the index. The shared documents_path corpus is indexed once and
@@ -483,25 +488,9 @@ Args:
 
 Returns JSON: {directory, indexed, skipped_unchanged, removed, errors,
 total_documents, total_chunks, embedding_model, scope, status}"""
-    )
-    def index_documents(
-        path: Optional[str] = None,
-        recursive: bool = True,
-        rebuild: bool = False,
-        chunk_size: int = DEFAULT_CHUNK_SIZE,
-        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
-        status_only: bool = False,
-        data_path: str = "",
-    ) -> str:
-        return _index_documents_impl(
-            path=path, recursive=recursive, rebuild=rebuild,
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-            status_only=status_only, data_path=data_path,
-        )
 
-    @mcp.tool(
-        title="Search Local Documents",
-        description="""Search in-house documents (pdf, md, txt, csv, docx, xlsx)
+
+LOCAL_SEARCH_DESCRIPTION = """Search in-house documents (pdf, md, txt, csv, docx, xlsx)
 using the local search index. Automatically ingests the default corpus on
 first use. Use this for questions about internal/private data instead of
 web search.
@@ -521,6 +510,32 @@ several slots. Group results by `file` and judge each document by how well its
 name and text answer the query — repeated hits measure document length, not
 relevance. If every top hit comes from the same document and none of them
 answer the question, re-query with different terms."""
+
+
+# Register as MCP tools only when local search is not disabled
+if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
+    @mcp.tool(
+        title="Index Local Documents",
+        description=INDEX_DOCUMENTS_DESCRIPTION,
+    )
+    def index_documents(
+        path: Optional[str] = None,
+        recursive: bool = True,
+        rebuild: bool = False,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        status_only: bool = False,
+        data_path: str = "",
+    ) -> str:
+        return _index_documents_impl(
+            path=path, recursive=recursive, rebuild=rebuild,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            status_only=status_only, data_path=data_path,
+        )
+
+    @mcp.tool(
+        title="Search Local Documents",
+        description=LOCAL_SEARCH_DESCRIPTION,
     )
     def local_search(
         query: Optional[str] = None,

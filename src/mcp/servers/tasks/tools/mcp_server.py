@@ -521,6 +521,8 @@ def search_document(
 # -- Local Search tools (in-house data) ----------------------------------------
 
 from src.mcp.servers.tasks.local.search.mcp_server import (
+    INDEX_DOCUMENTS_DESCRIPTION,
+    LOCAL_SEARCH_DESCRIPTION,
     index_documents as _index_documents,
     local_search as _local_search,
 )
@@ -528,23 +530,7 @@ from src.mcp.servers.tasks.local.search.mcp_server import (
 if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
     @mcp.tool(
         title="Index Local Documents",
-        description="""Ingest in-house documents into the local search index.
-Parses, chunks, and indexes files for BM25 and (when an embedding endpoint is
-configured) dense retrieval. Unchanged files are skipped; deleted files are
-dropped from the index.
-
-Supported formats: pdf, md, txt, csv, docx, xlsx
-
-Args:
-- path: Directory to index (default: documents_path, else data_path)
-- recursive: Recurse into subdirectories (default: true)
-- rebuild: Discard the existing index and re-ingest everything (default: false)
-- chunk_size: Characters per chunk (default: 1600)
-- chunk_overlap: Character overlap between chunks (default: 200)
-- status_only: Only report index statistics without ingesting (default: false)
-
-Returns JSON: {directory, indexed, skipped_unchanged, removed, errors,
-total_documents, total_chunks, embedding_model, status}"""
+        description=INDEX_DOCUMENTS_DESCRIPTION,
     )
     def index_documents(
         path: Optional[str] = None,
@@ -563,20 +549,7 @@ total_documents, total_chunks, embedding_model, status}"""
 
     @mcp.tool(
         title="Search Local Documents",
-        description="""Search in-house documents (pdf, md, txt, csv, docx, xlsx)
-using the local search index. Automatically ingests the default corpus on
-first use. Use this for questions about internal/private data instead of
-web search.
-
-Args:
-- query: Natural-language query or keywords (required)
-- top_k: Number of results (default: 5, max: 20)
-- method: "hybrid" (default; BM25 + embeddings fused), "bm25" (lexical only),
-  or "dense" (embeddings only — requires ONIT_EMBEDDING_HOST/MODEL)
-- path: Optional corpus directory to (re)index before searching
-
-Returns JSON: {query, method, results: [{rank, score, file, location, text}],
-total_results, total_documents, total_chunks, status}"""
+        description=LOCAL_SEARCH_DESCRIPTION,
     )
     def local_search(
         query: Optional[str] = None,

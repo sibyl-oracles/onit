@@ -23,6 +23,7 @@ import pytest
 
 from src.mcp.servers.tasks.local.search.toolkit import (
     BM25,
+    MAX_CHUNKS_PER_FILE,
     RRF_K,
     LocalSearchIndex,
     chunk_text,
@@ -301,6 +302,57 @@ def test_document_outranks_a_catalog_that_merely_lists_it(tmp_path):
     assert results
     assert (os.path.basename(results[0]["file"])
             == "06-ayala-scholarship-ai-data-science.md")
+
+
+def test_one_document_cannot_fill_the_whole_result_page(tmp_path):
+    """A long catalogue matched the query in chunk after chunk and took every
+    visible slot, so the document holding the answer sat below the fold."""
+    docs = tmp_path / "docs"
+    (docs / "AI-Program").mkdir(parents=True)
+    (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
+        "# Ayala Graduate Scholarship Program\n\n"
+        "Covers tuition and stipends for graduate students in artificial "
+        "intelligence and data science at UP Diliman.\n")
+    for i, name in enumerate(("policy.md", "stipends.md", "admissions.md",
+                              "handbook.md")):
+        (docs / name).write_text(
+            f"# {name}\n\nAI Program scholarship note {i}: scholarships and "
+            "stipends are released each semester at UPD.\n")
+    # A catalogue long enough to be chunked many times over, every chunk of it
+    # naming the query terms.
+    (docs / "README.md").write_text(
+        "# Document Catalog\n\n" + "".join(
+            f"- `AI-Program/{i:02d}-scholarship.md` — UPD AI Program "
+            f"scholarship entry {i}, listing scholarships for the AI Program "
+            f"at UPD.\n" * 6
+            for i in range(30)))
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("UPD AI Program scholarships", top_k=5, method="bm25")
+    readme_hits = [r for r in results if os.path.basename(r["file"]) == "README.md"]
+    assert len(readme_hits) <= MAX_CHUNKS_PER_FILE
+    assert any(os.path.basename(r["file"])
+               == "06-ayala-scholarship-ai-data-science.md" for r in results)
+
+
+def test_result_page_is_filled_when_few_documents_match(tmp_path):
+    # The cap defers a document's extra chunks, it does not drop them: a corpus
+    # where one file holds every match still returns a full page.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "handbook.md").write_text(
+        "".join(f"## Section {i}\n\nScholarship terms, clause {i}. " + "filler " * 300
+                + "\n\n" for i in range(6)))
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("scholarship", top_k=4, method="bm25")
+    assert len(results) == 4
+    assert all(os.path.basename(r["file"]) == "handbook.md" for r in results)
+    assert [r["rank"] for r in results] == [1, 2, 3, 4]
 
 
 def test_documents_yielding_no_text_are_reported(tmp_path, corpus):
