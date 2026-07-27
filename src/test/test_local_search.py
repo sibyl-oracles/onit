@@ -337,6 +337,57 @@ def test_one_document_cannot_fill_the_whole_result_page(tmp_path):
                == "06-ayala-scholarship-ai-data-science.md" for r in results)
 
 
+def test_named_document_is_shown_through_its_opening(tmp_path):
+    """A document matched by name must be shown by the passage that identifies
+    it, not only by whichever passages repeat the query words.
+
+    The excerpt is picked by term frequency while the cap allows two per file,
+    so a document could come back entirely through passages that never say what
+    it is — here a list of degree programs and a page of contact links, with the
+    title and the coverage it states deferred as a third chunk. Read through
+    those two excerpts the document looks like unrelated boilerplate, and the
+    one in-house document on the subject was dropped from the answer.
+    """
+    docs = tmp_path / "docs"
+    (docs / "AI-Program").mkdir(parents=True)
+    (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
+        # Opening: says what the document is, and matches the query weakly.
+        "# Ayala Graduate Scholarship Program\n\n"
+        "Covers tuition, a stipend, and research support.\n\n"
+        + "filler " * 250 + "\n\n"
+        # Two passages that repeat the query words far more often.
+        "## Covered programs\n\nThe AI Program at UPD: the MEngg AI program, "
+        "the PhD AI program, and the PhD Data Science program of the AI "
+        "Program at UPD.\n\n" + "filler " * 150 + "\n\n"
+        "## Contact\n\nAI Program office at UPD, the AI Program mailing list, "
+        "and the AI Program page.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("UPD AI Program scholarships", top_k=2, method="bm25")
+    assert results
+    assert "Ayala Graduate Scholarship Program" in results[0]["text"]
+    assert "Covers tuition, a stipend, and research support." in results[0]["text"]
+
+
+def test_opening_is_not_promoted_for_a_document_matched_only_by_text(tmp_path):
+    # Promotion follows the corpus's own vote on the document as a whole: with
+    # nothing in the filename or folder matching, the passages keep the page.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "minutes-2024.md").write_text(
+        "# Minutes\n\n" + "filler " * 250 + "\n\n"
+        "## Item 4\n\nThe stipend was raised.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("stipend", top_k=1, method="bm25")
+    assert results
+    assert "The stipend was raised." in results[0]["text"]
+
+
 def test_result_page_is_filled_when_few_documents_match(tmp_path):
     # The cap defers a document's extra chunks, it does not drop them: a corpus
     # where one file holds every match still returns a full page.

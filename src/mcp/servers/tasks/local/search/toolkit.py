@@ -432,9 +432,10 @@ class LocalSearchIndex:
         self.documents: Dict[str, Dict[str, Any]] = {}
         self.chunks: List[Dict[str, Any]] = []
         # Built together and invalidated together: _bm25 being None is what
-        # signals both fields need rebuilding.
+        # signals these fields need rebuilding.
         self._bm25: Optional[BM25] = None
         self._bm25_label: Optional[BM25] = None
+        self._leading: Optional[Dict[str, int]] = None
         self.load()
 
     # -- persistence ---------------------------------------------------------
@@ -468,6 +469,7 @@ class LocalSearchIndex:
             if "name_label" not in chunk:
                 chunk["name_label"] = _name_label(chunk["path"])
         self._bm25 = None
+        self._leading = None
 
     def save(self) -> None:
         """Persist the index, atomically.
@@ -549,6 +551,7 @@ class LocalSearchIndex:
         if indexed or removed:
             self._embed_pending()
             self._bm25 = None
+            self._leading = None
             self.save()
 
         return {
@@ -648,6 +651,7 @@ class LocalSearchIndex:
             ranked = sorted(fused.items(), key=lambda item: -item[1])
             method_used = "hybrid"
 
+        ranked = self._promote_document_openings(query, ranked)
         ranked = cap_per_file(ranked, top_k,
                               lambda item: self.chunks[item[0]]["path"])
 
@@ -663,6 +667,67 @@ class LocalSearchIndex:
                 "method": method_used,
             })
         return results
+
+    def _leading_chunk(self, path: str) -> Optional[int]:
+        """Index of a document's first chunk — the one carrying its title.
+
+        Chunks are appended in reading order at ingestion, so the first chunk
+        recorded for a path is the opening of the document.
+        """
+        if self._leading is None:
+            self._leading = {}
+            for i, chunk in enumerate(self.chunks):
+                self._leading.setdefault(chunk["path"], i)
+        return self._leading.get(path)
+
+    def _promote_document_openings(
+            self, query: str,
+            ranked: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
+        """Give each document matched by name a slot for its opening chunk.
+
+        A document is retrieved as a whole but shown as an excerpt, and the
+        excerpt is chosen by term frequency — which selects for repetition of
+        the query words, not for the passage that identifies the document.
+        A scholarship document whose name matched the query was returned twice,
+        once on a passage listing degree programs and once on a page of contact
+        links, while the chunks stating what the scholarship covers and who may
+        apply ranked below its own cap and were never shown. Read from those two
+        excerpts the document looks like unrelated boilerplate, so the answer
+        was written from the web instead, omitting the one in-house document on
+        the subject.
+
+        The opening chunk is what makes a document recognizable: a title, and
+        usually the summary under it. Promotion applies only where the corpus
+        already voted for the document as a whole — its filename or folder
+        matched the query — and the opening takes one of that document's own
+        capped slots rather than a slot from another document, so a page still
+        shows the same number of files. A document already led by its opening
+        keeps the order it had.
+        """
+        if not ranked or self._bm25_label is None:
+            return ranked
+        label_scores = self._bm25_label.scores(tokenize(query))
+        promoted: List[Tuple[int, float]] = []
+        seen_paths: set = set()
+        moved: set = set()
+        for idx, score in ranked:
+            if idx in moved:
+                continue        # already emitted ahead of its document
+            path = self.chunks[idx]["path"]
+            if path not in seen_paths:
+                seen_paths.add(path)
+                opening = self._leading_chunk(path)
+                if (opening is not None and opening != idx
+                        and label_scores[idx] > 0):
+                    # Ahead of the document's other chunks, so the per-file cap
+                    # keeps it — ranked lower it was deferred as the document's
+                    # third chunk and never shown. It stands for the document
+                    # rather than matching on its own, so it inherits the rank
+                    # the document earned.
+                    promoted.append((opening, score))
+                    moved.add(opening)
+            promoted.append((idx, score))
+        return promoted
 
     def _bm25_ranking(self, query: str) -> List[Tuple[int, float]]:
         """Rank chunks by BM25 over two fields: the passage text and the

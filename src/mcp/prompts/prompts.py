@@ -194,22 +194,26 @@ When a question needs external information:
             no_hit = ("re-query once with different terms, then say the local documents "
                       "do not cover it.")
          instruction += f"""
-`local_search` returns chunks, not documents. Group results by `file` and judge
-each document by whether its name and text answer the question; many hits mean
-a long document, not a better one. Prefer a file whose name matches the queried
-entity or period.
+### Working with `local_search` results
+Results are chunks — excerpts picked by keyword overlap, which routinely miss the
+part of a document that actually answers the question. Group results by `file` and
+reason about documents, not chunks; repeated hits measure document length, not
+relevance.
 
-A chunk is an excerpt, not the document. When a result's file name matches what
-you were asked about, open the whole file with `read_file` on that result's
-`file` path before you judge it — the detail you need is often in a part of the
-document that was never returned. Rank is a hint, not a verdict: a lower-ranked
-file whose name matches the question outweighs a higher-ranked one whose name
-does not.
+**Required before you answer**: for every result whose file name contains a term
+from the question, call `read_file` on that result's `file` path — even when its
+chunk looks generic, off-topic, or already-covered. A chunk is no evidence about
+the rest of its document. `read_file` accepts these paths, the shared documents
+directory included.
 
-A file that catalogues or indexes other files — a README, a table of contents,
-a directory listing — mentions every topic in the corpus, so it ranks high on
-almost any query without answering one. Treat such a hit as a pointer: read the
-document it names, and cite that document, not the catalogue.
+A file that catalogues others — README, index, table of contents — mentions every
+topic in the corpus, so it ranks high on any query and answers none. Its entries
+are pointers: open every document whose entry sounds relevant to the question,
+and cite that document, not the catalogue.
+
+Drop such a document only after `read_file` shows it does not apply. Never drop it
+because its chunk ranked low, read as unrelated, or because other sources already
+gave you an answer that looks complete.
 
 If no result answers the question, {no_hit}
 """
