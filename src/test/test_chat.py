@@ -324,6 +324,20 @@ class TestIsPlanningResponse:
         content = "<think>reasoning</think>Let me proceed with the plan."
         assert _is_planning_response(content)
 
+    def test_answer_with_trailing_plan_is_not_planning(self):
+        """A long answer closing with one forward-looking sentence is still an answer."""
+        answer = (
+            "The MEng AI program at UP Diliman offers the DOST-SEI ERDT scholarship, "
+            "which covers full tuition and a monthly stipend. " * 4
+        )
+        assert not _is_planning_response(f"{answer}\nLet me verify the current deadline.")
+
+    def test_early_mid_sentence_plan_still_detected(self):
+        """The phrase still counts while it is near the start — a short lead is a preamble."""
+        assert _is_planning_response(
+            "I checked the repository and it is out of date. Let me update it now."
+        )
+
 
 # ── planning-continuation integration ──────────────────────────────────────
 
@@ -601,6 +615,28 @@ class TestProseAlongsideToolCalls:
         final = "Here is the full answer you asked for. " * 20
         assert _recover_dropped_answer(final, prose) == final
 
+    def test_summarizing_acknowledgment_restores_answer(self):
+        """A closing that describes the answer instead of being it loses to the prose."""
+        from model.serving.chat import _recover_dropped_answer
+
+        prose = "MEng AI applicants may apply for the DOST-SEI scholarship. " * 12
+        # 217 characters — long enough to clear any plausible fixed ack cap.
+        final = (
+            "Research on UPD AI program scholarships is complete. The comprehensive "
+            "answer was provided above, covering all available scholarship and "
+            "financial assistance options for the UP Diliman AI Program "
+            "(MEng AI and PhD AI)."
+        )
+        assert _recover_dropped_answer(final, prose) == f"{prose.strip()}\n\n{final}"
+
+    def test_summarizing_acknowledgment_restores_short_answer(self):
+        """The reference phrase wins even when the prose barely outruns the closing."""
+        from model.serving.chat import _recover_dropped_answer
+
+        prose = "The deadline is 15 March and the stipend is 25,000 PHP a month. " * 4
+        final = "Done — the details are described above."
+        assert _recover_dropped_answer(final, prose) == f"{prose.strip()}\n\n{final}"
+
     def test_short_prose_is_not_restored(self):
         from model.serving.chat import _recover_dropped_answer
 
@@ -641,3 +677,40 @@ class TestProseAlongsideToolCalls:
 
         assert answer.strip() in result
         assert result.endswith("Done.")
+
+    @pytest.mark.asyncio
+    async def test_chat_keeps_answer_that_ends_with_a_next_step(self):
+        """End to end: the answer closes with "Let me verify ..." before the last tool call."""
+        answer = (
+            "The MEng AI program at UP Diliman offers the DOST-SEI ERDT scholarship, "
+            "which covers full tuition and a monthly stipend. " * 4
+        )
+        prose = f"{answer}\nLet me verify the current application deadline."
+        tc = _mock_tool_call("fetch", '{"url": "https://upd.edu.ph"}')
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion(content=prose, tool_calls=[tc]),
+            _mock_completion(
+                "Research on UPD AI program scholarships is complete. The "
+                "comprehensive answer was provided above."
+            ),
+        ])
+
+        mock_handler = AsyncMock(return_value="deadline: 15 March")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "fetch"}}
+        ]
+        mock_registry.tools = {"fetch"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="UPD AI Program scholarships",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert answer.strip() in result

@@ -985,12 +985,23 @@ _PLANNING_PREFIXES = (
     "the user wants me to ",
 )
 
+# A plan announcement is forward-looking from the outset.  Once this much prose
+# has gone by, a "let me ..." sentence is a follow-up step appended to an answer
+# that has already been given, and the answer is the part that matters.
+_PLANNING_LEAD_MAX_CHARS = 200
+
+
 def _is_planning_response(content: str) -> bool:
     """Return True if the response looks like a plan announcement rather than a final answer.
 
     Detects patterns like "Let me create X and then push it" where the model
     states its intent in future tense but stops before executing tool calls.
     Only returns True when tools are available (caller's responsibility).
+
+    A trailing planning sentence does not make the whole response a plan.  Models
+    routinely answer at length and then close with "Let me verify that link" ahead
+    of one last tool call; treating that as a plan would discard the answer, so the
+    planning phrase only counts while it is still near the start of the text.
     """
     if not content:
         return False
@@ -1002,8 +1013,10 @@ def _is_planning_response(content: str) -> bool:
         return True
     # Check mid-sentence planning phrases (after ". " or "\n")
     for p in _PLANNING_PREFIXES:
-        if f". {p}" in lower or f"\n{p}" in lower:
-            return True
+        for sep in (f". {p}", f"\n{p}"):
+            idx = lower.find(sep)
+            if idx != -1 and idx <= _PLANNING_LEAD_MAX_CHARS:
+                return True
     return False
 
 
@@ -1096,10 +1109,22 @@ def _extract_final_response(content: str | None, full_reasoning: str, full_conte
     return last_response
 
 
-# A post-tool reply no longer than this is an acknowledgment, not an answer.
-_ACK_MAX_CHARS = 200
-# Prose only counts as the dropped answer if it dwarfs that acknowledgment.
+# Prose only counts as the dropped answer if there is enough of it to be one.
 _ANSWER_MIN_CHARS = 200
+# A post-tool reply is an acknowledgment rather than an answer when the prose
+# before it is at least this many times longer.
+_ACK_RATIO = 3
+
+# Closings that point at the answer instead of being it. However long these
+# run, they are a reference to prose the caller is about to drop, so they can
+# never stand in for it.
+_ACK_REFERENCE_RE = re.compile(
+    r"\b(?:provided|described|detailed|outlined|listed|covered|answered|shown"
+    r"|summarized|summarised)\s+(?:in\s+full\s+)?above\b"
+    r"|\bas\s+(?:described|detailed|outlined|noted|stated)\s+above\b"
+    r"|\bsee\s+(?:the\s+)?(?:answer|response|details|list|breakdown)\s+above\b",
+    re.IGNORECASE,
+)
 
 
 def _message_content(message) -> str:
@@ -1116,14 +1141,24 @@ def _recover_dropped_answer(final: str, prose: str) -> str:
     file, verify a link), then close with "Done." — leaving the caller holding
     only the acknowledgment while the answer scrolls away.  When the earlier
     prose is substantial and the closing line is not, return both.
+
+    "Not substantial" is judged against the prose, not against a fixed length:
+    a closing that summarizes what it replaces ("the full answer was provided
+    above, covering ...") runs to a few hundred characters and would clear any
+    absolute cap while still being an acknowledgment.  Such a closing names the
+    answer as being elsewhere, so _ACK_REFERENCE_RE recovers the prose whatever
+    the lengths work out to.
     """
     prose = (prose or "").strip()
     if len(prose) < _ANSWER_MIN_CHARS:
         return final
     closing = (final or "").strip()
-    if len(closing) > _ACK_MAX_CHARS or len(closing) * 3 > len(prose):
+    if not closing:
+        return prose
+    if (not _ACK_REFERENCE_RE.search(closing)
+            and len(closing) * _ACK_RATIO > len(prose)):
         return final
-    return f"{prose}\n\n{closing}" if closing else prose
+    return f"{prose}\n\n{closing}"
 
 
 async def _handle_raw_tool_call(
