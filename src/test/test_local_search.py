@@ -335,8 +335,9 @@ def test_cross_index_merge_uses_reciprocal_rank_fusion(search_env):
     assert "travel.md" in files and "expenses.txt" in files
     assert results[0]["score"] == results[1]["score"]
 
-    # One entry per (file, location) — chunks are fused, not concatenated
-    keys = [(r["file"], r["location"]) for r in results]
+    # One entry per passage — the same chunk seen by both indexes is fused,
+    # not concatenated and not repeated
+    keys = [(r["file"], r["location"], r["text"]) for r in results]
     assert len(keys) == len(set(keys))
 
 
@@ -355,8 +356,37 @@ def test_cross_index_merge_boosts_chunks_ranked_by_both_indexes(
     top = found["results"][0]
     assert top["file"].endswith("vacation.md")
     assert top["score"] == pytest.approx(2.0 / (RRF_K + 1), abs=1e-6)
-    keys = [(r["file"], r["location"]) for r in found["results"]]
+    keys = [(r["file"], r["location"], r["text"]) for r in found["results"]]
     assert len(keys) == len(set(keys))
+
+
+def test_cross_index_merge_keeps_chunks_of_one_file_apart(search_env, corpus):
+    # A long catalog whose every chunk mentions the query terms in passing,
+    # next to one short document that answers the query outright.
+    sections = [
+        f"## Entry {i}\n\nThe UPD directory lists the AI program and the "
+        f"scholarship desk for unit {i}. " + "Archived record. " * 90
+        for i in range(8)
+    ]
+    (corpus / "catalog.md").write_text("# Directory\n\n" + "\n\n".join(sections))
+    (corpus / "ayala.md").write_text(
+        "# Ayala Grant\n\nThe Ayala Foundation AI scholarship program at UPD "
+        "funds ten graduate students each year.\n"
+    )
+
+    session_a = _make_session(search_env, "session-a")
+    found = json.loads(local_mod._local_search_impl(
+        query="UPD AI scholarship program", top_k=5, data_path=session_a))
+    results = found["results"]
+
+    # The catalog's chunks stay separate entries, each carrying only its own
+    # rank contribution, so they cannot sum their way past the short document.
+    assert results[0]["file"].endswith("ayala.md")
+    assert all(r["score"] <= 2.0 / (RRF_K + 1) + 1e-9 for r in results)
+
+    catalog = [r for r in results if r["file"].endswith("catalog.md")]
+    assert len(catalog) > 1
+    assert len({r["text"] for r in catalog}) == len(catalog)
 
 
 def test_duplicate_document_across_indexes_returned_once(search_env, corpus):

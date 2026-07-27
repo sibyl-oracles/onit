@@ -414,12 +414,21 @@ def _local_search_impl(
         # ones. Equal ranks fuse to equal scores, so the merge interleaves the
         # two indexes, with the shared index taking ties on stable-sort order
         # (and its path, the canonical one, labelling any deduplicated pair).
+        #
+        # The passage text is part of the key because location does not
+        # identify a chunk: a text or markdown file parses to a single
+        # locationless block, and a pdf page or docx table is re-chunked, so
+        # keying on (document, location) alone would merge every chunk of a
+        # file into one entry. A long file whose chunks each match the query
+        # weakly would then out-score a short, squarely relevant one by
+        # summing contributions that belong to different passages.
         top_k = max(1, min(int(top_k), 20))
-        fused: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        fused: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         for index in indexes:
             for rank, result in enumerate(
                     index.search(query, top_k=top_k, method=method)):
-                key = (_document_key(index, result["file"]), result["location"])
+                key = (_document_key(index, result["file"]),
+                       result["location"], result["text"])
                 entry = fused.setdefault(key, {**result, "score": 0.0})
                 entry["score"] += 1.0 / (RRF_K + rank + 1)
 
