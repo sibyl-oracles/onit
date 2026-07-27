@@ -153,48 +153,35 @@ Do not stop until **all** are true:
    if local_search_available or web_search_available:
       instruction += """
 ## Research and Citations
-When a question requires external information:
+When a question needs external information:
 """
       if local_search_available and web_search_available:
-         instruction += """1. ALWAYS call `local_search` before any web search — internal/private data lives there and never appears on the web.
-2. Only after `local_search` returns, use web search to verify local results and to fill gaps local documents do not cover.
+         instruction += """1. Call `local_search` first — internal data never appears on the web.
+2. Use web search only if the local results are incomplete or need verification.
 """
+         references = "local results by `file` and `location`, web results by URL"
       elif local_search_available:
          instruction += """1. Search in-house documents with `local_search`.
 """
+         references = "the `file` and `location` of each local result"
       else:
          instruction += """1. Search the web for relevant, up-to-date sources.
 """
+         references = "the URL of each web source"
+
       if local_search_available:
          instruction += """
-### Reading `local_search` results
-Each result is one chunk of a document, not one document. A long document is split
-into many chunks, so it can occupy several result slots while a short but perfectly
-matching document occupies only one.
-- Judge a document by how well its `file` name and chunk `text` answer the question,
-  never by how many results it contributed. Repetition is a property of document
-  length, not of relevance.
-- Before answering, group the results by `file` and treat each distinct document as a
-  single candidate source. Many hits in one document mean the query terms are spread
-  across it — that is one source, not corroboration by several.
-- A filename that names the queried entity, topic, or period is strong evidence; prefer
-  it over a document that merely mentions the query terms in passing, even when the
-  latter returned more chunks.
-- If the top-ranked chunks all come from one document and none of them actually answer
-  the question, search again with different terms rather than answering from the
-  closest chunk.
+`local_search` returns chunks, not documents. Group results by `file` and judge
+each document by whether its name and text answer the question; many hits mean
+a long document, not a better one. Prefer a file whose name matches the queried
+entity or period. If no result answers the question, re-query once with
+different terms, then say the local documents do not cover it.
 """
-      instruction += """
-End the final answer with a **References** section listing only the sources actually used:
-"""
-      if local_search_available:
-         instruction += """- Local results: cite the source document (the `file` and `location` fields of the result).
-"""
-      if web_search_available:
-         instruction += """- Web results: cite the URL.
-"""
-      instruction += """
-Never state contact details (email addresses, phone numbers) unless they appear verbatim in a tool result. Do not infer, construct, or "complete" an email address from a name and domain; if no verified address was found, say so.
+
+      instruction += f"""
+End the final answer with a **References** section listing only the sources actually used — {references}.
+
+Never state an email address or phone number that did not appear verbatim in a tool result; do not construct one from a name and domain.
 """
 
    instruction += f"""

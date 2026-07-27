@@ -66,6 +66,8 @@ RRF_K = 60                        # reciprocal rank fusion constant
 DEFAULT_CHUNK_SIZE = 1600         # characters per chunk
 DEFAULT_CHUNK_OVERLAP = 200       # character overlap between chunks
 
+NAME_LABEL_WEIGHT = 1.0           # weight of the filename/folder field in BM25
+
 
 def file_content_hash(file_path: str, block_size: int = 1 << 20) -> str:
     """Hash of the file's bytes — an identity that does not depend on where
@@ -216,8 +218,35 @@ def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
+def _fold_plural(word: str) -> str:
+    """Fold a common English plural onto its singular form.
+
+    BM25 matches terms literally, so "scholarships" and "scholarship" are
+    unrelated terms to it — a query in one number scores nothing against a
+    document written in the other. Documents are titled in the singular
+    ("...-scholarship-...") far more often than questions are asked in it,
+    which is exactly where the mismatch costs the most.
+
+    Deliberately not a full stemmer: the rules below are the plural forms, and
+    nothing else. A wider stemmer trades recall for precision on a corpus this
+    small, and mis-stems ("meeting" -> "meet") are harder to reason about than
+    a missed match. What matters is that queries and documents are folded by
+    the same function, so an imperfect fold still lines the two sides up.
+    """
+    if len(word) > 4 and word.endswith("ies"):        # policies -> policy
+        return word[:-3] + "y"
+    if len(word) > 4 and (word.endswith("ches") or word.endswith("shes")
+                          or (word.endswith("es") and word[-3] in "sxz")):
+        return word[:-2]                              # boxes -> box
+    if (len(word) > 3 and word.endswith("s")
+            and not word.endswith("ss")               # process, class
+            and not word.endswith("us")):             # campus, syllabus
+        return word[:-1]                              # scholarships -> scholarship
+    return word
+
+
 def tokenize(text: str) -> List[str]:
-    return _TOKEN_RE.findall(text.lower())
+    return [_fold_plural(w) for w in _TOKEN_RE.findall(text.lower())]
 
 
 def _name_label(file_path: str) -> str:
@@ -240,7 +269,11 @@ def _name_label(file_path: str) -> str:
 
 
 def _labelled(chunk: Dict[str, Any]) -> str:
-    """Chunk text with its folder and filename words prepended, as indexed."""
+    """Chunk text with its folder and filename words prepended.
+
+    Used for embedding only. BM25 scores the label as a separate field
+    (see ``_bm25_ranking``) rather than reading it out of this string.
+    """
     label = chunk.get("name_label", "")
     return f"{label} {chunk['text']}" if label else chunk["text"]
 
@@ -366,7 +399,10 @@ class LocalSearchIndex:
         self.embedding_model: Optional[str] = None
         self.documents: Dict[str, Dict[str, Any]] = {}
         self.chunks: List[Dict[str, Any]] = []
+        # Built together and invalidated together: _bm25 being None is what
+        # signals both fields need rebuilding.
         self._bm25: Optional[BM25] = None
+        self._bm25_label: Optional[BM25] = None
         self.load()
 
     # -- persistence ---------------------------------------------------------
@@ -489,10 +525,23 @@ class LocalSearchIndex:
             "skipped_unchanged": len(skipped),
             "removed": removed,
             "errors": errors,
+            "no_text_extracted": self._no_text_extracted(),
             "total_documents": len(self.documents),
             "total_chunks": len(self.chunks),
             "embedding_model": self.embedding_model,
         }
+
+    def _no_text_extracted(self) -> List[str]:
+        """Documents that parsed without error but yielded no text.
+
+        Overwhelmingly scanned PDFs: pages that are images carry no text layer
+        for pypdf to extract, so the file is ingested, recorded, counted in
+        total_documents — and matches nothing, because it contributed no chunk
+        to search. That reads as a corpus with no answer rather than as a file
+        needing OCR, so it is reported instead of passing silently.
+        """
+        return sorted(path for path, info in self.documents.items()
+                      if not info.get("num_chunks"))
 
     def _index_file(self, file_path: str, stat: os.stat_result) -> None:
         blocks = parse_document(file_path)
@@ -581,10 +630,34 @@ class LocalSearchIndex:
         return results
 
     def _bm25_ranking(self, query: str) -> List[Tuple[int, float]]:
+        """Rank chunks by BM25 over two fields: the passage text and the
+        folder/filename label, summed with NAME_LABEL_WEIGHT.
+
+        Scoring the label as its own field rather than as words prepended to
+        the passage is what makes a document's name count. Concatenated, the
+        label's handful of tokens sit in a chunk of several hundred: BM25
+        saturates term frequency and divides by document length, so a title
+        that names the query topic outright scored no better than the same word
+        mentioned once in passing. A corpus index — a README cataloguing every
+        filename in the corpus — beat the documents it catalogues on their own
+        subjects, because it mentions every topic and is long enough to mention
+        each one several times.
+
+        As its own short field the label is scored on its own length, so
+        matching two words of a four-word title is a strong signal, and it
+        stays a bounded addition rather than an override: a passage that
+        genuinely answers the query still outranks a file merely named for it.
+        """
         if self._bm25 is None:
-            self._bm25 = BM25([tokenize(_labelled(c)) for c in self.chunks])
-        scores = self._bm25.scores(tokenize(query))
-        ranking = [(i, s) for i, s in enumerate(scores) if s > 0]
+            self._bm25 = BM25([tokenize(c["text"]) for c in self.chunks])
+            self._bm25_label = BM25(
+                [tokenize(c.get("name_label", "")) for c in self.chunks])
+        query_tokens = tokenize(query)
+        text_scores = self._bm25.scores(query_tokens)
+        label_scores = self._bm25_label.scores(query_tokens)
+        ranking = [(i, t + NAME_LABEL_WEIGHT * l)
+                   for i, (t, l) in enumerate(zip(text_scores, label_scores))
+                   if t + NAME_LABEL_WEIGHT * l > 0]
         ranking.sort(key=lambda item: -item[1])
         return ranking
 
@@ -613,6 +686,7 @@ class LocalSearchIndex:
             "total_documents": len(self.documents),
             "total_chunks": len(self.chunks),
             "documents_by_format": by_format,
+            "no_text_extracted": self._no_text_extracted(),
             "embedding_model": self.embedding_model,
             "embedded_chunks": sum(1 for c in self.chunks if "embedding" in c),
             "chunk_size": self.chunk_size,

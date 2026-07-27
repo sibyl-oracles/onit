@@ -74,6 +74,20 @@ def test_tokenize():
     assert tokenize("Hello, World! 42") == ["hello", "world", "42"]
 
 
+def test_tokenize_folds_plurals_onto_the_singular():
+    # A question asked in the plural has to reach a document titled in the
+    # singular ("...-scholarship-..."), which BM25 treats as a separate term.
+    assert tokenize("scholarships") == tokenize("scholarship")
+    assert tokenize("policies") == tokenize("policy")
+    assert tokenize("boxes") == tokenize("box")
+
+
+def test_tokenize_leaves_non_plurals_alone():
+    # Words that merely end in "s" must not be truncated into a different word.
+    for word in ("process", "class", "campus", "syllabus", "gas", "ai"):
+        assert tokenize(word) == [word]
+
+
 def test_chunk_text_short_passthrough():
     assert chunk_text("short text", chunk_size=100) == ["short text"]
 
@@ -234,6 +248,74 @@ def test_folder_terms_make_document_discoverable(tmp_path):
     results = index.search("ai program", method="bm25")
     assert results
     assert os.path.basename(results[0]["file"]) == "06-ayala-grant.md"
+
+
+def test_plural_query_reaches_singular_filename(tmp_path):
+    """The document is named "scholarship"; the question asks about
+    "scholarships". Matched literally these are unrelated terms, so nothing in
+    the corpus scores at all and the ranking comes back empty."""
+    docs = tmp_path / "docs"
+    (docs / "AI-Program").mkdir(parents=True)
+    (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
+        "# Ayala Graduate Grant\n\nCovers tuition and a monthly stipend.\n")
+    (docs / "parking.md").write_text("Parking permits are issued quarterly.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("scholarships", method="bm25")
+    assert results
+    assert (os.path.basename(results[0]["file"])
+            == "06-ayala-scholarship-ai-data-science.md")
+
+
+def test_document_outranks_a_catalog_that_merely_lists_it(tmp_path):
+    """A corpus README naming every file must not outrank the file itself.
+
+    The catalog mentions every topic in the corpus and is long enough to
+    mention each more than once, so with the filename folded into the passage
+    text it beat the documents it catalogues on their own subjects.
+    """
+    docs = tmp_path / "docs"
+    (docs / "AI-Program").mkdir(parents=True)
+    (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
+        "# Ayala Graduate Scholarship Program\n\n"
+        "Covers tuition, stipends, and research support for graduate "
+        "students in artificial intelligence and data science.\n")
+    (docs / "README.md").write_text(
+        "# Document Catalog\n\n"
+        "### AI Program\n"
+        "- Files: `AI-Program/06-ayala-scholarship-ai-data-science.md`, "
+        "`AI-Program/06-mengg-ai-program-handbook-v1.pdf`\n"
+        "- Note: the AI Program scholarship covers AI and data science "
+        "students; other scholarships are listed under prefix 17.\n\n"
+        "### Scholarships\n"
+        "- Files: `02-sikap-annex-e-scholarship-privileges.pdf`\n"
+        "- Note: SIKAP is a CHED scholarship; the AI Program scholarship "
+        "is separate.\n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    index.index_directory(str(docs))
+
+    results = index.search("UPD AI Program scholarships", method="bm25")
+    assert results
+    assert (os.path.basename(results[0]["file"])
+            == "06-ayala-scholarship-ai-data-science.md")
+
+
+def test_documents_yielding_no_text_are_reported(tmp_path, corpus):
+    # A scanned PDF parses without error and yields no text: it is counted as
+    # a document but can never be reached by a query, so it must be reported
+    # rather than inflating total_documents in silence.
+    (corpus / "scanned.txt").write_text("   \n")
+
+    index = LocalSearchIndex(str(tmp_path / "idx"))
+    result = index.index_directory(str(corpus))
+
+    assert result["total_documents"] == 4
+    assert [os.path.basename(p) for p in result["no_text_extracted"]] == ["scanned.txt"]
+    assert [os.path.basename(p) for p in index.status()["no_text_extracted"]] \
+        == ["scanned.txt"]
 
 
 def test_name_label_backfilled_on_load_of_older_index(tmp_path, corpus):

@@ -219,6 +219,15 @@ def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
                 f"{result['skipped_unchanged']} unchanged, "
                 f"{len(result['removed'])} dropped"
             )
+            if result["no_text_extracted"]:
+                # Warned, not merely logged: these files are in the corpus and
+                # counted as documents, but no query can ever reach them.
+                logger.warning(
+                    f"{len(result['no_text_extracted'])} document(s) in "
+                    f"{docs_root} yielded no extractable text and are not "
+                    f"searchable (scanned PDFs need OCR): "
+                    f"{', '.join(os.path.basename(p) for p in result['no_text_extracted'])}"
+                )
         except Exception as e:
             logger.error(f"Failed to rebuild shared local_search index: {e}")
 
@@ -352,6 +361,8 @@ def _combined_status(base: str) -> dict:
         "total_chunks": sum(s["total_chunks"] for s in statuses),
         "embedded_chunks": sum(s["embedded_chunks"] for s in statuses),
         "documents_by_format": by_format,
+        "no_text_extracted": sorted(
+            p for s in statuses for p in s["no_text_extracted"]),
         "embedding_model": next(
             (s["embedding_model"] for s in statuses if s["embedding_model"]), None),
         "chunk_size": session_status["chunk_size"],
