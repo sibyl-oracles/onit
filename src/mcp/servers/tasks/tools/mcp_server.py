@@ -83,8 +83,8 @@ def _init_submodules(data_path: str, documents_path: str = None, verbose: bool =
     search_mod.logger.setLevel(level)
     local_mod.logger.setLevel(level)
 
-    # Drop any index persisted by a previous run and re-ingest the corpus in
-    # the background, so this server never serves a stale local_search index
+    # Re-ingest the corpus in the background so this server never serves a
+    # local_search index left stale by changes made while it was down
     local_mod.rebuild_indexes()
 
 

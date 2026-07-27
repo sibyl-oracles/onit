@@ -33,11 +33,13 @@ Optional dependencies:
     pip install python-docx openpyxl   # .docx and .xlsx ingestion
 '''
 
+import contextlib
 import hashlib
 import json
 import math
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -350,16 +352,33 @@ class LocalSearchIndex:
         try:
             with open(self.index_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            self.chunk_size = data.get("chunk_size", DEFAULT_CHUNK_SIZE)
-            self.chunk_overlap = data.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP)
-            self.embedding_model = data.get("embedding_model")
-            self.documents = data.get("documents", {})
-            self.chunks = data.get("chunks", [])
-            self._bm25 = None
         except Exception as e:
             logger.error(f"Failed to load index {self.index_path}: {e}")
+            return
+        # An index written by an older layout is not migrated: it is left
+        # unread, so the next ingest rebuilds it from the documents instead of
+        # serving chunks whose shape this version no longer understands.
+        if data.get("version") != INDEX_VERSION:
+            logger.warning(
+                f"Ignoring index {self.index_path}: version {data.get('version')} "
+                f"!= {INDEX_VERSION}; it will be rebuilt from the corpus")
+            return
+        self.chunk_size = data.get("chunk_size", DEFAULT_CHUNK_SIZE)
+        self.chunk_overlap = data.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP)
+        self.embedding_model = data.get("embedding_model")
+        self.documents = data.get("documents", {})
+        self.chunks = data.get("chunks", [])
+        self._bm25 = None
 
     def save(self) -> None:
+        """Persist the index, atomically.
+
+        The index is written to a temporary file in the same directory and
+        renamed over the old one, so a concurrent reader — another onit
+        service sharing this data directory, which loads the index at its own
+        start — sees either the previous index or the new one, never the
+        truncated middle of a write.
+        """
         os.makedirs(self.index_dir, mode=0o700, exist_ok=True)
         data = {
             "version": INDEX_VERSION,
@@ -370,9 +389,18 @@ class LocalSearchIndex:
             "documents": self.documents,
             "chunks": self.chunks,
         }
-        fd = os.open(self.index_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+        # mkstemp creates the file 0o600, and the leading dot keeps a partial
+        # write out of any corpus walk over the directory holding the index.
+        fd, tmp_path = tempfile.mkstemp(dir=self.index_dir, prefix=".index-",
+                                        suffix=".tmp")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(tmp_path, self.index_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
     # -- ingestion -----------------------------------------------------------
 

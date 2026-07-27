@@ -132,6 +132,37 @@ def test_index_persistence(tmp_path, corpus):
     assert results[0]["file"].endswith("expenses.txt")
 
 
+def test_save_replaces_the_index_atomically(tmp_path, corpus):
+    """A reader (a sibling onit service sharing the data directory) must never
+    observe the truncated middle of a write."""
+    index_dir = tmp_path / "idx"
+    index = LocalSearchIndex(str(index_dir))
+    index.index_directory(str(corpus))
+    inode = (index_dir / "index.json").stat().st_ino
+
+    (corpus / "parking.md").write_text("# Parking\n\nPermits from facilities.\n")
+    index.index_directory(str(corpus))
+
+    # A rename, not a truncate-in-place: the old file is never a partial one
+    assert (index_dir / "index.json").stat().st_ino != inode
+    assert json.loads((index_dir / "index.json").read_text())["version"] == 1
+    assert [p.name for p in index_dir.iterdir()] == ["index.json"]
+
+
+def test_index_of_an_older_version_is_not_read(tmp_path, corpus):
+    index_dir = tmp_path / "idx"
+    LocalSearchIndex(str(index_dir)).index_directory(str(corpus))
+    persisted = index_dir / "index.json"
+    data = json.loads(persisted.read_text())
+    data["version"] = 0
+    persisted.write_text(json.dumps(data))
+
+    stale = LocalSearchIndex(str(index_dir))
+    assert stale.documents == {} and stale.chunks == []
+    # ...and the next ingest rebuilds it from the corpus rather than serving nothing
+    assert stale.index_directory(str(corpus))["total_documents"] == 3
+
+
 def test_index_skips_unchanged_and_drops_deleted(tmp_path, corpus):
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(corpus))
@@ -472,27 +503,61 @@ def test_rebuild_reflects_corpus_changed_while_server_was_down(search_env, corpu
     assert all(not r["file"].endswith("onboarding.md") for r in dropped["results"])
 
 
-def test_rebuild_discards_persisted_session_indexes(search_env, corpus):
-    stale = search_env / "old-session" / "local_search"
-    LocalSearchIndex(str(stale)).index_directory(str(corpus))
+def test_rebuild_keeps_indexes_it_does_not_own(search_env, corpus):
+    """One data directory is commonly shared by several onit services, each
+    running its own copy of this server. A start must not delete the indexes
+    of the sessions its siblings are still serving."""
+    sibling = search_env / "other-session" / "local_search"
+    LocalSearchIndex(str(sibling)).index_directory(str(corpus))
     fallback = search_env / "local_search"
     LocalSearchIndex(str(fallback)).index_directory(str(corpus))
 
     local_mod.rebuild_indexes(background=False)
 
-    assert not stale.exists()
-    assert not (fallback / "index.json").exists()
-    # Only the freshly rebuilt shared index survives
+    assert (sibling / "index.json").is_file()
+    assert (fallback / "index.json").is_file()
     assert (fallback / "shared" / "index.json").is_file()
 
 
-def test_rebuild_without_documents_path_only_purges(search_env, corpus, monkeypatch):
+def test_rebuild_leaves_a_shared_index_a_sibling_just_wrote(search_env):
+    """The shared index a sibling container built is refreshed in place, so it
+    is never missing from disk while this server rebuilds its own copy."""
+    local_mod._index_documents_impl()  # the sibling's build
+    shared = search_env / "local_search" / "shared" / "index.json"
+    before = json.loads(shared.read_text())
+    local_mod._INDEXES.clear()
+
+    local_mod.rebuild_indexes(background=False)
+
+    assert shared.is_file()
+    assert json.loads(shared.read_text())["documents"].keys() == before["documents"].keys()
+
+
+def test_rebuild_reuses_embeddings_of_unchanged_documents(search_env):
+    """An unchanged corpus is not re-embedded at every start — four containers
+    restarting must not each re-embed a corpus that nobody edited."""
+    local_mod.rebuild_indexes(background=False)
+    index = local_mod._get_index(local_mod._shared_index_dir())
+    for chunk in index.chunks:
+        chunk["embedding"] = [1.0, 0.0]
+    index.embedding_model = "test-embeddings"
+    index.save()
+    local_mod._INDEXES.clear()  # a restart starts with no in-memory index
+
+    local_mod.rebuild_indexes(background=False)
+
+    index = local_mod._get_index(local_mod._shared_index_dir())
+    assert index.chunks and all("embedding" in c for c in index.chunks)
+    assert index.embedding_model == "test-embeddings"
+
+
+def test_rebuild_without_documents_path_is_a_noop(search_env, corpus, monkeypatch):
     monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", None)
-    stale = search_env / "old-session" / "local_search"
-    LocalSearchIndex(str(stale)).index_directory(str(corpus))
+    session = search_env / "old-session" / "local_search"
+    LocalSearchIndex(str(session)).index_directory(str(corpus))
 
     assert local_mod.rebuild_indexes(background=False) is None
-    assert not stale.exists()
+    assert (session / "index.json").is_file()
 
 
 def test_rebuild_in_background_completes(search_env):

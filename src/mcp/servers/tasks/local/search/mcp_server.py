@@ -29,9 +29,11 @@ The read-only DOCUMENTS_PATH corpus is indexed once into a shared server-level
 index reused by all sessions; files a session indexes from its own jail go
 into a per-session index. local_search queries both, fuses the results by rank,
 and collapses a document held by both indexes into a single hit.
-Every server start discards the indexes persisted under DATA_PATH and rebuilds
-the shared one, so a restart always picks up corpus changes made while the
-server was down. While the server is up, every search incrementally re-ingests
+Every server start re-ingests the shared corpus into the index persisted under
+DATA_PATH, so a restart picks up corpus changes made while the server was down
+without discarding work (or a sibling service's index — one data directory is
+commonly shared by several onit containers). While the server is up, every
+search incrementally re-ingests
 the corpora it queries, so documents added, edited, or deleted mid-run are
 picked up without an explicit index_documents call.
 
@@ -44,7 +46,6 @@ Optional environment variables for dense/hybrid retrieval:
 import contextlib
 import json
 import os
-import shutil
 import tempfile
 import threading
 from typing import Any, Dict, Optional, Tuple
@@ -167,43 +168,29 @@ def _get_index(index_dir: str) -> LocalSearchIndex:
     return _INDEXES[index_dir]
 
 
-def _purge_persisted_indexes() -> int:
-    """Delete every persisted local_search index under DATA_PATH.
-
-    The index is derived data, and ingestion only re-parses files whose
-    mtime/size changed — documents added, edited, or deleted while the server
-    was down are never noticed by a corpus nobody re-ingests. Discarding what
-    is on disk is what makes the startup rebuild authoritative. Covers the
-    shared index, the server-level fallback index, and leftover per-session
-    indexes. Returns the number of index directories removed.
-    """
-    root = os.path.realpath(os.path.expanduser(DATA_PATH))
-    if not os.path.isdir(root):
-        return 0
-    removed = 0
-    for dirpath, dirnames, _ in os.walk(root):
-        if "local_search" not in dirnames:
-            continue
-        dirnames.remove("local_search")  # do not descend into what we delete
-        shutil.rmtree(os.path.join(dirpath, "local_search"), ignore_errors=True)
-        removed += 1
-    return removed
-
-
 def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
-    """Discard the persisted indexes and re-ingest the shared corpus.
+    """Re-ingest the shared corpus once per server start.
 
-    Called once per server start so every run serves an index that matches the
-    corpus as it exists now. The re-ingest runs in a daemon thread holding
-    _SHARED_LOCK: binding the server port is not delayed by parsing and
-    embedding a large corpus, and searches arriving mid-rebuild block on the
-    lock instead of reading a half-built index. Returns the thread (None when
-    the rebuild ran inline or there is no shared corpus to rebuild).
+    The pass is incremental: ``index_directory`` re-parses the files whose
+    mtime or size changed, drops the entries of files that no longer exist,
+    and leaves everything else — including the embeddings already computed for
+    it — untouched. That is enough to make a restart authoritative over a
+    corpus edited while the server was down, and it does not make every
+    container start pay to re-embed a corpus that did not change.
+
+    Nothing persisted under DATA_PATH is deleted. Several onit services (web,
+    a2a, gateway, terminal) routinely bind-mount one data directory, and each
+    runs its own copy of this server: a start that wiped every index under
+    that directory would delete the shared index a sibling had just built and
+    the live per-session indexes of sibling sessions still serving traffic.
+
+    The re-ingest runs in a daemon thread holding _SHARED_LOCK: binding the
+    server port is not delayed by parsing and embedding a large corpus, and
+    searches arriving mid-rebuild block on the lock instead of reading a
+    half-built index. Returns the thread (None when the rebuild ran inline or
+    there is no shared corpus to rebuild).
     """
     _INDEXES.clear()
-    removed = _purge_persisted_indexes()
-    if removed:
-        logger.info(f"Discarded {removed} persisted local_search index(es) under {DATA_PATH}")
 
     docs_root = _documents_root()
     if not docs_root or not os.path.isdir(docs_root):
@@ -213,12 +200,24 @@ def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
         try:
             with _SHARED_LOCK:
                 index = _get_index(_shared_index_dir())
-                if index.chunks:
-                    return  # a search that arrived first already rebuilt it
-                result = index.index_directory(docs_root, recursive=True, rebuild=True)
+                result = index.index_directory(docs_root, recursive=True)
+            if not result["total_documents"]:
+                # Logged as an error because it is a misconfiguration, not a
+                # state: the corpus is mounted but local_search can only answer
+                # "index is empty" until it holds a supported document.
+                logger.error(
+                    f"Shared local_search corpus {docs_root} holds no indexable "
+                    f"document — check that the corpus is mounted and contains "
+                    f"pdf/md/txt/csv/docx/xlsx files"
+                )
+                return
             logger.info(
-                f"Rebuilt shared local_search index from {docs_root}: "
-                f"{result['total_documents']} document(s), {result['total_chunks']} chunk(s)"
+                f"Shared local_search index from {docs_root}: "
+                f"{result['total_documents']} document(s), "
+                f"{result['total_chunks']} chunk(s); "
+                f"{len(result['indexed'])} (re)ingested, "
+                f"{result['skipped_unchanged']} unchanged, "
+                f"{len(result['removed'])} dropped"
             )
         except Exception as e:
             logger.error(f"Failed to rebuild shared local_search index: {e}")
@@ -556,7 +555,7 @@ def run(
     elif os.environ.get('ONIT_DOCUMENTS_PATH'):
         DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
 
-    # Every start serves a freshly built index of the corpus as it is now
+    # Every start re-ingests the corpus as it is now
     rebuild_indexes()
 
     logger.info(f"Starting Local Search MCP Server at {host}:{port}{path}")
