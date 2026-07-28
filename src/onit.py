@@ -45,7 +45,7 @@ from .lib.tools import discover_tools
 from .lib.text import remove_tags
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
-from .model.serving.chat import chat
+from .model.serving.chat import chat, summarize_metrics
 from .model.serving.balancer import LoadBalancer, ServerEndpoint
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -940,6 +940,9 @@ class OnIt(BaseModel):
         while not effective_safety_queue.empty():
             effective_safety_queue.get_nowait()
 
+        # Timed because it is a round trip to the prompts MCP server sitting in
+        # front of the first token of every task, and nothing else measures it.
+        _instruction_start = time.monotonic()
         prompt_client = Client(self.prompt_url)
         async with prompt_client:
             instruction = await prompt_client.get_prompt("assistant", {
@@ -956,6 +959,7 @@ class OnIt(BaseModel):
                 "developer": self.developer,
             })
             instruction = instruction.messages[0].content.text
+        _instruction_s = time.monotonic() - _instruction_start
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
         _adapter = None
@@ -970,7 +974,9 @@ class OnIt(BaseModel):
             )
 
         effective_session_id = session_id or self.session_id
+        _metrics: dict = {}
         kwargs = {
+            'metrics': _metrics,
             'console': None,
             'chat_ui': _adapter,
             'cursor': AGENT_CURSOR, 'memories': None,
@@ -1035,6 +1041,14 @@ class OnIt(BaseModel):
             await _adapter.flush()
             if stats is not None:
                 stats["tokens_per_second"] = _adapter.tokens_per_second
+
+        # Telemetry is reported whether or not the task succeeded — a run that
+        # ended in a retry loop is exactly the one worth looking at.
+        _metrics["instruction_s"] = round(_instruction_s, 3)
+        if stats is not None:
+            stats["metrics"] = _metrics
+        logger.info("task timing: instruction %.2fs | %s",
+                    _instruction_s, summarize_metrics(_metrics))
 
         if not last_response or not remove_tags(last_response).strip():
             logger.error("chat() returned empty/None after %d retries "

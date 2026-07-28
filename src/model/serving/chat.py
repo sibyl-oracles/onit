@@ -24,6 +24,7 @@ import mimetypes
 import os
 import json
 import re
+import time
 import types
 import uuid
 import httpx
@@ -73,6 +74,114 @@ def _truncate_tool_response(response: str) -> str:
         return response
     half = MAX_TOOL_RESPONSE // 2
     return response[:half] + f"\n\n... [truncated {len(response) - MAX_TOOL_RESPONSE} chars] ...\n\n" + response[-half:]
+
+
+# ── per-turn telemetry ──────────────────────────────────────────────────────
+
+def _as_int(value) -> int:
+    """Token counts as an int, whatever the provider actually returned.
+
+    ``usage`` fields are absent on some providers, None on others, and a mock
+    in tests; none of those should poison an accumulator.
+    """
+    return value if isinstance(value, int) else 0
+
+
+class TurnMetrics:
+    """Timing and token accounting for one ``chat()`` run, turn by turn.
+
+    Wall time for an answer is the sum over turns of prefill + decode + tool
+    execution, but the only figure reported was the decode rate of the final
+    stream — blind to how many turns ran, to a prompt that grows with every
+    tool result, and to the tools themselves.  A run can double in length with
+    that number unchanged, which is exactly the case this exists to diagnose.
+
+    The caller owns the dict; it is filled in as the loop runs rather than at
+    the end, because the loop returns from a dozen places and a summary built
+    on the way out would be missing from most of them.
+    """
+
+    def __init__(self, sink: dict):
+        self.sink = sink
+        self.turns: list = []
+        sink.clear()
+        sink.update(turns=self.turns, turn_count=0, tool_calls=0,
+                    model_s=0.0, tool_s=0.0, prefill_s=0.0, decode_s=0.0,
+                    compaction_s=0.0, compactions=0,
+                    prompt_tokens_max=0, completion_tokens=0)
+        self._api_start = 0.0
+        self._ttft = None
+
+    # -- model call --------------------------------------------------------
+    def start_api(self) -> None:
+        """Mark the start of an API call.  Called again on each retry, so a
+        retried turn is timed from the attempt that actually answered."""
+        self._api_start = time.monotonic()
+        self._ttft = None
+
+    def first_token(self) -> None:
+        """First chunk carrying generated text: the prefill is over."""
+        if self._ttft is None and self._api_start:
+            self._ttft = time.monotonic() - self._api_start
+
+    def end_api(self, prompt_tokens=0, completion_tokens=0,
+                finish_reason=None) -> None:
+        elapsed = time.monotonic() - self._api_start if self._api_start else 0.0
+        prompt_tokens = _as_int(prompt_tokens)
+        completion_tokens = _as_int(completion_tokens)
+        self.turns.append({
+            "n": len(self.turns) + 1,
+            "ttft_s": round(self._ttft, 3) if self._ttft is not None else None,
+            "model_s": round(elapsed, 3),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "finish_reason": finish_reason,
+            "tools": [],
+            "tool_s": 0.0,
+        })
+        s = self.sink
+        s["turn_count"] = len(self.turns)
+        s["model_s"] = round(s["model_s"] + elapsed, 3)
+        s["completion_tokens"] += completion_tokens
+        s["prompt_tokens_max"] = max(s["prompt_tokens_max"], prompt_tokens)
+        if self._ttft is not None:
+            # Only streamed turns can separate the two: without a first-token
+            # timestamp there is no line between waiting and generating.
+            s["prefill_s"] = round(s["prefill_s"] + self._ttft, 3)
+            s["decode_s"] = round(s["decode_s"] + max(elapsed - self._ttft, 0.0), 3)
+        self._api_start = 0.0
+
+    # -- tools and compaction ----------------------------------------------
+    def add_tools(self, names: list, seconds: float) -> None:
+        if self.turns:
+            self.turns[-1]["tools"] = list(names)
+            self.turns[-1]["tool_s"] = round(seconds, 3)
+        self.sink["tool_calls"] += len(names)
+        self.sink["tool_s"] = round(self.sink["tool_s"] + seconds, 3)
+
+    def add_compaction(self, seconds: float) -> None:
+        """Compaction is an extra LLM call the user never asked for — counted
+        separately so its cost isn't read as the model being slow."""
+        self.sink["compactions"] += 1
+        self.sink["compaction_s"] = round(self.sink["compaction_s"] + seconds, 3)
+
+
+def summarize_metrics(m: dict) -> str:
+    """One-line rendering of a TurnMetrics sink, for logs and status lines."""
+    if not m or not m.get("turn_count"):
+        return "no turns recorded"
+    parts = [
+        f"{m['turn_count']} turn(s)",
+        f"{m['tool_calls']} tool call(s)",
+        f"model {m['model_s']:.1f}s (prefill {m['prefill_s']:.1f}s, "
+        f"decode {m['decode_s']:.1f}s)",
+        f"tools {m['tool_s']:.1f}s",
+        f"peak prompt {m['prompt_tokens_max']:,} tok",
+        f"generated {m['completion_tokens']:,} tok",
+    ]
+    if m.get("compactions"):
+        parts.append(f"{m['compactions']} compaction(s) {m['compaction_s']:.1f}s")
+    return " | ".join(parts)
 
 
 def _log_to_ui_or_verbose(message: str, chat_ui, verbose: bool, level: str = "info") -> None:
@@ -156,13 +265,66 @@ def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True)
     )
 
 
+# ── endpoint metadata caches ────────────────────────────────────────────────
+# The model a host serves and the size of its context window are properties of
+# a running server, not of a request, but both were re-queried on every chat()
+# call — two HTTP round trips sitting in front of the first token of every
+# task.  They are cached here.
+#
+# The caches live inside the helpers rather than at the call site in chat() so
+# that a test patching a helper patches the caching away with it, and so the
+# fallback path below can invalidate a stale answer in one place.
+#
+# A successful answer is kept for the life of the process.  A failure is kept
+# only briefly: a host that was down or slow during one call is asked again on
+# the next, instead of a single bad moment costing context accounting until
+# the process restarts.
+_MODEL_ID_CACHE: dict = {}        # host -> model id
+_MAX_CONTEXT_CACHE: dict = {}     # (host, model) -> (value, expires_at)
+_OLLAMA_CONTEXT_CACHE: dict = {}  # model -> (value, expires_at)
+_NEGATIVE_CACHE_TTL = 300.0       # seconds a "could not determine" answer sticks
+
+
+def reset_endpoint_caches() -> None:
+    """Forget every cached model id and context window.
+
+    For tests, and for callers that reconfigure an endpoint in-process.
+    """
+    _MODEL_ID_CACHE.clear()
+    _MAX_CONTEXT_CACHE.clear()
+    _OLLAMA_CONTEXT_CACHE.clear()
+
+
+def _cache_get(cache: dict, key) -> tuple:
+    """Look up a (value, expires_at) entry. Returns (hit, value).
+
+    A cached success never expires; a cached failure does.
+    """
+    entry = cache.get(key)
+    if entry is None:
+        return False, None
+    value, expires_at = entry
+    if value is not None or expires_at > time.monotonic():
+        return True, value
+    return False, None
+
+
+def _cache_put(cache: dict, key, value):
+    cache[key] = (value, time.monotonic() + _NEGATIVE_CACHE_TTL)
+    return value
+
+
 async def _ollama_resolve_model_id(client, host: str) -> str:
     """Fetch the first available model from an Ollama endpoint via client.list()."""
+    cached = _MODEL_ID_CACHE.get(host)
+    if cached:
+        return cached
     response = await client.list()
     if not response.models:
         raise ValueError(f"No models available at {host}")
     model_id = response.models[0].model
     logger.info("Auto-detected Ollama model: %s from %s", model_id, host)
+    _MODEL_ID_CACHE[host] = model_id
     return model_id
 
 
@@ -172,11 +334,15 @@ async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
     vLLM typically serves a single model, so models.data[0].id is used.
     For OpenRouter, the caller should always supply the model name explicitly.
     """
+    cached = _MODEL_ID_CACHE.get(host)
+    if cached:
+        return cached
     models = await client.models.list()
     if not models.data:
         raise ValueError(f"No models available at {host}")
     model_id = models.data[0].id
     logger.info("Auto-detected model: %s from %s", model_id, host)
+    _MODEL_ID_CACHE[host] = model_id
     return model_id
 
 
@@ -189,6 +355,10 @@ async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
     Returns the detected model name, or None if detection failed or it matches
     the name that already 404'd.
     """
+    # The cached id is what just 404'd if it came from an earlier auto-detect,
+    # and a cache hit here would re-detect the dead name, compare it equal to
+    # the current model, and report "no fallback" forever.  Ask the host again.
+    _MODEL_ID_CACHE.pop(host, None)
     try:
         detected = (await _ollama_resolve_model_id(ollama_client, host) if is_ollama
                     else await _resolve_model_id(client, host))
@@ -204,6 +374,9 @@ async def _get_model_max_context(host: str, api_key: str, model: str) -> Optiona
     vLLM exposes ``max_model_len`` in the ``/v1/models`` response as an extra
     field.  Returns None for OpenRouter or any host that doesn't provide it.
     """
+    hit, cached = _cache_get(_MAX_CONTEXT_CACHE, (host, model))
+    if hit:
+        return cached
     try:
         async with httpx.AsyncClient(timeout=10.0) as http_client:
             resp = await http_client.get(
@@ -215,10 +388,10 @@ async def _get_model_max_context(host: str, api_key: str, model: str) -> Optiona
                     if m.get("id") == model:
                         val = m.get("max_model_len")
                         if val:
-                            return int(val)
+                            return _cache_put(_MAX_CONTEXT_CACHE, (host, model), int(val))
     except Exception as e:
         logger.debug("Could not query max_model_len from vLLM: %s", e)
-    return None
+    return _cache_put(_MAX_CONTEXT_CACHE, (host, model), None)
 
 
 async def _get_ollama_max_context(client, model: str) -> Optional[int]:
@@ -232,16 +405,22 @@ async def _get_ollama_max_context(client, model: str) -> Optional[int]:
     otherwise — far smaller than ``max_tokens`` — which silently truncates long
     responses mid-stream.  Knowing the native window lets us size ``num_ctx`` and
     drive the same context-compaction accounting used for vLLM.
+
+    Cached by model name alone: the context window is a property of the model,
+    so two hosts serving the same model agree on it.
     """
+    hit, cached = _cache_get(_OLLAMA_CONTEXT_CACHE, model)
+    if hit:
+        return cached
     try:
         resp = await client.show(model)
         modelinfo = getattr(resp, "modelinfo", None) or {}
         for key, val in modelinfo.items():
             if key.endswith(".context_length") and val:
-                return int(val)
+                return _cache_put(_OLLAMA_CONTEXT_CACHE, model, int(val))
     except Exception as e:
         logger.debug("Could not query context_length from Ollama: %s", e)
-    return None
+    return _cache_put(_OLLAMA_CONTEXT_CACHE, model, None)
 
 
 def _parse_commands_format(obj: dict, tool_registry) -> Optional[list[dict]]:
@@ -766,7 +945,7 @@ def _adapt_ollama_tool_calls(tool_calls) -> list:
 
 async def _process_streaming_response(
     chat_completion, safety_queue: asyncio.Queue,
-    chat_ui, think: bool,
+    chat_ui, think: bool, on_first_token=None,
 ) -> tuple[str, str, dict, bool, Any, str | None] | None:
     """Consume a streaming chat completion and return accumulated results.
 
@@ -775,6 +954,11 @@ async def _process_streaming_response(
     CompletionUsage object from the final chunk (requires stream_options
     include_usage=True), or None if not available.  ``finish_reason`` is the
     stop reason from the final chunk (e.g. "stop", "tool_calls", "length").
+
+    ``on_first_token`` fires once, on the first chunk carrying generated text
+    — reasoning, content, or a tool-call delta.  That instant separates the
+    prefill from the decode, which is the split telemetry needs and which the
+    chunk loop is the only place that can see.
     """
     full_content = ""
     full_reasoning = ""
@@ -800,6 +984,11 @@ async def _process_streaming_response(
         if choice.finish_reason is not None:
             finish_reason = choice.finish_reason
         delta = choice.delta
+
+        if on_first_token and (delta.tool_calls or delta.content
+                               or getattr(delta, 'reasoning_content', None)):
+            on_first_token()
+            on_first_token = None
 
         # Accumulate structured tool-call deltas
         if delta.tool_calls:
@@ -871,6 +1060,7 @@ async def _ollama_process_streaming_response(
     safety_queue: asyncio.Queue,
     chat_ui,
     think: bool,
+    on_first_token=None,
 ) -> tuple[str, str, list | None, bool, int, str | None] | None:
     """Consume an Ollama streaming chat completion and return accumulated results.
 
@@ -902,6 +1092,12 @@ async def _ollama_process_streaming_response(
             dr = getattr(chunk, "done_reason", None)
             if dr:
                 done_reason = dr
+
+            if on_first_token and (chunk.message.tool_calls
+                                   or chunk.message.content
+                                   or getattr(chunk.message, "thinking", None)):
+                on_first_token()
+                on_first_token = None
 
             # Tool calls arrive complete in the final chunk
             if chunk.message.tool_calls:
@@ -1429,6 +1625,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
     max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
     num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
+    # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
+    _metrics_sink = kwargs.get('metrics', None)
+    _m = TurnMetrics(_metrics_sink) if _metrics_sink is not None else None
 
     images_bytes = _load_images(images, chat_ui, verbose)
     messages = _build_messages(instruction, images_bytes, prompt_intro,
@@ -1531,6 +1730,20 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     _final_answer_prefix = ""      # accumulated text from prior truncated final-answer turns
     _prose_before_tools = ""       # answer text written just before the last tool call
 
+    async def _compact(msgs: list) -> list:
+        """Compact the conversation, timing it.  Compaction is itself an LLM
+        call, so its cost belongs in the telemetry rather than hidden inside
+        whichever turn happened to trigger it."""
+        _t0 = time.monotonic()
+        out = await _compact_context(
+            msgs, ollama_client if is_ollama else client,
+            model, max_tokens, chat_ui, verbose,
+            is_ollama=is_ollama, instruction=instruction,
+        )
+        if _m:
+            _m.add_compaction(time.monotonic() - _t0)
+        return out
+
     while True:
         iteration_count += 1
         if MAX_CHAT_ITERATIONS >= 0 and iteration_count > MAX_CHAT_ITERATIONS:
@@ -1546,12 +1759,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 "Compacting context after truncated response (finish_reason=length)...",
                 chat_ui, verbose, level="warning",
             )
-            messages = await _compact_context(
-                messages,
-                ollama_client if is_ollama else client,
-                model, max_tokens, chat_ui, verbose,
-                is_ollama=is_ollama, instruction=instruction,
-            )
+            messages = await _compact(messages)
             _last_prompt_tokens = 0
 
         # Context compaction: check if the previous call used ≥90% of the context window.
@@ -1564,12 +1772,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"Context at {usage_pct:.0%} ({_last_prompt_tokens:,}/{max_context_tokens:,} tokens). Compacting...",
                     chat_ui, verbose, level="warning",
                 )
-                messages = await _compact_context(
-                    messages,
-                    ollama_client if is_ollama else client,
-                    model, max_tokens, chat_ui, verbose,
-                    is_ollama=is_ollama, instruction=instruction,
-                )
+                messages = await _compact(messages)
                 _last_prompt_tokens = 0
 
         _strip_old_images(messages)
@@ -1578,6 +1781,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _full_content = ""
         _full_reasoning = ""
         _finish_reason: str | None = None
+        _completion_tokens = 0  # set from usage where the provider reports it
 
         # Pre-call compaction: _last_prompt_tokens is from the previous API call and may
         # underestimate the true prompt size after large tool results were appended.
@@ -1593,11 +1797,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"minimum ({_min_useful_output:,}). Compacting context before API call...",
                     chat_ui, verbose, level="warning",
                 )
-                messages = await _compact_context(
-                    messages, ollama_client if is_ollama else client,
-                    model, max_tokens, chat_ui, verbose, is_ollama=is_ollama,
-                    instruction=instruction,
-                )
+                messages = await _compact(messages)
                 _last_prompt_tokens = 0
 
         # Retry loop for transient API errors — preserves accumulated messages/tool history
@@ -1608,6 +1808,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if not safety_queue.empty():
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
                     return None
+
+                if _m:
+                    _m.start_api()
 
                 # Cap output tokens so that prompt + output never approaches the context limit.
                 # Never expand beyond the configured max_tokens — only shrink when the
@@ -1698,6 +1901,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     if is_ollama:
                         stream_result = await _ollama_process_streaming_response(
                             chat_completion, safety_queue, chat_ui, think,
+                            on_first_token=_m.first_token if _m else None,
                         )
                         if stream_result is None:
                             return None
@@ -1736,12 +1940,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     else:
                         stream_result = await _process_streaming_response(
                             chat_completion, safety_queue, chat_ui, think,
+                            on_first_token=_m.first_token if _m else None,
                         )
                         if stream_result is None:
                             return None
                         _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
                         if _stream_usage is not None:
                             _last_prompt_tokens = _stream_usage.prompt_tokens
+                            _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         if _ui_was_streaming and chat_ui:
@@ -1837,6 +2043,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 else:
                     _message_for_history = {"role": "assistant", "content": _content}
                 # Ollama exposes prompt_eval_count for token tracking
+                _completion_tokens = getattr(chat_completion, "eval_count", 0)
                 _pec = getattr(chat_completion, "prompt_eval_count", None)
                 if _pec is not None:
                     _last_prompt_tokens = _pec
@@ -1866,17 +2073,27 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 # Capture token usage for context tracking
                 if chat_completion.usage is not None:
                     _last_prompt_tokens = chat_completion.usage.prompt_tokens
+                    _completion_tokens = getattr(chat_completion.usage, "completion_tokens", 0)
                     if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                         chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+
+        # Both paths have converged: the model call for this turn is done.
+        if _m:
+            _m.end_api(_last_prompt_tokens, _completion_tokens, _finish_reason)
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:
             # No structured tool calls -- check for raw JSON tool calls in content
+            _t_tools = time.monotonic()
             should_continue, bail = await _handle_raw_tool_call(
                 _content, tool_registry, timeout, data_path,
                 chat_ui, verbose, messages, tool_call_history,
                 MAX_REPEATED_TOOL_CALLS, session_id=session_id,
             )
+            if _m and (should_continue or bail):
+                # A tool ran; its name was parsed out of the content inside the
+                # handler, so record it under the shape it arrived in.
+                _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools)
             if bail:
                 return bail
             if should_continue:
@@ -1968,12 +2185,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _force_tool_call = False
         _active_max_tokens = max_tokens
         planning_continuation_count = 0
+        _t_tools = time.monotonic()
         bail = await _handle_structured_tool_calls(
             tool_calls, _message_for_history, tool_registry,
             timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
             safety_queue, session_id=session_id,
         )
+        if _m:
+            _m.add_tools([tc.function.name for tc in tool_calls],
+                         time.monotonic() - _t_tools)
         if bail is _SAFETY_ABORT:
             return None
         if bail:

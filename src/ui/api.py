@@ -25,7 +25,7 @@ SSE event schema (see docs/web-ui-plan.md):
     phase_end     {"content": str}
     status        {"text": str}
     done          {"content": str, "files": [...],
-                   "elapsed": float, "tok_s": float}
+                   "elapsed": float, "tok_s": float, "timing": {...}}
     error         {"message": str}
 """
 
@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
+from src.model.serving.chat import summarize_metrics
 from src.sessions import delete_session as _delete_session_index
 from src.sessions import get_session_owner as _get_session_owner
 from src.sessions import list_sessions as _list_sessions
@@ -205,6 +206,32 @@ def _email_of(mailto_url: str) -> str:
     rest = mailto_url.split(":", 1)[1] if ":" in mailto_url else mailto_url
     rest = rest.split("?", 1)[0]
     return urllib.parse.unquote(rest).strip().lower()
+
+
+def _timing_summary(metrics: dict, elapsed: float) -> dict:
+    """Where the wall clock went, small enough to ride along on ``done``.
+
+    The per-turn detail stays in the log: this is the shape a client can show
+    without parsing a list, and the part that explains why an answer took as
+    long as it did — turn count and prompt growth, not the streaming rate.
+    """
+    if not metrics:
+        return {}
+    accounted = (metrics.get("model_s", 0.0) + metrics.get("tool_s", 0.0)
+                 + metrics.get("instruction_s", 0.0))
+    return {
+        "turns": metrics.get("turn_count", 0),
+        "tool_calls": metrics.get("tool_calls", 0),
+        "instruction_s": metrics.get("instruction_s", 0.0),
+        "model_s": metrics.get("model_s", 0.0),
+        "prefill_s": metrics.get("prefill_s", 0.0),
+        "decode_s": metrics.get("decode_s", 0.0),
+        "tool_s": metrics.get("tool_s", 0.0),
+        "compaction_s": metrics.get("compaction_s", 0.0),
+        "other_s": round(max(elapsed - accounted, 0.0), 2),
+        "prompt_tokens_max": metrics.get("prompt_tokens_max", 0),
+        "completion_tokens": metrics.get("completion_tokens", 0),
+    }
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -782,6 +809,17 @@ class WebApiUI:
             )
             elapsed = time.monotonic() - start
             tok_s = stats.get("tokens_per_second", 0)
+            metrics = stats.get("metrics") or {}
+            # tok_s covers the final answer stream only, so it stays flat while
+            # a run grows extra turns.  Report the breakdown that does move —
+            # to the server log, and to the drawer where anyone watching a slow
+            # answer is already looking.
+            _summary = summarize_metrics(metrics)
+            logger.info("session %s answered in %.1fs — %s",
+                        session.session_id, elapsed, _summary)
+            logger.debug("session %s per-turn: %s",
+                         session.session_id, metrics.get("turns"))
+            self.add_log(f"Answered in {elapsed:.1f}s — {_summary}")
 
             if not response:
                 events.put_nowait(("error", {
@@ -797,6 +835,7 @@ class WebApiUI:
                 "files": self._file_infos(file_paths, session.session_id),
                 "elapsed": round(elapsed, 2),
                 "tok_s": round(tok_s, 1),
+                "timing": _timing_summary(metrics, elapsed),
             }))
         except Exception as e:
             logger.error("Error processing task: %s", e)
