@@ -158,47 +158,42 @@ Do not stop until **all** are true:
 ## Research and Citations
 When a question needs external information:
 """
+      # How to open a document that `local_search` pointed at
+      open_doc = (
+         '`search_document` (`mode="context"`, the question as `query`) for the relevant '
+         'passages, or `read_file` for the whole document'
+         if document_search_available else '`read_file`'
+      )
+
       if local_search_available and web_search_available:
-         _open_step = (
-            """3. Open each of those documents and find what it actually says on the topic:
-   `search_document` (`mode="context"`, the question as `query`) to locate the relevant
-   passages, `read_file` when you need the whole document. `local_search` ranks
-   documents; only opening one tells you what is in it.
-"""
-            if document_search_available else
-            """3. Open each of those documents with `read_file` and report what it says.
-   `local_search` ranks documents; only opening one tells you what is in it.
-"""
-         )
-         instruction += """1. Call `local_search` first — internal data never appears on the web. It searches
-   the whole in-house corpus and ranks documents; it does not read them.
-2. Before any web search, list by `file` the local documents that answer the question.
-   That list is the backbone of the answer. A document whose name matches the query is
-   a primary source.
-""" + _open_step + """4. Search the web only for what steps 1-3 left unanswered, or for public facts that
-   change over time. Name the gap you are filling before you search. An answer the
-   in-house documents already cover in full needs no web search at all.
-5. The in-house documents are the authority on internal matters — people, projects,
-   customers, policies, internal numbers and dates. If a web source disagrees with a
-   local result, keep the local answer and note the discrepancy. Never drop, overwrite,
-   or water down a local fact because a web page says otherwise, ranks higher, or is
-   written more confidently.
-6. Web material is supplement. It may extend or corroborate the local findings; it
-   never replaces them and never sets the structure of the answer.
-7. When the question asks what exists — options, programs, offerings, policies,
-   contacts — every qualifying local document becomes its own item in the answer.
-   Adding items found on the web is welcome; omitting a local one is not.
-8. Before writing the final answer, re-check the list from step 2. If a local document
-   that answers the question is missing from your draft, add it.
+         instruction += f"""1. Call `local_search` first — internal data never appears on the web. It ranks
+   documents across the in-house corpus; it does not read them.
+2. List, by `file`, the local documents that answer the question. That list is the
+   backbone of the answer. A file name matching the question is a primary source.
+3. Open every document on that list — opening one is the only way to learn what it
+   says. Use {open_doc}.
+4. Search the web only for gaps left after step 3, or for public facts that change
+   over time. Name the gap before you search.
+5. Re-check the step-2 list before writing. Every local document that answers the
+   question must appear in the answer.
+
+### Precedence
+- Local documents are the authority on internal matters — people, projects, customers,
+  policies, internal numbers and dates.
+- If a web source disagrees, keep the local answer and note the discrepancy. Never drop
+  or soften a local fact because a web page ranks higher or sounds more confident.
+- Web material supplements local findings; it never replaces them and never sets the
+  structure of the answer.
+- When the question asks what exists — options, programs, offerings, policies, contacts
+  — each qualifying local document is its own item in the answer. Adding web items is
+  welcome; omitting a local one is not.
 """
          references = "local results by `file` and `location`, web results by URL"
       elif local_search_available:
-         instruction += """1. Search in-house documents with `local_search` — it ranks documents across the
+         instruction += f"""1. Search in-house documents with `local_search` — it ranks documents across the
    corpus; it does not read them.
-""" + ("""2. Open the documents it points at: `search_document` (`mode="context"`, the question
-   as `query`) for the relevant passages, `read_file` for the whole document.
-""" if document_search_available else """2. Open the documents it points at with `read_file` and report what they say.
-""")
+2. Open the documents it points at with {open_doc}, and report what they say.
+"""
          references = "the `file` and `location` of each local result"
       else:
          instruction += """1. Search the web for relevant, up-to-date sources.
@@ -207,51 +202,33 @@ When a question needs external information:
 
       if local_search_available:
          if web_search_available:
-            no_hit = ("re-query once with different terms before turning to the web, "
-                      "and say plainly that the answer came from the web and not from "
-                      "the in-house documents.")
+            no_hit = ("re-query once with different terms before turning to the web, then "
+                      "say plainly that the answer came from the web and not from the "
+                      "in-house documents.")
          else:
             no_hit = ("re-query once with different terms, then say the local documents "
                       "do not cover it.")
-         open_tools = (
-            "Use `search_document` (`mode=\"context\"`) to pull the\n"
-            "passages that bear on the question out of a long document, and `read_file`\n"
-            "when the document is short enough to take whole or you need its structure.\n"
-            "Both accept the paths `local_search` returns, the shared documents\n"
-            "directory included."
-            if document_search_available else
-            "Use `read_file`, which accepts the paths `local_search`\n"
-            "returns, the shared documents directory included."
-         )
          instruction += f"""
-### Working with `local_search` results
-Results are chunks — excerpts picked by keyword overlap, which routinely miss the
-part of a document that actually answers the question. Group results by `file` and
-reason about documents, not chunks; repeated hits measure document length, not
-relevance.
-
-**Required before you answer**: for every result whose file name contains a term
-from the question, open that result's `file` path — even when its chunk looks
-generic, off-topic, or already-covered. A chunk is no evidence about the rest of
-its document. {open_tools}
-
-A file that catalogues others — README, index, table of contents — mentions every
-topic in the corpus, so it ranks high on any query and answers none. Its entries
-are pointers: open every document whose entry sounds relevant to the question,
-and cite that document, not the catalogue.
-
-Drop such a document only after opening it shows it does not apply. Never drop it
-because its chunk ranked low, read as unrelated, or because other sources already
-gave you an answer that looks complete.
-
-If no result answers the question, {no_hit}
+### Reading `local_search` results
+- Results are chunks, not documents, and routinely miss the passage that answers the
+  question. Group them by `file` and reason about documents; repeated hits measure
+  document length, not relevance.
+- Open every result whose file name contains a term from the question, even when its
+  chunk looks generic, off-topic, or already covered. A chunk is no evidence about the
+  rest of its document. Paths returned by `local_search` — including those in the
+  shared documents directory — can be opened directly.
+- A file that catalogues others (README, index, table of contents) mentions every topic
+  and answers none. Its entries are pointers: open the documents they name and cite
+  those, not the catalogue.
+- Drop a document only after opening it shows it does not apply — never because its
+  chunk ranked low or because other sources already look sufficient.
+- If no result answers the question, {no_hit}
 """
 
       if local_search_available and web_search_available:
          instruction += """
-Cite every local result you relied on. If `local_search` supplied any part of the
-answer, its `file` must appear in the references — a reference list of web URLs only
-is wrong in that case.
+If `local_search` supplied any part of the answer, its `file` must appear in the
+references; a list of web URLs alone is wrong in that case.
 """
 
       instruction += f"""

@@ -144,8 +144,11 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=True,
         )
-        assert "Search the web only for what steps 1-3 left unanswered" in result
-        assert "already cover in full needs no web search at all" in result
+        section = result[result.index("## Research and Citations"):]
+        # Web search is permitted for the remainder only, and the gap has to be
+        # named first — a bare "search the web too" would defeat the hierarchy.
+        assert "only for gaps left after step 3" in section
+        assert "Name the gap before you search" in section
 
     @pytest.mark.asyncio
     async def test_a_missing_document_tool_is_never_named(self, tmp_path):
