@@ -43,6 +43,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from .lib.tools import discover_tools
 from .lib.text import remove_tags
+from .mcp.prompts.prompts import build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
 from .model.serving.chat import chat, summarize_metrics
@@ -591,6 +592,10 @@ class OnIt(BaseModel):
     # Prior task/response pairs replayed into each request. They are re-sent
     # every turn, so a long tail costs prompt tokens on all of them.
     history_turns: int = Field(default=10)
+    # Build the instruction by calling the prompt function directly instead of
+    # reaching PromptsMCPServer over the network. Set false when that server
+    # runs a customized prompt rather than the one shipped here.
+    prompt_in_process: bool = Field(default=True)
     timeout: int | None = Field(default=None)
     show_logs: bool = Field(default=False)
     stream: bool = Field(default=True)
@@ -905,6 +910,7 @@ class OnIt(BaseModel):
         self.prompt_intro = self.config_data.get('prompt_intro', None)
         self.max_documents = int(self.config_data.get('max_documents', 6))
         self.history_turns = int(self.config_data.get('history_turns', 10))
+        self.prompt_in_process = bool(self.config_data.get('prompt_in_process', True))
         self.timeout = self.config_data.get('timeout', None)  # default timeout 300 seconds
         if self.timeout is not None and self.timeout < 0:
             self.timeout = None  # no timeout
@@ -1041,26 +1047,10 @@ class OnIt(BaseModel):
         while not effective_safety_queue.empty():
             effective_safety_queue.get_nowait()
 
-        # Timed because it is a round trip to the prompts MCP server sitting in
-        # front of the first token of every task, and nothing else measures it.
+        # Still timed: it sits in front of the first token of every task, and
+        # nothing else measures it.
         _instruction_start = time.monotonic()
-        prompt_client = Client(self.prompt_url)
-        async with prompt_client:
-            instruction = await prompt_client.get_prompt("assistant", {
-                "task": task,
-                "data_path": effective_data_path,
-                "template_path": self.template_path,
-                "file_server_url": self.file_server_url,
-                "topic": self.topic,
-                "sandbox_available": self.sandbox_available,
-                "local_search_available": self.local_search_available,
-                "document_search_available": self.document_search_available,
-                "web_search_available": self.web_search_available,
-                "agent_name": self.agent_name,
-                "developer": self.developer,
-                "max_documents": self.max_documents,
-            })
-            instruction = instruction.messages[0].content.text
+        instruction = await self._assistant_instruction(task, effective_data_path)
         _instruction_s = time.monotonic() - _instruction_start
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
@@ -1187,7 +1177,6 @@ class OnIt(BaseModel):
             raise ValueError("Loop mode requires a 'task' to be set in the config.")
 
         print(f"Loop mode: task='{self.task}', period={self.period}s (Ctrl+C to stop)")
-        prompt_client = Client(self.prompt_url)
         iteration = 0
 
         while True:
@@ -1199,23 +1188,8 @@ class OnIt(BaseModel):
                 while not self.safety_queue.empty():
                     self.safety_queue.get_nowait()
 
-                # build instruction via MCP prompt
                 print(f"--- Iteration {iteration} ---")
-                async with prompt_client:
-                    instruction = await prompt_client.get_prompt("assistant", {"task": self.task,
-                                                                                "data_path": self.data_path,
-                                                                                "template_path": self.template_path,
-                                                                                "file_server_url": self.file_server_url,
-                                                                                "topic": self.topic,
-                                                                                "sandbox_available": self.sandbox_available,
-                                                                                "local_search_available": self.local_search_available,
-                                                                                "document_search_available": self.document_search_available,
-                                                                                "web_search_available": self.web_search_available,
-                                                                                "agent_name": self.agent_name,
-                                                                                "developer": self.developer,
-                                                                                "max_documents": self.max_documents})
-                    instruction = instruction.messages[0]
-                    instruction = instruction.content.text
+                instruction = await self._assistant_instruction(self.task)
 
                 # call chat directly (no queues needed)
                 kwargs = {'console': None,
@@ -1429,24 +1403,40 @@ class OnIt(BaseModel):
             return await self.chat_ui.get_user_input_async()
         return await loop.run_in_executor(None, self.chat_ui.get_user_input)
 
-    async def _build_instruction(self, prompt_client: Client, task: str) -> str:
-        """Build the agent instruction via the MCP prompts server."""
-        async with prompt_client:
-            instruction = await prompt_client.get_prompt("assistant", {"task": task,
-                                                                        "data_path": self.data_path,
-                                                                        "template_path": self.template_path,
-                                                                        "file_server_url": self.file_server_url,
-                                                                        "topic": self.topic,
-                                                                        "sandbox_available": self.sandbox_available,
-                                                                        "local_search_available": self.local_search_available,
-                                                                        "document_search_available": self.document_search_available,
-                                                                        "web_search_available": self.web_search_available,
-                                                                        "agent_name": self.agent_name,
-                                                                        "developer": self.developer,
-                                                                                "max_documents": self.max_documents})
-            instruction = instruction.messages[0]
-            instruction = instruction.content.text
-        return instruction
+    async def _assistant_instruction(self, task: str,
+                                     data_path: str | None = None) -> str:
+        """The agent instruction for ``task``.
+
+        PromptsMCPServer hosts a single prompt, and that prompt is a pure
+        function in this package: it assembles a string, holds no state, and
+        does no I/O beyond creating the data directory.  Reaching it over MCP
+        put a connection, an initialize handshake and a round trip in front of
+        the first token of every task — the cost ``instruction_s`` exists to
+        measure.  Call it directly, and leave the server up for clients outside
+        this process.
+
+        ``prompt_in_process: false`` restores the round trip, for a
+        PromptsMCPServer running a customized prompt rather than this one.
+        """
+        args = {
+            "task": task,
+            "data_path": data_path or self.data_path,
+            "template_path": self.template_path,
+            "file_server_url": self.file_server_url,
+            "topic": self.topic,
+            "sandbox_available": self.sandbox_available,
+            "local_search_available": self.local_search_available,
+            "document_search_available": self.document_search_available,
+            "web_search_available": self.web_search_available,
+            "agent_name": self.agent_name,
+            "developer": self.developer,
+            "max_documents": self.max_documents,
+        }
+        if self.prompt_in_process:
+            return await build_assistant_instruction(**args)
+        async with Client(self.prompt_url) as prompt_client:
+            result = await prompt_client.get_prompt("assistant", args)
+        return result.messages[0].content.text
 
     def _setup_enter_key_listener(self, loop: asyncio.AbstractEventLoop):
         """Set up Enter-key stop listener for text UI.
@@ -1572,7 +1562,6 @@ class OnIt(BaseModel):
     async def client_to_agent(self) -> None:
         """Handle client to agent communication"""
 
-        prompt_client = Client(self.prompt_url)
         agent_task = None
         loop = asyncio.get_event_loop()
 
@@ -1597,7 +1586,7 @@ class OnIt(BaseModel):
             while not self.safety_queue.empty():
                 self.safety_queue.get_nowait()
 
-            instruction = await self._build_instruction(prompt_client, task)
+            instruction = await self._assistant_instruction(task)
 
             on_enter_cb = self._setup_enter_key_listener(loop)
 

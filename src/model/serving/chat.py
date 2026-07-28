@@ -32,6 +32,11 @@ from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
 try:
+    from ...lib.text import split_instruction
+except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
+    from lib.text import split_instruction
+
+try:
     from ollama import AsyncClient as OllamaAsyncClient
     OLLAMA_SDK_AVAILABLE = True
 except ImportError:
@@ -919,34 +924,75 @@ def _load_images(images: List[str] | str | None, chat_ui, verbose: bool) -> list
     return images_bytes
 
 
+# Replayed history: exchanges kept verbatim, and the size an older answer is
+# cut down to.  A research answer runs well past a thousand tokens, and every
+# prior one is re-sent on every turn of every later task — ten of them is a
+# five-figure token bill paid before the model reads the current question.
+# What an older exchange is actually for is the thread of the conversation:
+# what was asked, and roughly what came back.  Its opening carries that; the
+# body and the references list do not, and they are the bulk of it.
+HISTORY_KEEP_FULL = 3
+HISTORY_DECAY_CHARS = 1200
+
+
+def _trim_history(session_history: list,
+                  keep_full: int = HISTORY_KEEP_FULL,
+                  head_chars: int = HISTORY_DECAY_CHARS) -> list:
+    """Replayed history with older answers cut to their opening.
+
+    Questions are left whole — they are one line each, and they are what makes
+    a follow-up intelligible.  Only answers are trimmed, and only those older
+    than the last ``keep_full`` exchanges.
+    """
+    if len(session_history) <= keep_full:
+        return session_history
+    trimmed = []
+    for entry in session_history[:-keep_full] if keep_full else session_history:
+        response = entry.get("response") or ""
+        if len(response) > head_chars:
+            response = (response[:head_chars]
+                        + f"\n... [earlier answer, {len(response) - head_chars} chars trimmed] ...")
+        trimmed.append({**entry, "response": response})
+    return trimmed + (session_history[-keep_full:] if keep_full else [])
+
+
 def _build_messages(instruction: str, images_bytes: list[str],
                     prompt_intro: str, session_history: list | None,
-                    memories: Any) -> list[dict]:
+                    memories: Any, system_rules: str = "") -> list[dict]:
     """Assemble the initial message list for the API call.
 
     Includes the system message, session history, the current user instruction,
     and the empty tool sentinel when appropriate.
+
+    ``system_rules`` is the half of the instruction that does not vary between
+    requests (see ``split_instruction``).  It belongs in the system message and
+    nowhere else: the system message is the only one that sits ahead of the
+    session history, so it is the only place where the same bytes appear at the
+    same offset on every request and a prefix-caching server can skip
+    prefilling them.  Carried in the trailing user message instead — where it
+    used to live — it shifted by a turn's worth of history each time and was
+    re-prefilled on every request of every session.
     """
     if images_bytes:
-        messages: list[dict] = [{
-            "role": "system",
-            "content": (
-                f"{prompt_intro} "
-                "You are an expert vision-language assistant. Your task is to analyze images with high precision, "
-                "reasoning step-by-step about visual elements and their spatial relationships (e.g., coordinates, "
-                "relative positions like left/right/center). Always verify visual evidence before concluding. "
-                "If a task requires external data, calculation, or specific actions beyond visual description, "
-                "use the provided tools. Be concise, objective, and format your tool calls strictly according to schema."
-            )
-        }]
+        system_content = (
+            f"{prompt_intro} "
+            "You are an expert vision-language assistant. Your task is to analyze images with high precision, "
+            "reasoning step-by-step about visual elements and their spatial relationships (e.g., coordinates, "
+            "relative positions like left/right/center). Always verify visual evidence before concluding. "
+            "If a task requires external data, calculation, or specific actions beyond visual description, "
+            "use the provided tools. Be concise, objective, and format your tool calls strictly according to schema."
+        )
     else:
-        messages = [{"role": "system", "content": prompt_intro}]
+        system_content = prompt_intro
+    if system_rules:
+        system_content = f"{system_content}\n{system_rules}"
+    messages: list[dict] = [{"role": "system", "content": system_content}]
 
     # Inject session history BEFORE the current instruction so the model
     # sees prior context first and treats the latest user message as the
     # one to respond to.
     if session_history:
-        for entry in session_history:
+        for entry in _trim_history(session_history):
             messages.append({"role": "user", "content": entry["task"]})
             messages.append({"role": "assistant", "content": entry["response"]})
 
@@ -1623,9 +1669,13 @@ async def _compact_context(
     Keeps the system message, generates a dense LLM summary of all other
     messages, and returns [system_msg, compacted_user_msg, ack_assistant_msg].
     When ``instruction`` is given it is restated verbatim in the compacted
-    user message — the system message is only the short prompt_intro, so any
-    rules in the instruction (tool routing, citations, sandbox) would
-    otherwise be lost to the lossy summary.
+    user message, so it survives the lossy summary.
+
+    Callers pass only the volatile half of the instruction — the session
+    context and the task.  The standing rules (tool routing, citations,
+    sandbox) live in the system message, which compaction preserves untouched,
+    so restating them here would duplicate them in every compacted prompt.
+
     Falls back to the original messages list if the summarization call fails.
     """
     system_msg = (
@@ -1771,8 +1821,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     think_tool_turns = kwargs.get('think_tool_turns', True)
 
     images_bytes = _load_images(images, chat_ui, verbose)
-    messages = _build_messages(instruction, images_bytes, prompt_intro,
-                               kwargs.get('session_history', None), memories)
+    # The standing rules go to the system message, where they stay put across
+    # requests; only the session context and the task ride in the user message.
+    system_rules, task_instruction = split_instruction(instruction)
+    messages = _build_messages(task_instruction, images_bytes, prompt_intro,
+                               kwargs.get('session_history', None), memories,
+                               system_rules=system_rules)
 
     api_key = _resolve_api_key(host, host_key)
     # Explicit positive timeout applies to the whole request; -1/None means no
@@ -1879,7 +1933,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         out = await _compact_context(
             msgs, ollama_client if is_ollama else client,
             model, max_tokens, chat_ui, verbose,
-            is_ollama=is_ollama, instruction=instruction,
+            is_ollama=is_ollama, instruction=task_instruction,
         )
         if _m:
             _m.add_compaction(time.monotonic() - _t0)

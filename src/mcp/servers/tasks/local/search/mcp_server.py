@@ -91,6 +91,13 @@ _SHARED_INDEX_DIRS: dict[Tuple[str, str], str] = {}
 # sessions don't parse/chunk/embed the same corpus twice
 _SHARED_LOCK = threading.Lock()
 
+# Last time each corpus was walked for changes, and how long a walk stays
+# good for. A research answer searches several times in a row and the corpus
+# does not change between those calls; the walk is a stat per file, which is
+# free on a small corpus and is not on a large one.
+_LAST_REFRESH: dict[str, float] = {}
+REFRESH_MIN_INTERVAL = float(os.environ.get('ONIT_SEARCH_REFRESH_INTERVAL', '30'))
+
 
 def _validate_required(**kwargs) -> str:
     """Check for missing required arguments. Returns JSON error string or empty string."""
@@ -328,15 +335,23 @@ def _session_indexes(base: str) -> tuple[LocalSearchIndex, Optional[LocalSearchI
 
 
 def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
-                    shared_index: Optional[LocalSearchIndex]) -> None:
+                    shared_index: Optional[LocalSearchIndex],
+                    min_interval: Optional[float] = None) -> None:
     """Incrementally re-ingest ``corpus`` into whichever index owns it.
 
-    Cheap enough to run on every query: ``index_directory`` re-parses only the
-    files whose mtime or size changed and rewrites index.json only when one
-    did, so an unchanged corpus costs a single stat-per-file walk — well under
-    the BM25 pass the search itself runs. Ingestion into the shared index is
-    serialized: taking the lock also parks a search behind an in-flight startup
-    rebuild, so it never reads a partially populated index.
+    ``index_directory`` re-parses only the files whose mtime or size changed and
+    rewrites index.json only when one did, so an unchanged corpus costs a single
+    stat-per-file walk. That is cheap against a corpus of hundreds of files and
+    not cheap against one of tens of thousands, and a research answer searches
+    several times in a row — so a corpus walked within the last
+    ``min_interval`` seconds is left alone. The window only delays noticing a
+    file added mid-answer; the next question picks it up. ``index_documents``
+    and the startup rebuild are not rate limited, so an explicit re-index is
+    still immediate.
+
+    Ingestion into the shared index is serialized: taking the lock also parks a
+    search behind an in-flight startup rebuild, so it never reads a partially
+    populated index.
 
     A session walk never descends into DOCUMENTS_PATH. The corpus can sit
     inside the data directory, and in the terminal UI the jail root *is* that
@@ -351,10 +366,17 @@ def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
     index = shared_index if shared else session_index
     if index is None:
         return
+    # Read at call time, not bound as a default, so the window stays settable.
+    if min_interval is None:
+        min_interval = REFRESH_MIN_INTERVAL
+    if min_interval > 0 and time.monotonic() - _LAST_REFRESH.get(corpus, 0.0) < min_interval:
+        return
     docs_root = _documents_root()
     exclude = [docs_root] if docs_root and not shared else None
     with _SHARED_LOCK if shared else contextlib.nullcontext():
         index.index_directory(corpus, recursive=True, exclude=exclude)
+    # Stamped after the walk, so a slow one does not immediately re-arm.
+    _LAST_REFRESH[corpus] = time.monotonic()
 
 
 def _summarize_documents(merged: list, indexes: list) -> list:
@@ -464,6 +486,9 @@ def _index_documents_impl(
             index.chunk_overlap = max(0, min(int(chunk_overlap), index.chunk_size // 2))
             result = index.index_directory(corpus, recursive=recursive,
                                            rebuild=rebuild, exclude=exclude)
+        # An explicit ingest is a fresher walk than the rate limiter could ask
+        # for, so it re-arms the window rather than being blocked by it.
+        _LAST_REFRESH[corpus] = time.monotonic()
 
         scope = "shared" if shared else "session"
         return json.dumps({**result, "scope": scope, "status": "success"}, indent=2)
@@ -522,8 +547,10 @@ def _local_search_impl(
         docs_root = _documents_root()
 
         if path:
+            # An explicit path is a request to re-index that corpus, so it is
+            # honoured immediately rather than deferred by the refresh window.
             _refresh_corpus(_validate_corpus_path(path, base=base),
-                            session_index, shared_index)
+                            session_index, shared_index, min_interval=0)
         else:
             # Both corpora a query can reach are refreshed, not just whichever
             # one happens to be empty: a document added to the shared corpus or

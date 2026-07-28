@@ -21,13 +21,17 @@ import yaml
 import logging
 from pathlib import Path
 
+try:
+    from ...lib.text import INSTRUCTION_SPLIT
+except ImportError:  # server started as a script rather than a package module
+    from lib.text import INSTRUCTION_SPLIT
+
 logger = logging.getLogger(__name__)
 
 
 mcp_prompts = FastMCP("Prompts MCP")
 
-@mcp_prompts.prompt("assistant")
-async def assistant_instruction(task: str,
+async def build_assistant_instruction(task: str,
                                 data_path: str = None,
                                 template_path: str = None,
                                 file_server_url: str = None,
@@ -39,6 +43,14 @@ async def assistant_instruction(task: str,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
                                 max_documents: str | int = 6) -> str:
+   """Assemble the agent instruction.
+
+   Kept separate from the MCP prompt below so callers inside this process can
+   import and call it directly rather than paying a connection, a handshake
+   and a round trip to reach a pure string-assembly function.  Every argument
+   is normalized as if it had arrived over the wire, so both paths produce
+   byte-identical output.
+   """
    if not data_path:
       raise ValueError("data_path is required and must be a non-empty string")
 
@@ -66,24 +78,40 @@ async def assistant_instruction(task: str,
 
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
+   # A task that happened to contain the sentinel would split the instruction
+   # in the wrong place, handing the caller part of the task as standing rules.
+   task = (task or "").replace(INSTRUCTION_SPLIT.strip(), "")
 
-   # The task is deliberately not in the template: it is appended last, after
-   # every block below, so that everything ahead of it is identical from one
-   # request to the next. A server with prefix caching then re-uses the whole
-   # preamble instead of prefilling it again for each task; with the task in
-   # the middle, the first differing character invalidates all of it.
+   # The instruction is built in two halves, joined by INSTRUCTION_SPLIT.
    #
-   # A custom template that still interpolates {task} keeps working — it just
-   # decides where the task goes, and gives up that reuse (see below).
+   # The static half — role, research procedure, standing instructions — is
+   # byte-identical from one request to the next and from one session to the
+   # next, so the caller can put it in the system message, ahead of the session
+   # history. A server with prefix caching then sees the same opening bytes on
+   # every request from every session and skips prefilling them.
+   #
+   # Appending the task last was already the intent, but a task at the end of a
+   # *user* message still sits behind the session history, which grows by a turn
+   # each time: the preamble shifted on every request and was re-prefilled
+   # anyway. Only the system message sits ahead of the history.
+   #
+   # The volatile half — today's date, the working directory, the file server,
+   # the task — is what actually varies, and it goes last.
+   #
+   # A custom template is never split: nothing in it can be assumed stable, so
+   # it is emitted whole, in the order it always had, and gives up the reuse.
    default_template = """
 You are {agent_name}, an autonomous agent harness developed by {developer}, with access to tools and a file system.
+"""
 
+   context_block = f"""
 ## Context
 - **Today's date**: {current_date}
 - **Working directory**: `{data_path}` - this is the agent local filesystem. If sandbox filesystem is available, use it instead and treat this as a staging area for file transfers.
 """
 
    template = default_template
+   custom_template = False
 
    if template_path:
       template_file = Path(template_path)
@@ -91,12 +119,15 @@ You are {agent_name}, an autonomous agent harness developed by {developer}, with
          try:
             with open(template_file, 'r') as f:
                config = yaml.safe_load(f)
-               template = config.get('instruction_template', default_template)
+               loaded = config.get('instruction_template')
+            if loaded:
+               template = loaded
+               custom_template = True
          except (OSError, yaml.YAMLError):
             pass
 
    task_in_template = "{task}" in template
-   instruction = template.format(
+   header = template.format(
       task=task if task_in_template else "",
       current_date=current_date,
       data_path=data_path,
@@ -104,16 +135,18 @@ You are {agent_name}, an autonomous agent harness developed by {developer}, with
       developer=developer
    )
 
+   topic_block = ""
    if topic:
-      instruction += f"""
+      topic_block = f"""
 ## Topic
 Unless specified, assume that the topic is about `{topic}`.
 """
 
+   file_block = ""
    if file_server_url:
       upload_id = Path(data_path).name
       upload_prefix = f"{file_server_url}/uploads/{upload_id}"
-      instruction += f"""
+      file_block = f"""
 Files are served by a remote file server at {upload_prefix}/.
 Before reading any file referenced in the task, first download it:
   curl -s {upload_prefix}/<filename> -o {data_path}/<filename>
@@ -124,8 +157,9 @@ When using create_presentation, create_excel, or create_document tools, always p
 """
 
    # Add sandbox routing instructions when sandbox tools are available
+   sandbox_block = ""
    if sandbox_available:
-      instruction += f"""
+      sandbox_block = f"""
 ## Code Development and Execution
 **Do ALL** development inside the sandboxed Docker container.
 **DO NOT** run code in the agent environment or local filesystem.
@@ -164,9 +198,15 @@ Do not stop until **all** are true:
 """
 
    # Add research and citation instructions based on available search tools
+   research_block = ""
    if local_search_available or web_search_available:
-      instruction += """
+      research_block += """
 ## Research and Citations
+Not every message needs research. A greeting, a thank-you, a question about what
+you just said, or anything the conversation above already answers gets a direct
+reply and no tool call. The procedure below is for questions that genuinely need
+information you do not have.
+
 When a question needs external information:
 """
       # How to open a document that `local_search` pointed at
@@ -177,18 +217,24 @@ When a question needs external information:
       )
 
       if local_search_available and web_search_available:
-         instruction += f"""1. Call `local_search` first — internal data never appears on the web. It ranks
+         research_block += f"""1. Call `local_search` first — internal data never appears on the web. It ranks
    documents across the in-house corpus and returns, under `documents`, each
    one's opening: its title and usually the summary beneath it.
-2. List, by `file`, the local documents that answer the question. That list is the
-   backbone of the answer. A file name matching the question is a primary source.
+   If the question also has a public side — a market figure, a standard, a current
+   event, anything that would be true outside this organization — issue the web
+   `search` in that same reply. Neither depends on the other's result, so together
+   they cost one wait instead of two. Precedence below still governs how the two
+   sets of findings are written up.
+2. Note which local documents, by `file`, answer the question — hold that list,
+   do not write it out. It is the backbone of the answer. A file name matching
+   the question is a primary source.
 3. Judge each document on that list from its opening and its matched excerpts.
    Open one only where those leave the question unanswered — highest-ranked
    first, at most {max_documents} of them. Use {open_doc}.
-4. Search the web only for gaps left after step 3, or for public facts that change
-   over time. Name the gap before you search.
-5. Re-check the step-2 list before writing. Every local document that answers the
-   question must appear in the answer.
+4. Search the web for what is still missing after step 3, and for public facts that
+   change over time, unless step 1 already covered it.
+5. Before you finish, check the answer against the step-2 list. Every local
+   document that answers the question must appear in it.
 
 ### Precedence
 - Local documents are the authority on internal matters — people, projects, customers,
@@ -203,7 +249,7 @@ When a question needs external information:
 """
          references = "local results by `file` and `location`, web results by URL"
       elif local_search_available:
-         instruction += f"""1. Search in-house documents with `local_search` — it ranks documents across the
+         research_block += f"""1. Search in-house documents with `local_search` — it ranks documents across the
    corpus and returns each one's opening under `documents`.
 2. Where an opening and its matched excerpts leave the question unanswered, open
    the document with {open_doc} — highest-ranked first, at most {max_documents}
@@ -211,7 +257,7 @@ When a question needs external information:
 """
          references = "the `file` and `location` of each local result"
       else:
-         instruction += """1. Search the web for relevant, up-to-date sources.
+         research_block += """1. Search the web for relevant, up-to-date sources.
 """
          references = "the URL of each web source"
 
@@ -223,11 +269,16 @@ When a question needs external information:
          else:
             no_hit = ("re-query once with different terms, then say the local documents "
                       "do not cover it.")
-         instruction += f"""
+         # What `documents` and `results` are, how they rank, and the README trap
+         # are all stated in local_search's own tool description, which ships with
+         # every request regardless of this prompt. Restating them here cost ~350
+         # tokens a turn and gave the same guidance two homes to drift between —
+         # which had already happened once. Only what the tool description does
+         # not say belongs below.
+         research_block += f"""
 ### Reading `local_search` results
-- `documents` is the list to reason about; `results` are chunks, and routinely miss
-  the passage that answers the question. Repeated hits in `results` measure document
-  length, not relevance.
+Its tool description covers `documents` versus `results` and how to read the
+ranking; follow it. Beyond that:
 - A document's opening says what it is; a matched chunk does not. Treat a file whose
   name or opening carries a term from the question as relevant even when its excerpts
   look generic or off-topic, and open it if the question is still open. Paths returned
@@ -235,29 +286,29 @@ When a question needs external information:
   opened directly.
 - When you do open several documents, ask for them in one reply: tool calls made
   together are executed together, one per reply are executed one after another.
-- A file that catalogues others (README, index, table of contents) mentions every topic
-  and answers none. Its entries are pointers: open the documents they name and cite
-  those, not the catalogue.
 - Drop a document only when its opening or its passages show it does not apply — never
   because its chunk ranked low or because other sources already look sufficient.
 - If no result answers the question, {no_hit}
 """
 
       if local_search_available and web_search_available:
-         instruction += """
+         research_block += """
 If `local_search` supplied any part of the answer, its `file` must appear in the
 references; a list of web URLs alone is wrong in that case.
 """
 
-      instruction += f"""
+      research_block += f"""
 End the final answer with a **References** section listing only the sources actually used — {references}.
 
 Never state an email address or phone number that did not appear verbatim in a tool result; do not construct one from a name and domain.
 """
 
-   instruction += f"""
+   instructions_block = f"""
 ## Instructions
-1. If the answer is straightforward, respond directly without tool use.
+1. If the answer is straightforward — a greeting, a follow-up about what you just
+   said, anything the conversation already contains — answer it now, in one reply,
+   with no tool call. Reaching for a tool you do not need is the most common way
+   to make a fast answer slow.
 2. Otherwise, reason step by step, invoke tools as needed, and work toward a final answer.
 3. When the next few tool calls do not depend on each other's results, make them in
    one reply. Calls sent together run at once; sent one per reply they run one after
@@ -267,14 +318,52 @@ Never state an email address or phone number that did not appear verbatim in a t
 6. Conclude with your final answer.
 """
 
-   # Last, so that everything above is byte-identical between tasks and a
-   # server with prefix caching can skip prefilling it (see default_template).
-   if not task_in_template:
-      instruction += f"""
+   task_block = f"""
 ## Task
 {task}
 """
-   return instruction
+
+   if custom_template:
+      # Unsplit and in the original order: a custom template owns the whole
+      # preamble, and the caller keeps sending it as one user message.
+      instruction = (header + topic_block + file_block + sandbox_block
+                     + research_block + instructions_block)
+      if not task_in_template:
+         instruction += task_block
+      return instruction
+
+   static = header + topic_block + sandbox_block + research_block + instructions_block
+   volatile = context_block + file_block + task_block
+   return static + INSTRUCTION_SPLIT + volatile
+
+
+@mcp_prompts.prompt("assistant")
+async def assistant_instruction(task: str,
+                                data_path: str = None,
+                                template_path: str = None,
+                                file_server_url: str = None,
+                                topic: str = None,
+                                sandbox_available: str | bool = False,
+                                local_search_available: str | bool = False,
+                                document_search_available: str | bool = False,
+                                web_search_available: str | bool = False,
+                                agent_name: str = "OnIt",
+                                developer: str = "Rowel Atienza",
+                                max_documents: str | int = 6) -> str:
+   return await build_assistant_instruction(
+      task=task,
+      data_path=data_path,
+      template_path=template_path,
+      file_server_url=file_server_url,
+      topic=topic,
+      sandbox_available=sandbox_available,
+      local_search_available=local_search_available,
+      document_search_available=document_search_available,
+      web_search_available=web_search_available,
+      agent_name=agent_name,
+      developer=developer,
+      max_documents=max_documents,
+   )
 
 
 def run(

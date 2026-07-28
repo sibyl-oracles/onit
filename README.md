@@ -720,8 +720,17 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
   --max-model-len 262144 --port 8000 \
   --enable-auto-tool-choice --tool-call-parser hermes \
   --reasoning-parser qwen3 --tensor-parallel-size 4 \
-  --chat-template-content-format string
+  --chat-template-content-format string \
+  --enable-prefix-caching
 ```
+
+`--enable-prefix-caching` is on by default in current vLLM and is pinned here
+because OnIt is built around it. Every request opens with the same bytes — the
+tool schemas, then the agent's standing rules — roughly 4k tokens that a warm
+prefix cache skips prefilling entirely. An agent turn re-sends the whole
+conversation to add one tool result, so that saving is paid back on every turn
+of every task, not once per session. Serving without it makes prefill, not
+decode, the thing you wait on.
 
 ```bash
 onit --host http://localhost:8000/v1

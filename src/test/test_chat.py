@@ -10,7 +10,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.chat import _resolve_api_key, _parse_tool_call_from_content, _is_planning_response, chat
+from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
+                                _is_planning_response, _build_messages,
+                                _trim_history, chat)
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
@@ -714,3 +716,81 @@ class TestProseAlongsideToolCalls:
             )
 
         assert answer.strip() in result
+
+
+# ── prompt assembly ─────────────────────────────────────────────────────────
+
+class TestBuildMessages:
+    """Where each half of the instruction lands. The system message is the only
+    one ahead of the session history, so it is the only place the standing rules
+    keep the same offset from one request to the next."""
+
+    def test_standing_rules_go_to_the_system_message(self):
+        messages = _build_messages(
+            "## Task\nwhat scholarships exist", [], "I am OnIt.",
+            session_history=None, memories=None,
+            system_rules="## Instructions\nCite your sources.",
+        )
+        assert messages[0]["role"] == "system"
+        assert "I am OnIt." in messages[0]["content"]
+        assert "Cite your sources." in messages[0]["content"]
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"] == "## Task\nwhat scholarships exist"
+        assert "Cite your sources." not in messages[-1]["content"]
+
+    def test_rules_keep_their_offset_as_history_grows(self):
+        """The point of the split: the opening bytes of request N+1 match those
+        of request N, so a prefix cache can skip prefilling them."""
+        rules = "## Instructions\nCite your sources."
+        turn_one = _build_messages("## Task\nfirst", [], "I am OnIt.",
+                                   session_history=[], memories=None,
+                                   system_rules=rules)
+        turn_two = _build_messages("## Task\nsecond", [], "I am OnIt.",
+                                   session_history=[{"task": "first",
+                                                     "response": "an answer"}],
+                                   memories=None, system_rules=rules)
+        assert turn_one[0] == turn_two[0]
+
+    def test_no_rules_leaves_the_system_message_alone(self):
+        """A custom template yields no static half; nothing should change."""
+        messages = _build_messages("do the thing", [], "I am OnIt.",
+                                   session_history=None, memories=None)
+        assert messages[0]["content"] == "I am OnIt."
+
+
+class TestTrimHistory:
+    def _history(self, n, answer_chars=5000):
+        return [{"task": f"question {i}", "response": "x" * answer_chars}
+                for i in range(n)]
+
+    def test_recent_exchanges_are_untouched(self):
+        history = self._history(6)
+        trimmed = _trim_history(history, keep_full=3, head_chars=100)
+        assert trimmed[-3:] == history[-3:]
+
+    def test_older_answers_are_cut_to_their_opening(self):
+        history = self._history(6)
+        trimmed = _trim_history(history, keep_full=3, head_chars=100)
+        for entry in trimmed[:3]:
+            assert len(entry["response"]) < 200
+            assert "trimmed" in entry["response"]
+
+    def test_questions_are_never_cut(self):
+        """A follow-up is unintelligible without the question it follows."""
+        history = self._history(6)
+        trimmed = _trim_history(history, keep_full=3, head_chars=10)
+        assert [e["task"] for e in trimmed] == [e["task"] for e in history]
+
+    def test_short_history_is_returned_as_is(self):
+        history = self._history(2)
+        assert _trim_history(history, keep_full=3) is history
+
+    def test_a_short_answer_is_left_whole(self):
+        history = self._history(6, answer_chars=20)
+        trimmed = _trim_history(history, keep_full=3, head_chars=100)
+        assert [e["response"] for e in trimmed] == [e["response"] for e in history]
+
+    def test_trimming_does_not_mutate_the_caller_s_history(self):
+        history = self._history(6)
+        _trim_history(history, keep_full=3, head_chars=100)
+        assert all(len(e["response"]) == 5000 for e in history)

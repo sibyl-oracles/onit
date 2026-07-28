@@ -18,6 +18,7 @@ RequestHandler - abstract base class for all tools.
 ToolHandler - concrete implementation of RequestHandler that calls a tool via FastMCP client.
 '''
 
+import asyncio
 import tempfile
 import os
 import base64
@@ -87,6 +88,117 @@ class RequestHandler(ABC):
 
     def get_tool(self) -> ToolItem | None:
         return self.tool_item
+
+
+# ── MCP connection pooling ──────────────────────────────────────────────────
+#
+# A tool call used to open its own client: a TCP connect, an SSE stream, an
+# initialize handshake and a notifications/initialized round trip — all before
+# the tool began doing anything, and all torn down the moment it finished. A
+# research answer makes six to ten calls, so that setup was paid six to ten
+# times per answer, in series, while the user waited.
+#
+# One client per (server URL, event loop) instead, opened on first use and kept
+# open. MCP multiplexes concurrent requests over a single session by request
+# id, so tool calls issued in parallel share it safely.
+
+
+class _PooledClient:
+    """A long-lived MCP client for one server URL on one event loop."""
+
+    def __init__(self, url: str, loop: asyncio.AbstractEventLoop) -> None:
+        self.url = url
+        # Held so the loop cannot be garbage collected while this entry is
+        # pooled under its id(), which would let a later loop reuse the address
+        # and inherit a session belonging to a dead one.
+        self.loop = loop
+        self._client: Client | None = None
+        self._connect_lock = asyncio.Lock()
+        self._log_handlers: dict[int, Callable] = {}
+        self._next_token = 0
+
+    async def _dispatch_log(self, message: object) -> None:
+        """Forward a server log notification to the call that caused it.
+
+        MCP log notifications carry no request id, so a line can only be
+        attributed while a single call is in flight on this connection. With
+        several running, labelling sandbox output with whichever tool happened
+        to be picked would be worse than not showing it: the UI reports batch
+        progress in that case anyway.
+        """
+        handlers = list(self._log_handlers.values())
+        if len(handlers) != 1:
+            return
+        try:
+            result = handlers[0](message)
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            logger.debug("log handler failed for %s", self.url, exc_info=True)
+
+    async def _connect(self) -> Client:
+        if self._client is not None:
+            return self._client
+        async with self._connect_lock:
+            if self._client is None:
+                client = Client(self.url, log_handler=self._dispatch_log)
+                await client.__aenter__()
+                self._client = client
+            return self._client
+
+    async def _discard(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    async def call_tool(self, name: str, arguments: dict,
+                        log_handler: Callable | None = None):
+        token = self._next_token
+        self._next_token += 1
+        if log_handler is not None:
+            self._log_handlers[token] = log_handler
+        try:
+            for attempt in (1, 2):
+                client = await self._connect()
+                try:
+                    return await client.call_tool(name, arguments)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A pooled session can be closed underneath us: the server
+                    # restarted, or an idle SSE stream was reaped. Reconnect and
+                    # try once more — a second failure is the tool's own error
+                    # and belongs to the caller.
+                    await self._discard()
+                    if attempt == 2:
+                        raise
+        finally:
+            self._log_handlers.pop(token, None)
+
+
+_CLIENT_POOL: dict[tuple[str, int], _PooledClient] = {}
+
+
+def _pooled_client(url: str) -> _PooledClient:
+    """The pooled client for ``url`` on the running loop, creating it if needed."""
+    loop = asyncio.get_running_loop()
+    key = (url, id(loop))
+    entry = _CLIENT_POOL.get(key)
+    if entry is None or entry.loop is not loop:
+        entry = _PooledClient(url, loop)
+        _CLIENT_POOL[key] = entry
+    return entry
+
+
+async def reset_tool_clients() -> None:
+    """Close and forget every pooled client. For shutdown and for tests."""
+    entries = list(_CLIENT_POOL.values())
+    _CLIENT_POOL.clear()
+    for entry in entries:
+        await entry._discard()
 
 
 class ToolHandler(RequestHandler):
@@ -161,10 +273,10 @@ class ToolHandler(RequestHandler):
             # so the tool's own required-argument check returns a clean error.
             kwargs[k] = v[k] if k in v else None
 
-        async with Client(self.url, log_handler=log_handler) as client:
-            keys_kwargs = list(kwargs.keys())
-            logger.info(f"Calling tool: {self.tool_item['function']['name']} with arguments: {keys_kwargs}")
-            tool_response = await client.call_tool(self.tool_item['function']['name'], kwargs)
+        tool_name = self.tool_item['function']['name']
+        logger.info(f"Calling tool: {tool_name} with arguments: {list(kwargs.keys())}")
+        tool_response = await _pooled_client(self.url).call_tool(
+            tool_name, kwargs, log_handler=log_handler)
 
         if isinstance(tool_response, str):
             return tool_response

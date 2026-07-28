@@ -2,6 +2,34 @@ import re
 
 _TAG_RE = re.compile(r'<[^>]+>')
 
+# Separates the two halves of an agent instruction.
+#
+# Everything before it is identical from one request to the next — the agent's
+# role, the research procedure, the standing rules — and so belongs in the
+# system message, ahead of the session history, where a server with prefix
+# caching sees the same bytes on every request from every session and skips
+# prefilling them. Everything after it is what this session and this task
+# supply: the date, the working directory, the file server, the task itself.
+#
+# Deliberately not a tag: remove_tags() runs over model output and would eat an
+# HTML-comment sentinel if one ever came back through.
+INSTRUCTION_SPLIT = "\n[[onit:session-context]]\n"
+
+
+def split_instruction(instruction: str) -> tuple[str, str]:
+    """Split an instruction into its (static, volatile) halves.
+
+    An instruction with no sentinel is treated as entirely volatile, which is
+    what a custom template produces: nothing in it can be assumed stable, so
+    it keeps the pre-split behaviour of riding in the user message whole.
+    """
+    if not instruction:
+        return "", instruction
+    static, sentinel, volatile = instruction.partition(INSTRUCTION_SPLIT)
+    if not sentinel:
+        return "", instruction
+    return static, volatile
+
 def remove_tags(text: str) -> str:
     """
     Remove all HTML/XML tags from text.

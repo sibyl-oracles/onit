@@ -49,8 +49,17 @@ template_path:
 max_documents: 6
 
 # Prior task/response pairs replayed into every request. They are re-sent on
-# each turn, so a long tail costs prompt tokens on all of them.
+# each turn, so a long tail costs prompt tokens on all of them. The most recent
+# few are replayed whole; older answers are cut to their opening, which keeps
+# the thread of the conversation without re-sending every answer in full.
 history_turns: 10
+
+# Build the agent instruction by calling the prompt function directly instead of
+# reaching PromptsMCPServer over the network. That server hosts one prompt and
+# the prompt is a pure function in this package, so the connection, handshake
+# and round trip in front of every task bought nothing. Set false if your
+# PromptsMCPServer runs a customized prompt rather than the one shipped here.
+prompt_in_process: true
 
 # number of seconds before a request times out; -1 for no overall timeout.
 # Even with -1, connection setup and streaming stalls (no chunk received for

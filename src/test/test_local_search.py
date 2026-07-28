@@ -67,6 +67,11 @@ def search_env(tmp_path, corpus, monkeypatch):
     monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(corpus))
     monkeypatch.setattr(local_mod, "_INDEXES", {})
     monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
+    # The refresh window is wall-clock state that would otherwise carry from one
+    # test to the next, and a test that writes a file then searches for it needs
+    # the walk to actually happen.
+    monkeypatch.setattr(local_mod, "_LAST_REFRESH", {})
+    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 0.0)
     monkeypatch.delenv("ONIT_EMBEDDING_HOST", raising=False)
     monkeypatch.delenv("ONIT_EMBEDDING_MODEL", raising=False)
     return data
@@ -817,6 +822,11 @@ def nested_corpus(tmp_path, corpus, monkeypatch):
     monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(nested))
     monkeypatch.setattr(local_mod, "_INDEXES", {})
     monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
+    # The refresh window is wall-clock state that would otherwise carry from one
+    # test to the next, and a test that writes a file then searches for it needs
+    # the walk to actually happen.
+    monkeypatch.setattr(local_mod, "_LAST_REFRESH", {})
+    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 0.0)
     (data / "session-notes.md").write_text(
         "# Notes\n\nDraft notes about the quarterly planning offsite.\n")
     return data, nested
@@ -1135,3 +1145,70 @@ def test_opening_is_the_start_of_the_document_not_the_best_chunk(search_env, cor
     benefits = next(d for d in found["documents"]
                     if d["file"].endswith("benefits.md"))
     assert benefits["opening"].startswith("# Benefits Handbook")
+
+
+# -- refresh window -----------------------------------------------------------
+
+def test_a_corpus_is_not_rewalked_on_every_search(search_env, corpus, monkeypatch):
+    """A research answer searches several times in a row and the corpus does not
+    change in between; the walk is a stat per file, which is not free on a large
+    corpus."""
+    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 300.0)
+    walks = []
+    original = local_mod.LocalSearchIndex.index_directory
+
+    def counted(self, directory, **kwargs):
+        walks.append(directory)
+        return original(self, directory, **kwargs)
+
+    monkeypatch.setattr(local_mod.LocalSearchIndex, "index_directory", counted)
+    for _ in range(4):
+        local_mod._local_search_impl(query="vacation policy")
+    # A search reaches two corpora — the shared one and the session's own — so
+    # four searches walked eight times before the window existed.
+    assert sorted(walks) == sorted(set(walks))
+    assert len(walks) == 2
+
+
+def test_the_window_expires(search_env, corpus, monkeypatch):
+    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 300.0)
+    walks = []
+    original = local_mod.LocalSearchIndex.index_directory
+
+    def counted(self, directory, **kwargs):
+        walks.append(directory)
+        return original(self, directory, **kwargs)
+
+    monkeypatch.setattr(local_mod.LocalSearchIndex, "index_directory", counted)
+    local_mod._local_search_impl(query="vacation policy")
+    walked_once = len(walks)
+    local_mod._local_search_impl(query="vacation policy")
+    assert len(walks) == walked_once
+    # Age the stamps past the window rather than sleeping through it.
+    local_mod._LAST_REFRESH.clear()
+    local_mod._local_search_impl(query="vacation policy")
+    assert len(walks) == walked_once * 2
+
+
+def test_an_explicit_path_is_indexed_immediately(search_env, corpus, monkeypatch):
+    """Passing `path` is a request to re-index, so the window must not defer it."""
+    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 300.0)
+    local_mod._local_search_impl(query="vacation policy")
+
+    (corpus / "sabbatical.md").write_text(
+        "# Sabbatical Policy\n\nStaff may take a sabbatical after seven years.\n"
+    )
+    result = json.loads(local_mod._local_search_impl(query="sabbatical",
+                                                    path=str(corpus)))
+    assert result["status"] == "success"
+    assert any("sabbatical" in r["file"].lower() for r in result["results"])
+
+
+def test_a_new_file_is_still_found_once_the_window_lapses(search_env, corpus):
+    """The window delays noticing a mid-answer addition; it does not hide it."""
+    local_mod._local_search_impl(query="vacation policy")
+    (corpus / "sabbatical.md").write_text(
+        "# Sabbatical Policy\n\nStaff may take a sabbatical after seven years.\n"
+    )
+    result = json.loads(local_mod._local_search_impl(query="sabbatical"))
+    assert any("sabbatical" in r["file"].lower() for r in result["results"])
