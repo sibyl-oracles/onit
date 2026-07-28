@@ -23,8 +23,15 @@ from pathlib import Path
 
 try:
     from ...lib.text import INSTRUCTION_SPLIT
+    from ..servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
 except ImportError:  # server started as a script rather than a package module
     from lib.text import INSTRUCTION_SPLIT
+    from mcp.servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
+
+# How many documents an answer may open. Tied to the number a result page
+# describes: a smaller budget silently truncates the very list the prompt just
+# told the model to reason about.
+DEFAULT_MAX_DOCUMENTS = MAX_DOCUMENT_SUMMARIES
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +49,7 @@ async def build_assistant_instruction(task: str,
                                 web_search_available: str | bool = False,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
-                                max_documents: str | int = 6) -> str:
+                                max_documents: str | int = DEFAULT_MAX_DOCUMENTS) -> str:
    """Assemble the agent instruction.
 
    Kept separate from the MCP prompt below so callers inside this process can
@@ -74,7 +81,7 @@ async def build_assistant_instruction(task: str,
    try:
       max_documents = max(1, int(max_documents))
    except (TypeError, ValueError):
-      max_documents = 6
+      max_documents = DEFAULT_MAX_DOCUMENTS
 
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
@@ -337,33 +344,13 @@ Never state an email address or phone number that did not appear verbatim in a t
    return static + INSTRUCTION_SPLIT + volatile
 
 
-@mcp_prompts.prompt("assistant")
-async def assistant_instruction(task: str,
-                                data_path: str = None,
-                                template_path: str = None,
-                                file_server_url: str = None,
-                                topic: str = None,
-                                sandbox_available: str | bool = False,
-                                local_search_available: str | bool = False,
-                                document_search_available: str | bool = False,
-                                web_search_available: str | bool = False,
-                                agent_name: str = "OnIt",
-                                developer: str = "Rowel Atienza",
-                                max_documents: str | int = 6) -> str:
-   return await build_assistant_instruction(
-      task=task,
-      data_path=data_path,
-      template_path=template_path,
-      file_server_url=file_server_url,
-      topic=topic,
-      sandbox_available=sandbox_available,
-      local_search_available=local_search_available,
-      document_search_available=document_search_available,
-      web_search_available=web_search_available,
-      agent_name=agent_name,
-      developer=developer,
-      max_documents=max_documents,
-   )
+# Registered directly rather than through a forwarding wrapper: fastmcp derives
+# the argument schema from the signature, so the wire contract stays in one
+# place and a new parameter cannot be added to one copy of it and not the other.
+assistant_instruction = mcp_prompts.prompt(
+   "assistant",
+   description="Assemble the OnIt agent instruction.",
+)(build_assistant_instruction)
 
 
 def run(

@@ -23,9 +23,7 @@ def split_instruction(instruction: str) -> tuple[str, str]:
     what a custom template produces: nothing in it can be assumed stable, so
     it keeps the pre-split behaviour of riding in the user message whole.
     """
-    if not instruction:
-        return "", instruction
-    static, sentinel, volatile = instruction.partition(INSTRUCTION_SPLIT)
+    static, sentinel, volatile = (instruction or "").partition(INSTRUCTION_SPLIT)
     if not sentinel:
         return "", instruction
     return static, volatile

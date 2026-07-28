@@ -283,6 +283,10 @@ def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
             with _SHARED_LOCK:
                 index = _get_index(_shared_index_dir())
                 result = index.index_directory(docs_root, recursive=True)
+            # Startup just walked this corpus, so arm the refresh window here
+            # too: without the stamp the first search re-walks it from scratch,
+            # paying the whole cost again on the first question asked.
+            _LAST_REFRESH[docs_root] = time.monotonic()
             elapsed = time.monotonic() - started
             if not result["total_documents"]:
                 # Logged as an error because it is a misconfiguration, not a

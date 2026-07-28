@@ -58,20 +58,28 @@ def corpus(tmp_path):
     return docs
 
 
+def _reset_search_globals(monkeypatch, data_path, documents_path):
+    """Point the MCP module at a temp corpus and clear its module state.
+
+    The caches and the refresh window are module globals that would otherwise
+    carry from one test to the next; the refresh window in particular is
+    wall-clock state, and a test that writes a file then searches for it needs
+    the walk to actually happen.
+    """
+    monkeypatch.setattr(local_mod, "DATA_PATH", str(data_path))
+    monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(documents_path))
+    monkeypatch.setattr(local_mod, "_INDEXES", {})
+    monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
+    monkeypatch.setattr(local_mod, "_LAST_REFRESH", {})
+    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 0.0)
+
+
 @pytest.fixture
 def search_env(tmp_path, corpus, monkeypatch):
     """Point the MCP module at a temp DATA_PATH/DOCUMENTS_PATH."""
     data = tmp_path / "data"
     data.mkdir()
-    monkeypatch.setattr(local_mod, "DATA_PATH", str(data))
-    monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(corpus))
-    monkeypatch.setattr(local_mod, "_INDEXES", {})
-    monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
-    # The refresh window is wall-clock state that would otherwise carry from one
-    # test to the next, and a test that writes a file then searches for it needs
-    # the walk to actually happen.
-    monkeypatch.setattr(local_mod, "_LAST_REFRESH", {})
-    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 0.0)
+    _reset_search_globals(monkeypatch, data, corpus)
     monkeypatch.delenv("ONIT_EMBEDDING_HOST", raising=False)
     monkeypatch.delenv("ONIT_EMBEDDING_MODEL", raising=False)
     return data
@@ -818,15 +826,7 @@ def nested_corpus(tmp_path, corpus, monkeypatch):
     data.mkdir()
     nested = data / "docs"
     corpus.rename(nested)
-    monkeypatch.setattr(local_mod, "DATA_PATH", str(data))
-    monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(nested))
-    monkeypatch.setattr(local_mod, "_INDEXES", {})
-    monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
-    # The refresh window is wall-clock state that would otherwise carry from one
-    # test to the next, and a test that writes a file then searches for it needs
-    # the walk to actually happen.
-    monkeypatch.setattr(local_mod, "_LAST_REFRESH", {})
-    monkeypatch.setattr(local_mod, "REFRESH_MIN_INTERVAL", 0.0)
+    _reset_search_globals(monkeypatch, data, nested)
     (data / "session-notes.md").write_text(
         "# Notes\n\nDraft notes about the quarterly planning offsite.\n")
     return data, nested

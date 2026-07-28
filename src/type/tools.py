@@ -193,14 +193,6 @@ def _pooled_client(url: str) -> _PooledClient:
     return entry
 
 
-async def reset_tool_clients() -> None:
-    """Close and forget every pooled client. For shutdown and for tests."""
-    entries = list(_CLIENT_POOL.values())
-    _CLIENT_POOL.clear()
-    for entry in entries:
-        await entry._discard()
-
-
 class ToolHandler(RequestHandler):
     def __init__(self,
                  url: str | None = None,

@@ -435,14 +435,6 @@ class TestEndpointCaches:
 
 # ── parallel tool batches ───────────────────────────────────────────────────
 
-def _tool(name, args='{}', call_id=None):
-    tc = MagicMock()
-    tc.function.name = name
-    tc.function.arguments = args
-    tc.id = call_id or f"call_{name}"
-    return tc
-
-
 class TestParallelToolCalls:
     """A batch of reads is only as slow as its slowest call, but the results
     must still line up with the ids the model asked for."""
@@ -465,9 +457,9 @@ class TestParallelToolCalls:
 
     @pytest.mark.asyncio
     async def test_read_only_batch_runs_concurrently(self):
-        calls = [_tool("read_file", '{"path": "/a"}', "c1"),
-                 _tool("read_file", '{"path": "/b"}', "c2"),
-                 _tool("search_document", '{"query": "x"}', "c3")]
+        calls = [_mock_tool_call("read_file", '{"path": "/a"}', "c1"),
+                 _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
+                 _mock_tool_call("search_document", '{"query": "x"}', "c3")]
         registry = self._registry({"read_file", "search_document"}, delay=0.05)
         messages: list = []
 
@@ -488,8 +480,8 @@ class TestParallelToolCalls:
     async def test_results_keep_call_order_not_completion_order(self):
         """The API pairs tool messages to tool_call ids by position, so a fast
         second call must not overtake a slow first one."""
-        slow_first = [_tool("read_file", '{"path": "/slow"}', "c1"),
-                      _tool("read_file", '{"path": "/fast"}', "c2")]
+        slow_first = [_mock_tool_call("read_file", '{"path": "/slow"}', "c1"),
+                      _mock_tool_call("read_file", '{"path": "/fast"}', "c2")]
 
         async def _handler(log_handler=None, path=None, **kwargs):
             await asyncio.sleep(0.05 if path == "/slow" else 0.0)
@@ -525,8 +517,8 @@ class TestParallelToolCalls:
         registry.tool_accepts_param.return_value = False
         registry.__getitem__ = lambda _self, key: _handler
 
-        calls = [_tool("write_file", '{"path": "/first"}', "c1"),
-                 _tool("write_file", '{"path": "/second"}', "c2")]
+        calls = [_mock_tool_call("write_file", '{"path": "/first"}', "c1"),
+                 _mock_tool_call("write_file", '{"path": "/second"}', "c2")]
         await _handle_structured_tool_calls(
             calls, {"role": "assistant"}, registry, None, "", None, False,
             [], [], 30, asyncio.Queue(), session_id="s",
@@ -545,7 +537,7 @@ class TestParallelToolCalls:
 
         messages: list = []
         await _handle_structured_tool_calls(
-            [_tool("read_file", '{"path": "/a"}', "c1")], {"role": "assistant"},
+            [_mock_tool_call("read_file", '{"path": "/a"}', "c1")], {"role": "assistant"},
             registry, None, "", None, False, messages, [], 30,
             asyncio.Queue(), session_id="s",
         )
@@ -566,8 +558,8 @@ class TestParallelToolCalls:
 
         messages: list = []
         await _handle_structured_tool_calls(
-            [_tool("read_file", '{"path": "/bad"}', "c1"),
-             _tool("read_file", '{"path": "/ok"}', "c2")],
+            [_mock_tool_call("read_file", '{"path": "/bad"}', "c1"),
+             _mock_tool_call("read_file", '{"path": "/ok"}', "c2")],
             {"role": "assistant"}, registry, None, "", None, False,
             messages, [], 30, asyncio.Queue(), session_id="s",
         )

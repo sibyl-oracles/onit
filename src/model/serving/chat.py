@@ -1808,8 +1808,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
     num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
+    # Accounting always runs: with no caller sink it fills a throwaway dict, so
+    # every recording site is unconditional rather than each one remembering a
+    # null guard.  The timers it wraps run either way.
     _metrics_sink = kwargs.get('metrics', None)
-    _m = TurnMetrics(_metrics_sink) if _metrics_sink is not None else None
+    _m = TurnMetrics(_metrics_sink if _metrics_sink is not None else {})
     # Whether thinking, when enabled, is also spent on the turns that only
     # pick a tool.  A thinking model emits its full reasoning before every
     # tool-call JSON, so in a loop of N tool calls the reasoning is paid for N
@@ -1935,8 +1938,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             model, max_tokens, chat_ui, verbose,
             is_ollama=is_ollama, instruction=task_instruction,
         )
-        if _m:
-            _m.add_compaction(time.monotonic() - _t0)
+        _m.add_compaction(time.monotonic() - _t0)
         return out
 
     while True:
@@ -2013,8 +2015,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
                     return None
 
-                if _m:
-                    _m.start_api()
+                _m.start_api()
 
                 # Cap output tokens so that prompt + output never approaches the context limit.
                 # Never expand beyond the configured max_tokens — only shrink when the
@@ -2105,7 +2106,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     if is_ollama:
                         stream_result = await _ollama_process_streaming_response(
                             chat_completion, safety_queue, chat_ui, _turn_think,
-                            on_first_token=_m.first_token if _m else None,
+                            on_first_token=_m.first_token,
                         )
                         if stream_result is None:
                             return None
@@ -2144,7 +2145,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     else:
                         stream_result = await _process_streaming_response(
                             chat_completion, safety_queue, chat_ui, _turn_think,
-                            on_first_token=_m.first_token if _m else None,
+                            on_first_token=_m.first_token,
                         )
                         if stream_result is None:
                             return None
@@ -2282,8 +2283,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
 
         # Both paths have converged: the model call for this turn is done.
-        if _m:
-            _m.end_api(_last_prompt_tokens, _completion_tokens, _finish_reason)
+        _m.end_api(_last_prompt_tokens, _completion_tokens, _finish_reason)
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:
@@ -2294,7 +2294,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 chat_ui, verbose, messages, tool_call_history,
                 MAX_REPEATED_TOOL_CALLS, session_id=session_id,
             )
-            if _m and (should_continue or bail):
+            if should_continue or bail:
                 # A tool ran; its name was parsed out of the content inside the
                 # handler, so record it under the shape it arrived in.
                 _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools)
@@ -2396,9 +2396,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
             safety_queue, session_id=session_id,
         )
-        if _m:
-            _m.add_tools([tc.function.name for tc in tool_calls],
-                         time.monotonic() - _t_tools)
+        _m.add_tools([tc.function.name for tc in tool_calls],
+                     time.monotonic() - _t_tools)
         if bail is _SAFETY_ABORT:
             return None
         if bail:

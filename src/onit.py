@@ -43,7 +43,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from .lib.tools import discover_tools
 from .lib.text import remove_tags
-from .mcp.prompts.prompts import build_assistant_instruction
+from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
 from .model.serving.chat import chat, summarize_metrics
@@ -57,6 +57,11 @@ from a2a.helpers.proto_helpers import new_text_message
 AGENT_CURSOR = "OnIt"
 USER_CURSOR = "You"
 STOP_TAG = "<stop></stop>"
+
+# ``serving:`` keys forwarded to chat() only when the config sets them, so
+# chat()'s own default stays the single place each one is defined.
+SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty',
+                       'repetition_penalty', 'num_ctx', 'think_tool_turns')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
@@ -149,7 +154,7 @@ def tool_status_text(name: str, arguments: dict | None) -> str:
         return f"Running {name}…"
     if len(subject) > 60:
         subject = subject[:59] + "…"
-    return f"{verb or 'Running ' + name} {subject}…" if verb else f"{name}: {subject}…"
+    return f"{verb} {subject}…" if verb else f"{name}: {subject}…"
 
 
 class StreamingAdapter:
@@ -588,7 +593,7 @@ class OnIt(BaseModel):
     # dial between recall and how long an answer takes to arrive. Defaults to
     # the number of documents a result page describes, so the budget never cuts
     # the list short of what local_search put in front of the model.
-    max_documents: int = Field(default=6)
+    max_documents: int = Field(default=DEFAULT_MAX_DOCUMENTS)
     # Prior task/response pairs replayed into each request. They are re-sent
     # every turn, so a long tail costs prompt tokens on all of them.
     history_turns: int = Field(default=10)
@@ -908,7 +913,7 @@ class OnIt(BaseModel):
         self.template_path = self.config_data.get('template_path', None)
         self.topic = self.config_data.get('topic', None)
         self.prompt_intro = self.config_data.get('prompt_intro', None)
-        self.max_documents = int(self.config_data.get('max_documents', 6))
+        self.max_documents = int(self.config_data.get('max_documents', DEFAULT_MAX_DOCUMENTS))
         self.history_turns = int(self.config_data.get('history_turns', 10))
         self.prompt_in_process = bool(self.config_data.get('prompt_in_process', True))
         self.timeout = self.config_data.get('timeout', None)  # default timeout 300 seconds
@@ -1080,9 +1085,8 @@ class OnIt(BaseModel):
             'max_context_tokens': self.model_serving.get('max_context_tokens', None),
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
-            'think_tool_turns': self.model_serving.get('think_tool_turns', True),
         }
-        for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
+        for _k in SERVING_PASSTHROUGH:
             if _k in self.model_serving:
                 kwargs[_k] = self.model_serving[_k]
         if self.prompt_intro:
@@ -1201,9 +1205,8 @@ class OnIt(BaseModel):
                           'session_id': self.session_id,
                           'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
-                          'session_history': self.load_session_history(),
-                          'think_tool_turns': self.model_serving.get('think_tool_turns', True)}
-                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
+                          'session_history': self.load_session_history()}
+                for _k in SERVING_PASSTHROUGH:
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]
                 endpoint = self.load_balancer.acquire(key=self.session_id)
@@ -1698,9 +1701,8 @@ class OnIt(BaseModel):
                           'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history(),
-                          'stream': self.stream,
-                          'think_tool_turns': self.model_serving.get('think_tool_turns', True)}
-                for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
+                          'stream': self.stream}
+                for _k in SERVING_PASSTHROUGH:
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]
                 if self.prompt_intro:
