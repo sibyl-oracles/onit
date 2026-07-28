@@ -534,6 +534,12 @@ class OnIt(BaseModel):
         return self.tool_registry is not None and "local_search" in self.tool_registry.tools
 
     @property
+    def document_search_available(self) -> bool:
+        """Check if the within-document search tool was discovered."""
+        return (self.tool_registry is not None
+                and "search_document" in self.tool_registry.tools)
+
+    @property
     def web_search_available(self) -> bool:
         """Check if the web search tool was discovered."""
         return self.tool_registry is not None and "search" in self.tool_registry.tools
@@ -932,6 +938,7 @@ class OnIt(BaseModel):
                 "topic": self.topic,
                 "sandbox_available": self.sandbox_available,
                 "local_search_available": self.local_search_available,
+                "document_search_available": self.document_search_available,
                 "web_search_available": self.web_search_available,
                 "agent_name": self.agent_name,
                 "developer": self.developer,
@@ -1071,6 +1078,7 @@ class OnIt(BaseModel):
                                                                                 "topic": self.topic,
                                                                                 "sandbox_available": self.sandbox_available,
                                                                                 "local_search_available": self.local_search_available,
+                                                                                "document_search_available": self.document_search_available,
                                                                                 "web_search_available": self.web_search_available,
                                                                                 "agent_name": self.agent_name,
                                                                                 "developer": self.developer})
@@ -1298,6 +1306,7 @@ class OnIt(BaseModel):
                                                                         "topic": self.topic,
                                                                         "sandbox_available": self.sandbox_available,
                                                                         "local_search_available": self.local_search_available,
+                                                                        "document_search_available": self.document_search_available,
                                                                         "web_search_available": self.web_search_available,
                                                                         "agent_name": self.agent_name,
                                                                         "developer": self.developer})

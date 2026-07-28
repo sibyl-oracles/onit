@@ -42,7 +42,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import logging
 
@@ -506,13 +506,24 @@ class LocalSearchIndex:
     # -- ingestion -----------------------------------------------------------
 
     def index_directory(self, directory: str, recursive: bool = True,
-                        rebuild: bool = False) -> Dict[str, Any]:
+                        rebuild: bool = False,
+                        exclude: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """Index all supported documents under directory. Skips unchanged
-        files, drops entries for deleted files, and persists the result."""
+        files, drops entries for deleted files, and persists the result.
+
+        ``exclude`` lists subtrees to leave alone — used when a directory
+        nested under ``directory`` belongs to a different index, so the two do
+        not both hold the same document.
+        """
         directory = os.path.abspath(os.path.expanduser(directory))
+        excluded = [os.path.abspath(os.path.expanduser(p)) for p in (exclude or [])]
         if rebuild:
             self.documents = {}
             self.chunks = []
+
+        def _is_excluded(path: str) -> bool:
+            return any(path == root or path.startswith(root + os.sep)
+                       for root in excluded)
 
         pattern = "**/*" if recursive else "*"
         candidates = []
@@ -523,11 +534,16 @@ class LocalSearchIndex:
                 continue
             if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
+            if _is_excluded(str(path)):
+                continue
             candidates.append(str(path))
 
-        # Drop index entries for files that no longer exist under this root
+        # Drop index entries for files that no longer exist under this root, and
+        # for files an exclusion has since handed to another index — an earlier
+        # pass may have ingested them while they were still in scope.
         removed = [p for p in self.documents
-                   if p.startswith(directory + os.sep) and not os.path.isfile(p)]
+                   if p.startswith(directory + os.sep)
+                   and (not os.path.isfile(p) or _is_excluded(p))]
         for p in removed:
             self._remove_document(p)
 

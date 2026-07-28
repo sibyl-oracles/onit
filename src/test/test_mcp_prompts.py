@@ -115,3 +115,64 @@ class TestAssistantInstruction:
             file_server_url=None,
         )
         assert "uploads" not in result
+
+
+class TestResearchHierarchy:
+    """The order the search tools are meant to be tried in: the in-house corpus
+    first, then the documents it points at, and the web only for what is left."""
+
+    @pytest.mark.asyncio
+    async def test_search_tools_are_ordered_corpus_document_web(self, tmp_path):
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            document_search_available=True,
+            web_search_available=True,
+        )
+        section = result[result.index("## Research and Citations"):]
+        steps = section[:section.index("###")]
+        assert steps.index("`local_search`") < steps.index("`search_document`") \
+            < steps.index("Search the web")
+
+    @pytest.mark.asyncio
+    async def test_web_search_is_gated_on_an_incomplete_local_answer(self, tmp_path):
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            document_search_available=True,
+            web_search_available=True,
+        )
+        assert "Search the web only for what steps 1-3 left unanswered" in result
+        assert "already cover in full needs no web search at all" in result
+
+    @pytest.mark.asyncio
+    async def test_a_missing_document_tool_is_never_named(self, tmp_path):
+        """The tool is registered separately from local_search and can be absent.
+        Naming a tool the model does not have earns a failed call, not an answer."""
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            document_search_available=False,
+            web_search_available=True,
+        )
+        # Scoped to the instructions: data_path is echoed into the prompt, and a
+        # pytest tmp dir carries the test's own name.
+        section = result[result.index("## Research and Citations"):]
+        assert "search_document" not in section
+        assert "`read_file`" in section
+
+    @pytest.mark.asyncio
+    async def test_hierarchy_holds_without_web_search(self, tmp_path):
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            document_search_available=True,
+            web_search_available=False,
+        )
+        section = result[result.index("## Research and Citations"):]
+        assert section.index("`local_search`") < section.index("`search_document`")
+        assert "Search the web" not in section

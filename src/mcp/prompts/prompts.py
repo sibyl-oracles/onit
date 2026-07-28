@@ -34,6 +34,7 @@ async def assistant_instruction(task: str,
                                 topic: str = None,
                                 sandbox_available: str | bool = False,
                                 local_search_available: str | bool = False,
+                                document_search_available: str | bool = False,
                                 web_search_available: str | bool = False,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza") -> str:
@@ -49,6 +50,8 @@ async def assistant_instruction(task: str,
       sandbox_available = False
    if isinstance(local_search_available, str) and local_search_available.lower() in ("false", "null", "none", "0", ""):
       local_search_available = False
+   if isinstance(document_search_available, str) and document_search_available.lower() in ("false", "null", "none", "0", ""):
+      document_search_available = False
    if isinstance(web_search_available, str) and web_search_available.lower() in ("false", "null", "none", "0", ""):
       web_search_available = False
    if not agent_name or agent_name == "null":
@@ -156,29 +159,46 @@ Do not stop until **all** are true:
 When a question needs external information:
 """
       if local_search_available and web_search_available:
-         instruction += """1. Call `local_search` first — internal data never appears on the web.
+         _open_step = (
+            """3. Open each of those documents and find what it actually says on the topic:
+   `search_document` (`mode="context"`, the question as `query`) to locate the relevant
+   passages, `read_file` when you need the whole document. `local_search` ranks
+   documents; only opening one tells you what is in it.
+"""
+            if document_search_available else
+            """3. Open each of those documents with `read_file` and report what it says.
+   `local_search` ranks documents; only opening one tells you what is in it.
+"""
+         )
+         instruction += """1. Call `local_search` first — internal data never appears on the web. It searches
+   the whole in-house corpus and ranks documents; it does not read them.
 2. Before any web search, list by `file` the local documents that answer the question.
    That list is the backbone of the answer. A document whose name matches the query is
-   a primary source: read it in full and report what it says.
-3. Search the web only for what those documents leave unanswered, or for public facts
-   that change over time. Name the gap you are filling before you search.
-4. The in-house documents are the authority on internal matters — people, projects,
+   a primary source.
+""" + _open_step + """4. Search the web only for what steps 1-3 left unanswered, or for public facts that
+   change over time. Name the gap you are filling before you search. An answer the
+   in-house documents already cover in full needs no web search at all.
+5. The in-house documents are the authority on internal matters — people, projects,
    customers, policies, internal numbers and dates. If a web source disagrees with a
    local result, keep the local answer and note the discrepancy. Never drop, overwrite,
    or water down a local fact because a web page says otherwise, ranks higher, or is
    written more confidently.
-5. Web material is supplement. It may extend or corroborate the local findings; it
+6. Web material is supplement. It may extend or corroborate the local findings; it
    never replaces them and never sets the structure of the answer.
-6. When the question asks what exists — options, programs, offerings, policies,
+7. When the question asks what exists — options, programs, offerings, policies,
    contacts — every qualifying local document becomes its own item in the answer.
    Adding items found on the web is welcome; omitting a local one is not.
-7. Before writing the final answer, re-check the list from step 2. If a local document
+8. Before writing the final answer, re-check the list from step 2. If a local document
    that answers the question is missing from your draft, add it.
 """
          references = "local results by `file` and `location`, web results by URL"
       elif local_search_available:
-         instruction += """1. Search in-house documents with `local_search`.
-"""
+         instruction += """1. Search in-house documents with `local_search` — it ranks documents across the
+   corpus; it does not read them.
+""" + ("""2. Open the documents it points at: `search_document` (`mode="context"`, the question
+   as `query`) for the relevant passages, `read_file` for the whole document.
+""" if document_search_available else """2. Open the documents it points at with `read_file` and report what they say.
+""")
          references = "the `file` and `location` of each local result"
       else:
          instruction += """1. Search the web for relevant, up-to-date sources.
@@ -193,6 +213,16 @@ When a question needs external information:
          else:
             no_hit = ("re-query once with different terms, then say the local documents "
                       "do not cover it.")
+         open_tools = (
+            "Use `search_document` (`mode=\"context\"`) to pull the\n"
+            "passages that bear on the question out of a long document, and `read_file`\n"
+            "when the document is short enough to take whole or you need its structure.\n"
+            "Both accept the paths `local_search` returns, the shared documents\n"
+            "directory included."
+            if document_search_available else
+            "Use `read_file`, which accepts the paths `local_search`\n"
+            "returns, the shared documents directory included."
+         )
          instruction += f"""
 ### Working with `local_search` results
 Results are chunks — excerpts picked by keyword overlap, which routinely miss the
@@ -201,17 +231,16 @@ reason about documents, not chunks; repeated hits measure document length, not
 relevance.
 
 **Required before you answer**: for every result whose file name contains a term
-from the question, call `read_file` on that result's `file` path — even when its
-chunk looks generic, off-topic, or already-covered. A chunk is no evidence about
-the rest of its document. `read_file` accepts these paths, the shared documents
-directory included.
+from the question, open that result's `file` path — even when its chunk looks
+generic, off-topic, or already-covered. A chunk is no evidence about the rest of
+its document. {open_tools}
 
 A file that catalogues others — README, index, table of contents — mentions every
 topic in the corpus, so it ranks high on any query and answers none. Its entries
 are pointers: open every document whose entry sounds relevant to the question,
 and cite that document, not the catalogue.
 
-Drop such a document only after `read_file` shows it does not apply. Never drop it
+Drop such a document only after opening it shows it does not apply. Never drop it
 because its chunk ranked low, read as unrelated, or because other sources already
 gave you an answer that looks complete.
 

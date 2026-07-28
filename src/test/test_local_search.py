@@ -64,6 +64,7 @@ def search_env(tmp_path, corpus, monkeypatch):
     monkeypatch.setattr(local_mod, "DATA_PATH", str(data))
     monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(corpus))
     monkeypatch.setattr(local_mod, "_INDEXES", {})
+    monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
     monkeypatch.delenv("ONIT_EMBEDDING_HOST", raising=False)
     monkeypatch.delenv("ONIT_EMBEDDING_MODEL", raising=False)
     return data
@@ -513,7 +514,7 @@ def _make_session(data, name):
     return str(session)
 
 
-def test_shared_corpus_indexed_once_across_sessions(search_env):
+def test_shared_corpus_indexed_once_across_sessions(search_env, corpus):
     session_a = _make_session(search_env, "session-a")
     session_b = _make_session(search_env, "session-b")
 
@@ -527,8 +528,8 @@ def test_shared_corpus_indexed_once_across_sessions(search_env):
     assert result_b["indexed"] == []
     assert result_b["skipped_unchanged"] == 3
 
-    # Only one shared index directory exists, none inside the session jails
-    assert (search_env / "local_search" / "shared" / "index.json").is_file()
+    # One shared index, stored beside the corpus, none inside the session jails
+    assert (corpus / ".local_search" / "index.json").is_file()
     assert not (search_env / "session-a" / "local_search").exists()
     assert not (search_env / "session-b" / "local_search").exists()
 
@@ -722,11 +723,154 @@ def test_document_key_falls_back_to_filename_for_unreadable_file(search_env):
     assert "hash" not in index.documents[missing]
 
 
+# -- where the shared index is stored -------------------------------------------
+
+def test_shared_index_lives_beside_the_corpus_not_under_data_path(search_env, corpus):
+    """The index belongs with the documents it describes: a corpus mounted into
+    another deployment must arrive already ingested, rather than leaving its
+    index behind in a DATA_PATH that is per-deployment scratch."""
+    local_mod.rebuild_indexes(background=False)
+
+    assert (corpus / ".local_search" / "index.json").is_file()
+    assert not (search_env / "local_search" / "shared").exists()
+
+
+def test_shared_index_is_not_itself_indexed(search_env, corpus):
+    """The index sits inside the directory being walked, so an ingest that did
+    not skip it would index its own output and grow on every pass."""
+    local_mod.rebuild_indexes(background=False)
+    local_mod._INDEXES.clear()
+    local_mod.rebuild_indexes(background=False)
+
+    index = local_mod._get_index(local_mod._shared_index_dir())
+    assert len(index.documents) == 3
+    assert all(local_mod.SHARED_INDEX_DIRNAME not in p for p in index.documents)
+
+
+def test_missing_shared_index_is_rebuilt_from_the_corpus(search_env, corpus):
+    """A corpus with no index beside it — new, or last indexed by a version
+    that stored the index elsewhere — is simply ingested. Nothing is adopted
+    from another directory: the corpus on disk defines the index."""
+    stale_elsewhere = search_env / "local_search" / "shared"
+    LocalSearchIndex(str(stale_elsewhere)).index_directory(str(corpus))
+    os.unlink(corpus / "onboarding.md")
+    assert not (corpus / ".local_search" / "index.json").exists()
+
+    result = json.loads(local_mod._local_search_impl(
+        query="vacation days", data_path=str(search_env / "session-a")))
+
+    assert (corpus / ".local_search" / "index.json").is_file()
+    built = json.loads((corpus / ".local_search" / "index.json").read_text())
+    # Built from the corpus as it is now, not inherited from the stale copy
+    assert len(built["documents"]) == 2
+    assert not any(p.endswith("onboarding.md") for p in built["documents"])
+    assert result["results"][0]["file"].endswith("vacation.md")
+
+
+def test_read_only_corpus_falls_back_to_data_path(search_env, corpus, monkeypatch):
+    """A corpus mounted read-only is the normal container deployment. Search
+    must still work — the index just goes under DATA_PATH instead."""
+    def _refuse(path, *args, **kwargs):
+        if str(path).startswith(str(corpus)):
+            raise PermissionError(f"read-only corpus: {path}")
+        return os.makedirs(path, *args, **kwargs)
+
+    monkeypatch.setattr(local_mod.os, "makedirs", _refuse)
+
+    assert local_mod._shared_index_dir() == str(search_env / "local_search" / "shared")
+
+
+def test_read_only_corpus_that_already_has_an_index_dir_falls_back_too(
+        search_env, corpus):
+    """A corpus remounted read-only still carries the .local_search left by an
+    earlier read-write run, and makedirs(exist_ok=True) succeeds for it. The
+    index would then be unwritable at the very moment it is saved."""
+    stale = corpus / ".local_search"
+    stale.mkdir()
+    stale.chmod(0o500)
+    try:
+        assert local_mod._shared_index_dir() == str(
+            search_env / "local_search" / "shared")
+
+        # ...and searching still works against the fallback location
+        result = json.loads(local_mod._local_search_impl(
+            query="vacation days", data_path=str(search_env / "session-a")))
+        assert result["results"][0]["file"].endswith("vacation.md")
+        assert (search_env / "local_search" / "shared" / "index.json").is_file()
+    finally:
+        stale.chmod(0o700)
+
+
+# -- what a session walk covers -------------------------------------------------
+
+@pytest.fixture
+def nested_corpus(tmp_path, corpus, monkeypatch):
+    """DOCUMENTS_PATH sitting inside DATA_PATH — the default layout, and the
+    one the terminal UI hits when its jail root is the data directory itself."""
+    data = tmp_path / "data"
+    data.mkdir()
+    nested = data / "docs"
+    corpus.rename(nested)
+    monkeypatch.setattr(local_mod, "DATA_PATH", str(data))
+    monkeypatch.setattr(local_mod, "DOCUMENTS_PATH", str(nested))
+    monkeypatch.setattr(local_mod, "_INDEXES", {})
+    monkeypatch.setattr(local_mod, "_SHARED_INDEX_DIRS", {})
+    (data / "session-notes.md").write_text(
+        "# Notes\n\nDraft notes about the quarterly planning offsite.\n")
+    return data, nested
+
+
+def test_session_walk_leaves_the_shared_corpus_to_the_shared_index(nested_corpus):
+    """The corpus lives inside the data directory, so a session walk rooted at
+    the data directory would otherwise take a second copy of every shared
+    document — paying to parse it per session and letting one file score from
+    both indexes in the fused ranking."""
+    data, nested = nested_corpus
+
+    local_mod._local_search_impl(query="vacation days", data_path=str(data))
+
+    session_index = local_mod._get_index(local_mod._index_dir(str(data)))
+    shared_index = local_mod._get_index(local_mod._shared_index_dir())
+    assert [os.path.basename(p) for p in session_index.documents] == ["session-notes.md"]
+    assert len(shared_index.documents) == 3
+    assert not any(str(nested) in p for p in session_index.documents)
+
+
+def test_both_scopes_stay_searchable(nested_corpus):
+    """Excluding the corpus from the session walk must not put it out of reach:
+    the shared index still answers for it, the session index for its own files."""
+    data, _ = nested_corpus
+
+    shared_hit = json.loads(local_mod._local_search_impl(
+        query="vacation days", data_path=str(data)))
+    session_hit = json.loads(local_mod._local_search_impl(
+        query="quarterly planning offsite", data_path=str(data)))
+
+    assert shared_hit["results"][0]["file"].endswith("vacation.md")
+    assert session_hit["results"][0]["file"].endswith("session-notes.md")
+    # One entry per document, not one per index
+    assert shared_hit["total_documents"] == 4
+
+
+def test_documents_already_taken_by_the_session_index_are_dropped(nested_corpus):
+    """An index written before the exclusion existed holds the shared corpus
+    too. Those entries are dropped on the next pass rather than lingering as
+    duplicates that outrank single-index hits."""
+    data, nested = nested_corpus
+    session_index = local_mod._get_index(local_mod._index_dir(str(data)))
+    session_index.index_directory(str(data))  # the pre-exclusion pass
+    assert len(session_index.documents) == 4
+
+    local_mod._local_search_impl(query="vacation days", data_path=str(data))
+
+    assert [os.path.basename(p) for p in session_index.documents] == ["session-notes.md"]
+
+
 # -- startup rebuild ------------------------------------------------------------
 
 def test_rebuild_reflects_corpus_changed_while_server_was_down(search_env, corpus):
     local_mod._index_documents_impl()  # index built by the "previous run"
-    assert (search_env / "local_search" / "shared" / "index.json").is_file()
+    assert (corpus / ".local_search" / "index.json").is_file()
 
     os.unlink(corpus / "onboarding.md")
     (corpus / "parking.md").write_text(
@@ -757,14 +901,14 @@ def test_rebuild_keeps_indexes_it_does_not_own(search_env, corpus):
 
     assert (sibling / "index.json").is_file()
     assert (fallback / "index.json").is_file()
-    assert (fallback / "shared" / "index.json").is_file()
+    assert (corpus / ".local_search" / "index.json").is_file()
 
 
-def test_rebuild_leaves_a_shared_index_a_sibling_just_wrote(search_env):
+def test_rebuild_leaves_a_shared_index_a_sibling_just_wrote(search_env, corpus):
     """The shared index a sibling container built is refreshed in place, so it
     is never missing from disk while this server rebuilds its own copy."""
     local_mod._index_documents_impl()  # the sibling's build
-    shared = search_env / "local_search" / "shared" / "index.json"
+    shared = corpus / ".local_search" / "index.json"
     before = json.loads(shared.read_text())
     local_mod._INDEXES.clear()
 

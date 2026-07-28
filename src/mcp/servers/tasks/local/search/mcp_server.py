@@ -73,9 +73,18 @@ DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
 # Optional read-only documents directory (set via options['documents_path'])
 DOCUMENTS_PATH = None
 
+# Name of the shared index directory created inside DOCUMENTS_PATH. Dotted so
+# the corpus walk in index_directory(), which skips dot-components, does not
+# descend into the index it is writing.
+SHARED_INDEX_DIRNAME = ".local_search"
+
 # Cached index instances, keyed by index directory so DATA_PATH changes and
 # per-session jail roots each get their own index
 _INDEXES: dict[str, LocalSearchIndex] = {}
+
+# Resolved shared-index location per (corpus, DATA_PATH), so the writability
+# probe behind _shared_index_dir() runs once instead of once per query
+_SHARED_INDEX_DIRS: dict[Tuple[str, str], str] = {}
 
 # Serializes ingestion into the shared DOCUMENTS_PATH index so concurrent
 # sessions don't parse/chunk/embed the same corpus twice
@@ -150,11 +159,70 @@ def _documents_root() -> Optional[str]:
     return os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
 
 
-def _shared_index_dir() -> str:
-    # The DOCUMENTS_PATH corpus is identical for every session, so its index
-    # lives once at the server level instead of being rebuilt per session jail.
+def _fallback_shared_index_dir() -> str:
+    """Where the shared index goes when it cannot live beside its corpus."""
     root = os.path.realpath(os.path.expanduser(DATA_PATH))
     return os.path.join(root, "local_search", "shared")
+
+
+def _shared_index_dir() -> str:
+    """Directory holding the index of the DOCUMENTS_PATH corpus.
+
+    The corpus is identical for every session, so its index is built once at
+    the server level rather than per session jail. It is stored *inside*
+    DOCUMENTS_PATH, beside the documents it describes, so the index and the
+    originals stay together: a corpus mounted into another deployment arrives
+    already ingested, and the index does not accumulate under a DATA_PATH that
+    is per-deployment scratch. The directory name is dotted because
+    ``index_directory`` skips path components starting with a dot — otherwise
+    the ingest walk would descend into the index it is writing.
+
+    A read-only corpus is the normal container deployment — docker-compose
+    mounts DOCUMENTS_PATH with ``:ro`` — so when it cannot be written the index
+    goes under DATA_PATH instead, at the path it has always used. Creating the
+    directory is not proof that the index can be written into it: a corpus
+    remounted read-only still has the ``.local_search`` left by an earlier
+    read-write run, and ``makedirs(exist_ok=True)`` returns happily for a
+    directory that already exists. Writability is therefore checked, not
+    inferred.
+
+    The verdict is cached per (corpus, DATA_PATH) pair: this runs on every
+    query, and re-probing each time would cost syscalls per search for an
+    answer that cannot change while the server runs.
+
+    An index that is not there yet — a fresh corpus, or one whose index was
+    written by an older version somewhere else — is simply built from the
+    corpus by the next ingest. Nothing is carried over from another directory:
+    the corpus on disk is the only thing that defines the index, so rebuilding
+    from it cannot resurrect entries for documents that have since changed.
+    """
+    docs = _documents_root()
+    if not docs:
+        return _fallback_shared_index_dir()
+
+    cache_key = (docs, os.path.realpath(os.path.expanduser(DATA_PATH)))
+    cached = _SHARED_INDEX_DIRS.get(cache_key)
+    if cached:
+        return cached
+
+    resolved = os.path.join(docs, SHARED_INDEX_DIRNAME)
+    reason = ""
+    try:
+        os.makedirs(resolved, mode=0o700, exist_ok=True)
+        if not os.access(resolved, os.W_OK | os.X_OK):
+            reason = "directory is not writable"
+    except OSError as e:
+        reason = str(e)
+
+    if reason:
+        resolved = _fallback_shared_index_dir()
+        logger.info(
+            f"Shared local_search index cannot be kept beside the corpus "
+            f"{docs} ({reason}); using {resolved}"
+        )
+
+    _SHARED_INDEX_DIRS[cache_key] = resolved
+    return resolved
 
 
 def _is_shared_corpus(corpus: str) -> bool:
@@ -193,6 +261,9 @@ def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
     there is no shared corpus to rebuild).
     """
     _INDEXES.clear()
+    # run() assigns DATA_PATH/DOCUMENTS_PATH just before calling this, so the
+    # cached shared-index location may predate the corpus now configured.
+    _SHARED_INDEX_DIRS.clear()
 
     docs_root = _documents_root()
     if not docs_root or not os.path.isdir(docs_root):
@@ -259,6 +330,13 @@ def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
     the BM25 pass the search itself runs. Ingestion into the shared index is
     serialized: taking the lock also parks a search behind an in-flight startup
     rebuild, so it never reads a partially populated index.
+
+    A session walk never descends into DOCUMENTS_PATH. The corpus can sit
+    inside the data directory, and in the terminal UI the jail root *is* that
+    directory, so without the exclusion the session index would ingest a second
+    copy of every shared document: the same file would then contribute to the
+    fused ranking from both indexes, and every session would separately pay to
+    parse and embed a corpus the shared index already holds.
     """
     if not corpus or not os.path.isdir(corpus):
         return
@@ -266,8 +344,10 @@ def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
     index = shared_index if shared else session_index
     if index is None:
         return
+    docs_root = _documents_root()
+    exclude = [docs_root] if docs_root and not shared else None
     with _SHARED_LOCK if shared else contextlib.nullcontext():
-        index.index_directory(corpus, recursive=True)
+        index.index_directory(corpus, recursive=True, exclude=exclude)
 
 
 def _document_key(index: LocalSearchIndex, file_path: str) -> str:
@@ -333,11 +413,16 @@ def _index_documents_impl(
         session_index, shared_index = _session_indexes(base)
         index = shared_index if shared else session_index
         lock = _SHARED_LOCK if shared else contextlib.nullcontext()
+        # As in _refresh_corpus: a session ingest leaves the shared corpus to
+        # the shared index rather than taking a second copy of it.
+        docs_root = _documents_root()
+        exclude = [docs_root] if docs_root and not shared else None
 
         with lock:
             index.chunk_size = max(200, min(int(chunk_size), 8000))
             index.chunk_overlap = max(0, min(int(chunk_overlap), index.chunk_size // 2))
-            result = index.index_directory(corpus, recursive=recursive, rebuild=rebuild)
+            result = index.index_directory(corpus, recursive=recursive,
+                                           rebuild=rebuild, exclude=exclude)
 
         scope = "shared" if shared else "session"
         return json.dumps({**result, "scope": scope, "status": "success"}, indent=2)

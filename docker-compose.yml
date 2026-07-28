@@ -25,9 +25,14 @@ x-onit-hardening: &onit-hardening
 # ONIT_DATA_DIR at a host folder on persistent storage (e.g. an SSD mount).
 x-data-volume: &data-volume ${ONIT_DATA_DIR:-/data/sandbox}:/home/onit/data
 
-# Read-only corpus for the local_search tool. Point ONIT_DOCUMENTS_DIR at the
-# host folder holding your documents (absolute path — ~ is not expanded). The
-# search index itself is written under the data volume, so :ro is safe.
+# Corpus for the local_search tool. Point ONIT_DOCUMENTS_DIR at the host folder
+# holding your documents (absolute path — ~ is not expanded).
+#
+# local_search prefers to keep its index in a .local_search/ directory beside
+# the documents, so the index travels with the corpus. That needs write access,
+# which :ro denies — so with the mount as shipped the index falls back to the
+# data volume instead. Everything works either way; drop the :ro if you would
+# rather the corpus carry its own index and be usable pre-indexed elsewhere.
 x-documents-volume: &documents-volume ${ONIT_DOCUMENTS_DIR:-/data/documents}:/home/onit/documents:ro
 
 # Tells the local_search MCP server (running inside each service) where the
