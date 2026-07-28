@@ -369,7 +369,13 @@ def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
     # Read at call time, not bound as a default, so the window stays settable.
     if min_interval is None:
         min_interval = REFRESH_MIN_INTERVAL
-    if min_interval > 0 and time.monotonic() - _LAST_REFRESH.get(corpus, 0.0) < min_interval:
+    # A missing stamp means "never walked", which is not the same as "walked at
+    # monotonic zero": monotonic() counts from boot on Linux, so defaulting to
+    # 0.0 suppresses the first walk of every corpus for the first
+    # REFRESH_MIN_INTERVAL seconds of the machine's uptime — exactly the window
+    # in which a freshly started container serves its first search.
+    last = _LAST_REFRESH.get(corpus)
+    if min_interval > 0 and last is not None and time.monotonic() - last < min_interval:
         return
     docs_root = _documents_root()
     exclude = [docs_root] if docs_root and not shared else None
