@@ -37,7 +37,8 @@ async def assistant_instruction(task: str,
                                 document_search_available: str | bool = False,
                                 web_search_available: str | bool = False,
                                 agent_name: str = "OnIt",
-                                developer: str = "Rowel Atienza") -> str:
+                                developer: str = "Rowel Atienza",
+                                max_documents: str | int = 4) -> str:
    if not data_path:
       raise ValueError("data_path is required and must be a non-empty string")
 
@@ -58,19 +59,28 @@ async def assistant_instruction(task: str,
       agent_name = "OnIt"
    if not developer or developer == "null":
       developer = "Rowel Atienza"
+   try:
+      max_documents = max(1, int(max_documents))
+   except (TypeError, ValueError):
+      max_documents = 4
 
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
 
+   # The task is deliberately not in the template: it is appended last, after
+   # every block below, so that everything ahead of it is identical from one
+   # request to the next. A server with prefix caching then re-uses the whole
+   # preamble instead of prefilling it again for each task; with the task in
+   # the middle, the first differing character invalidates all of it.
+   #
+   # A custom template that still interpolates {task} keeps working — it just
+   # decides where the task goes, and gives up that reuse (see below).
    default_template = """
 You are {agent_name}, an autonomous agent harness developed by {developer}, with access to tools and a file system.
 
 ## Context
 - **Today's date**: {current_date}
 - **Working directory**: `{data_path}` - this is the agent local filesystem. If sandbox filesystem is available, use it instead and treat this as a staging area for file transfers.
-
-## Task
-{task}
 """
 
    template = default_template
@@ -85,8 +95,9 @@ You are {agent_name}, an autonomous agent harness developed by {developer}, with
          except (OSError, yaml.YAMLError):
             pass
 
+   task_in_template = "{task}" in template
    instruction = template.format(
-      task=task,
+      task=task if task_in_template else "",
       current_date=current_date,
       data_path=data_path,
       agent_name=agent_name,
@@ -161,17 +172,19 @@ When a question needs external information:
       # How to open a document that `local_search` pointed at
       open_doc = (
          '`search_document` (`mode="context"`, the question as `query`) for the relevant '
-         'passages, or `read_file` for the whole document'
+         'passages, and `read_file` only for a short document'
          if document_search_available else '`read_file`'
       )
 
       if local_search_available and web_search_available:
          instruction += f"""1. Call `local_search` first — internal data never appears on the web. It ranks
-   documents across the in-house corpus; it does not read them.
+   documents across the in-house corpus and returns, under `documents`, each
+   one's opening: its title and usually the summary beneath it.
 2. List, by `file`, the local documents that answer the question. That list is the
    backbone of the answer. A file name matching the question is a primary source.
-3. Open every document on that list — opening one is the only way to learn what it
-   says. Use {open_doc}.
+3. Judge each document on that list from its opening and its matched excerpts.
+   Open one only where those leave the question unanswered — highest-ranked
+   first, at most {max_documents} of them. Use {open_doc}.
 4. Search the web only for gaps left after step 3, or for public facts that change
    over time. Name the gap before you search.
 5. Re-check the step-2 list before writing. Every local document that answers the
@@ -191,8 +204,10 @@ When a question needs external information:
          references = "local results by `file` and `location`, web results by URL"
       elif local_search_available:
          instruction += f"""1. Search in-house documents with `local_search` — it ranks documents across the
-   corpus; it does not read them.
-2. Open the documents it points at with {open_doc}, and report what they say.
+   corpus and returns each one's opening under `documents`.
+2. Where an opening and its matched excerpts leave the question unanswered, open
+   the document with {open_doc} — highest-ranked first, at most {max_documents}
+   of them — and report what they say.
 """
          references = "the `file` and `location` of each local result"
       else:
@@ -210,18 +225,21 @@ When a question needs external information:
                       "do not cover it.")
          instruction += f"""
 ### Reading `local_search` results
-- Results are chunks, not documents, and routinely miss the passage that answers the
-  question. Group them by `file` and reason about documents; repeated hits measure
-  document length, not relevance.
-- Open every result whose file name contains a term from the question, even when its
-  chunk looks generic, off-topic, or already covered. A chunk is no evidence about the
-  rest of its document. Paths returned by `local_search` — including those in the
-  shared documents directory — can be opened directly.
+- `documents` is the list to reason about; `results` are chunks, and routinely miss
+  the passage that answers the question. Repeated hits in `results` measure document
+  length, not relevance.
+- A document's opening says what it is; a matched chunk does not. Treat a file whose
+  name or opening carries a term from the question as relevant even when its excerpts
+  look generic or off-topic, and open it if the question is still open. Paths returned
+  by `local_search` — including those in the shared documents directory — can be
+  opened directly.
+- When you do open several documents, ask for them in one reply: tool calls made
+  together are executed together, one per reply are executed one after another.
 - A file that catalogues others (README, index, table of contents) mentions every topic
   and answers none. Its entries are pointers: open the documents they name and cite
   those, not the catalogue.
-- Drop a document only after opening it shows it does not apply — never because its
-  chunk ranked low or because other sources already look sufficient.
+- Drop a document only when its opening or its passages show it does not apply — never
+  because its chunk ranked low or because other sources already look sufficient.
 - If no result answers the question, {no_hit}
 """
 
@@ -241,9 +259,20 @@ Never state an email address or phone number that did not appear verbatim in a t
 ## Instructions
 1. If the answer is straightforward, respond directly without tool use.
 2. Otherwise, reason step by step, invoke tools as needed, and work toward a final answer.
-3. If critical information is missing and cannot be inferred, ask exactly one clarifying question before proceeding.
-4. If a file was generated, provide a download link to the file.
-5. Conclude with your final answer.
+3. When the next few tool calls do not depend on each other's results, make them in
+   one reply. Calls sent together run at once; sent one per reply they run one after
+   another, and the wait is the sum rather than the longest.
+4. If critical information is missing and cannot be inferred, ask exactly one clarifying question before proceeding.
+5. If a file was generated, provide a download link to the file.
+6. Conclude with your final answer.
+"""
+
+   # Last, so that everything above is byte-identical between tasks and a
+   # server with prefix caching can skip prefilling it (see default_template).
+   if not task_in_template:
+      instruction += f"""
+## Task
+{task}
 """
    return instruction
 

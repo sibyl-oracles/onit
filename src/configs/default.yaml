@@ -4,6 +4,12 @@ serving:
   # host_key: EMPTY  # API key. For OpenRouter set here or via OPENROUTER_API_KEY env var
   # model: auto-detected from endpoint. Set explicitly for OpenRouter.
   think: false
+  # When think is on, also spend reasoning on the turns that only pick a tool.
+  # A thinking model reasons in full before every tool-call JSON, so a loop of
+  # N tool calls pays for N reasoning passes. Set false to keep thinking for
+  # the opening turn, where the approach is decided, and drop it for the rest
+  # of the loop — the final answer included. Latency for deliberation.
+  # think_tool_turns: true
   # Max output tokens per response. 32768 fits any single answer and keeps the
   # context-compaction threshold healthy (~90%) on large-context models.
   max_tokens: 32768
@@ -29,6 +35,15 @@ session_path: "~/.onit/sessions"
 
 # see template examples in the `src/mcp/prompts/prompt_templates` folder
 template_path:
+
+# Documents a research answer may open after local_search. Each one is a tool
+# round trip whose result then rides along in every later prompt, so this is
+# the dial between recall and how long an answer takes to arrive.
+max_documents: 4
+
+# Prior task/response pairs replayed into every request. They are re-sent on
+# each turn, so a long tail costs prompt tokens on all of them.
+history_turns: 10
 
 # number of seconds before a request times out; -1 for no overall timeout.
 # Even with -1, connection setup and streaming stalls (no chunk received for

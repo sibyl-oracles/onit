@@ -24,6 +24,7 @@ SSE event schema (see docs/web-ui-plan.md):
     token         {"delta": str}
     phase_end     {"content": str}
     status        {"text": str}
+    answer_start  {}                 the model began writing the answer
     done          {"content": str, "files": [...],
                    "elapsed": float, "tok_s": float, "timing": {...}}
     error         {"message": str}
@@ -783,6 +784,11 @@ class WebApiUI:
             def _on_tool_status(text):
                 events.put_nowait(("status", {"text": text or ""}))
 
+            def _on_answer_start():
+                # The run is not over, but the answer has started arriving —
+                # which is the moment the user is actually waiting for.
+                events.put_nowait(("answer_start", {}))
+
             def _on_tool_result(_name, result):
                 # Tool output is source material, not model invention: web
                 # search hits, document reads, file listings. Any address in
@@ -805,6 +811,7 @@ class WebApiUI:
                 stats=stats,
                 tool_status_callback=_on_tool_status,
                 tool_result_callback=_on_tool_result,
+                answer_start_callback=_on_answer_start,
                 session_id=session.session_id,
             )
             elapsed = time.monotonic() - start

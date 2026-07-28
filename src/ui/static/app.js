@@ -2,7 +2,7 @@
  * Talks to the FastAPI backend in src/ui/api.py:
  *   GET  /api/config /api/history /api/sessions /api/logs
  *   POST /api/chat (SSE) /api/chat/stop /api/clear /api/upload /api/sessions/new
- * SSE events: token, phase_end, status, done, error.
+ * SSE events: token, phase_end, status, answer_start, done, error.
  */
 (function () {
   "use strict";
@@ -660,6 +660,15 @@
       status(d) {
         chip.set(d.text || "");
         if (!d.text && state.processing) chip.set("Working…");
+      },
+      answer_start() {
+        // Everything committed so far was the model working, not answering.
+        // Clear it so the answer starts on a clean turn: `done` would replace
+        // it anyway, and until then the preamble reads as if it were the reply.
+        turn.content.innerHTML = "";
+        streamBlock = null;
+        streamText = "";
+        chip.set("Writing the answer…");
       },
       done(d) {
         chip.remove();

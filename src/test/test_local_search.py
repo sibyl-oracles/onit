@@ -23,7 +23,9 @@ import pytest
 
 from src.mcp.servers.tasks.local.search.toolkit import (
     BM25,
+    DOCUMENT_OPENING_CHARS,
     MAX_CHUNKS_PER_FILE,
+    MAX_DOCUMENT_SUMMARIES,
     RRF_K,
     LocalSearchIndex,
     chunk_text,
@@ -1044,3 +1046,68 @@ def test_session_refresh_does_not_leak_into_other_sessions(search_env):
         query="Project Zebra October budget", data_path=session_b))
     assert all(not r["file"].endswith("secret.md") for r in hidden["results"])
     assert hidden["total_documents"] == 3
+
+
+# -- documents section --------------------------------------------------------
+
+def test_results_carry_the_documents_behind_them(search_env):
+    """The excerpts are chosen for repeating the query's words; the opening is
+    what says which document this is. Returning it here is what saves a round
+    trip per document."""
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="vacation days accrue", data_path=session))
+
+    assert found["documents"], "every result page describes its documents"
+    vacation = next(d for d in found["documents"]
+                    if d["file"].endswith("vacation.md"))
+    assert "Vacation Policy" in vacation["opening"]
+    assert vacation["num_chunks"] >= 1
+    assert vacation["best_rank"] >= 1
+
+
+def test_one_entry_per_document_however_many_chunks_matched(search_env):
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="days", top_k=10, data_path=session))
+
+    files = [d["file"] for d in found["documents"]]
+    assert len(files) == len(set(files))
+    assert len(found["documents"]) <= len(found["results"])
+
+
+def test_document_openings_are_bounded(search_env, corpus):
+    """A result page has a size budget: the caller truncates the whole thing."""
+    long_doc = corpus / "handbook.md"
+    long_doc.write_text("# Handbook\n\n" + ("policy detail " * 2000))
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="handbook policy detail", data_path=session))
+    handbook = next(d for d in found["documents"]
+                    if d["file"].endswith("handbook.md"))
+    assert len(handbook["opening"]) <= DOCUMENT_OPENING_CHARS + 2
+    assert len(found["documents"]) <= MAX_DOCUMENT_SUMMARIES
+
+
+def test_opening_is_the_start_of_the_document_not_the_best_chunk(search_env, corpus):
+    """The passage repeating the query's words can be anywhere; the title is
+    at the top, and the title is what identifies the document."""
+    (corpus / "benefits.md").write_text(
+        "# Benefits Handbook\n\nThis handbook describes employee benefits.\n\n"
+        + ("filler paragraph. " * 300)
+        + "\n\nDental coverage includes two cleanings per year."
+    )
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    found = json.loads(local_mod._local_search_impl(
+        query="dental cleanings coverage", data_path=session))
+    benefits = next(d for d in found["documents"]
+                    if d["file"].endswith("benefits.md"))
+    assert benefits["opening"].startswith("# Benefits Handbook")

@@ -68,6 +68,8 @@ DEFAULT_CHUNK_OVERLAP = 200       # character overlap between chunks
 
 NAME_LABEL_WEIGHT = 1.0           # weight of the filename/folder field in BM25
 MAX_CHUNKS_PER_FILE = 2           # chunks one document may fill in a result page
+DOCUMENT_OPENING_CHARS = 700      # opening excerpt returned per document
+MAX_DOCUMENT_SUMMARIES = 6        # documents described in one result page
 
 
 def cap_per_file(ordered: List[Any], top_k: int,
@@ -683,6 +685,28 @@ class LocalSearchIndex:
                 "method": method_used,
             })
         return results
+
+    def document_opening(self, path: str) -> Optional[Dict[str, Any]]:
+        """What a document says about itself: its opening, and its size.
+
+        A result page is chunks, and a chunk is chosen for repeating the query
+        terms — which is why the prompt had to send the agent off to open every
+        document it named, one round trip each, just to find out what they
+        were. The opening is the title and usually the summary under it, so
+        returning it with the results answers that question in the same call.
+
+        Returns None for a path this index does not hold.
+        """
+        idx = self._leading_chunk(path)
+        if idx is None:
+            return None
+        text = self.chunks[idx]["text"].strip()
+        if len(text) > DOCUMENT_OPENING_CHARS:
+            text = text[:DOCUMENT_OPENING_CHARS].rstrip() + " …"
+        return {
+            "opening": text,
+            "num_chunks": self.documents.get(path, {}).get("num_chunks", 0),
+        }
 
     def _leading_chunk(self, path: str) -> Optional[int]:
         """Index of a document's first chunk — the one carrying its title.

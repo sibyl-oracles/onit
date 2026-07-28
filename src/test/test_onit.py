@@ -87,11 +87,63 @@ class TestFriendlyToolStatus:
         assert tokens == []
         assert adapter._content == ""
 
-    def test_spinner_status_is_friendly(self):
+    def test_spinner_status_stays_short(self):
+        """A long argument is summarized, never dumped into the status line."""
         statuses = []
         adapter = StreamingAdapter(on_tool_status=statuses.append)
         adapter.start_tool_spinner("search_web", {"query": "very long query " * 20})
-        assert statuses == ["Running search_web…"]
+        assert len(statuses) == 1
+        assert len(statuses[0]) < 80
+        assert statuses[0].endswith("…")
+
+    def test_spinner_status_names_what_is_being_read(self):
+        """'Reading policy.pdf' reads as progress; 'Running read_file' reads
+        as a stall, and a long tool phase is exactly when that matters."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_spinner("read_file", {"path": "/data/docs/policy.pdf"})
+        assert statuses == ["Reading policy.pdf…"]
+
+    def test_unknown_tool_still_reports(self):
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_spinner("mystery_tool", {})
+        assert statuses == ["Running mystery_tool…"]
+
+    def test_batch_reports_progress_not_per_tool_noise(self):
+        """Concurrent calls finish in any order, so one going quiet says
+        nothing about the others — the batch counts instead."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_batch(["read_file", "read_file", "search_document"])
+        adapter.start_tool_spinner("read_file", {"path": "/a.pdf"})  # suppressed
+        adapter.show_tool_done("read_file", "ok")
+        adapter.stop_tool_spinner()                                  # suppressed
+        adapter.show_tool_done("read_file", "ok")
+        adapter.end_tool_batch()
+        assert statuses == [
+            "Running 3 tools together…",
+            "1 of 3 tools done…",
+            "2 of 3 tools done…",
+            "",
+        ]
+
+    def test_answer_start_fires_once_after_tools_have_run(self):
+        starts, tokens = [], []
+        adapter = StreamingAdapter(
+            on_token=lambda tok, full: tokens.append(tok),
+            on_answer_start=lambda: starts.append(1),
+        )
+        # A prose phase before any tool ran is not the answer.
+        adapter.stream_start()
+        adapter.stream_token("Let me look that up.")
+        assert starts == []
+
+        adapter.set_turn_context(tools_run=2)
+        adapter.stream_start()
+        adapter.stream_token("The scholarship ")
+        adapter.stream_token("covers tuition.")
+        assert starts == [1]
 
 
 # ── OnIt.__init__ ───────────────────────────────────────────────────────────

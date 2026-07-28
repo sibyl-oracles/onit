@@ -48,18 +48,19 @@ import json
 import os
 import tempfile
 import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from fastmcp import FastMCP
 
 try:
     from .toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                          DEFAULT_CHUNK_OVERLAP, RRF_K, cap_per_file,
-                          file_content_hash)
+                          DEFAULT_CHUNK_OVERLAP, MAX_DOCUMENT_SUMMARIES,
+                          RRF_K, cap_per_file, file_content_hash)
 except ImportError:
     from toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                         DEFAULT_CHUNK_OVERLAP, RRF_K, cap_per_file,
-                         file_content_hash)
+                         DEFAULT_CHUNK_OVERLAP, MAX_DOCUMENT_SUMMARIES,
+                         RRF_K, cap_per_file, file_content_hash)
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -271,9 +272,11 @@ def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
 
     def _build() -> None:
         try:
+            started = time.monotonic()
             with _SHARED_LOCK:
                 index = _get_index(_shared_index_dir())
                 result = index.index_directory(docs_root, recursive=True)
+            elapsed = time.monotonic() - started
             if not result["total_documents"]:
                 # Logged as an error because it is a misconfiguration, not a
                 # state: the corpus is mounted but local_search can only answer
@@ -284,8 +287,12 @@ def rebuild_indexes(background: bool = True) -> Optional[threading.Thread]:
                     f"pdf/md/txt/csv/docx/xlsx files"
                 )
                 return
+            # The elapsed time is logged because a search taking the lock waits
+            # exactly this long: an unwarmed corpus is paid for by whoever asks
+            # the first question, and nothing else reports that cost.
             logger.info(
-                f"Shared local_search index from {docs_root}: "
+                f"Shared local_search index from {docs_root} ready in "
+                f"{elapsed:.1f}s: "
                 f"{result['total_documents']} document(s), "
                 f"{result['total_chunks']} chunk(s); "
                 f"{len(result['indexed'])} (re)ingested, "
@@ -348,6 +355,40 @@ def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
     exclude = [docs_root] if docs_root and not shared else None
     with _SHARED_LOCK if shared else contextlib.nullcontext():
         index.index_directory(corpus, recursive=True, exclude=exclude)
+
+
+def _summarize_documents(merged: list, indexes: list) -> list:
+    """Collapse a page of chunks into the documents behind it.
+
+    The results are excerpts chosen for repeating the query's words, which is
+    not the same question as "what is this document, and does it apply?" —
+    and answering that question was costing one round trip per document,
+    serially, before the agent could say anything. Each document here carries
+    its opening, so most of those reads no longer need to happen.
+
+    Only the first MAX_DOCUMENT_SUMMARIES documents are described: a tool
+    result has a size budget (the caller truncates at MAX_TOOL_RESPONSE), and
+    spending it on the tail of the ranking would cost the top of it.
+    """
+    by_file: Dict[str, Dict[str, Any]] = {}
+    for result in merged:
+        entry = by_file.setdefault(result["file"], {
+            "file": result["file"],
+            "best_rank": result["rank"],
+            "matched_at": [],
+        })
+        if result.get("location"):
+            entry["matched_at"].append(result["location"])
+
+    summaries = []
+    for entry in list(by_file.values())[:MAX_DOCUMENT_SUMMARIES]:
+        for index in indexes:
+            opening = index.document_opening(entry["file"])
+            if opening:
+                entry.update(opening)
+                break
+        summaries.append(entry)
+    return summaries
 
 
 def _document_key(index: LocalSearchIndex, file_path: str) -> str:
@@ -540,6 +581,7 @@ def _local_search_impl(
         return json.dumps({
             "query": query,
             "method": method,
+            "documents": _summarize_documents(merged, indexes),
             "results": merged,
             "total_results": len(merged),
             "total_documents": sum(len(i.documents) for i in indexes),
@@ -587,18 +629,28 @@ Args:
   or "dense" (embeddings only — requires ONIT_EMBEDDING_HOST/MODEL)
 - path: Optional corpus directory to (re)index before searching
 
-Returns JSON: {query, method, results: [{rank, score, file, location, text}],
+Returns JSON: {query, method,
+documents: [{file, best_rank, matched_at, opening, num_chunks}],
+results: [{rank, score, file, location, text}],
 total_results, total_documents, total_chunks, status}
 
-Each result is a chunk, not a whole document, so one long document can fill
-several slots. Group results by `file` and judge each document by how well its
-name and text answer the query — repeated hits measure document length, not
-relevance. A chunk is an excerpt: when a result's file name matches the query,
-read the whole file (`read_file` on its `file` path) before concluding the
-document lacks the answer. A README or other index file names every topic in
-the corpus and so ranks high on any query; follow it to the document it points
-at instead of answering from it. If every top hit comes from the same document
-and none of them answer the question, re-query with different terms."""
+Read `documents` first. One entry per document behind the results, carrying
+that document's opening — its title and usually the summary under it — which
+is what identifies the document and what its matched excerpts routinely do
+not show. `results` are the individual matched chunks, ranked; one long
+document can fill several slots, so repeated hits there measure document
+length, not relevance.
+
+The opening plus the matched excerpts answer most questions outright. When
+they do not, do not read the whole file: call `search_document` with
+mode="context" and the question as `query` to pull the relevant passages out
+of it. Reserve `read_file` for short documents, or when the passages you got
+back point at something specific you still need.
+
+A README or other index file names every topic in the corpus and so ranks
+high on any query; follow it to the document it points at instead of
+answering from it. If every top hit comes from the same document and none of
+them answer the question, re-query with different terms."""
 
 
 # Register as MCP tools only when local search is not disabled
@@ -670,8 +722,18 @@ def run(
     elif os.environ.get('ONIT_DOCUMENTS_PATH'):
         DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
 
-    # Every start re-ingests the corpus as it is now
-    rebuild_indexes()
+    # Every start re-ingests the corpus as it is now.  In the background by
+    # default, so the server answers other tools immediately — but a search
+    # arriving meanwhile blocks on _SHARED_LOCK until the ingest finishes, so
+    # the wait lands on the first question rather than on startup.  Set
+    # warm_index (or ONIT_WARM_INDEX=1) to move it back to startup, where a
+    # deployment can wait for it before taking traffic.
+    warm = options.get('warm_index')
+    if warm is None:
+        warm = os.environ.get('ONIT_WARM_INDEX') == '1'
+    if warm:
+        logger.info("Warming the local_search index before serving...")
+    rebuild_indexes(background=not warm)
 
     logger.info(f"Starting Local Search MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")

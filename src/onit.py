@@ -114,6 +114,43 @@ def friendly_tool_status(name: str, data) -> str:
     return f"{name}: {line}"
 
 
+# Arguments worth naming in a status line, in the order they are looked for.
+# "Reading scholarship-policy.pdf" is a different wait from "Running
+# read_file…": one reads as progress, the other as a stall.
+_STATUS_ARG_KEYS = ("query", "path", "file", "file_path", "url", "command")
+
+_TOOL_VERBS = {
+    "read_file": "Reading", "search_document": "Reading",
+    "get_document_context": "Reading", "extract_tables": "Reading",
+    "local_search": "Searching documents for", "search": "Searching the web for",
+    "fetch_content": "Fetching", "grep": "Searching for",
+    "find_files": "Looking for", "search_directory": "Looking for",
+    "write_file": "Writing", "edit_file": "Editing", "bash": "Running",
+}
+
+
+def tool_status_text(name: str, arguments: dict | None) -> str:
+    """One line describing what a tool is doing right now.
+
+    Falls back to the tool's own name when nothing in the arguments is worth
+    showing, so an unrecognized tool still reports that it is running.
+    """
+    verb = _TOOL_VERBS.get(name)
+    subject = ""
+    for key in _STATUS_ARG_KEYS:
+        value = (arguments or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            subject = value.strip()
+            if key in ("path", "file", "file_path"):
+                subject = os.path.basename(subject.rstrip("/")) or subject
+            break
+    if not subject:
+        return f"Running {name}…"
+    if len(subject) > 60:
+        subject = subject[:59] + "…"
+    return f"{verb or 'Running ' + name} {subject}…" if verb else f"{name}: {subject}…"
+
+
 class StreamingAdapter:
     """Minimal chat_ui adapter that forwards streaming tokens to a callback.
 
@@ -123,13 +160,22 @@ class StreamingAdapter:
     """
 
     def __init__(self, on_token=None, on_complete=None, show_logs=False,
-                 throttle_tokens=0, on_tool_status=None, on_tool_result=None):
+                 throttle_tokens=0, on_tool_status=None, on_tool_result=None,
+                 on_answer_start=None):
         self.on_token = on_token
         self.on_complete = on_complete
         self.show_logs = show_logs
         self._throttle_tokens = throttle_tokens
         self._on_tool_status = on_tool_status
         self._on_tool_result = on_tool_result
+        self._on_answer_start = on_answer_start
+        # Set by the chat loop before each turn; the answer is the prose that
+        # starts once tools have run, and the client wants to know which of
+        # several streamed phases that is.
+        self._tools_run = 0
+        self._answer_announced = False
+        self._batch_total = 0
+        self._batch_done = 0
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
@@ -144,7 +190,12 @@ class StreamingAdapter:
         self._tag_buf = ""
         self._token_count = 0
         self._total_tokens = 0
+        self._answer_announced = False
         self._start_time = time.monotonic()
+
+    def set_turn_context(self, tools_run: int = 0) -> None:
+        """Told by the chat loop, before each turn, how much work preceded it."""
+        self._tools_run = tools_run
 
     def stream_token(self, token):
         # Strip <answer></answer> wrapper tags
@@ -160,6 +211,15 @@ class StreamingAdapter:
         self._total_tokens += 1
         if not (self.on_token and token):
             return
+        if not self._answer_announced and self._tools_run:
+            # Prose after the tools have run: the model has stopped gathering
+            # and started writing.  Announced once per stream — a phase that
+            # turns out to end in another tool call is corrected by the next
+            # announcement, which is the same correction the UI already makes
+            # when a phase ends.
+            self._answer_announced = True
+            if self._on_answer_start:
+                self._on_answer_start()
         self._token_count += 1
         # Throttle: skip intermediate tokens when configured
         if self._throttle_tokens and (self._token_count % self._throttle_tokens != 0):
@@ -210,17 +270,38 @@ class StreamingAdapter:
         if self.show_logs:
             print(f"{name}({arguments})")
 
-    def start_tool_spinner(self, name, arguments):
+    def start_tool_batch(self, names):
+        """Several read-only tools are about to run at once."""
+        self._batch_total = len(names)
+        self._batch_done = 0
         if self._on_tool_status:
-            self._on_tool_status(f"Running {name}…")
+            self._on_tool_status(f"Running {len(names)} tools together…")
+
+    def end_tool_batch(self):
+        self._batch_total = 0
+        self._batch_done = 0
+        if self._on_tool_status:
+            self._on_tool_status("")
+
+    def start_tool_spinner(self, name, arguments):
+        if self._on_tool_status and not self._batch_total:
+            self._on_tool_status(tool_status_text(name, arguments))
 
     def stop_tool_spinner(self):
-        if self._on_tool_status:
+        # Inside a batch the calls finish in any order, so one of them going
+        # quiet says nothing about the others; the batch counter reports
+        # instead, and clearing here would only flicker.
+        if self._on_tool_status and not self._batch_total:
             self._on_tool_status("")
 
     def show_tool_done(self, name, result, success=True):
         if self._on_tool_status:
-            self._on_tool_status("")
+            if self._batch_total:
+                self._batch_done += 1
+                self._on_tool_status(
+                    f"{self._batch_done} of {self._batch_total} tools done…")
+            else:
+                self._on_tool_status("")
         if self.show_logs:
             truncated = result[:500] + "..." if len(result) > 500 else result
             print(f"{name} returned: {truncated}")
@@ -501,6 +582,13 @@ class OnIt(BaseModel):
     template_path: str | None = Field(default=None)
     topic: str | None = Field(default=None)
     prompt_intro: str | None = Field(default=None)
+    # How many documents a research answer may open. Each one is a tool round
+    # trip whose result then rides along in every later prompt, so this is the
+    # dial between recall and how long an answer takes to arrive.
+    max_documents: int = Field(default=4)
+    # Prior task/response pairs replayed into each request. They are re-sent
+    # every turn, so a long tail costs prompt tokens on all of them.
+    history_turns: int = Field(default=10)
     timeout: int | None = Field(default=None)
     show_logs: bool = Field(default=False)
     stream: bool = Field(default=True)
@@ -813,6 +901,8 @@ class OnIt(BaseModel):
         self.template_path = self.config_data.get('template_path', None)
         self.topic = self.config_data.get('topic', None)
         self.prompt_intro = self.config_data.get('prompt_intro', None)
+        self.max_documents = int(self.config_data.get('max_documents', 4))
+        self.history_turns = int(self.config_data.get('history_turns', 10))
         self.timeout = self.config_data.get('timeout', None)  # default timeout 300 seconds
         if self.timeout is not None and self.timeout < 0:
             self.timeout = None  # no timeout
@@ -845,16 +935,21 @@ class OnIt(BaseModel):
         self.viber_webhook_url = self.config_data.get('viber_webhook_url', None)
         self.viber_port = self.config_data.get('viber_port', 8443)
         self.sandbox = self.config_data.get('sandbox', False)
-    def load_session_history(self, max_turns: int = 20, session_path: str | None = None) -> list[dict]:
+    def load_session_history(self, max_turns: int | None = None, session_path: str | None = None) -> list[dict]:
         """Load recent session history from the JSONL session file.
 
         Args:
             max_turns: Maximum number of recent task/response pairs to return.
+                Defaults to the configured ``history_turns``. Every pair is
+                replayed in full on every request, so the depth is a running
+                cost on each turn of every task, not a one-off.
             session_path: Optional override path to the session file.
 
         Returns:
             A list of dicts with 'task' and 'response' keys, oldest first.
         """
+        if max_turns is None:
+            max_turns = self.history_turns
         effective_path = session_path or self.session_path
         history = []
         try:
@@ -910,6 +1005,7 @@ class OnIt(BaseModel):
                            stats: dict | None = None,
                            tool_status_callback=None,
                            tool_result_callback=None,
+                           answer_start_callback=None,
                            session_id: str | None = None) -> str:
         """Process a single task and return the response string.
 
@@ -931,6 +1027,9 @@ class OnIt(BaseModel):
             tool_result_callback: Optional callback ``(tool_name, result) -> None``
                 called with each tool's raw output, letting callers treat it as
                 sourced material (the web UI verifies emails against it).
+            answer_start_callback: Optional callback ``() -> None`` fired when
+                the model starts writing prose after its tools have run — the
+                moment the answer begins, as opposed to the moment the run ends.
         """
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
         effective_session_path = session_path or self.session_path
@@ -957,6 +1056,7 @@ class OnIt(BaseModel):
                 "web_search_available": self.web_search_available,
                 "agent_name": self.agent_name,
                 "developer": self.developer,
+                "max_documents": self.max_documents,
             })
             instruction = instruction.messages[0].content.text
         _instruction_s = time.monotonic() - _instruction_start
@@ -971,6 +1071,7 @@ class OnIt(BaseModel):
                 throttle_tokens=stream_throttle,
                 on_tool_status=tool_status_callback,
                 on_tool_result=tool_result_callback,
+                on_answer_start=answer_start_callback,
             )
 
         effective_session_id = session_id or self.session_id
@@ -987,6 +1088,7 @@ class OnIt(BaseModel):
             'max_context_tokens': self.model_serving.get('max_context_tokens', None),
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
+            'think_tool_turns': self.model_serving.get('think_tool_turns', True),
         }
         for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
             if _k in self.model_serving:
@@ -1108,7 +1210,8 @@ class OnIt(BaseModel):
                                                                                 "document_search_available": self.document_search_available,
                                                                                 "web_search_available": self.web_search_available,
                                                                                 "agent_name": self.agent_name,
-                                                                                "developer": self.developer})
+                                                                                "developer": self.developer,
+                                                                                "max_documents": self.max_documents})
                     instruction = instruction.messages[0]
                     instruction = instruction.content.text
 
@@ -1122,7 +1225,8 @@ class OnIt(BaseModel):
                           'session_id': self.session_id,
                           'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
-                          'session_history': self.load_session_history()}
+                          'session_history': self.load_session_history(),
+                          'think_tool_turns': self.model_serving.get('think_tool_turns', True)}
                 for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]
@@ -1336,7 +1440,8 @@ class OnIt(BaseModel):
                                                                         "document_search_available": self.document_search_available,
                                                                         "web_search_available": self.web_search_available,
                                                                         "agent_name": self.agent_name,
-                                                                        "developer": self.developer})
+                                                                        "developer": self.developer,
+                                                                                "max_documents": self.max_documents})
             instruction = instruction.messages[0]
             instruction = instruction.content.text
         return instruction
@@ -1602,7 +1707,8 @@ class OnIt(BaseModel):
                           'max_tokens': self.model_serving.get('max_tokens', 32768),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history(),
-                          'stream': self.stream}
+                          'stream': self.stream,
+                          'think_tool_turns': self.model_serving.get('think_tool_turns', True)}
                 for _k in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'num_ctx'):
                     if _k in self.model_serving:
                         kwargs[_k] = self.model_serving[_k]

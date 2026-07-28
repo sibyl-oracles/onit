@@ -179,3 +179,91 @@ class TestResearchHierarchy:
         section = result[result.index("## Research and Citations"):]
         assert section.index("`local_search`") < section.index("`search_document`")
         assert "Search the web" not in section
+
+
+class TestPromptShape:
+    """What the prompt costs to send, as opposed to what it says."""
+
+    @pytest.mark.asyncio
+    async def test_task_comes_last(self, tmp_path):
+        """Everything ahead of the task is identical between tasks, so a
+        server with prefix caching prefills it once instead of per request."""
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            web_search_available=True,
+        )
+        assert result.rstrip().endswith("what scholarships exist")
+        assert result.index("## Instructions") < result.index("## Task")
+
+    @pytest.mark.asyncio
+    async def test_preamble_is_identical_across_tasks(self, tmp_path):
+        dp = str(tmp_path / "data")
+        kwargs = dict(data_path=dp, local_search_available=True,
+                      web_search_available=True)
+        a = await _assistant_fn(task="what scholarships exist", **kwargs)
+        b = await _assistant_fn(task="who runs admissions", **kwargs)
+        assert a[:a.index("## Task")] == b[:b.index("## Task")]
+
+    @pytest.mark.asyncio
+    async def test_custom_template_still_places_the_task_itself(self, tmp_path):
+        """A template that interpolates {task} decides where the task goes —
+        it gives up the shared preamble, it does not get the task twice."""
+        template = tmp_path / "t.yaml"
+        template.write_text('instruction_template: "Do {task} now."')
+        result = await _assistant_fn(
+            task="my task", data_path=str(tmp_path / "data"),
+            template_path=str(template),
+        )
+        assert "Do my task now." in result
+        assert result.count("my task") == 1
+        assert "## Task" not in result
+
+
+class TestResearchFanOut:
+    @pytest.mark.asyncio
+    async def test_document_budget_is_stated(self, tmp_path):
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            document_search_available=True,
+            web_search_available=True,
+            max_documents=2,
+        )
+        section = result[result.index("## Research and Citations"):]
+        assert "at most 2 of them" in section
+
+    @pytest.mark.asyncio
+    async def test_openings_are_read_before_documents_are_opened(self, tmp_path):
+        """Opening a document is a round trip; the opening comes back with the
+        search for free, so it is judged first."""
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            document_search_available=True,
+            web_search_available=True,
+        )
+        section = result[result.index("## Research and Citations"):]
+        assert "`documents`" in section
+        assert "opening" in section
+
+    @pytest.mark.asyncio
+    async def test_batching_is_asked_for(self, tmp_path):
+        """Calls sent together run together; one per reply runs them serially."""
+        result = await _assistant_fn(
+            task="what scholarships exist",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+        )
+        assert "in one reply" in result
+
+    @pytest.mark.asyncio
+    async def test_a_bad_budget_falls_back_instead_of_raising(self, tmp_path):
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "data"),
+            local_search_available=True, max_documents="null",
+        )
+        assert "at most 4" in result

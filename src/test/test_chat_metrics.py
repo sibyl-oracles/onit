@@ -4,6 +4,7 @@ plus the vLLM prefix-cache probe in model/serving/diagnostics.py."""
 import asyncio
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,9 +12,13 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from model.serving.chat import (
+    _DECAY_MARKER,
+    TOOL_RESULT_DECAY_CHARS,
     TurnMetrics,
     _autodetect_fallback_model,
+    _decay_old_tool_results,
     _get_model_max_context,
+    _handle_structured_tool_calls,
     _resolve_model_id,
     chat,
     reset_endpoint_caches,
@@ -298,6 +303,49 @@ class TestFirstTokenHook:
         assert calls == []
 
 
+# ── reasoning budget across turns ───────────────────────────────────────────
+
+class TestThinkToolTurns:
+    async def _run(self, think_tool_turns):
+        """Two turns: a tool call, then the answer.  Returns the per-request
+        chat_template_kwargs the model was sent."""
+        tc = _mock_tool_call()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion("The answer."),
+        ])
+        registry = MagicMock()
+        registry.tools = {"local_search"}
+        registry.get_tool_items.return_value = [{"type": "function"}]
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="qwen3-30b"), \
+             patch("model.serving.chat._handle_structured_tool_calls",
+                   new_callable=AsyncMock, return_value=None):
+            await chat(
+                host="http://localhost:8000/v1", instruction="q",
+                tool_registry=registry, safety_queue=asyncio.Queue(),
+                think=True, think_tool_turns=think_tool_turns,
+            )
+        return [call.kwargs["extra_body"].get("chat_template_kwargs")
+                for call in mock_client.chat.completions.create.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_thinking_on_every_turn_by_default(self):
+        sent = await self._run(think_tool_turns=True)
+        assert all(kw and kw["enable_thinking"] for kw in sent)
+
+    @pytest.mark.asyncio
+    async def test_thinking_kept_for_the_opening_turn_only(self):
+        """The reasoning that decides the approach is worth paying for once;
+        repeating it before every tool-call JSON is what costs the loop."""
+        sent = await self._run(think_tool_turns=False)
+        assert sent[0]["enable_thinking"] is True
+        assert sent[1] is None
+
+
 # ── endpoint metadata caching ───────────────────────────────────────────────
 
 class TestEndpointCaches:
@@ -383,6 +431,193 @@ class TestEndpointCaches:
 
             assert await _get_model_max_context("http://h/v1", "EMPTY", "m") is None
             assert http.get.await_count == 2
+
+
+# ── parallel tool batches ───────────────────────────────────────────────────
+
+def _tool(name, args='{}', call_id=None):
+    tc = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = args
+    tc.id = call_id or f"call_{name}"
+    return tc
+
+
+class TestParallelToolCalls:
+    """A batch of reads is only as slow as its slowest call, but the results
+    must still line up with the ids the model asked for."""
+
+    def _registry(self, names, delay=0.0, order=None):
+        def _handler_for(name):
+            async def _handler(log_handler=None, **kwargs):
+                if delay:
+                    await asyncio.sleep(delay)
+                if order is not None:
+                    order.append(name)
+                return f"result of {name}"
+            return _handler
+
+        reg = MagicMock()
+        reg.tools = set(names)
+        reg.tool_accepts_param.return_value = False
+        reg.__getitem__ = lambda _self, key: _handler_for(key)
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_read_only_batch_runs_concurrently(self):
+        calls = [_tool("read_file", '{"path": "/a"}', "c1"),
+                 _tool("read_file", '{"path": "/b"}', "c2"),
+                 _tool("search_document", '{"query": "x"}', "c3")]
+        registry = self._registry({"read_file", "search_document"}, delay=0.05)
+        messages: list = []
+
+        started = time.monotonic()
+        bail = await _handle_structured_tool_calls(
+            calls, {"role": "assistant"}, registry, None, "", None, False,
+            messages, [], 30, asyncio.Queue(), session_id="s",
+        )
+        elapsed = time.monotonic() - started
+
+        assert bail is None
+        # Serial would be ~0.15s; concurrent is ~0.05s.
+        assert elapsed < 0.12
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
+
+    @pytest.mark.asyncio
+    async def test_results_keep_call_order_not_completion_order(self):
+        """The API pairs tool messages to tool_call ids by position, so a fast
+        second call must not overtake a slow first one."""
+        slow_first = [_tool("read_file", '{"path": "/slow"}', "c1"),
+                      _tool("read_file", '{"path": "/fast"}', "c2")]
+
+        async def _handler(log_handler=None, path=None, **kwargs):
+            await asyncio.sleep(0.05 if path == "/slow" else 0.0)
+            return f"content of {path}"
+
+        registry = MagicMock()
+        registry.tools = {"read_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        messages: list = []
+        await _handle_structured_tool_calls(
+            slow_first, {"role": "assistant"}, registry, None, "", None, False,
+            messages, [], 30, asyncio.Queue(), session_id="s",
+        )
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"]
+        assert "slow" in tool_msgs[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_writes_stay_sequential(self):
+        """A batch that writes is a script, and a script has an order."""
+        order: list = []
+
+        async def _handler(log_handler=None, **kwargs):
+            name = kwargs.get("path", "?")
+            await asyncio.sleep(0.02 if name == "/first" else 0.0)
+            order.append(name)
+            return "written"
+
+        registry = MagicMock()
+        registry.tools = {"write_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        calls = [_tool("write_file", '{"path": "/first"}', "c1"),
+                 _tool("write_file", '{"path": "/second"}', "c2")]
+        await _handle_structured_tool_calls(
+            calls, {"role": "assistant"}, registry, None, "", None, False,
+            [], [], 30, asyncio.Queue(), session_id="s",
+        )
+        assert order == ["/first", "/second"]
+
+    @pytest.mark.asyncio
+    async def test_a_single_call_is_unaffected(self):
+        registry = MagicMock()
+        registry.tools = {"read_file"}
+        registry.tool_accepts_param.return_value = False
+
+        async def _handler(log_handler=None, **kwargs):
+            return "one result"
+        registry.__getitem__ = lambda _self, key: _handler
+
+        messages: list = []
+        await _handle_structured_tool_calls(
+            [_tool("read_file", '{"path": "/a"}', "c1")], {"role": "assistant"},
+            registry, None, "", None, False, messages, [], 30,
+            asyncio.Queue(), session_id="s",
+        )
+        assert [m["tool_call_id"] for m in messages if m.get("role") == "tool"] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_every_call_is_answered_even_when_one_fails(self):
+        """A tool_call id with no tool message gets the next request rejected."""
+        async def _handler(log_handler=None, path=None, **kwargs):
+            if path == "/bad":
+                raise RuntimeError("exploded")
+            return "fine"
+
+        registry = MagicMock()
+        registry.tools = {"read_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        messages: list = []
+        await _handle_structured_tool_calls(
+            [_tool("read_file", '{"path": "/bad"}', "c1"),
+             _tool("read_file", '{"path": "/ok"}', "c2")],
+            {"role": "assistant"}, registry, None, "", None, False,
+            messages, [], 30, asyncio.Queue(), session_id="s",
+        )
+        ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+        assert ids == ["c1", "c2"]
+
+
+# ── tool-result decay ───────────────────────────────────────────────────────
+
+class TestToolResultDecay:
+    def _tool_msg(self, text):
+        return {"role": "tool", "content": text, "name": "read_file",
+                "tool_call_id": "c"}
+
+    def test_recent_results_are_untouched(self):
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [{"role": "user", "content": "hi"}] + \
+                   [self._tool_msg(big) for _ in range(3)]
+        _decay_old_tool_results(messages, keep_full=3)
+        assert all(m["content"] == big for m in messages[1:])
+
+    def test_older_results_are_cut_to_their_opening(self):
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [self._tool_msg(big) for _ in range(5)]
+        _decay_old_tool_results(messages, keep_full=2)
+        assert all(m["content"].endswith(_DECAY_MARKER) for m in messages[:3])
+        assert all(m["content"] == big for m in messages[3:])
+
+    def test_short_results_are_left_alone(self):
+        messages = [self._tool_msg("brief"), self._tool_msg("also brief"),
+                    self._tool_msg("third")]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert [m["content"] for m in messages] == ["brief", "also brief", "third"]
+
+    def test_decay_is_idempotent(self):
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [self._tool_msg(big), self._tool_msg(big), self._tool_msg(big)]
+        _decay_old_tool_results(messages, keep_full=1)
+        once = messages[0]["content"]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert messages[0]["content"] == once
+
+    def test_image_results_are_left_to_the_image_stripper(self):
+        """Their content is a list of parts, not text to slice."""
+        parts = [{"type": "text", "text": "y" * 9000},
+                 {"type": "image_url", "image_url": {"url": "data:..."}}]
+        messages = [{"role": "tool", "content": parts, "tool_call_id": "c"},
+                    self._tool_msg("z" * 9000), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert messages[0]["content"] is parts
 
 
 # ── prefix-cache probe ──────────────────────────────────────────────────────

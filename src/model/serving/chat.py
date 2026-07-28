@@ -694,6 +694,45 @@ def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str |
     return json.dumps(data), image_b64, mime_type if image_b64 else None
 
 
+# Tool results kept at full length; older ones are trimmed to their opening.
+TOOL_RESULT_KEEP_FULL = 3
+TOOL_RESULT_DECAY_CHARS = 1500
+_DECAY_MARKER = "… [trimmed: older tool result, call the tool again for the rest]"
+
+
+def _decay_old_tool_results(messages: list,
+                            keep_full: int = TOOL_RESULT_KEEP_FULL,
+                            head_chars: int = TOOL_RESULT_DECAY_CHARS) -> None:
+    """Trim tool results the conversation has moved past.
+
+    Each result may be up to MAX_TOOL_RESPONSE characters, and every one of
+    them is re-sent on every later turn: a research loop that opens six
+    documents pays for all six on each subsequent request, so the prompt grows
+    quadratically in the number of tool calls while the answer is still being
+    assembled.
+
+    Only the most recent results are working memory. Older ones are cut to
+    their opening, which is enough to remember what was consulted and what it
+    was about, and the marker tells the model the rest is retrievable rather
+    than gone.
+
+    This is deliberately cheaper than compaction, which only fires near the
+    context ceiling and costs a whole extra LLM call when it does. Trimming
+    here is meant to keep the conversation from reaching that ceiling at all.
+    """
+    tool_indices = [
+        i for i, msg in enumerate(messages)
+        if isinstance(msg, dict) and msg.get("role") == "tool"
+        and isinstance(msg.get("content"), str)
+    ]
+    for i in tool_indices[:-keep_full] if keep_full else tool_indices:
+        content = messages[i]["content"]
+        if len(content) <= head_chars or content.endswith(_DECAY_MARKER):
+            continue
+        messages[i] = {**messages[i],
+                       "content": content[:head_chars].rstrip() + "\n\n" + _DECAY_MARKER}
+
+
 def _strip_old_images(messages: list) -> None:
     """Replace base64 image payloads in stale tool messages with a short placeholder.
 
@@ -1430,6 +1469,98 @@ async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float
         raise
 
 
+# Tools that only read.  A batch of these can run at once: none of them can
+# observe another's effect, so the messages they produce are the same whatever
+# order the calls finish in.  Everything else — writing a file, running a
+# command, driving a sandbox — stays sequential, because a batch of those is a
+# script, and a script has an order.
+_READ_ONLY_TOOLS = frozenset({
+    "local_search", "search_document", "get_document_context",
+    "read_file", "grep", "find_files", "search_directory",
+    "search", "fetch_content", "extract_tables", "extract_pdf_images",
+    "get_weather",
+})
+
+
+def _parse_tool_arguments(tool, verbose: bool) -> dict:
+    """Read a structured tool call's arguments, repairing sloppy JSON."""
+    try:
+        return json.loads(tool.function.arguments)
+    except json.JSONDecodeError:
+        # Try fixing common issues: single quotes, trailing commas
+        fixed = tool.function.arguments.strip()
+        # Replace single quotes with double quotes
+        fixed = fixed.replace("'", '"')
+        # Remove trailing commas before closing braces/brackets
+        fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError as e:
+            if verbose:
+                print(f"Failed to parse tool arguments for {tool.function.name}: {e}")
+                print(f"Raw arguments: {tool.function.arguments}")
+            return {}
+
+
+async def _execute_tools_in_parallel(
+    calls: list, tool_registry, timeout, data_path, chat_ui, verbose: bool,
+    messages: list, tool_call_history: list, max_repeated: int,
+    safety_queue: asyncio.Queue, session_id: str,
+) -> str | object | None:
+    """Run a batch of read-only tool calls concurrently.
+
+    A model that asks for six documents in one turn was made to wait for the
+    sum of six round trips, when the turn is only as useful as its slowest
+    call.  Reading documents is the case that matters: the research prompt
+    asks for several at once, and they are all network round trips to the same
+    MCP server, idle while each other waits.
+
+    Each call writes into its own buffer and the buffers are drained in call
+    order, because the API requires one tool message per tool_call id in the
+    order the assistant asked for them — completion order is not that order.
+    """
+    buffers: list = [[] for _ in calls]
+    if chat_ui and hasattr(chat_ui, "start_tool_batch"):
+        chat_ui.start_tool_batch([name for name, _, _ in calls])
+
+    async def _run(index: int, name: str, args: dict, call_id: str):
+        return await _execute_tool(
+            name, args, call_id, tool_registry, timeout, data_path,
+            chat_ui, verbose, buffers[index], tool_call_history,
+            max_repeated, is_structured=True, session_id=session_id,
+        )
+
+    gathered = _await_with_safety(
+        asyncio.gather(*(_run(i, name, args, call_id)
+                         for i, (name, args, call_id) in enumerate(calls)),
+                       return_exceptions=True),
+        safety_queue,
+    )
+    results = await gathered
+    if results is _SAFETY_ABORT:
+        if chat_ui and hasattr(chat_ui, "end_tool_batch"):
+            chat_ui.end_tool_batch()
+        return _SAFETY_ABORT
+
+    bail = None
+    for (name, args, call_id), buffer, result in zip(calls, buffers, results):
+        if not buffer:
+            # _execute_tool answers every call, including failures, so an empty
+            # buffer means it did not run at all (cancelled, or raised before
+            # appending).  The id still needs an answer or the next request is
+            # rejected for having a tool_call nothing replied to.
+            reason = result if isinstance(result, BaseException) else "no result"
+            buffer.append({'role': 'tool', 'content': f'Error: {reason}',
+                           'name': name, 'parameters': args,
+                           "tool_call_id": call_id})
+        messages.extend(buffer)
+        if bail is None and isinstance(result, str):
+            bail = result
+    if chat_ui and hasattr(chat_ui, "end_tool_batch"):
+        chat_ui.end_tool_batch()
+    return bail
+
+
 async def _handle_structured_tool_calls(
     tool_calls: list, message_for_history, tool_registry,
     timeout, data_path, chat_ui, verbose: bool,
@@ -1439,38 +1570,32 @@ async def _handle_structured_tool_calls(
 ) -> str | object | None:
     """Execute structured tool calls and append results to messages.
 
+    A batch of read-only calls runs concurrently; anything else runs in the
+    order the model asked for it.
+
     Returns:
       - A bail-out message string if a repeated-call limit is hit.
       - _SAFETY_ABORT sentinel if the safety queue fired.
       - None when all tools completed normally.
     """
     messages.append(message_for_history)
-    for tool in tool_calls:
+    calls = [(tool.function.name, _parse_tool_arguments(tool, verbose), tool.id)
+             for tool in tool_calls]
+
+    if len(calls) > 1 and all(name in _READ_ONLY_TOOLS for name, _, _ in calls):
+        return await _execute_tools_in_parallel(
+            calls, tool_registry, timeout, data_path, chat_ui, verbose,
+            messages, tool_call_history, max_repeated, safety_queue, session_id,
+        )
+
+    for function_name, function_arguments, call_id in calls:
         await asyncio.sleep(0.1)
         if not safety_queue.empty():
             if verbose:
                 print("Safety queue triggered, exiting chat loop.")
             return _SAFETY_ABORT
-        function_name = tool.function.name
-        try:
-            function_arguments = json.loads(tool.function.arguments)
-        except json.JSONDecodeError:
-            # Try fixing common issues: single quotes, trailing commas
-            import re
-            fixed = tool.function.arguments.strip()
-            # Replace single quotes with double quotes
-            fixed = fixed.replace("'", '"')
-            # Remove trailing commas before closing braces/brackets
-            fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-            try:
-                function_arguments = json.loads(fixed)
-            except json.JSONDecodeError as e:
-                if verbose:
-                    print(f"Failed to parse tool arguments for {function_name}: {e}")
-                    print(f"Raw arguments: {tool.function.arguments}")
-                function_arguments = {}
         bail = await _execute_tool(
-            function_name, function_arguments, tool.id,
+            function_name, function_arguments, call_id,
             tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated,
             is_structured=True, session_id=session_id,
@@ -1628,6 +1753,15 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     _metrics_sink = kwargs.get('metrics', None)
     _m = TurnMetrics(_metrics_sink) if _metrics_sink is not None else None
+    # Whether thinking, when enabled, is also spent on the turns that only
+    # pick a tool.  A thinking model emits its full reasoning before every
+    # tool-call JSON, so in a loop of N tool calls the reasoning is paid for N
+    # times to produce N pieces of JSON.  Turning this off keeps thinking for
+    # the opening turn — where the approach is actually decided — and drops it
+    # for the rest of the loop, the final answer included.  That last part is
+    # the cost: it is a trade of answer deliberation for latency, which is why
+    # it is opt-in.
+    think_tool_turns = kwargs.get('think_tool_turns', True)
 
     images_bytes = _load_images(images, chat_ui, verbose)
     messages = _build_messages(instruction, images_bytes, prompt_intro,
@@ -1776,12 +1910,21 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _last_prompt_tokens = 0
 
         _strip_old_images(messages)
+        _decay_old_tool_results(messages)
+        if chat_ui and hasattr(chat_ui, "set_turn_context"):
+            # Prose written on a turn that follows tool calls is the answer
+            # being written; the UI shows it as such rather than as one more
+            # indistinguishable phase.
+            chat_ui.set_turn_context(tools_run=len(tool_call_history))
 
         # Track streaming state across the try block for the final-response path
         _full_content = ""
         _full_reasoning = ""
         _finish_reason: str | None = None
         _completion_tokens = 0  # set from usage where the provider reports it
+        # Reasoning on the opening turn is the plan; on later turns it is spent
+        # deciding which tool to call next.  See think_tool_turns.
+        _turn_think = think and (think_tool_turns or iteration_count == 1)
 
         # Pre-call compaction: _last_prompt_tokens is from the previous API call and may
         # underestimate the true prompt size after large tool results were appended.
@@ -1839,7 +1982,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             "repeat_penalty": repetition_penalty,
                         },
                     )
-                    if think:
+                    if _turn_think:
                         ollama_kwargs["think"] = True
                     if tools:
                         ollama_kwargs["tools"] = tools
@@ -1861,7 +2004,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         "presence_penalty": presence_penalty,
                         "repetition_penalty": repetition_penalty,
                     }
-                    if think:
+                    if _turn_think:
                         _chat_template_kwargs: dict = {"enable_thinking": True}
                         # preserve_thinking is only supported on Qwen3.6+
                         _model_lower = model.lower()
@@ -1900,7 +2043,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if stream:
                     if is_ollama:
                         stream_result = await _ollama_process_streaming_response(
-                            chat_completion, safety_queue, chat_ui, think,
+                            chat_completion, safety_queue, chat_ui, _turn_think,
                             on_first_token=_m.first_token if _m else None,
                         )
                         if stream_result is None:
@@ -1939,7 +2082,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             _message_for_history = {"role": "assistant", "content": _full_content}
                     else:
                         stream_result = await _process_streaming_response(
-                            chat_completion, safety_queue, chat_ui, think,
+                            chat_completion, safety_queue, chat_ui, _turn_think,
                             on_first_token=_m.first_token if _m else None,
                         )
                         if stream_result is None:
