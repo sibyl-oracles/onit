@@ -173,6 +173,40 @@ def _link_shape_ok(url: str) -> bool:
     return not _PRIVATE_HOST_RE.match(host)
 
 
+# ── Email verification ──────────────────────────────────────────────────────
+# Email addresses can't be probed the way URLs can (no protocol to speak, and
+# SMTP verification is unreliable and looks like harvesting). Instead an
+# address counts as verified when it is *grounded*: it appeared verbatim in
+# something the model did not invent — a tool result (web search hits,
+# document/file reads), an uploaded file, or the user's own message. Anything
+# the model produced without that backing renders struck through, like a
+# hallucinated URL.
+_EMAIL_RE = re.compile(
+    r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}'
+)
+_EMAIL_SOURCE_MAX = 2000       # addresses remembered per session
+_EMAIL_SCAN_MAX_BYTES = 2 << 20  # per-file cap when scanning uploads
+
+
+def _emails_in(text: str) -> set[str]:
+    """Every syntactically valid address in *text*, lowercased.
+
+    Case is dropped because the local part's case-sensitivity is theoretical:
+    matching a document's "Rowel@Sibyl.ai" against the model's "rowel@sibyl.ai"
+    matters more than honouring a distinction no real mail host makes.
+    """
+    if not text:
+        return set()
+    return {m.group(0).lower() for m in _EMAIL_RE.finditer(text)}
+
+
+def _email_of(mailto_url: str) -> str:
+    """Bare address from a mailto: URL, minus any ?subject=… parameters."""
+    rest = mailto_url.split(":", 1)[1] if ":" in mailto_url else mailto_url
+    rest = rest.split("?", 1)[0]
+    return urllib.parse.unquote(rest).strip().lower()
+
+
 def _sse(event: str, payload: dict) -> str:
     """Format one server-sent event."""
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -242,6 +276,10 @@ class ApiSession:
     processing: bool = False
     safety_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=10))
     created: datetime = field(default_factory=datetime.now)
+    # Addresses seen in grounded sources for this session (see _emails_in).
+    # Session-scoped on purpose: one chat's search results say nothing about
+    # what another chat's model output invented.
+    sourced_emails: set = field(default_factory=set)
 
 
 class WebApiUI:
@@ -412,6 +450,7 @@ class WebApiUI:
         # land where /uploads/{sid}/ serves them (matches the messaging UIs).
         session.data_path = os.path.join(self.data_path, session.session_id)
         os.makedirs(session.data_path, exist_ok=True)
+        self._load_sourced_emails(session)
 
         self._web_sessions[session.session_id] = session
         logger.info("Web session %s ready", session.session_id)
@@ -613,6 +652,74 @@ class WebApiUI:
         except requests.RequestException:
             return False
 
+    # ------------------------------------------------------------------
+    # Email verification (provenance, not probing)
+    # ------------------------------------------------------------------
+
+    def _email_store_path(self, session: ApiSession) -> str:
+        """Sidecar holding the session's grounded addresses.
+
+        Kept out of the JSONL: that file is turn records, and _turn_count_from_jsonl
+        counts every line, so extra entries would inflate the sidebar's turn count.
+        """
+        return os.path.join(self._sessions_dir(), f"{session.session_id}.emails.json")
+
+    def _load_sourced_emails(self, session: ApiSession) -> None:
+        """Restore grounded addresses so a page reload doesn't strike through
+        addresses a previous run already verified."""
+        try:
+            with open(self._email_store_path(session), "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, list):
+                session.sourced_emails = {str(e).lower() for e in stored}
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+
+    def _save_sourced_emails(self, session: ApiSession) -> None:
+        try:
+            with open(self._email_store_path(session), "w", encoding="utf-8") as f:
+                json.dump(sorted(session.sourced_emails), f)
+        except OSError:
+            pass
+
+    def _record_email_sources(self, session: ApiSession, text: str) -> None:
+        """Mark every address in *text* as grounded for this session.
+
+        Callers pass text the model did not author: tool results, uploaded file
+        contents, the user's own message.
+        """
+        found = _emails_in(text)
+        if not found:
+            return
+        new = found - session.sourced_emails
+        if not new:
+            return
+        if len(session.sourced_emails) >= _EMAIL_SOURCE_MAX:
+            return
+        session.sourced_emails |= set(list(new)[:_EMAIL_SOURCE_MAX - len(session.sourced_emails)])
+        self._save_sourced_emails(session)
+
+    def _scan_upload_for_emails(self, session: ApiSession, content: bytes) -> None:
+        """Harvest addresses from an uploaded file's text.
+
+        Best effort by design: plain text, CSV, Markdown and HTML decode
+        cleanly, while addresses inside compressed containers (PDF, docx) stay
+        invisible here — those surface later through the tool result when the
+        agent actually reads the document.
+        """
+        try:
+            text = content[:_EMAIL_SCAN_MAX_BYTES].decode("utf-8", errors="ignore")
+        except Exception:
+            return
+        self._record_email_sources(session, text)
+
+    def _verify_email(self, session: ApiSession, mailto_url: str) -> bool:
+        """A mailto: link is clickable only when its address is grounded."""
+        addr = _email_of(mailto_url)
+        if not addr or not _EMAIL_RE.fullmatch(addr):
+            return False
+        return addr in session.sourced_emails
+
     def _verify_link(self, url: str) -> bool:
         """Verdict for one URL: structural screen, then cached network probe."""
         if not _link_shape_ok(url):
@@ -649,6 +756,16 @@ class WebApiUI:
             def _on_tool_status(text):
                 events.put_nowait(("status", {"text": text or ""}))
 
+            def _on_tool_result(_name, result):
+                # Tool output is source material, not model invention: web
+                # search hits, document reads, file listings. Any address in
+                # it is grounded for this session.
+                self._record_email_sources(session, result or "")
+
+            # The user's own message counts too — an address they typed is
+            # by definition not something the model made up.
+            self._record_email_sources(session, task)
+
             stats: dict = {}
             start = time.monotonic()
             response = await self._onit.process_task(
@@ -660,6 +777,7 @@ class WebApiUI:
                 stream_complete_callback=_on_phase_end,
                 stats=stats,
                 tool_status_callback=_on_tool_status,
+                tool_result_callback=_on_tool_result,
                 session_id=session.session_id,
             )
             elapsed = time.monotonic() - start
@@ -873,6 +991,13 @@ class WebApiUI:
             if session.session_path and os.path.exists(session.session_path):
                 with open(session.session_path, "w", encoding="utf-8") as f:
                     f.write("")
+            # The sources that grounded them are gone, so the addresses lose
+            # their backing too.
+            session.sourced_emails = set()
+            try:
+                os.remove(self._email_store_path(session))
+            except OSError:
+                pass
             return {"cleared": True, "session_id": sid}
 
         @app.post("/api/upload")
@@ -889,6 +1014,7 @@ class WebApiUI:
                 )
             with open(dest, "wb") as f:
                 f.write(content)
+            self._scan_upload_for_emails(session, content)
             return {
                 "name": safe_name,
                 "url": f"/uploads/{sid}/{urllib.parse.quote(safe_name)}",
@@ -902,10 +1028,19 @@ class WebApiUI:
             if not isinstance(urls, list):
                 return JSONResponse({"detail": "urls must be a list"}, status_code=400)
             urls = [str(u) for u in urls[:_VERIFY_MAX_URLS]]
+            # mailto: is answered from the session's grounded sources, not the
+            # network, so it needs the session http(s) probing doesn't.
+            mails = [u for u in urls if u.lower().startswith("mailto:")]
+            links = [u for u in urls if not u.lower().startswith("mailto:")]
+            results: dict[str, bool] = {}
+            if mails:
+                _sid, session = self._resolve_session(request)
+                results.update({u: self._verify_email(session, u) for u in mails})
             verdicts = await asyncio.gather(
-                *(asyncio.to_thread(self._verify_link, u) for u in urls)
+                *(asyncio.to_thread(self._verify_link, u) for u in links)
             )
-            return {"results": dict(zip(urls, verdicts))}
+            results.update(dict(zip(links, verdicts)))
+            return {"results": results}
 
         @app.get("/api/logs")
         async def api_logs():

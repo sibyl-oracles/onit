@@ -495,6 +495,115 @@ class TestVerifyLinks:
                            json={"urls": "https://example.com"}).status_code == 400
 
 
+class TestVerifyEmails:
+    """mailto: verdicts come from session provenance, never the network."""
+
+    @staticmethod
+    def _verdict(client, sid, addr, monkeypatch=None):
+        res = client.post("/api/verify_links", json={"urls": [f"mailto:{addr}"]},
+                          headers={"X-Session-Id": sid})
+        return res.json()["results"][f"mailto:{addr}"]
+
+    def test_ungrounded_address_is_not_verified(self, client, ui, monkeypatch):
+        monkeypatch.setattr(ui, "_probe_url",
+                            lambda url: pytest.fail(f"probed {url}"))
+        sid, _session = ui._get_or_create_session()
+        assert self._verdict(client, sid, "invented@nowhere.example") is False
+
+    def test_address_from_user_message_is_verified(self, client, ui):
+        sid, _session = ui._get_or_create_session()
+        client.post("/api/chat", json={"message": "mail rowel@sibyl.ai please"},
+                    headers={"X-Session-Id": sid})
+        assert self._verdict(client, sid, "rowel@sibyl.ai") is True
+
+    def test_address_from_tool_result_is_verified(self, client, ui):
+        """A web search hit or document read grounds the address."""
+        class SearchingOnit(FakeOnit):
+            async def process_task(self, task, **kwargs):
+                cb = kwargs.get("tool_result_callback")
+                if cb:
+                    cb("search", "Top hit: Contact press@newsroom.example for media.")
+                return await super().process_task(task, **kwargs)
+
+        ui._onit = SearchingOnit()
+        sid, _session = ui._get_or_create_session()
+        assert self._verdict(client, sid, "press@newsroom.example") is False
+        client.post("/api/chat", json={"message": "find the press contact"},
+                    headers={"X-Session-Id": sid})
+        assert self._verdict(client, sid, "press@newsroom.example") is True
+
+    def test_address_from_uploaded_document_is_verified(self, client, ui):
+        sid, _session = ui._get_or_create_session()
+        client.post("/api/upload",
+                    files={"file": ("contacts.csv", b"name,email\nAda,ada@lovelace.example\n")},
+                    headers={"X-Session-Id": sid})
+        assert self._verdict(client, sid, "ada@lovelace.example") is True
+
+    def test_grounding_survives_session_eviction(self, client, ui):
+        """A page reload after the in-memory session is dropped must not
+        resurrect strikethrough on an already-grounded address."""
+        sid, _session = ui._get_or_create_session()
+        client.post("/api/chat", json={"message": "write to ada@lovelace.example"},
+                    headers={"X-Session-Id": sid})
+        del ui._web_sessions[sid]
+        assert self._verdict(client, sid, "ada@lovelace.example") is True
+
+    def test_grounding_does_not_leak_across_sessions(self, client, ui):
+        sid_a, _a = ui._get_or_create_session()
+        client.post("/api/chat", json={"message": "ping ada@lovelace.example"},
+                    headers={"X-Session-Id": sid_a})
+        sid_b = client.post("/api/sessions/new").json()["session_id"]
+        assert self._verdict(client, sid_a, "ada@lovelace.example") is True
+        assert self._verdict(client, sid_b, "ada@lovelace.example") is False
+
+    def test_matching_ignores_case_and_mailto_params(self, client, ui):
+        sid, _session = ui._get_or_create_session()
+        client.post("/api/chat", json={"message": "Ada@Lovelace.example wrote back"},
+                    headers={"X-Session-Id": sid})
+        res = client.post("/api/verify_links", headers={"X-Session-Id": sid}, json={
+            "urls": ["mailto:ada@lovelace.example?subject=Hi%20there"],
+        })
+        assert res.json()["results"]["mailto:ada@lovelace.example?subject=Hi%20there"] is True
+
+    def test_malformed_mailto_rejected(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        session.sourced_emails = {"ada@lovelace.example"}
+        for bad in ["mailto:", "mailto:not-an-address", "mailto:missing@tld"]:
+            res = client.post("/api/verify_links", json={"urls": [bad]},
+                              headers={"X-Session-Id": sid})
+            assert res.json()["results"][bad] is False, bad
+
+    def test_mixed_batch_splits_by_scheme(self, client, ui, monkeypatch):
+        monkeypatch.setattr(ui, "_probe_url", lambda url: True)
+        sid, session = ui._get_or_create_session()
+        session.sourced_emails = {"ada@lovelace.example"}
+        res = client.post("/api/verify_links", headers={"X-Session-Id": sid}, json={
+            "urls": ["https://example.com/ok", "mailto:ada@lovelace.example",
+                     "mailto:ghost@nowhere.example"],
+        })
+        assert res.json()["results"] == {
+            "https://example.com/ok": True,
+            "mailto:ada@lovelace.example": True,
+            "mailto:ghost@nowhere.example": False,
+        }
+
+    def test_clear_chat_drops_grounding(self, client, ui):
+        sid, _session = ui._get_or_create_session()
+        client.post("/api/chat", json={"message": "ping ada@lovelace.example"},
+                    headers={"X-Session-Id": sid})
+        client.post("/api/clear", headers={"X-Session-Id": sid})
+        assert self._verdict(client, sid, "ada@lovelace.example") is False
+
+    def test_delete_session_removes_sidecar(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        client.post("/api/chat", json={"message": "ping ada@lovelace.example"},
+                    headers={"X-Session-Id": sid})
+        sidecar = ui._email_store_path(session)
+        assert os.path.isfile(sidecar)
+        client.delete(f"/api/sessions/{sid}")
+        assert not os.path.isfile(sidecar)
+
+
 class TestSessionsEndpoints:
     def test_new_session(self, client):
         sid = client.post("/api/sessions/new").json()["session_id"]

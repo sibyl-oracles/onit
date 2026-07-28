@@ -205,6 +205,16 @@ def delete_session(session_id: str,
             found = True
         except OSError:
             pass
+    # Sidecars written alongside the history (e.g. <sid>.emails.json, the web
+    # UI's grounded-address list) go with it — otherwise they outlive the
+    # session and a recycled id would inherit them.
+    for sidecar in ("emails.json",):
+        path = os.path.join(sessions_dir, f"{session_id}.{sidecar}")
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     return found
 
 

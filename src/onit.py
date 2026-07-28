@@ -123,12 +123,13 @@ class StreamingAdapter:
     """
 
     def __init__(self, on_token=None, on_complete=None, show_logs=False,
-                 throttle_tokens=0, on_tool_status=None):
+                 throttle_tokens=0, on_tool_status=None, on_tool_result=None):
         self.on_token = on_token
         self.on_complete = on_complete
         self.show_logs = show_logs
         self._throttle_tokens = throttle_tokens
         self._on_tool_status = on_tool_status
+        self._on_tool_result = on_tool_result
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
@@ -247,7 +248,14 @@ class StreamingAdapter:
                 self._pending.append(task)
 
     def add_tool_result(self, name, result, truncate=300):
-        pass
+        """Not displayed (raw tool output would swamp the chat), but forwarded
+        when a caller asked for it — the web UI uses tool output as the ground
+        truth for which emails and facts actually came from a source."""
+        if self._on_tool_result:
+            try:
+                self._on_tool_result(name, result)
+            except Exception:
+                pass
 
     def add_log(self, message, level="info"):
         if self.show_logs:
@@ -901,6 +909,7 @@ class OnIt(BaseModel):
                            stream_throttle: int = 0,
                            stats: dict | None = None,
                            tool_status_callback=None,
+                           tool_result_callback=None,
                            session_id: str | None = None) -> str:
         """Process a single task and return the response string.
 
@@ -919,6 +928,9 @@ class OnIt(BaseModel):
                 tokens to avoid flooding (useful for A2A SSE).
             tool_status_callback: Optional callback ``(status_text) -> None``
                 called when a tool starts/stops to show activity indicators.
+            tool_result_callback: Optional callback ``(tool_name, result) -> None``
+                called with each tool's raw output, letting callers treat it as
+                sourced material (the web UI verifies emails against it).
         """
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
         effective_session_path = session_path or self.session_path
@@ -947,13 +959,14 @@ class OnIt(BaseModel):
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
         _adapter = None
-        if stream_callback and self.stream:
+        if (stream_callback and self.stream) or tool_result_callback:
             _adapter = StreamingAdapter(
                 on_token=stream_callback,
                 on_complete=stream_complete_callback,
                 show_logs=self.show_logs,
                 throttle_tokens=stream_throttle,
                 on_tool_status=tool_status_callback,
+                on_tool_result=tool_result_callback,
             )
 
         effective_session_id = session_id or self.session_id

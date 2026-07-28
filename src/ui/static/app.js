@@ -68,14 +68,25 @@
   // (e.g. https://ge.php, https://manual). External links stay
   // non-clickable until POST /api/verify_links confirms they resolve;
   // failures render as plain text.
+  //
+  // mailto: links ride the same path, but the server answers them from the
+  // session's sources rather than the network: an address is clickable when
+  // it appeared in a document, a web search result, or the user's own
+  // message, and struck through when only the model ever said it.
   const linkCache = new Map();   // url -> "ok" | "bad"
   const linkQueue = new Set();   // urls awaiting a verify request
   let linkFlushTimer = null;
   const VERIFY_BATCH = 20;       // must match _VERIFY_MAX_URLS server-side
+  const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)*\.[a-z]{2,}$/i;
 
   function urlShapeOk(href) {
     let u;
     try { u = new URL(href); } catch (e) { return false; }
+    if (u.protocol === "mailto:") {
+      // Screen the shape here so obvious junk never costs a round trip;
+      // whether the address is *grounded* is the server's call.
+      return EMAIL_RE.test(decodeURIComponent(u.pathname.split("?")[0]).trim());
+    }
     if (u.protocol !== "http:" && u.protocol !== "https:") return false;
     return u.hostname.includes(".");
   }
@@ -89,26 +100,55 @@
     return span;
   }
 
+  function isMailto(href) {
+    return /^mailto:/i.test(href);
+  }
+
+  // Reason shown on hover, so a struck-through address doesn't read as a
+  // dead link when it's really an ungrounded one.
+  function brokenTitle(href) {
+    return isMailto(href)
+      ? "Address not found in any document or search result"
+      : "Link could not be verified";
+  }
+
+  function pendingTitle(href) {
+    return isMailto(href) ? "Checking sources…" : "Verifying link…";
+  }
+
   function activateLink(a, href) {
     a.setAttribute("href", href);
-    a.setAttribute("target", "_blank");
-    a.setAttribute("rel", "noopener noreferrer");
+    if (!isMailto(href)) {
+      // A mail client handoff isn't a new browsing context; target/rel only
+      // matter for the http(s) case.
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener noreferrer");
+    }
   }
 
   function vetLink(a, href) {
     if (!urlShapeOk(href)) {
-      delinkify(a, "link-broken", "Link could not be verified");
+      delinkify(a, "link-broken", brokenTitle(href));
       return;
     }
     const verdict = linkCache.get(href);
     if (verdict === "ok") {
       activateLink(a, href);
     } else if (verdict === "bad") {
-      delinkify(a, "link-broken", "Link could not be verified");
+      delinkify(a, "link-broken", brokenTitle(href));
     } else {
-      const span = delinkify(a, "link-pending", "Verifying link…");
+      const span = delinkify(a, "link-pending", pendingTitle(href));
       span.dataset.verifyUrl = href;
       queueLinkVerify(href);
+    }
+  }
+
+  // http(s) verdicts are a property of the internet and survive a session
+  // switch; email verdicts are a property of *this* session's sources, so
+  // they must not leak into the next chat.
+  function forgetEmailVerdicts() {
+    for (const url of Array.from(linkCache.keys())) {
+      if (isMailto(url)) linkCache.delete(url);
     }
   }
 
@@ -162,7 +202,7 @@
       } else if (verdict === "bad") {
         delete span.dataset.verifyUrl;
         span.className = "link-broken";
-        span.title = "Link could not be verified";
+        span.title = brokenTitle(url);
       }
     });
   }
@@ -460,6 +500,7 @@
     if (state.processing) return;
     state.sessionId = sid;
     localStorage.setItem("onit.sid", sid);
+    forgetEmailVerdicts();
     clearAttachments();
     await loadHistory();
     await refreshSessions();
@@ -477,6 +518,7 @@
     if (state.processing) return;
     if (!confirm("Clear this chat's history?")) return;
     await api("/api/clear", { method: "POST" });
+    forgetEmailVerdicts();
     clearAttachments();
     await loadHistory();
     await refreshSessions();
@@ -604,6 +646,9 @@
         paintStream();
       },
       phase_end(d) {
+        // Tools ran since the last render, so the session may have picked up
+        // sources that ground an address previously judged ungrounded.
+        forgetEmailVerdicts();
         // Commit the streamed phase and prepare for the next one
         if (streamBlock) {
           renderMarkdown(streamBlock, d.content || streamText);
@@ -618,6 +663,7 @@
       },
       done(d) {
         chip.remove();
+        forgetEmailVerdicts();
         // Final response supersedes streamed phases — unless it is empty, in
         // which case wiping would leave the turn blank. Keep what streamed.
         if ((d.content || "").trim()) {
