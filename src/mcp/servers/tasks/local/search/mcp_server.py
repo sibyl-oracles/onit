@@ -578,11 +578,23 @@ def _local_search_impl(
             result["rank"] = rank
             result["score"] = round(result["score"], 6)
 
+        # `results` is serialized ahead of `documents` so that the head of this
+        # response is the ranking. A tool result is trimmed to its first
+        # characters once the conversation moves past it (TOOL_RESULT_DECAY_CHARS),
+        # and what survives that cut should be the best-ranked passages, whose
+        # offset is fixed, rather than the document summaries, whose bulk grows
+        # with top_k and pushes every passage out of the window: with summaries
+        # first the top-ranked quotes sat at offset ~7.9k at top_k=5 and ~9.7k at
+        # top_k=20, past any budget worth keeping; with the ranking first they
+        # start at ~0.3k whatever top_k is. The summaries stay in the response in
+        # full — this is byte order, not priority, and the guidance to read
+        # `documents` first still stands. Each result also carries its `file`, so
+        # a trimmed trace still records which documents were consulted.
         return json.dumps({
             "query": query,
             "method": method,
-            "documents": _summarize_documents(merged, indexes),
             "results": merged,
+            "documents": _summarize_documents(merged, indexes),
             "total_results": len(merged),
             "total_documents": sum(len(i.documents) for i in indexes),
             "total_chunks": sum(len(i.chunks) for i in indexes),
@@ -630,8 +642,8 @@ Args:
 - path: Optional corpus directory to (re)index before searching
 
 Returns JSON: {query, method,
-documents: [{file, best_rank, matched_at, opening, num_chunks}],
 results: [{rank, score, file, location, text}],
+documents: [{file, best_rank, matched_at, opening, num_chunks}],
 total_results, total_documents, total_chunks, status}
 
 Read `documents` first. One entry per document behind the results, carrying

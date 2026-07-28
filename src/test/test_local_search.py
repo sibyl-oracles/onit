@@ -1080,6 +1080,30 @@ def test_one_entry_per_document_however_many_chunks_matched(search_env):
     assert len(found["documents"]) <= len(found["results"])
 
 
+def test_ranked_passages_are_serialized_before_the_document_summaries(search_env):
+    """The head of the response is what survives being trimmed as an older tool
+    result, so it has to be the ranking.
+
+    The summaries grow with top_k; the top-ranked passages do not. With the
+    summaries first, a passage's offset moves with the page size and outruns any
+    trim budget — the model is left holding titles and no quotes.
+    """
+    session = _make_session(search_env, "session-a")
+    local_mod.rebuild_indexes(background=False)
+
+    raw = local_mod._local_search_impl(query="vacation days accrue",
+                                       top_k=10, data_path=session)
+    assert raw.index('"results"') < raw.index('"documents"')
+
+    # The passages start at the same offset however big the page is.
+    heads = {
+        local_mod._local_search_impl(query="vacation days accrue", top_k=k,
+                                     data_path=session).index('"results"')
+        for k in (1, 5, 20)
+    }
+    assert len(heads) == 1
+
+
 def test_document_openings_are_bounded(search_env, corpus):
     """A result page has a size budget: the caller truncates the whole thing."""
     long_doc = corpus / "handbook.md"

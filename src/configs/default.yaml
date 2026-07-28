@@ -39,7 +39,14 @@ template_path:
 # Documents a research answer may open after local_search. Each one is a tool
 # round trip whose result then rides along in every later prompt, so this is
 # the dial between recall and how long an answer takes to arrive.
-max_documents: 4
+#
+# Set to the number of documents a result page describes (MAX_DOCUMENT_SUMMARIES).
+# A budget below that silently truncates the very list the prompt just told the
+# model to reason about: the documents ranked last are the ones whose opening
+# does not restate the query, which is exactly the case where the opening is a
+# poor proxy for the contents — a scholarship named only in the tail of an
+# admissions announcement was dropped this way.
+max_documents: 6
 
 # Prior task/response pairs replayed into every request. They are re-sent on
 # each turn, so a long tail costs prompt tokens on all of them.

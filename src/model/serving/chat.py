@@ -696,7 +696,14 @@ def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str |
 
 # Tool results kept at full length; older ones are trimmed to their opening.
 TOOL_RESULT_KEEP_FULL = 3
-TOOL_RESULT_DECAY_CHARS = 1500
+# Enough for the head of a search page to be evidence rather than just a table
+# of contents: a chunk is DEFAULT_CHUNK_SIZE (1600) characters, so this holds
+# the top three ranked passages once JSON escaping is paid for. At 1500 the
+# surviving head of a local_search result was its document summaries alone —
+# every matched passage fell outside it, leaving the model a list of titles and
+# no quotes, which is the one thing worse than dropping the result entirely.
+# Still trims a maximum-size (MAX_TOOL_RESPONSE) result to ~37%.
+TOOL_RESULT_DECAY_CHARS = 6000
 _DECAY_MARKER = "… [trimmed: older tool result, call the tool again for the rest]"
 
 

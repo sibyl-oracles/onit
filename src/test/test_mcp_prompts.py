@@ -266,4 +266,4 @@ class TestResearchFanOut:
             task="t", data_path=str(tmp_path / "data"),
             local_search_available=True, max_documents="null",
         )
-        assert "at most 4" in result
+        assert "at most 6" in result

@@ -38,7 +38,7 @@ async def assistant_instruction(task: str,
                                 web_search_available: str | bool = False,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
-                                max_documents: str | int = 4) -> str:
+                                max_documents: str | int = 6) -> str:
    if not data_path:
       raise ValueError("data_path is required and must be a non-empty string")
 
@@ -62,7 +62,7 @@ async def assistant_instruction(task: str,
    try:
       max_documents = max(1, int(max_documents))
    except (TypeError, ValueError):
-      max_documents = 4
+      max_documents = 6
 
    Path(data_path).mkdir(parents=True, exist_ok=True)
    current_date = datetime.now().strftime("%B %d, %Y")
