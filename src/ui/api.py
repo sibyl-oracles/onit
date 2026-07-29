@@ -127,6 +127,13 @@ try:
 except ValueError:
     _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+# Image types the UI previews inline. SVG is deliberately absent: it is a
+# document that can carry script, and these files are written by tools, so it
+# stays a download rather than something the browser renders on our origin.
+_PREVIEW_IMAGE_TYPES = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+}
+
 # Response headers applied to every response — defence in depth alongside the
 # reverse proxy. These don't depend on the request, so they're a module const;
 # HSTS and CSP (which do vary) are added per-request in the middleware.
@@ -233,6 +240,12 @@ def _timing_summary(metrics: dict, elapsed: float) -> dict:
         "prompt_tokens_max": metrics.get("prompt_tokens_max", 0),
         "completion_tokens": metrics.get("completion_tokens", 0),
     }
+
+
+def _preview_image_type(path: str) -> Optional[str]:
+    """MIME type if this file is an image the UI can render inline, else None."""
+    mime = mimetypes.guess_type(path)[0]
+    return mime if mime in _PREVIEW_IMAGE_TYPES else None
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -583,19 +596,41 @@ class WebApiUI:
         # Strip any other absolute file paths, keeping only the basename
         cleaned = re.sub(r'(?<![:\w/])/(?:[\w\.\-]+/)+(?=[\w\.\-]+)', '', cleaned)
 
+        upload_prefix = f"/uploads/{session_id}" if session_id else "/uploads"
+
+        # The model often writes its own markdown around a file it made —
+        # `![chart](chart.png)` for an image, `[report](report.pdf)` for a
+        # download. Point those targets at the upload URL and leave the syntax
+        # alone; the bare-name pass below would otherwise nest a second link
+        # inside the parentheses: `![chart]([chart.png](/uploads/…))`.
+        linked: set[str] = set()
+
+        def _retarget(m: re.Match) -> str:
+            fname = m.group(2)
+            fpath = os.path.join(effective_data_path, fname)
+            if not os.path.isfile(fpath):
+                return m.group(0)
+            linked.add(fname)
+            if fpath not in found_files:
+                found_files.append(fpath)
+            return f"{m.group(1)}{upload_prefix}/{urllib.parse.quote(fname)}{m.group(3)}"
+
+        cleaned = re.sub(r'(!?\[[^\]\n]*\]\()([\w\-.]+\.\w+)(\))', _retarget, cleaned)
+
         # 3. Check for bare filenames that exist in data_path
         if os.path.isdir(effective_data_path):
             existing = set(os.listdir(effective_data_path))
             for fname in existing:
-                if fname in cleaned:
+                if fname not in linked and fname in cleaned:
                     fpath = os.path.join(effective_data_path, fname)
                     if fpath not in found_files:
                         found_files.append(fpath)
 
         # Turn found basenames into markdown download links
-        upload_prefix = f"/uploads/{session_id}" if session_id else "/uploads"
         for fpath in found_files:
             fname = os.path.basename(fpath)
+            if fname in linked:
+                continue        # already carries its own markdown link
             cleaned = cleaned.replace(fname, f'[{fname}]({upload_prefix}/{fname})', 1)
 
         return cleaned, found_files
@@ -611,6 +646,9 @@ class WebApiUI:
                 "name": fname,
                 "url": f"/uploads/{session_id}/{urllib.parse.quote(fname)}",
                 "size": os.path.getsize(fpath),
+                # Images the agent produced (charts, extracted pages, renders)
+                # are shown in the reply instead of only offered as a download.
+                "kind": "image" if _preview_image_type(fpath) else "file",
             })
         return infos
 
@@ -1184,6 +1222,15 @@ class WebApiUI:
             data_path = self._web_sessions[session_id].data_path
             filepath = os.path.join(data_path, safe_name)
             if os.path.isfile(filepath):
+                # ?inline=1 renders in the browser instead of downloading — the
+                # image previews in a reply, and opening one in a new tab. Only
+                # honoured for types we are willing to render (_PREVIEW_IMAGE_TYPES);
+                # anything else keeps the attachment disposition that `filename=`
+                # sets, so a stray inline flag can never make the browser display
+                # tool-written HTML or SVG on this origin.
+                preview = _preview_image_type(filepath)
+                if preview and request.query_params.get("inline"):
+                    return FileResponse(filepath, media_type=preview)
                 media_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
                 return FileResponse(filepath, media_type=media_type, filename=safe_name)
             return Response(content="File not found", status_code=404)

@@ -57,6 +57,15 @@
         vetLink(a, href);
       }
     });
+    // Images the agent made and referenced itself: ask for the inline
+    // rendering of the upload route, since the plain URL is a download.
+    container.querySelectorAll("img[src]").forEach((img) => {
+      const src = img.getAttribute("src") || "";
+      if (!src.startsWith("/uploads/")) return;
+      img.setAttribute("src", inlineUrl(src));
+      img.classList.add("msg-image");
+      img.setAttribute("loading", "lazy");
+    });
     container.querySelectorAll("pre > code").forEach((code) => {
       try { hljs.highlightElement(code); } catch (e) { /* ignore */ }
       decorateCodeBlock(code);
@@ -297,9 +306,45 @@
     return { root: msg, content };
   }
 
+  function inlineUrl(url) {
+    return url + (url.includes("?") ? "&" : "?") + "inline=1";
+  }
+
   function addFileChips(root, files) {
     const all = (files || []).slice();
     if (!all.length) return;
+
+    // An image already rendered in the reply (the model wrote its own
+    // `![…](…)`) doesn't need a second copy below it — only its download chip.
+    const shown = new Set(
+      Array.from(root.querySelectorAll("img[src]"), (i) => i.getAttribute("src"))
+    );
+    const previews = all.filter(
+      (f) => f.kind === "image" && !shown.has(inlineUrl(f.url))
+    );
+
+    if (previews.length) {
+      const gallery = document.createElement("div");
+      gallery.className = "file-images";
+      for (const f of previews) {
+        const a = document.createElement("a");
+        a.className = "file-image";
+        a.href = inlineUrl(f.url);       // full size in a new tab
+        a.target = "_blank";
+        a.rel = "noopener";
+        const img = document.createElement("img");
+        img.src = inlineUrl(f.url);
+        img.alt = f.name;
+        img.loading = "lazy";
+        // A file the agent named but never wrote (or wrote as something other
+        // than the image it claims) shouldn't leave a broken frame behind.
+        img.addEventListener("error", () => a.remove());
+        a.appendChild(img);
+        gallery.appendChild(a);
+      }
+      root.appendChild(gallery);
+    }
+
     const wrap = document.createElement("div");
     wrap.className = "file-chips";
     for (const f of all) {
@@ -308,7 +353,8 @@
       a.href = f.url;
       a.setAttribute("download", f.name);
       const size = f.size ? ` <span class="file-size">${formatSize(f.size)}</span>` : "";
-      a.innerHTML = `📄 <span>${escapeHtml(f.name)}</span>${size}`;
+      const icon = f.kind === "image" ? "🖼️" : "📄";
+      a.innerHTML = `${icon} <span>${escapeHtml(f.name)}</span>${size}`;
       wrap.appendChild(a);
     }
     root.appendChild(wrap);

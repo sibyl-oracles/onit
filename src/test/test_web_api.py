@@ -1,6 +1,7 @@
 """Tests for src/ui/api.py — the FastAPI + SSE web UI (WebApiUI)."""
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -50,6 +51,20 @@ class FakeOnit:
                 f.write(json.dumps({"task": task, "response": self.response,
                                     "timestamp": 0}) + "\n")
         return self.response
+
+
+# Smallest valid PNG (1×1, transparent) — enough for mimetype and byte checks.
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAY"
+    "AAjCB0C8AAAAASUVORK5CYII="
+)
+
+
+def _write_png(data_path, name="chart.png"):
+    path = os.path.join(data_path, name)
+    with open(path, "wb") as f:
+        f.write(_PNG_1X1)
+    return path
 
 
 @pytest.fixture
@@ -158,6 +173,77 @@ class TestExtractFilePaths:
             "See /home/user/notes/report.txt for details",
             data_path=session.data_path, session_id=sid)
         assert cleaned == "See report.txt for details"
+
+    def test_markdown_image_keeps_its_syntax(self, ui):
+        # The model embedding its own chart must survive as an image, not end
+        # up with a second link nested inside the parentheses.
+        sid, session = ui._get_or_create_session()
+        _write_png(session.data_path, "chart.png")
+        cleaned, files = ui._extract_file_paths(
+            f"Here it is:\n\n![chart]({session.data_path}/chart.png)",
+            data_path=session.data_path, session_id=sid)
+        assert cleaned.endswith(f"![chart](/uploads/{sid}/chart.png)")
+        assert files == [os.path.join(session.data_path, "chart.png")]
+
+    def test_markdown_link_target_rewritten_once(self, ui):
+        sid, session = ui._get_or_create_session()
+        with open(os.path.join(session.data_path, "report.pdf"), "wb") as f:
+            f.write(b"%PDF-1.4\n")
+        cleaned, _ = ui._extract_file_paths(
+            "[report.pdf](report.pdf)",
+            data_path=session.data_path, session_id=sid)
+        assert cleaned == f"[report.pdf](/uploads/{sid}/report.pdf)"
+
+
+class TestImagePreview:
+    """Images an agent creates are rendered in the reply, not just downloaded."""
+
+    def test_image_tagged_for_preview(self, ui):
+        sid, session = ui._get_or_create_session()
+        png = _write_png(session.data_path)
+        infos = ui._file_infos([png], sid)
+        assert infos[0]["kind"] == "image"
+        assert infos[0]["url"] == f"/uploads/{sid}/chart.png"
+
+    def test_other_files_are_downloads(self, ui):
+        sid, session = ui._get_or_create_session()
+        path = os.path.join(session.data_path, "result.csv")
+        with open(path, "w") as f:
+            f.write("a,b\n")
+        assert ui._file_infos([path], sid)[0]["kind"] == "file"
+
+    def test_svg_is_not_previewed(self, ui):
+        # SVG can carry script, so it stays a download rather than something
+        # the browser renders on our own origin.
+        sid, session = ui._get_or_create_session()
+        path = os.path.join(session.data_path, "plot.svg")
+        with open(path, "w") as f:
+            f.write("<svg xmlns='http://www.w3.org/2000/svg'/>")
+        assert ui._file_infos([path], sid)[0]["kind"] == "file"
+
+    def test_inline_request_renders_in_browser(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        _write_png(session.data_path)
+        res = client.get(f"/uploads/{sid}/chart.png?inline=1")
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "image/png"
+        assert "attachment" not in res.headers.get("content-disposition", "")
+        assert res.content == _PNG_1X1
+
+    def test_download_is_still_an_attachment(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        _write_png(session.data_path)
+        res = client.get(f"/uploads/{sid}/chart.png")
+        assert "attachment" in res.headers["content-disposition"]
+
+    def test_inline_ignored_for_non_images(self, client, ui):
+        # A stray inline flag must never make the browser render tool-written
+        # HTML or SVG on this origin.
+        sid, session = ui._get_or_create_session()
+        with open(os.path.join(session.data_path, "page.html"), "w") as f:
+            f.write("<script>alert(1)</script>")
+        res = client.get(f"/uploads/{sid}/page.html?inline=1")
+        assert "attachment" in res.headers["content-disposition"]
 
 
 # ── API endpoints ──────────────────────────────────────────────────────────
