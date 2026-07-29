@@ -615,6 +615,7 @@ class OnIt(BaseModel):
     web_require_auth: bool = Field(default=True)
     web_title: str = Field(default="OnIt Chat")
     web_ga_measurement_id: str | None = Field(default=None)
+    web_html_preview: bool = Field(default=True)
     agent_name: str = Field(default="OnIt")
     developer: str = Field(default="Rowel Atienza")
     a2a: bool = Field(default=False)
@@ -684,6 +685,7 @@ class OnIt(BaseModel):
                     ga_measurement_id=self.web_ga_measurement_id,
                     verbose=self.verbose,
                     require_auth=self.web_require_auth,
+                    html_preview=self.web_html_preview,
                 )
                 self.chat_ui._onit = self
             else:
@@ -937,6 +939,9 @@ class OnIt(BaseModel):
         self.web_require_auth = bool(self.config_data.get('web_require_auth', True))
         self.web_title = self.config_data.get('web_title', 'OnIt Chat')
         self.web_ga_measurement_id = self.config_data.get('web_ga_measurement_id', None)
+        # Generated pages run in a sandboxed frame in the reply; set false to
+        # keep them as source and a download instead.
+        self.web_html_preview = bool(self.config_data.get('web_html_preview', True))
         self.agent_name = self.config_data.get('agent_name', 'OnIt')
         self.developer = self.config_data.get('developer', 'Rowel Atienza')
         self.a2a = self.config_data.get('a2a', False)

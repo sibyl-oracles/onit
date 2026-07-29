@@ -336,6 +336,51 @@
     decorateCodeBlock(code, `${f.name} · ${lines} line${lines === 1 ? "" : "s"}`);
   }
 
+  // A page the agent generated, running in the reply. The frame is sandboxed
+  // without allow-same-origin, so the page has an opaque origin: it cannot
+  // touch this document, its cookies or its storage. The server pins that down
+  // again with its own CSP (see _PREVIEW_CSP) — this attribute is the half of
+  // the fence the browser enforces here.
+  function addWebPreview(root, f) {
+    const wrap = document.createElement("div");
+    wrap.className = "web-preview";
+
+    const head = document.createElement("div");
+    head.className = "code-head";
+    const label = document.createElement("span");
+    label.textContent = f.name;
+    const open = document.createElement("a");
+    open.className = "code-copy";
+    open.href = f.preview_url;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.textContent = "Open ↗";
+    head.append(label, open);
+
+    const box = document.createElement("div");
+    box.className = "web-frame-box";      // drag the bottom edge to resize
+    const frame = document.createElement("iframe");
+    frame.className = "web-frame";
+    frame.setAttribute("sandbox", "allow-scripts allow-modals allow-pointer-lock");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.title = f.name;
+    frame.src = f.preview_url;
+    box.appendChild(frame);
+
+    wrap.append(head, box);
+    root.appendChild(wrap);
+
+    if (f.preview) {
+      const details = document.createElement("details");
+      details.className = "web-source";
+      const summary = document.createElement("summary");
+      summary.textContent = "Source";
+      details.appendChild(summary);
+      root.appendChild(details);
+      addCodeInset(details, f);
+    }
+  }
+
   function addFileChips(root, files) {
     const all = (files || []).slice();
     if (!all.length) return;
@@ -374,6 +419,10 @@
     }
 
     for (const f of all) {
+      if (f.kind === "web" && f.preview_url) {
+        addWebPreview(root, f);
+        continue;
+      }
       if (f.kind !== "code" || !f.preview) continue;
       const body = f.preview.text.trim();
       if (body && quoted.some((q) => q.includes(body))) continue;
@@ -388,7 +437,9 @@
       a.href = f.url;
       a.setAttribute("download", f.name);
       const size = f.size ? ` <span class="file-size">${formatSize(f.size)}</span>` : "";
-      const icon = f.kind === "image" ? "🖼️" : f.kind === "code" ? "📝" : "📄";
+      const icon = f.kind === "image" ? "🖼️"
+        : f.kind === "web" ? "🌐"
+        : f.kind === "code" ? "📝" : "📄";
       a.innerHTML = `${icon} <span>${escapeHtml(f.name)}</span>${size}`;
       wrap.appendChild(a);
     }

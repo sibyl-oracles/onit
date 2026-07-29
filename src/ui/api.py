@@ -149,6 +149,31 @@ _PREVIEW_CODE_LANGS = {
     ".md": "markdown", ".txt": "plaintext",
 }
 
+# Generated pages the UI runs in a sandboxed frame, so a small web app the
+# agent wrote (a game, a form, a chart page) is usable in the reply.
+_PREVIEW_WEB_EXTS = {".html", ".htm"}
+
+# CSP for a page served to that frame. `sandbox` *without* allow-same-origin
+# gives the document an opaque origin: no access to the SPA's cookies, storage
+# or DOM, and no credentials on anything it requests. The source directives
+# then keep it self-contained — its own inline script and styles run, but
+# `default-src 'none'` blocks every external load and `connect-src 'none'`
+# leaves it no way to phone home. This header must survive the security
+# middleware, which is why that applies its defaults with setdefault.
+_PREVIEW_CSP = "; ".join([
+    "sandbox allow-scripts allow-modals allow-pointer-lock",
+    "default-src 'none'",
+    "script-src 'unsafe-inline' 'unsafe-eval' blob:",
+    "style-src 'unsafe-inline'",
+    "img-src data: blob:",
+    "media-src data: blob:",
+    "font-src data:",
+    "connect-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'self'",
+])
+
 # How much of a code file rides along in the reply payload. Past this the inset
 # shows the head of the file and points at the download for the rest — the
 # preview is for inspection, not for shipping a megabyte through the SSE stream.
@@ -392,8 +417,13 @@ class WebApiUI:
         ga_measurement_id: Optional[str] = None,
         verbose: bool = False,
         require_auth: bool = True,
+        html_preview: bool = True,
     ) -> None:
         self.title = title
+        # Running a generated page — even sandboxed — is a capability an
+        # operator may not want on a shared deployment: web_html_preview: false
+        # leaves such files as source and a download.
+        self.html_preview = html_preview
         self.ga_measurement_id = self._resolve_ga_id(ga_measurement_id)
         self.theme = theme
         self.agent_cursor = agent_cursor
@@ -704,6 +734,14 @@ class WebApiUI:
                 if preview:
                     info["kind"] = "code"
                     info["preview"] = preview
+                    # A generated page also runs, in a sandboxed frame — the
+                    # source stays available underneath it.
+                    if (self.html_preview
+                            and os.path.splitext(fname)[1].lower() in _PREVIEW_WEB_EXTS):
+                        info["kind"] = "web"
+                        info["preview_url"] = (
+                            f"/preview/{session_id}/{urllib.parse.quote(fname)}"
+                        )
             infos.append(info)
         return infos
 
@@ -988,9 +1026,12 @@ class WebApiUI:
         @app.middleware("http")
         async def security_headers_middleware(request: Request, call_next):
             response = await call_next(request)
+            # setdefault, not assignment: a route that sets one of these knows
+            # why (see the sandboxed preview, which must be frameable and runs
+            # under its own CSP). Every other route gets the defaults.
             for name, value in _STATIC_SECURITY_HEADERS.items():
-                response.headers[name] = value
-            response.headers["Content-Security-Policy"] = self._csp_header()
+                response.headers.setdefault(name, value)
+            response.headers.setdefault("Content-Security-Policy", self._csp_header())
             # Only advertise HSTS over a secure connection (behind the TLS
             # proxy request.url.scheme is https via proxy_headers); sending it
             # on plain-http dev/localhost would wrongly pin those hosts.
@@ -1024,7 +1065,8 @@ class WebApiUI:
             async def auth_middleware(request: Request, call_next):
                 path = request.url.path
                 protected = path.startswith("/api/") or (
-                    path.startswith("/uploads/") and request.method == "GET"
+                    (path.startswith("/uploads/") or path.startswith("/preview/"))
+                    and request.method == "GET"
                 )
                 # /api/config is public: the SPA needs it to show the login view
                 if protected and path != "/api/config" and not self._auth_email(request):
@@ -1290,6 +1332,39 @@ class WebApiUI:
                 return FileResponse(filepath, media_type=media_type, filename=safe_name)
             return Response(content="File not found", status_code=404)
 
+        @app.get("/preview/{session_id}/{filename}")
+        async def serve_preview(session_id: str, filename: str, request: Request):
+            """Serve a generated page for the sandboxed preview frame.
+
+            Deliberately separate from the download route: this is the one
+            place the server hands the browser a page to *execute*, so the
+            rules live here — previews must be enabled, the file must be one
+            of this session's own .html files, and it goes out under
+            _PREVIEW_CSP, which denies it an origin and a network."""
+            if not self.html_preview:
+                return Response(content="Preview disabled", status_code=404)
+            safe_name = os.path.basename(urllib.parse.unquote(filename))
+            if os.path.splitext(safe_name)[1].lower() not in _PREVIEW_WEB_EXTS:
+                return Response(content="Not previewable", status_code=404)
+            if session_id not in self._web_sessions:
+                return Response(content="Session not found", status_code=404)
+            owner = self._auth_email(request) if self.auth_enabled else None
+            if not self._can_access(session_id, owner):
+                return Response(content="Session not found", status_code=404)
+            filepath = os.path.join(self._web_sessions[session_id].data_path, safe_name)
+            if not os.path.isfile(filepath):
+                return Response(content="File not found", status_code=404)
+            return FileResponse(
+                filepath,
+                media_type="text/html",
+                headers={
+                    "Content-Security-Policy": _PREVIEW_CSP,
+                    # The SPA frames this; nothing else may.
+                    "X-Frame-Options": "SAMEORIGIN",
+                    "Cache-Control": "no-store",
+                },
+            )
+
         @app.post("/uploads/{session_id}/")
         async def receive_upload(session_id: str, file: UploadFile = File(...)):
             """Accept file uploads from remote MCP tools, scoped per session."""
@@ -1326,6 +1401,7 @@ class WebApiUI:
                 "Disallow: /api/\n"
                 "Disallow: /auth/\n"
                 "Disallow: /uploads/\n"
+                "Disallow: /preview/\n"
             )
             return Response(content=body, media_type="text/plain")
 

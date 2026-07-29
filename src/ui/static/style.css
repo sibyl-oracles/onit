@@ -380,6 +380,39 @@ textarea { font-family: var(--font); }
   color: var(--text-faint);
 }
 
+/* A generated page, running in a sandboxed frame */
+.web-preview {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-code);
+  overflow: hidden;
+}
+.web-frame-box {
+  height: 420px;
+  min-height: 120px;
+  overflow: hidden;
+  resize: vertical;          /* drag the bottom edge for taller apps */
+}
+.web-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* Generated pages usually assume a page background of their own; give them
+     a white canvas rather than letting the dark chat show through. */
+  background: #fff;
+}
+.web-source { margin-top: 6px; }
+.web-source > summary {
+  cursor: pointer;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.web-source > summary:hover { color: var(--text); }
+.web-source .code-file { margin-top: 6px; }
+
 /* Images the model embedded itself, inside the markdown flow */
 .msg-content img.msg-image {
   display: block;

@@ -312,6 +312,86 @@ class TestCodePreview:
         assert code["preview"]["text"] == "print('hi')\n"
 
 
+class TestWebPreview:
+    """A generated page runs in the reply — sandboxed, offline, origin-less."""
+
+    PAGE = "<!doctype html><h1>Tic tac toe</h1><script>let turn='X'</script>\n"
+
+    def _write_page(self, session, name="game.html"):
+        path = os.path.join(session.data_path, name)
+        with open(path, "w") as f:
+            f.write(self.PAGE)
+        return path
+
+    def test_page_is_runnable_and_keeps_its_source(self, ui):
+        sid, session = ui._get_or_create_session()
+        info = ui._file_infos([self._write_page(session)], sid)[0]
+        assert info["kind"] == "web"
+        assert info["preview_url"] == f"/preview/{sid}/game.html"
+        assert info["preview"]["text"] == self.PAGE     # still inspectable
+        assert info["url"] == f"/uploads/{sid}/game.html"   # still downloadable
+
+    def test_served_with_sandbox_csp(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        self._write_page(session)
+        res = client.get(f"/preview/{sid}/game.html")
+        assert res.status_code == 200
+        assert res.text == self.PAGE
+        assert res.headers["content-type"].startswith("text/html")
+        csp = res.headers["content-security-policy"]
+        # An opaque origin (no allow-same-origin) with no network of any kind.
+        assert "sandbox allow-scripts allow-modals allow-pointer-lock" in csp
+        assert "allow-same-origin" not in csp
+        assert "default-src 'none'" in csp
+        assert "connect-src 'none'" in csp
+        assert "frame-ancestors 'self'" in csp
+        # Framing is the point, so this route overrides the global DENY —
+        # and the middleware must not have put it back.
+        assert res.headers["x-frame-options"] == "SAMEORIGIN"
+        assert "attachment" not in res.headers.get("content-disposition", "")
+
+    def test_other_routes_keep_the_strict_defaults(self, client):
+        res = client.get("/")
+        assert res.headers["x-frame-options"] == "DENY"
+        assert "sandbox" not in res.headers["content-security-policy"]
+
+    def test_only_html_is_previewable(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        with open(os.path.join(session.data_path, "app.js"), "w") as f:
+            f.write("alert(1)")
+        assert client.get(f"/preview/{sid}/app.js").status_code == 404
+
+    def test_traversal_and_unknown_session_rejected(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        self._write_page(session)
+        assert client.get(f"/preview/{sid}/..%2f..%2fsecret.html").status_code == 404
+        assert client.get(f"/preview/{uuid.uuid4()}/game.html").status_code == 404
+
+    def test_missing_file_is_404(self, client, ui):
+        sid, _ = ui._get_or_create_session()
+        assert client.get(f"/preview/{sid}/nope.html").status_code == 404
+
+    def test_disabled_by_config(self, tmp_path, bg_loop):
+        off = WebApiUI(data_path=str(tmp_path / "d"),
+                       session_path=str(tmp_path / "s" / "c.jsonl"),
+                       require_auth=False, html_preview=False)
+        off._onit = FakeOnit()
+        off._loop = bg_loop
+        off.build_app()
+        sid, session = off._get_or_create_session()
+        info = off._file_infos([self._write_page(session)], sid)[0]
+        assert info["kind"] == "code"           # source and download only
+        assert "preview_url" not in info
+        assert TestClient(off.app).get(f"/preview/{sid}/game.html").status_code == 404
+
+    def test_preview_requires_auth(self, auth_ui):
+        sid, session = auth_ui._get_or_create_session()
+        os.makedirs(session.data_path, exist_ok=True)
+        self._write_page(session)
+        res = TestClient(auth_ui.app).get(f"/preview/{sid}/game.html")
+        assert res.status_code == 401
+
+
 # ── API endpoints ──────────────────────────────────────────────────────────
 
 class TestConfigEndpoint:

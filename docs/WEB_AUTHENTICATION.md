@@ -72,6 +72,13 @@ and survives server restarts.
 | `web_google_client_secret` | OAuth client secret (`GOCSPX-…`) | — (keychain via `onit setup`, or `GOOGLE_CLIENT_SECRET` env var) |
 | `web_allowed_emails` | Extra allowlist: exact addresses or `"*@domain"` patterns | unset (any Gmail/Workspace account) |
 | `web_require_auth` | Set `false` to allow running without login | `true` |
+| `web_html_preview` | Run generated `.html` files in a sandboxed frame in the reply. Set `false` to serve them as source and a download only | `true` |
+
+A previewed page is framed with `sandbox="allow-scripts allow-modals
+allow-pointer-lock"` — no `allow-same-origin` — and served under its own CSP
+(`default-src 'none'`, `connect-src 'none'`), so it has an opaque origin, no
+access to the session's cookies, storage or DOM, and no network of any kind.
+
 
 Credentials are resolved in order: config YAML → environment variable →
 OS keychain (stored by `onit setup`). Verify what is set with
