@@ -68,7 +68,10 @@ from src.mcp.servers.tasks.shared import (
 )
 from src.mcp.servers.tasks.os.bash.command_policy import (
     DEFAULT_ALLOWED_COMMANDS,
+    INSTALL_DENIED_MSG,
+    INSTALL_SEALED_MSG,
     check_command as _check_command_policy,
+    installs_sealed as _installs_sealed,
 )
 
 import logging
@@ -778,9 +781,8 @@ def _check_permission_rules(command: str) -> str | None:
 #   ONIT_COMMAND_ALLOWLIST=0  disable (even inside the container)
 # Package managers are blocked under allowlist enforcement unless
 # ONIT_ALLOW_PACKAGE_INSTALL=1, and then only version-pinned installs pass.
-# Exception: in the containerized web UI (ONIT_WEB_MODE=1 and ONIT_CONTAINER=1)
-# installs are refused unconditionally and ONIT_ALLOW_PACKAGE_INSTALL is
-# ignored — see _package_installs_allowed.
+# Exception: in the containerized web UI installs are refused unconditionally
+# and ONIT_ALLOW_PACKAGE_INSTALL is ignored — see command_policy.installs_sealed.
 
 
 def _allowlist_enforced() -> bool:
@@ -792,31 +794,17 @@ def _allowlist_enforced() -> bool:
     return _in_container()
 
 
-def _in_web_mode() -> bool:
-    """True when serving the web UI (`onit serve web` sets ONIT_WEB_MODE=1)."""
-    return os.environ.get("ONIT_WEB_MODE") == "1"
-
-
 def _package_installs_allowed() -> bool:
     """Whether package-manager install subcommands may run at all.
 
-    The containerized web UI is a hard refusal that ONIT_ALLOW_PACKAGE_INSTALL
-    cannot lift. It is a long-lived, multi-user, network-facing service: an
-    install there mutates state shared by every session and every user, and it
-    pulls code from a remote index at the request of whoever is typing into the
-    chat box. That is a different risk than a single operator on a terminal
-    opting in for their own session, so the opt-in does not carry over. The
-    image is the unit of change instead — packages belong in the Dockerfile,
-    reviewed and rebuilt, not installed at runtime by the agent.
-
-    Both conditions are required. Web mode alone is not enough: `onit serve web`
-    on bare metal is the local development loop, where blocking installs outright
-    (with no override, by design) would be pure friction rather than protection.
+    The containerized web UI (installs_sealed) is a hard refusal that
+    ONIT_ALLOW_PACKAGE_INSTALL cannot lift — rationale in docs/DOCKER.md,
+    "No package installs in web UI mode".
 
     Returning False here also removes `onit-install-ml` from the allowlist (see
     _allowed_commands), so the curated ML installer is refused there too.
     """
-    if _in_web_mode() and _in_container():
+    if _installs_sealed():
         return False
     return os.environ.get("ONIT_ALLOW_PACKAGE_INSTALL") == "1"
 
@@ -839,7 +827,9 @@ def _allowed_commands() -> frozenset:
 def _check_command_allowlist(check_command: str) -> str | None:
     return _check_command_policy(
         check_command, _allowed_commands(),
-        allow_installs=_package_installs_allowed())
+        allow_installs=_package_installs_allowed(),
+        denied_msg=(INSTALL_SEALED_MSG if _installs_sealed()
+                    else INSTALL_DENIED_MSG))
 
 
 # ── Auto-containment ─────────────────────────────────────────────────────

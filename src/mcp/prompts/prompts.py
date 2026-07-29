@@ -16,7 +16,6 @@
 
 from fastmcp import FastMCP
 from datetime import datetime
-import os
 import yaml
 
 import logging
@@ -25,9 +24,11 @@ from pathlib import Path
 try:
     from ...lib.text import INSTRUCTION_SPLIT
     from ..servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
+    from ..servers.tasks.os.bash.command_policy import installs_sealed
 except ImportError:  # server started as a script rather than a package module
     from lib.text import INSTRUCTION_SPLIT
     from mcp.servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
+    from mcp.servers.tasks.os.bash.command_policy import installs_sealed
 
 # How many documents an answer may open. Tied to the number a result page
 # describes: a smaller budget silently truncates the very list the prompt just
@@ -205,17 +206,12 @@ Do not stop until **all** are true:
 
 """
 
-   # The containerized web UI refuses every package install at the policy layer
-   # (see _package_installs_allowed in the bash MCP server). Say so up front:
-   # without this the agent discovers the rule only by trying, and burns turns
-   # retrying pip, then uv, then a vendored wheel, before giving up. Goes in the
-   # static half so it stays prefix-cacheable.
-   #
-   # Conditions must match that gate exactly — announcing a restriction that is
-   # not enforced (or enforcing one never announced) is worse than either alone.
+   # Announce the install block up front, or the agent discovers it only by
+   # trying — burning turns on pip, then uv, then a vendored wheel. Shares
+   # installs_sealed() with the policy layer that enforces it, so the two cannot
+   # disagree. Goes in the static half so it stays prefix-cacheable.
    no_install_block = ""
-   if (os.environ.get("ONIT_WEB_MODE") == "1"
-           and os.environ.get("ONIT_CONTAINER") == "1"):
+   if installs_sealed():
       no_install_block = """
 ## Package Installation Is Disabled
 This environment is sealed. You **cannot** install packages, and no flag,

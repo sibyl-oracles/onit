@@ -349,38 +349,34 @@ class TestResearchFanOut:
         assert "at most 6" in result
 
 
-class TestWebModeNoInstallBlock:
-    """Web mode hard-blocks package installs in the bash MCP server; the
-    instruction must say so up front, or the agent only finds out by trying."""
+class TestSealedNoInstallBlock:
+    """The containerized web UI hard-blocks package installs in the bash MCP
+    server; the instruction must say so up front, or the agent only finds out
+    by trying. The announcement must track the gate exactly — announcing a
+    restriction that is not enforced is as bad as enforcing a silent one."""
 
     @pytest.mark.asyncio
-    async def test_block_present_in_web_mode(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("ONIT_WEB_MODE", "1")
-        monkeypatch.setenv("ONIT_CONTAINER", "1")
+    @pytest.mark.parametrize("web_ui,container,announced", [
+        ("1", "1", True),     # containerized web UI: sealed
+        (None, None, False),  # terminal on the host
+        ("1", None, False),   # bare-metal `onit serve web`: local dev loop
+        (None, "1", False),   # containerized terminal/A2A/gateway
+    ])
+    async def test_block_tracks_the_gate(self, tmp_path, monkeypatch,
+                                         web_ui, container, announced):
+        for var, val in (("ONIT_WEB_UI", web_ui), ("ONIT_CONTAINER", container)):
+            if val is None:
+                monkeypatch.delenv(var, raising=False)
+            else:
+                monkeypatch.setenv(var, val)
         result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
-        assert "Package Installation Is Disabled" in result
-        assert "pip" in result
-
-    @pytest.mark.asyncio
-    async def test_block_absent_outside_web_mode(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
-        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
-        assert "Package Installation Is Disabled" not in result
-
-    @pytest.mark.asyncio
-    async def test_block_absent_for_bare_metal_web(self, tmp_path, monkeypatch):
-        """Web mode alone does not block installs, so it must not claim to."""
-        monkeypatch.setenv("ONIT_WEB_MODE", "1")
-        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
-        assert "Package Installation Is Disabled" not in result
+        assert ("Package Installation Is Disabled" in result) is announced
 
     @pytest.mark.asyncio
     async def test_block_lands_in_static_half(self, tmp_path, monkeypatch):
         """It is standing policy, not per-task context, so it must sit in the
         prefix-cacheable half ahead of INSTRUCTION_SPLIT."""
-        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_WEB_UI", "1")
         monkeypatch.setenv("ONIT_CONTAINER", "1")
         result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
         static, _ = split_instruction(result)

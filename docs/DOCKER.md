@@ -110,11 +110,31 @@ and redeploy — reviewed and reproducible, rather than installed at runtime by
 the agent. The image already carries a broad default stack; see
 [Preinstalled ML packages](#preinstalled-ml-packages).
 
-Mechanics, if you need to trace it: `serve web` sets `ONIT_WEB_MODE=1` (in
-`_ensure_mcp_servers`, `src/cli.py`), the Dockerfile sets `ONIT_CONTAINER=1`,
-and `_package_installs_allowed()` in
-`src/mcp/servers/tasks/os/bash/mcp_server.py` returns `False` when both are
-present.
+Mechanics, if you need to trace it: `installs_sealed()` in the bash server's
+`command_policy` is the single predicate. Both the enforcement (the bash
+server's install gate) and the announcement (the agent's instructions) read it,
+so they cannot disagree.
+
+## What may be added to the image
+
+Confinement comes from the runtime flags above and the command allowlist, not
+from the image being sparse — so a package is not disqualified simply for being
+another tool. What disqualifies it is belonging to one of these classes. A
+package must **not**:
+
+1. ship a setuid/setcap binary (`sudo`, `fusermount`, `mount`, `pkexec`) —
+   `no-new-privileges` blocks the escalation, but there is no reason to ship
+   the primitive
+2. be a client to a host control plane (`docker` CLI, `kubectl`, `virsh`) —
+   those become container-escape tooling the moment a socket is exposed
+3. turn the sandbox into a network pivot (`nmap`, `netcat`, `socat`,
+   `tcpdump`) — `host.docker.internal` and the bridge network give outbound
+   reach to host services and the LAN, which is the one boundary the runtime
+   flags do not close
+4. require a third-party apt repo — a new GPG key is trusted image-wide
+
+Keep `--no-install-recommends` on the apt layers: recommends are how dbus,
+avahi and other daemons arrive uninvited.
 
 ## What crosses the boundary
 
@@ -163,9 +183,9 @@ Each `--container-mount` punches a hole in the sandbox. Use `:ro` whenever
 possible, and never mount a host path that contains secrets you don't want
 the agent to see.
 
-Note: the default image ships **CPU-only torch** to keep the build small.
-`--container-gpus` plumbs the device through, but for actual GPU compute
-you need to rebuild the image with a CUDA torch wheel — see
+Note: the image does **not** ship torch. `--container-gpus` plumbs the device
+through, but you still need a CUDA-matched wheel — install it with
+`onit-install-ml`, or bake it into a derivative image for web deployments. See
 [Preinstalled ML packages](#preinstalled-ml-packages).
 
 ## Preinstalled ML packages
@@ -197,10 +217,9 @@ The base image is `nvidia/cuda:12.6.3-devel`, so `nvcc` and the CUDA headers
 are present for code that compiles kernels.
 
 > **Containerized web UI:** `onit-install-ml` is a package installer, so it is
-> blocked there along with everything else — see
-> [No package installs in web UI mode](#no-package-installs-in-web-ui-mode).
-> If your web deployment needs torch, bake it into a derivative image at build
-> time rather than relying on the on-demand helper.
+> blocked there like every other install
+> ([why](#no-package-installs-in-web-ui-mode)). Bake torch into a derivative
+> image instead.
 
 ## Combining with `--sandbox`
 

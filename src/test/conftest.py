@@ -14,6 +14,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ---------------------------------------------------------------------------
+# Deployment-mode env flags
+# ---------------------------------------------------------------------------
+
+# Process-global flags that change what the bash policy allows and what the
+# assistant prompt announces. A value inherited from the developer's shell (or
+# left behind by another test) silently rewrites refusal messages and flips
+# install tests, so clear them for every test and let each opt back in.
+_MODE_ENV_VARS = (
+    "ONIT_WEB_UI",
+    "ONIT_CONTAINER",
+    "ONIT_ALLOW_PACKAGE_INSTALL",
+    "ONIT_COMMAND_ALLOWLIST",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_mode_env(monkeypatch):
+    for var in _MODE_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+# ---------------------------------------------------------------------------
 # Minimal valid config dict (avoids real MCP / network calls)
 # ---------------------------------------------------------------------------
 

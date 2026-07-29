@@ -491,17 +491,6 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     data_path = config_data.get('data_path') or str(Path.home() / "sandbox")
     os.environ['ONIT_DATA_PATH'] = str(Path(data_path).expanduser().resolve())
 
-    # Tell the MCP servers they are backing the web UI. The bash server refuses
-    # all package installs under this flag, unconditionally — see
-    # _package_installs_allowed in mcp/servers/tasks/os/bash/mcp_server.py.
-    #
-    # Set here rather than in the `serve web` branch so that web mode enabled
-    # via the config file (not just `onit serve web`) is covered too. Servers
-    # run in a daemon thread of this process, so os.environ reaches them
-    # directly; a future out-of-process server inherits it the same way.
-    if config_data.get('web'):
-        os.environ['ONIT_WEB_MODE'] = '1'
-
     # Check if locally-managed servers are already running (skip external ones)
     servers = config_data.get('mcp', {}).get('servers', [])
     local_servers = [s for s in servers if not _is_external_server(s)]
@@ -1074,7 +1063,9 @@ def main():
 
     # Web UI mode: enforce ~/.onit/settings.json permission rules in the bash
     # MCP server. The text UI ignores the default settings file and runs
-    # privileged. Must be set before MCP servers are spawned.
+    # privileged. In the container this flag additionally seals off package
+    # installs (see command_policy.installs_sealed). Must be set before MCP
+    # servers are spawned.
     if config_data.get('web'):
         os.environ['ONIT_WEB_UI'] = '1'
 

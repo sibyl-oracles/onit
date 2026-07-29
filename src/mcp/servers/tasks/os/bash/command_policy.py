@@ -554,31 +554,44 @@ def _blocked(msg: str) -> str:
     return f"Command blocked: {msg}"
 
 
-def _install_disabled_msg() -> str:
-    """Explain why an install was refused, and whether it can be re-enabled.
+# Two refusal wordings, because the advice differs. The default names the env
+# var that lifts the block; the sealed one must not, since pointing at an
+# override that cannot be reached sends the agent into a retry loop. Callers
+# choose via installs_sealed() and pass the result down as denied_msg — the
+# checker itself stays a pure function of its arguments.
+INSTALL_DENIED_MSG = _blocked(
+    "package installation is disabled by default. Set "
+    "ONIT_ALLOW_PACKAGE_INSTALL=1 (or use --container-allow-installs) "
+    "to permit installs of pinned package versions.")
 
-    The containerized web UI is a hard refusal, so it gets its own wording. The
-    generic message names the env var to set; repeating that there would send
-    the agent into a retry loop chasing an override that is deliberately
-    unreachable. Both conditions must match the gate in _package_installs_allowed
-    (bash mcp_server.py) — a mismatch would hand the agent the wrong advice.
+INSTALL_SEALED_MSG = _blocked(
+    "package installation is permanently disabled in web UI mode. This "
+    "is not an overridable setting — ONIT_ALLOW_PACKAGE_INSTALL and "
+    "--container-allow-installs have no effect here. Do not retry, and "
+    "do not look for another way to install. Solve the task with the "
+    "packages already present, or tell the user which package the image "
+    "would need so an operator can add it to the Dockerfile and rebuild.")
+
+
+def installs_sealed() -> bool:
+    """True when package installs are refused with no override available.
+
+    Single source of truth for the rule, shared by the code that *enforces* it
+    (_package_installs_allowed in the bash MCP server) and the code that
+    *announces* it (the assistant prompt). Announcing a restriction that is not
+    enforced, or enforcing one never announced, is worse than either alone.
+
+    Both conditions are required: bare-metal `onit serve web` is the local
+    development loop, where an unliftable block would be friction rather than
+    protection. Rationale in docs/DOCKER.md, "No package installs in web UI
+    mode".
     """
-    if (os.environ.get("ONIT_WEB_MODE") == "1"
-            and os.environ.get("ONIT_CONTAINER") == "1"):
-        return _blocked(
-            "package installation is permanently disabled in web UI mode. This "
-            "is not an overridable setting — ONIT_ALLOW_PACKAGE_INSTALL and "
-            "--container-allow-installs have no effect here. Do not retry, and "
-            "do not look for another way to install. Solve the task with the "
-            "packages already present, or tell the user which package the image "
-            "would need so an operator can add it to the Dockerfile and rebuild.")
-    return _blocked(
-        "package installation is disabled by default. Set "
-        "ONIT_ALLOW_PACKAGE_INSTALL=1 (or use --container-allow-installs) "
-        "to permit installs of pinned package versions.")
+    return (os.environ.get("ONIT_WEB_UI") == "1"
+            and os.environ.get("ONIT_CONTAINER") == "1")
 
 
-def _check_pip_install(args: list, allow_installs: bool) -> str | None:
+def _check_pip_install(args: list, allow_installs: bool,
+                       denied_msg: str) -> str | None:
     sub = None
     sub_idx = -1
     for idx, w in enumerate(args):
@@ -589,7 +602,7 @@ def _check_pip_install(args: list, allow_installs: bool) -> str | None:
     if sub not in ("install", "uninstall", "download"):
         return None
     if not allow_installs:
-        return _install_disabled_msg()
+        return denied_msg
     if sub == "uninstall":
         return None
     rest = args[sub_idx + 1:]
@@ -614,7 +627,8 @@ def _check_pip_install(args: list, allow_installs: bool) -> str | None:
     return None
 
 
-def _check_node_pkg(exe: str, args: list, allow_installs: bool) -> str | None:
+def _check_node_pkg(exe: str, args: list, allow_installs: bool,
+                    denied_msg: str) -> str | None:
     positionals = _positionals(args, set())
     sub = positionals[0].text if positionals else None
     dlx_like = exe == "npx" or (sub in ("dlx", "exec") and exe in ("pnpm", "yarn", "npm"))
@@ -625,7 +639,7 @@ def _check_node_pkg(exe: str, args: list, allow_installs: bool) -> str | None:
     else:
         return None
     if not allow_installs:
-        return _install_disabled_msg()
+        return denied_msg
     if sub in ("uninstall", "remove", "rm", "unlink"):
         return None
     if sub == "ci":
@@ -642,8 +656,8 @@ def _check_node_pkg(exe: str, args: list, allow_installs: bool) -> str | None:
     return None
 
 
-def _check_package_policy(exe: str, args: list,
-                          allow_installs: bool) -> str | None:
+def _check_package_policy(exe: str, args: list, allow_installs: bool,
+                          denied_msg: str) -> str | None:
     """Gate package-manager install subcommands; require pins when allowed."""
     if exe in _SYSTEM_PKG_MANAGERS:
         # Only reachable when the user added the manager to the allowlist.
@@ -652,7 +666,7 @@ def _check_package_policy(exe: str, args: list,
         if sub in ("install", "add", "remove", "purge", "erase", "upgrade",
                    "dist-upgrade", "update", "-S", "-R", "-U"):
             if not allow_installs:
-                return _install_disabled_msg()
+                return denied_msg
             if sub in ("install", "add"):
                 for w in positionals[1:]:
                     if not _EQ_PIN_RE.match(w.text):
@@ -662,25 +676,25 @@ def _check_package_policy(exe: str, args: list,
         return None
 
     if exe == "pip":
-        return _check_pip_install(args, allow_installs)
+        return _check_pip_install(args, allow_installs, denied_msg)
 
     if exe == "python":
         texts = [w.text for w in args]
         if "-m" in texts:
             m_idx = texts.index("-m")
             if m_idx + 1 < len(texts) and _normalize_exe(texts[m_idx + 1]) == "pip":
-                return _check_pip_install(args[m_idx + 2:], allow_installs)
+                return _check_pip_install(args[m_idx + 2:], allow_installs, denied_msg)
         return None
 
     if exe == "uv":
         texts = [w.text for w in args]
         if texts[:1] == ["pip"]:
-            return _check_pip_install(args[1:], allow_installs)
+            return _check_pip_install(args[1:], allow_installs, denied_msg)
         positionals = _positionals(args, set())
         sub = positionals[0].text if positionals else None
         if sub in ("add", "tool", "sync"):
             if not allow_installs:
-                return _install_disabled_msg()
+                return denied_msg
             if sub == "add":
                 for w in positionals[1:]:
                     if not _PIP_PIN_RE.match(w.text):
@@ -694,7 +708,7 @@ def _check_package_policy(exe: str, args: list,
         sub = positionals[0].text if positionals else None
         if sub in ("install", "run", "upgrade"):
             if not allow_installs:
-                return _install_disabled_msg()
+                return denied_msg
             for w in positionals[1:]:
                 if not w.text.startswith("-") and not _PIP_PIN_RE.match(w.text):
                     return _blocked(
@@ -703,13 +717,13 @@ def _check_package_policy(exe: str, args: list,
         return None
 
     if exe in ("npm", "npx", "pnpm", "yarn"):
-        return _check_node_pkg(exe, args, allow_installs)
+        return _check_node_pkg(exe, args, allow_installs, denied_msg)
 
     if exe == "gem":
         positionals = _positionals(args, set())
         if positionals and positionals[0].text == "install":
             if not allow_installs:
-                return _install_disabled_msg()
+                return denied_msg
             texts = [w.text for w in args]
             if "-v" not in texts and "--version" not in texts \
                     and not any(":" in w.text for w in positionals[1:]):
@@ -724,7 +738,7 @@ def _check_package_policy(exe: str, args: list,
         if (exe == "cargo" and sub == "install") or \
                 (exe == "go" and sub in ("install", "get")):
             if not allow_installs:
-                return _install_disabled_msg()
+                return denied_msg
             texts = [w.text for w in positionals[1:]]
             if "--version" not in [w.text for w in args] and \
                     not all("@" in t for t in texts if not t.startswith("-")):
@@ -737,7 +751,7 @@ def _check_package_policy(exe: str, args: list,
         sub = positionals[0].text if positionals else None
         if sub in ("install", "create", "update"):
             if not allow_installs:
-                return _install_disabled_msg()
+                return denied_msg
             if sub == "install":
                 for w in positionals[1:]:
                     if not _EQ_PIN_RE.match(w.text):
@@ -799,7 +813,9 @@ def _unwrap_command(words: list, allowed: frozenset) -> tuple:
 
 
 def check_command(command: str, allowed: frozenset,
-                  allow_installs: bool = False, _depth: int = 0) -> str | None:
+                  allow_installs: bool = False,
+                  denied_msg: str = INSTALL_DENIED_MSG,
+                  _depth: int = 0) -> str | None:
     """Validate a command string against the allowlist and package policy.
 
     Returns an error string when blocked, else None. Fails closed: parse
@@ -839,8 +855,8 @@ def check_command(command: str, allowed: frozenset,
                 if script.has_expansion or script.has_substitution:
                     return _blocked(
                         "dynamic shell -c payloads cannot be allowlisted.")
-                if err := check_command(script.text, allowed,
-                                        allow_installs, _depth + 1):
+                if err := check_command(script.text, allowed, allow_installs,
+                                        denied_msg, _depth + 1):
                     return err
                 continue
         # find -exec/-execdir/-ok run an arbitrary program: check it too.
@@ -859,6 +875,6 @@ def check_command(command: str, allowed: frozenset,
                     expect_cmd = False
                 elif w.text in ("-exec", "-execdir", "-ok", "-okdir"):
                     expect_cmd = True
-        if err := _check_package_policy(exe, args, allow_installs):
+        if err := _check_package_policy(exe, args, allow_installs, denied_msg):
             return err
     return None

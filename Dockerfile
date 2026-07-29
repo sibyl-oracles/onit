@@ -33,21 +33,20 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-WORKDIR /build
-COPY . .
-# Non-editable install so the package resolves from site-packages in the
-# runtime stage (an editable install pins sys.path to /build, which is
-# discarded by the multi-stage copy).
-RUN pip install ".[all]"
-
-# Lightweight scientific stack available to agent-generated code by default.
-# Small, universally useful, and keeps the image lean. Heavy ML packages
-# (torch, transformers, etc) are NOT baked in — the agent installs them on
-# demand via `onit-install-ml` into the persistent data volume (PIP_TARGET).
+# Scientific stack available to agent-generated code by default. Heavy ML
+# packages (torch, transformers, etc) are NOT baked in — the agent installs
+# them on demand via `onit-install-ml` into the persistent data volume
+# (PIP_TARGET).
 #
 # Selection criterion: pure file/CPU work with no daemon, no listening socket,
 # and no credential surface. polars/duckdb in particular give real analytical
-# database capability without running a server process.
+# database capability without running a server process. Packages that `.[all]`
+# already declares (pyyaml, beautifulsoup4, openpyxl) are deliberately absent —
+# listing them here would imply this layer owns their versions when it does not.
+#
+# Installed BEFORE `COPY . .` so a source edit does not invalidate it; ~300 MB
+# of wheels would otherwise be re-fetched on every rebuild. `.[all]` then
+# resolves on top, so the project's own constraints win.
 RUN pip install \
         numpy \
         scipy \
@@ -60,15 +59,19 @@ RUN pip install \
         seaborn \
         plotly \
         pillow \
-        openpyxl \
         lxml \
-        beautifulsoup4 \
-        pyyaml \
         httpx \
         tqdm \
         ruff \
         mypy \
         ipython
+
+WORKDIR /build
+COPY . .
+# Non-editable install so the package resolves from site-packages in the
+# runtime stage (an editable install pins sys.path to /build, which is
+# discarded by the multi-stage copy).
+RUN pip install ".[all]"
 
 
 # ── Runtime stage ───────────────────────────────────────────────────
@@ -111,26 +114,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # deliberately carries a full toolchain (build-essential, and nvcc from the
 # devel base) — agent-generated code is expected to compile here.
 #
-# Adding packages does not weaken the security posture: confinement comes from
-# the runtime (read-only rootfs, cap_drop=ALL, no-new-privileges, non-root
-# USER, and the bash command allowlist in
-# src/mcp/servers/tasks/os/bash/command_policy.py), not from the image being
-# sparse. The bar for adding something here is that it must NOT:
-#   1. ship a setuid/setcap binary (sudo, fusermount, mount, pkexec)
-#   2. be a client to a host control plane (docker CLI, kubectl, virsh) —
-#      those are container-escape tooling the moment a socket is exposed
-#   3. turn the sandbox into a network pivot (nmap, netcat, socat, tcpdump);
-#      host.docker.internal + the bridge network give outbound reach to host
-#      services and the LAN, which is the one boundary the runtime flags do
-#      not close
-#   4. require a third-party apt repo (a new GPG key is trusted image-wide)
-#
-# Every executable added below is already named in the command allowlist (the
-# rest are shared libraries and fonts, not commands), so installing them grants
-# no capability the policy hasn't already sanctioned — it only stops the agent
-# from hitting "command not found" on tools it is explicitly permitted to run.
-# Keep --no-install-recommends: recommends are how dbus/avahi and other daemons
-# arrive uninvited.
+# Before adding a package, check it against the four-point bar in
+# docs/DOCKER.md, "What may be added to the image". Adding one does not weaken
+# confinement — that comes from the runtime flags and the command allowlist,
+# not from the image being sparse — but the bar rules out the specific classes
+# that would (setuid binaries, host control-plane clients, network pivots,
+# third-party apt repos).
 #
 # See build stage for the TLS note.
 # ubuntu:24.04 ships a default `ubuntu` user at UID/GID 1000 — remove it
@@ -167,8 +156,9 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
         ninja-build \
         pkg-config \
         git-lfs \
-        # headless rendering deps for matplotlib / OpenCV — without these,
-        # importing cv2 or saving a figure fails on a missing libGL/glib.
+        # matplotlib's Agg backend needs real fonts to render text. libGL/glib
+        # are for OpenCV, which is not baked in but is installable in the
+        # non-sealed container modes — without them `import cv2` fails.
         fonts-dejavu-core \
         libgl1 \
         libglib2.0-0 \
