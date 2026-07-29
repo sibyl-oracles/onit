@@ -246,6 +246,72 @@ class TestImagePreview:
         assert "attachment" in res.headers["content-disposition"]
 
 
+class TestCodePreview:
+    """Code an agent writes is inspectable in the reply, not only downloadable."""
+
+    def _write(self, session, name, text, mode="w"):
+        path = os.path.join(session.data_path, name)
+        with open(path, mode) as f:
+            f.write(text)
+        return path
+
+    def test_code_file_carries_its_source(self, ui):
+        sid, session = ui._get_or_create_session()
+        src = "def add(a, b):\n    return a + b\n"
+        info = ui._file_infos([self._write(session, "calc.py", src)], sid)[0]
+        assert info["kind"] == "code"
+        assert info["preview"] == {"language": "python", "text": src, "truncated": False}
+
+    def test_language_follows_extension(self, ui):
+        sid, session = ui._get_or_create_session()
+        info = ui._file_infos([self._write(session, "q.sql", "SELECT 1;\n")], sid)[0]
+        assert info["preview"]["language"] == "sql"
+
+    def test_unknown_extension_stays_a_download(self, ui):
+        sid, session = ui._get_or_create_session()
+        info = ui._file_infos([self._write(session, "data.parquet", "x")], sid)[0]
+        assert info["kind"] == "file"
+        assert "preview" not in info
+
+    def test_binary_content_is_not_previewed(self, ui):
+        # A .py that isn't valid UTF-8 is not the text it claims to be.
+        sid, session = ui._get_or_create_session()
+        path = self._write(session, "blob.py", b"\xff\xfe\x00\x01", mode="wb")
+        assert ui._file_infos([path], sid)[0]["kind"] == "file"
+
+    def test_empty_file_is_not_previewed(self, ui):
+        sid, session = ui._get_or_create_session()
+        info = ui._file_infos([self._write(session, "empty.py", "\n\n")], sid)[0]
+        assert info["kind"] == "file"
+
+    def test_long_file_truncated_on_a_line_boundary(self, ui):
+        sid, session = ui._get_or_create_session()
+        line = "print('x' * 10)\n"
+        path = self._write(session, "big.py", line * 8000)   # ~125 KB
+        preview = ui._file_infos([path], sid)[0]["preview"]
+        assert preview["truncated"] is True
+        assert len(preview["text"]) <= 64 * 1024
+        assert preview["text"].endswith("\n")
+        assert preview["text"].count(line) == preview["text"].count("\n")
+
+    def test_image_wins_over_code_preview(self, ui):
+        sid, session = ui._get_or_create_session()
+        png = _write_png(session.data_path)
+        assert ui._file_infos([png], sid)[0]["kind"] == "image"
+
+    def test_preview_reaches_the_client(self, client, ui):
+        # End to end: the SSE `done` payload carries what the UI renders.
+        sid, session = ui._get_or_create_session()
+        self._write(session, "script.py", "print('hi')\n")
+        ui._onit = FakeOnit(response="Wrote script.py for you.")
+        res = client.post("/api/chat", json={"message": "write a script"},
+                          headers={"X-Session-Id": sid})
+        done = [d for e, d in parse_sse(res.text) if e == "done"][0]
+        code = [f for f in done["files"] if f["name"] == "script.py"][0]
+        assert code["kind"] == "code"
+        assert code["preview"]["text"] == "print('hi')\n"
+
+
 # ── API endpoints ──────────────────────────────────────────────────────────
 
 class TestConfigEndpoint:

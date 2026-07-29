@@ -216,14 +216,14 @@
     });
   }
 
-  function decorateCodeBlock(code) {
+  function decorateCodeBlock(code, labelText) {
     const pre = code.parentElement;
     if (pre.querySelector(".code-head")) return;
     const lang = (code.className.match(/language-([\w+-]+)/) || [])[1] || "";
     const head = document.createElement("div");
     head.className = "code-head";
     const label = document.createElement("span");
-    label.textContent = lang;
+    label.textContent = labelText || lang;
     const copy = document.createElement("button");
     copy.className = "code-copy";
     copy.textContent = "Copy";
@@ -310,6 +310,32 @@
     return url + (url.includes("?") ? "&" : "?") + "inline=1";
   }
 
+  // A file of code the agent wrote: shown for inspection in its own scrollable
+  // pane, with the same header, highlighting and Copy button as a code block in
+  // the reply. The chip below it still downloads the real file.
+  function addCodeInset(root, f) {
+    const wrap = document.createElement("div");
+    wrap.className = "code-file";
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.className = "language-" + f.preview.language;
+    code.textContent = f.preview.text;   // never innerHTML: this is file content
+    pre.appendChild(code);
+    wrap.appendChild(pre);
+
+    if (f.preview.truncated) {
+      const note = document.createElement("div");
+      note.className = "code-truncated";
+      note.textContent = "Preview truncated — download the file for the rest.";
+      wrap.appendChild(note);
+    }
+    root.appendChild(wrap);
+
+    try { hljs.highlightElement(code); } catch (e) { /* ignore */ }
+    const lines = f.preview.text.replace(/\n$/, "").split("\n").length;
+    decorateCodeBlock(code, `${f.name} · ${lines} line${lines === 1 ? "" : "s"}`);
+  }
+
   function addFileChips(root, files) {
     const all = (files || []).slice();
     if (!all.length) return;
@@ -319,6 +345,8 @@
     const shown = new Set(
       Array.from(root.querySelectorAll("img[src]"), (i) => i.getAttribute("src"))
     );
+    // Same for code the model already quoted in full in its answer.
+    const quoted = Array.from(root.querySelectorAll("pre > code"), (c) => c.textContent);
     const previews = all.filter(
       (f) => f.kind === "image" && !shown.has(inlineUrl(f.url))
     );
@@ -345,6 +373,13 @@
       root.appendChild(gallery);
     }
 
+    for (const f of all) {
+      if (f.kind !== "code" || !f.preview) continue;
+      const body = f.preview.text.trim();
+      if (body && quoted.some((q) => q.includes(body))) continue;
+      addCodeInset(root, f);
+    }
+
     const wrap = document.createElement("div");
     wrap.className = "file-chips";
     for (const f of all) {
@@ -353,7 +388,7 @@
       a.href = f.url;
       a.setAttribute("download", f.name);
       const size = f.size ? ` <span class="file-size">${formatSize(f.size)}</span>` : "";
-      const icon = f.kind === "image" ? "🖼️" : "📄";
+      const icon = f.kind === "image" ? "🖼️" : f.kind === "code" ? "📝" : "📄";
       a.innerHTML = `${icon} <span>${escapeHtml(f.name)}</span>${size}`;
       wrap.appendChild(a);
     }

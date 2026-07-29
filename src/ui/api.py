@@ -134,6 +134,26 @@ _PREVIEW_IMAGE_TYPES = {
     "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
 }
 
+# Text files the UI shows in a scrollable inset beside the download, mapped to
+# the highlight.js language name. Data and binary formats stay downloads: a
+# preview of a spreadsheet or a PDF is worse than opening the real thing.
+_PREVIEW_CODE_LANGS = {
+    ".py": "python", ".js": "javascript", ".mjs": "javascript", ".ts": "typescript",
+    ".jsx": "javascript", ".tsx": "typescript", ".sh": "bash", ".bash": "bash",
+    ".zsh": "bash", ".rb": "ruby", ".go": "go", ".rs": "rust", ".java": "java",
+    ".kt": "kotlin", ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp",
+    ".hpp": "cpp", ".cs": "csharp", ".php": "php", ".swift": "swift", ".r": "r",
+    ".jl": "julia", ".lua": "lua", ".pl": "perl", ".sql": "sql", ".css": "css",
+    ".scss": "scss", ".html": "xml", ".htm": "xml", ".xml": "xml", ".json": "json",
+    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".ini": "ini", ".cfg": "ini",
+    ".md": "markdown", ".txt": "plaintext",
+}
+
+# How much of a code file rides along in the reply payload. Past this the inset
+# shows the head of the file and points at the download for the rest — the
+# preview is for inspection, not for shipping a megabyte through the SSE stream.
+_PREVIEW_CODE_BYTES = 64 * 1024
+
 # Response headers applied to every response — defence in depth alongside the
 # reverse proxy. These don't depend on the request, so they're a module const;
 # HSTS and CSP (which do vary) are added per-request in the middleware.
@@ -246,6 +266,35 @@ def _preview_image_type(path: str) -> Optional[str]:
     """MIME type if this file is an image the UI can render inline, else None."""
     mime = mimetypes.guess_type(path)[0]
     return mime if mime in _PREVIEW_IMAGE_TYPES else None
+
+
+def _code_preview(path: str) -> Optional[dict]:
+    """Head of a text file plus its highlight language, or None if it isn't
+    something worth showing inline (unknown type, unreadable, not text)."""
+    lang = _PREVIEW_CODE_LANGS.get(os.path.splitext(path)[1].lower())
+    if lang is None:
+        return None
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(_PREVIEW_CODE_BYTES + 1)
+    except OSError:
+        return None
+    truncated = len(raw) > _PREVIEW_CODE_BYTES
+    try:
+        # Strict decode: a file with a code extension that isn't valid UTF-8
+        # is not the text it claims to be, so leave it as a download.
+        text = raw[:_PREVIEW_CODE_BYTES].decode("utf-8")
+    except UnicodeDecodeError:
+        if not truncated:
+            return None
+        # A cut mid-character is the cap's doing, not the file's: drop the
+        # partial tail rather than the whole preview.
+        text = raw[:_PREVIEW_CODE_BYTES].decode("utf-8", errors="ignore")
+    if not text.strip():
+        return None
+    if truncated:
+        text = text[:text.rfind("\n") + 1] or text
+    return {"language": lang, "text": text, "truncated": truncated}
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -642,14 +691,20 @@ class WebApiUI:
             if not os.path.isfile(fpath):
                 continue
             fname = os.path.basename(fpath)
-            infos.append({
+            info = {
                 "name": fname,
                 "url": f"/uploads/{session_id}/{urllib.parse.quote(fname)}",
                 "size": os.path.getsize(fpath),
-                # Images the agent produced (charts, extracted pages, renders)
-                # are shown in the reply instead of only offered as a download.
+                # What the agent produced is shown in the reply, not just
+                # offered as a download: images render, code opens in an inset.
                 "kind": "image" if _preview_image_type(fpath) else "file",
-            })
+            }
+            if info["kind"] == "file":
+                preview = _code_preview(fpath)
+                if preview:
+                    info["kind"] = "code"
+                    info["preview"] = preview
+            infos.append(info)
         return infos
 
     def _load_history(self, session: ApiSession) -> list[dict]:
