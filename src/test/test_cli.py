@@ -270,6 +270,30 @@ class TestEnsureMcpServers:
             _ensure_mcp_servers(config)
             mock_thread_instance.start.assert_called_once()
 
+    def test_web_mode_flag_propagated(self, monkeypatch):
+        """Web mode must reach the MCP servers — it hard-blocks installs."""
+        # Swap in a copy: the code under test writes to os.environ, and a plain
+        # delenv has nothing to restore, so the write would leak into the rest
+        # of the suite and silently block installs in unrelated policy tests.
+        monkeypatch.setattr(os, "environ", dict(os.environ))
+        monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
+        config = {"web": True, "mcp": {"servers": []}}
+        with patch("src.cli._is_port_open", return_value=True), \
+             patch("src.cli.threading.Thread"), \
+             patch("src.cli._mcp_servers_ready", return_value=True):
+            _ensure_mcp_servers(config)
+        assert os.environ.get("ONIT_WEB_MODE") == "1"
+
+    def test_web_mode_flag_absent_outside_web(self, monkeypatch):
+        monkeypatch.setattr(os, "environ", dict(os.environ))
+        monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
+        config = {"mcp": {"servers": []}}
+        with patch("src.cli._is_port_open", return_value=True), \
+             patch("src.cli.threading.Thread"), \
+             patch("src.cli._mcp_servers_ready", return_value=True):
+            _ensure_mcp_servers(config)
+        assert "ONIT_WEB_MODE" not in os.environ
+
 
 # ── Web UI OAuth credential resolution ──────────────────────────────────────
 

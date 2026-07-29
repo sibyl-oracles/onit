@@ -517,6 +517,9 @@ class TestSettingsRulesUIGating:
 def enforced(monkeypatch, tmp_path):
     """Enable allowlist enforcement with isolated settings."""
     monkeypatch.setenv("ONIT_COMMAND_ALLOWLIST", "1")
+    # Web mode hard-blocks installs; a leaked value from the ambient environment
+    # would flip the opt-in tests below to a refusal for the wrong reason.
+    monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
     monkeypatch.setenv("ONIT_SETTINGS", str(tmp_path / "missing-settings.json"))
     monkeypatch.setattr(bash_mod, "SETTINGS_PATH", None)
     monkeypatch.setattr(bash_mod, "_PERMISSIONS_CACHE", None)
@@ -585,6 +588,93 @@ class TestCommandAllowlist:
         assert err is not None and "allowlist" in err
         monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
         assert bash_mod._validate_bash_command("onit-install-ml torch") is None
+
+    def test_web_mode_refuses_installs(self, enforced, monkeypatch):
+        """Web mode blocks installs even with the opt-in set."""
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
+        for cmd in (
+            "pip install requests==2.31.0",
+            "python -m pip install requests==2.31.0",
+            "uv pip install requests==2.31.0",
+            "uv add requests==2.31.0",
+            "pipx install black==24.1.0",
+            "npm install left-pad@1.3.0",
+            "yarn add left-pad@1.3.0",
+            "npx cowsay@1.5.0",
+            "gem install rake",
+        ):
+            err = bash_mod._validate_bash_command(cmd)
+            assert err is not None, f"web mode should refuse: {cmd}"
+            assert "web UI mode" in err, f"wrong refusal reason for {cmd}: {err}"
+
+    def test_system_pkg_managers_refused_in_web_mode(self, enforced, monkeypatch):
+        """System package managers stay blocked in web mode.
+
+        These are refused by an earlier layer than the web-mode check (apt is
+        rejected outright, and the managers are absent from the default
+        allowlist), so the reason text differs per command. This asserts the
+        outcome — never installable — not which layer caught it.
+        """
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
+        monkeypatch.setenv("ONIT_ALLOWED_COMMANDS", "apt-get,dnf,apk")
+        for cmd in ("apt-get install curl=8.5.0", "dnf install curl",
+                    "apk add curl"):
+            assert bash_mod._validate_bash_command(cmd) is not None, cmd
+
+    def test_web_mode_refusal_is_not_overridable_advice(self, enforced, monkeypatch):
+        """The message must not send the agent chasing the env-var override."""
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        err = bash_mod._validate_bash_command("pip install requests==2.31.0")
+        assert "Set ONIT_ALLOW_PACKAGE_INSTALL=1" not in err
+        assert "not an overridable setting" in err
+
+    def test_web_mode_blocks_onit_install_ml(self, enforced, monkeypatch):
+        """The curated ML installer drops out of the allowlist in web mode."""
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
+        err = bash_mod._validate_bash_command("onit-install-ml torch")
+        assert err is not None and "allowlist" in err
+
+    def test_bare_metal_web_keeps_the_optin(self, enforced, monkeypatch):
+        """Web mode alone is the local dev loop — the opt-in still works there.
+
+        The hard block is scoped to the containerized web UI; `onit serve web`
+        on a developer's machine must not lose pip.
+        """
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
+        assert bash_mod._validate_bash_command(
+            "pip install requests==2.31.0") is None
+
+        monkeypatch.delenv("ONIT_ALLOW_PACKAGE_INSTALL", raising=False)
+        err = bash_mod._validate_bash_command("pip install requests==2.31.0")
+        assert err is not None and "disabled by default" in err
+        assert "web UI mode" not in err
+
+    def test_container_terminal_keeps_the_optin(self, enforced, monkeypatch):
+        """Container without web mode is terminal/A2A/gateway — opt-in intact."""
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
+        monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
+        assert bash_mod._validate_bash_command(
+            "pip install requests==2.31.0") is None
+        assert bash_mod._validate_bash_command("onit-install-ml torch") is None
+
+    def test_web_mode_allows_non_install_commands(self, enforced, monkeypatch):
+        """The block is scoped to installs — normal work still runs."""
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        assert bash_mod._validate_bash_command("pip list") is None
+        assert bash_mod._validate_bash_command("pip show numpy") is None
+        assert bash_mod._validate_bash_command("python train.py") is None
+        assert bash_mod._validate_bash_command("git status") is None
 
     def test_serve_start_honors_allowlist(self, enforced, tmp_path):
         result = json.loads(bash_mod.serve(

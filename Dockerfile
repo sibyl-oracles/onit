@@ -12,6 +12,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Switch apt sources to HTTPS (some networks block outbound port 80 to
 # Canonical mirrors). ca-certificates isn't preinstalled, so disable TLS
 # verification for this one fetch — it's removed right after.
+#
+# NOTE: this does not weaken package integrity. apt independently verifies the
+# Release file's GPG signature against ubuntu-keyring regardless of transport,
+# so a MITM cannot substitute packages. Verify-Peer=false only gives up TLS
+# confidentiality (which packages we fetch) for the duration of this one layer.
+# Do not "fix" this by dropping the HTTPS rewrite — that reintroduces the
+# port-80 failure mode on restricted networks.
 RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources \
     && echo 'Acquire::https::Verify-Peer "false";' > /etc/apt/apt.conf.d/99no-verify \
     && apt-get update && apt-get install -y --no-install-recommends \
@@ -37,12 +44,31 @@ RUN pip install ".[all]"
 # Small, universally useful, and keeps the image lean. Heavy ML packages
 # (torch, transformers, etc) are NOT baked in — the agent installs them on
 # demand via `onit-install-ml` into the persistent data volume (PIP_TARGET).
+#
+# Selection criterion: pure file/CPU work with no daemon, no listening socket,
+# and no credential surface. polars/duckdb in particular give real analytical
+# database capability without running a server process.
 RUN pip install \
         numpy \
         scipy \
         pandas \
         matplotlib \
-        scikit-learn
+        scikit-learn \
+        pyarrow \
+        polars \
+        duckdb \
+        seaborn \
+        plotly \
+        pillow \
+        openpyxl \
+        lxml \
+        beautifulsoup4 \
+        pyyaml \
+        httpx \
+        tqdm \
+        ruff \
+        mypy \
+        ipython
 
 
 # ── Runtime stage ───────────────────────────────────────────────────
@@ -81,7 +107,32 @@ ENV DEBIAN_FRONTEND=noninteractive \
     XDG_CACHE_HOME=/home/onit/data/.cache \
     MPLCONFIGDIR=/home/onit/data/.matplotlib
 
-# Minimal runtime deps only — no compiler. See build stage for TLS note.
+# Runtime deps. This image is a standalone development environment, so it
+# deliberately carries a full toolchain (build-essential, and nvcc from the
+# devel base) — agent-generated code is expected to compile here.
+#
+# Adding packages does not weaken the security posture: confinement comes from
+# the runtime (read-only rootfs, cap_drop=ALL, no-new-privileges, non-root
+# USER, and the bash command allowlist in
+# src/mcp/servers/tasks/os/bash/command_policy.py), not from the image being
+# sparse. The bar for adding something here is that it must NOT:
+#   1. ship a setuid/setcap binary (sudo, fusermount, mount, pkexec)
+#   2. be a client to a host control plane (docker CLI, kubectl, virsh) —
+#      those are container-escape tooling the moment a socket is exposed
+#   3. turn the sandbox into a network pivot (nmap, netcat, socat, tcpdump);
+#      host.docker.internal + the bridge network give outbound reach to host
+#      services and the LAN, which is the one boundary the runtime flags do
+#      not close
+#   4. require a third-party apt repo (a new GPG key is trusted image-wide)
+#
+# Every executable added below is already named in the command allowlist (the
+# rest are shared libraries and fonts, not commands), so installing them grants
+# no capability the policy hasn't already sanctioned — it only stops the agent
+# from hitting "command not found" on tools it is explicitly permitted to run.
+# Keep --no-install-recommends: recommends are how dbus/avahi and other daemons
+# arrive uninvited.
+#
+# See build stage for the TLS note.
 # ubuntu:24.04 ships a default `ubuntu` user at UID/GID 1000 — remove it
 # before creating our own.
 RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources \
@@ -98,6 +149,29 @@ RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://s
         build-essential \
         curl \
         wget \
+        # search / data / shell utilities
+        ripgrep \
+        jq \
+        sqlite3 \
+        less \
+        patch \
+        bsdextrautils \
+        # archives (allowlist names 7z, zip, unzip, zstd, xz)
+        zip \
+        unzip \
+        xz-utils \
+        zstd \
+        p7zip-full \
+        # native build toolchain beyond build-essential
+        cmake \
+        ninja-build \
+        pkg-config \
+        git-lfs \
+        # headless rendering deps for matplotlib / OpenCV — without these,
+        # importing cv2 or saving a figure fails on a missing libGL/glib.
+        fonts-dejavu-core \
+        libgl1 \
+        libglib2.0-0 \
     && rm -f /etc/apt/apt.conf.d/99no-verify \
     && rm -rf /var/lib/apt/lists/* \
     && (userdel -r ubuntu 2>/dev/null || true) \

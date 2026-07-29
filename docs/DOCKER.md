@@ -72,6 +72,49 @@ The container is started with hardening flags:
   `--container-allow-installs` is passed, and installs must then be
   version-pinned (`pip install name==1.2.3`). Repeated policy violations
   auto-contain the bash MCP server (see README "Auto-Containment").
+- **The containerized web UI refuses all package installs, unconditionally**
+  (`--container-allow-installs` does not apply). See
+  [No package installs in web UI mode](#no-package-installs-in-web-ui-mode).
+
+## No package installs in web UI mode
+
+When OnIt serves the web UI **inside the container** — the `onit-web` compose
+service, or `onit --container serve web` — the bash MCP server refuses every
+package-manager install. `pip`, `uv`, `pipx`, `npm`, `yarn`, `pnpm`, `gem`,
+`cargo` and the system package managers are all covered, as is the
+`onit-install-ml` helper.
+
+This is **not** an overridable setting. `ONIT_ALLOW_PACKAGE_INSTALL=1` and
+`--container-allow-installs` have no effect here. They remain available for
+terminal, A2A and gateway modes, and for bare-metal `onit serve web`.
+
+Why this mode specifically: the containerized web UI is a long-lived,
+network-facing service shared by every user and every session. An install there
+mutates state that all of them depend on, and it fetches code from a remote
+index at the request of whoever is typing into the chat box. A single operator
+opting in for their own terminal session is a different risk, so that opt-in
+does not carry over.
+
+Bare-metal `onit serve web` is deliberately **not** covered — that is the local
+development loop, where a non-overridable block would be friction rather than
+protection. If you deploy the web UI on bare metal in production, set
+`ONIT_COMMAND_ALLOWLIST=1` to get allowlist enforcement, and simply leave
+`ONIT_ALLOW_PACKAGE_INSTALL` unset so installs stay off by default.
+
+The agent is told about the restriction in its instructions, so it does not
+discover the rule by trying and retrying. If a task genuinely needs a package
+that is not present, the agent is instructed to name it and stop.
+
+**Adding a package is an image change.** Add it to the `Dockerfile`, rebuild,
+and redeploy — reviewed and reproducible, rather than installed at runtime by
+the agent. The image already carries a broad default stack; see
+[Preinstalled ML packages](#preinstalled-ml-packages).
+
+Mechanics, if you need to trace it: `serve web` sets `ONIT_WEB_MODE=1` (in
+`_ensure_mcp_servers`, `src/cli.py`), the Dockerfile sets `ONIT_CONTAINER=1`,
+and `_package_installs_allowed()` in
+`src/mcp/servers/tasks/os/bash/mcp_server.py` returns `False` when both are
+present.
 
 ## What crosses the boundary
 
@@ -127,17 +170,37 @@ you need to rebuild the image with a CUDA torch wheel — see
 
 ## Preinstalled ML packages
 
-The container image ships with a default machine-learning stack so the agent
-can run ML code without `pip install` round-trips at execution time:
+The image ships a broad default stack so the agent can work without `pip
+install` round-trips at execution time — which matters most in web UI mode,
+where installs are refused outright.
 
-- `torch`, `torchvision`, `torchaudio` (CPU-only wheels)
-- `numpy`, `pandas`, `scikit-learn`
-- `matplotlib`, `einops`
+Baked into the image:
 
-CUDA is intentionally not included — containers have no GPU access by
-default, and CUDA wheels would add roughly 3 GB to the image. For GPU
-workloads, build a derivative image that replaces the CPU wheels with the
-appropriate CUDA build.
+- **Numeric / data**: `numpy`, `scipy`, `pandas`, `pyarrow`, `polars`, `duckdb`
+- **Modeling**: `scikit-learn`
+- **Plotting**: `matplotlib`, `seaborn`, `plotly`
+- **Files / parsing**: `pillow`, `openpyxl`, `lxml`, `beautifulsoup4`, `pyyaml`
+- **Misc**: `httpx`, `tqdm`, `ruff`, `mypy`, `ipython`, `pytest`
+
+**`torch` is deliberately not baked in.** CUDA wheels add several GB, and the
+right wheel depends on the host driver. Instead the image provides
+`onit-install-ml`, which picks a CUDA-matched wheel and installs into the
+persistent data volume (`PIP_TARGET`), so the cost is paid once per host:
+
+```bash
+onit-install-ml            # torch + Hugging Face + extras
+onit-install-ml torch      # torch / torchvision / torchaudio only
+onit-install-ml hf         # transformers, datasets, accelerate, ...
+```
+
+The base image is `nvidia/cuda:12.6.3-devel`, so `nvcc` and the CUDA headers
+are present for code that compiles kernels.
+
+> **Containerized web UI:** `onit-install-ml` is a package installer, so it is
+> blocked there along with everything else — see
+> [No package installs in web UI mode](#no-package-installs-in-web-ui-mode).
+> If your web deployment needs torch, bake it into a derivative image at build
+> time rather than relying on the on-demand helper.
 
 ## Combining with `--sandbox`
 

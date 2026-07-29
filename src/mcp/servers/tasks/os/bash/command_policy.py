@@ -31,6 +31,7 @@ arbitrary code from files. The allowlist is defense-in-depth on top of the
 container boundary, not a substitute for it.
 '''
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -553,6 +554,30 @@ def _blocked(msg: str) -> str:
     return f"Command blocked: {msg}"
 
 
+def _install_disabled_msg() -> str:
+    """Explain why an install was refused, and whether it can be re-enabled.
+
+    The containerized web UI is a hard refusal, so it gets its own wording. The
+    generic message names the env var to set; repeating that there would send
+    the agent into a retry loop chasing an override that is deliberately
+    unreachable. Both conditions must match the gate in _package_installs_allowed
+    (bash mcp_server.py) — a mismatch would hand the agent the wrong advice.
+    """
+    if (os.environ.get("ONIT_WEB_MODE") == "1"
+            and os.environ.get("ONIT_CONTAINER") == "1"):
+        return _blocked(
+            "package installation is permanently disabled in web UI mode. This "
+            "is not an overridable setting — ONIT_ALLOW_PACKAGE_INSTALL and "
+            "--container-allow-installs have no effect here. Do not retry, and "
+            "do not look for another way to install. Solve the task with the "
+            "packages already present, or tell the user which package the image "
+            "would need so an operator can add it to the Dockerfile and rebuild.")
+    return _blocked(
+        "package installation is disabled by default. Set "
+        "ONIT_ALLOW_PACKAGE_INSTALL=1 (or use --container-allow-installs) "
+        "to permit installs of pinned package versions.")
+
+
 def _check_pip_install(args: list, allow_installs: bool) -> str | None:
     sub = None
     sub_idx = -1
@@ -564,10 +589,7 @@ def _check_pip_install(args: list, allow_installs: bool) -> str | None:
     if sub not in ("install", "uninstall", "download"):
         return None
     if not allow_installs:
-        return _blocked(
-            "package installation is disabled by default. Set "
-            "ONIT_ALLOW_PACKAGE_INSTALL=1 (or use --container-allow-installs) "
-            "to permit installs of pinned package versions.")
+        return _install_disabled_msg()
     if sub == "uninstall":
         return None
     rest = args[sub_idx + 1:]
@@ -603,10 +625,7 @@ def _check_node_pkg(exe: str, args: list, allow_installs: bool) -> str | None:
     else:
         return None
     if not allow_installs:
-        return _blocked(
-            "package installation is disabled by default. Set "
-            "ONIT_ALLOW_PACKAGE_INSTALL=1 (or use --container-allow-installs) "
-            "to permit installs of pinned package versions.")
+        return _install_disabled_msg()
     if sub in ("uninstall", "remove", "rm", "unlink"):
         return None
     if sub == "ci":
@@ -633,9 +652,7 @@ def _check_package_policy(exe: str, args: list,
         if sub in ("install", "add", "remove", "purge", "erase", "upgrade",
                    "dist-upgrade", "update", "-S", "-R", "-U"):
             if not allow_installs:
-                return _blocked(
-                    "package installation is disabled by default. Set "
-                    "ONIT_ALLOW_PACKAGE_INSTALL=1 to permit pinned installs.")
+                return _install_disabled_msg()
             if sub in ("install", "add"):
                 for w in positionals[1:]:
                     if not _EQ_PIN_RE.match(w.text):
@@ -663,9 +680,7 @@ def _check_package_policy(exe: str, args: list,
         sub = positionals[0].text if positionals else None
         if sub in ("add", "tool", "sync"):
             if not allow_installs:
-                return _blocked(
-                    "package installation is disabled by default. Set "
-                    "ONIT_ALLOW_PACKAGE_INSTALL=1 to permit pinned installs.")
+                return _install_disabled_msg()
             if sub == "add":
                 for w in positionals[1:]:
                     if not _PIP_PIN_RE.match(w.text):
@@ -679,9 +694,7 @@ def _check_package_policy(exe: str, args: list,
         sub = positionals[0].text if positionals else None
         if sub in ("install", "run", "upgrade"):
             if not allow_installs:
-                return _blocked(
-                    "package installation is disabled by default. Set "
-                    "ONIT_ALLOW_PACKAGE_INSTALL=1 to permit pinned installs.")
+                return _install_disabled_msg()
             for w in positionals[1:]:
                 if not w.text.startswith("-") and not _PIP_PIN_RE.match(w.text):
                     return _blocked(
@@ -696,9 +709,7 @@ def _check_package_policy(exe: str, args: list,
         positionals = _positionals(args, set())
         if positionals and positionals[0].text == "install":
             if not allow_installs:
-                return _blocked(
-                    "package installation is disabled by default. Set "
-                    "ONIT_ALLOW_PACKAGE_INSTALL=1 to permit pinned installs.")
+                return _install_disabled_msg()
             texts = [w.text for w in args]
             if "-v" not in texts and "--version" not in texts \
                     and not any(":" in w.text for w in positionals[1:]):
@@ -713,9 +724,7 @@ def _check_package_policy(exe: str, args: list,
         if (exe == "cargo" and sub == "install") or \
                 (exe == "go" and sub in ("install", "get")):
             if not allow_installs:
-                return _blocked(
-                    "package installation is disabled by default. Set "
-                    "ONIT_ALLOW_PACKAGE_INSTALL=1 to permit pinned installs.")
+                return _install_disabled_msg()
             texts = [w.text for w in positionals[1:]]
             if "--version" not in [w.text for w in args] and \
                     not all("@" in t for t in texts if not t.startswith("-")):
@@ -728,9 +737,7 @@ def _check_package_policy(exe: str, args: list,
         sub = positionals[0].text if positionals else None
         if sub in ("install", "create", "update"):
             if not allow_installs:
-                return _blocked(
-                    "package installation is disabled by default. Set "
-                    "ONIT_ALLOW_PACKAGE_INSTALL=1 to permit pinned installs.")
+                return _install_disabled_msg()
             if sub == "install":
                 for w in positionals[1:]:
                     if not _EQ_PIN_RE.match(w.text):

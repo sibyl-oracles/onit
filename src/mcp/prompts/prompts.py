@@ -16,6 +16,7 @@
 
 from fastmcp import FastMCP
 from datetime import datetime
+import os
 import yaml
 
 import logging
@@ -204,6 +205,32 @@ Do not stop until **all** are true:
 
 """
 
+   # The containerized web UI refuses every package install at the policy layer
+   # (see _package_installs_allowed in the bash MCP server). Say so up front:
+   # without this the agent discovers the rule only by trying, and burns turns
+   # retrying pip, then uv, then a vendored wheel, before giving up. Goes in the
+   # static half so it stays prefix-cacheable.
+   #
+   # Conditions must match that gate exactly — announcing a restriction that is
+   # not enforced (or enforcing one never announced) is worse than either alone.
+   no_install_block = ""
+   if (os.environ.get("ONIT_WEB_MODE") == "1"
+           and os.environ.get("ONIT_CONTAINER") == "1"):
+      no_install_block = """
+## Package Installation Is Disabled
+This environment is sealed. You **cannot** install packages, and no flag,
+environment variable, or alternate tool will change that:
+- `pip`, `uv`, `pipx`, `npm`, `yarn`, `pnpm`, `gem`, `cargo`, `apt` installs are refused.
+- So are workarounds: vendoring a wheel, `curl | sh`, `python -m pip`, building from source.
+
+Work with what is already installed. Check first (`pip list`, `python -c "import x"`)
+rather than assuming a package is missing. If a task genuinely cannot be done
+with the available packages, say so plainly and name the package that would be
+needed — an operator adds it to the Dockerfile and rebuilds. Do not retry the
+install, and do not present a failed install as the reason the task is blocked
+without naming the package.
+"""
+
    # Add research and citation instructions based on available search tools
    research_block = ""
    if local_search_available or web_search_available:
@@ -334,12 +361,13 @@ Never state an email address or phone number that did not appear verbatim in a t
       # Unsplit and in the original order: a custom template owns the whole
       # preamble, and the caller keeps sending it as one user message.
       instruction = (header + topic_block + file_block + sandbox_block
-                     + research_block + instructions_block)
+                     + no_install_block + research_block + instructions_block)
       if not task_in_template:
          instruction += task_block
       return instruction
 
-   static = header + topic_block + sandbox_block + research_block + instructions_block
+   static = (header + topic_block + sandbox_block + no_install_block
+             + research_block + instructions_block)
    volatile = context_block + file_block + task_block
    return static + INSTRUCTION_SPLIT + volatile
 

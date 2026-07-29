@@ -170,6 +170,17 @@ class TestAllowlist:
 # ── package-manager policy ─────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _no_web_mode(monkeypatch):
+    """Keep ONIT_WEB_MODE out of these tests.
+
+    Web mode rewrites the refusal text (installs become unconditional), so a
+    value leaking in from the ambient environment or another test would fail
+    the message assertions below for the wrong reason.
+    """
+    monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
+
+
 class TestPackagePolicy:
     def test_installs_blocked_by_default(self):
         blocked("pip install requests", "disabled by default")

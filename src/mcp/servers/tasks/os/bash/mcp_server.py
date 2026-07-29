@@ -778,6 +778,9 @@ def _check_permission_rules(command: str) -> str | None:
 #   ONIT_COMMAND_ALLOWLIST=0  disable (even inside the container)
 # Package managers are blocked under allowlist enforcement unless
 # ONIT_ALLOW_PACKAGE_INSTALL=1, and then only version-pinned installs pass.
+# Exception: in the containerized web UI (ONIT_WEB_MODE=1 and ONIT_CONTAINER=1)
+# installs are refused unconditionally and ONIT_ALLOW_PACKAGE_INSTALL is
+# ignored — see _package_installs_allowed.
 
 
 def _allowlist_enforced() -> bool:
@@ -789,7 +792,32 @@ def _allowlist_enforced() -> bool:
     return _in_container()
 
 
+def _in_web_mode() -> bool:
+    """True when serving the web UI (`onit serve web` sets ONIT_WEB_MODE=1)."""
+    return os.environ.get("ONIT_WEB_MODE") == "1"
+
+
 def _package_installs_allowed() -> bool:
+    """Whether package-manager install subcommands may run at all.
+
+    The containerized web UI is a hard refusal that ONIT_ALLOW_PACKAGE_INSTALL
+    cannot lift. It is a long-lived, multi-user, network-facing service: an
+    install there mutates state shared by every session and every user, and it
+    pulls code from a remote index at the request of whoever is typing into the
+    chat box. That is a different risk than a single operator on a terminal
+    opting in for their own session, so the opt-in does not carry over. The
+    image is the unit of change instead — packages belong in the Dockerfile,
+    reviewed and rebuilt, not installed at runtime by the agent.
+
+    Both conditions are required. Web mode alone is not enough: `onit serve web`
+    on bare metal is the local development loop, where blocking installs outright
+    (with no override, by design) would be pure friction rather than protection.
+
+    Returning False here also removes `onit-install-ml` from the allowlist (see
+    _allowed_commands), so the curated ML installer is refused there too.
+    """
+    if _in_web_mode() and _in_container():
+        return False
     return os.environ.get("ONIT_ALLOW_PACKAGE_INSTALL") == "1"
 
 

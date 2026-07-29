@@ -347,3 +347,41 @@ class TestResearchFanOut:
             local_search_available=True, max_documents="null",
         )
         assert "at most 6" in result
+
+
+class TestWebModeNoInstallBlock:
+    """Web mode hard-blocks package installs in the bash MCP server; the
+    instruction must say so up front, or the agent only finds out by trying."""
+
+    @pytest.mark.asyncio
+    async def test_block_present_in_web_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "Package Installation Is Disabled" in result
+        assert "pip" in result
+
+    @pytest.mark.asyncio
+    async def test_block_absent_outside_web_mode(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ONIT_WEB_MODE", raising=False)
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "Package Installation Is Disabled" not in result
+
+    @pytest.mark.asyncio
+    async def test_block_absent_for_bare_metal_web(self, tmp_path, monkeypatch):
+        """Web mode alone does not block installs, so it must not claim to."""
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "Package Installation Is Disabled" not in result
+
+    @pytest.mark.asyncio
+    async def test_block_lands_in_static_half(self, tmp_path, monkeypatch):
+        """It is standing policy, not per-task context, so it must sit in the
+        prefix-cacheable half ahead of INSTRUCTION_SPLIT."""
+        monkeypatch.setenv("ONIT_WEB_MODE", "1")
+        monkeypatch.setenv("ONIT_CONTAINER", "1")
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        static, _ = split_instruction(result)
+        assert "Package Installation Is Disabled" in static
