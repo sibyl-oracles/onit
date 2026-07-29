@@ -74,10 +74,22 @@ and survives server restarts.
 | `web_require_auth` | Set `false` to allow running without login | `true` |
 | `web_html_preview` | Run generated `.html` files in a sandboxed frame in the reply. Set `false` to serve them as source and a download only | `true` |
 
-A previewed page is framed with `sandbox="allow-scripts allow-modals
-allow-pointer-lock"` — no `allow-same-origin` — and served under its own CSP
-(`default-src 'none'`, `connect-src 'none'`), so it has an opaque origin, no
-access to the session's cookies, storage or DOM, and no network of any kind.
+A previewed page is framed with `sandbox` but never `allow-same-origin`, and
+the response repeats that as a CSP `sandbox` directive so a page opened in its
+own tab is treated the same way. The document therefore has an opaque origin:
+it cannot read the session's cookies, storage or DOM, no credentials are sent
+on anything it requests, and responses from this server are unreadable to it
+(CORS). Because it has no storage, the preview injects an in-memory
+`localStorage`/`sessionStorage` stand-in — state there lasts one sitting and is
+never persisted. The file on disk, the download and the source view are
+unmodified.
+
+`/preview/<session>/…` serves the session directory as the app's web root, so
+an app split into `index.html` + `app.js` + `style.css` loads its own parts;
+paths are resolved through `realpath` and refused if they leave the directory.
+What a previewed page may *load* (its own files, a CDN library, a webfont) is
+not restricted — it has to behave the way it does when you open the file
+locally.
 
 
 Credentials are resolved in order: config YAML → environment variable →

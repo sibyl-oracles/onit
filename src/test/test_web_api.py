@@ -336,40 +336,87 @@ class TestWebPreview:
         self._write_page(session)
         res = client.get(f"/preview/{sid}/game.html")
         assert res.status_code == 200
-        assert res.text == self.PAGE
+        assert "<h1>Tic tac toe</h1><script>let turn='X'</script>" in res.text
         assert res.headers["content-type"].startswith("text/html")
         csp = res.headers["content-security-policy"]
-        # An opaque origin (no allow-same-origin) with no network of any kind.
-        assert "sandbox allow-scripts allow-modals allow-pointer-lock" in csp
+        # The isolation that matters: an opaque origin, and nobody else framing it.
+        assert csp.startswith("sandbox allow-scripts")
         assert "allow-same-origin" not in csp
-        assert "default-src 'none'" in csp
-        assert "connect-src 'none'" in csp
+        assert "allow-top-navigation" not in csp
         assert "frame-ancestors 'self'" in csp
+        assert "object-src 'none'" in csp
         # Framing is the point, so this route overrides the global DENY —
         # and the middleware must not have put it back.
         assert res.headers["x-frame-options"] == "SAMEORIGIN"
         assert "attachment" not in res.headers.get("content-disposition", "")
 
-    def test_other_routes_keep_the_strict_defaults(self, client):
-        res = client.get("/")
-        assert res.headers["x-frame-options"] == "DENY"
-        assert "sandbox" not in res.headers["content-security-policy"]
-
-    def test_only_html_is_previewable(self, client, ui):
+    def test_storage_shim_injected_before_page_scripts(self, client, ui):
+        # Sandboxed pages have no storage; without this the first
+        # localStorage read throws and the app never draws.
         sid, session = ui._get_or_create_session()
-        with open(os.path.join(session.data_path, "app.js"), "w") as f:
+        self._write_page(session)
+        body = client.get(f"/preview/{sid}/game.html").text
+        assert body.index("localStorage") < body.index("<h1>Tic tac toe</h1>")
+        assert body.startswith("<!doctype html>")     # doctype stays first
+
+    def test_source_on_disk_is_untouched(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        path = self._write_page(session)
+        client.get(f"/preview/{sid}/game.html")
+        with open(path) as f:
+            assert f.read() == self.PAGE
+        assert ui._file_infos([path], sid)[0]["preview"]["text"] == self.PAGE
+
+    def test_app_can_load_its_own_files(self, client, ui):
+        # Agents routinely split an app into page + script + stylesheet, and
+        # relative URLs resolve back into the preview path.
+        sid, session = ui._get_or_create_session()
+        os.makedirs(os.path.join(session.data_path, "assets"), exist_ok=True)
+        with open(os.path.join(session.data_path, "game.js"), "w") as f:
+            f.write("console.log(1)")
+        with open(os.path.join(session.data_path, "assets", "style.css"), "w") as f:
+            f.write("body { color: red }")
+        js = client.get(f"/preview/{sid}/game.js")
+        css = client.get(f"/preview/{sid}/assets/style.css")
+        assert js.status_code == css.status_code == 200
+        assert js.headers["content-type"].startswith("text/javascript")
+        assert css.headers["content-type"].startswith("text/css")
+        # Served under the same sandbox, so a direct hit is inert too.
+        assert js.headers["content-security-policy"].startswith("sandbox")
+
+    def test_only_html_gets_a_preview_frame(self, ui):
+        sid, session = ui._get_or_create_session()
+        path = os.path.join(session.data_path, "app.js")
+        with open(path, "w") as f:
             f.write("alert(1)")
-        assert client.get(f"/preview/{sid}/app.js").status_code == 404
+        assert ui._file_infos([path], sid)[0]["kind"] == "code"
 
     def test_traversal_and_unknown_session_rejected(self, client, ui):
         sid, session = ui._get_or_create_session()
         self._write_page(session)
-        assert client.get(f"/preview/{sid}/..%2f..%2fsecret.html").status_code == 404
+        with open(os.path.join(ui.data_path, "secret.html"), "w") as f:
+            f.write("<p>not this session's</p>")
+        for path in ("..%2fsecret.html", "../secret.html", "..%2f..%2fetc%2fpasswd",
+                     "%2e%2e%2fsecret.html"):
+            assert client.get(f"/preview/{sid}/{path}").status_code == 404, path
         assert client.get(f"/preview/{uuid.uuid4()}/game.html").status_code == 404
+
+    def test_symlink_out_of_the_session_rejected(self, ui, client):
+        sid, session = ui._get_or_create_session()
+        outside = os.path.join(ui.data_path, "outside.html")
+        with open(outside, "w") as f:
+            f.write("<p>elsewhere</p>")
+        os.symlink(outside, os.path.join(session.data_path, "link.html"))
+        assert client.get(f"/preview/{sid}/link.html").status_code == 404
 
     def test_missing_file_is_404(self, client, ui):
         sid, _ = ui._get_or_create_session()
         assert client.get(f"/preview/{sid}/nope.html").status_code == 404
+
+    def test_other_routes_keep_the_strict_defaults(self, client):
+        res = client.get("/")
+        assert res.headers["x-frame-options"] == "DENY"
+        assert "sandbox" not in res.headers["content-security-policy"]
 
     def test_disabled_by_config(self, tmp_path, bg_loop):
         off = WebApiUI(data_path=str(tmp_path / "d"),

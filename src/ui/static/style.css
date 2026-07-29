@@ -403,6 +403,14 @@ textarea { font-family: var(--font); }
      a white canvas rather than letting the dark chat show through. */
   background: #fff;
 }
+.web-issues {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
 .web-source { margin-top: 6px; }
 .web-source > summary {
   cursor: pointer;

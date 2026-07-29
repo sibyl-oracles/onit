@@ -153,26 +153,95 @@ _PREVIEW_CODE_LANGS = {
 # agent wrote (a game, a form, a chart page) is usable in the reply.
 _PREVIEW_WEB_EXTS = {".html", ".htm"}
 
-# CSP for a page served to that frame. `sandbox` *without* allow-same-origin
-# gives the document an opaque origin: no access to the SPA's cookies, storage
-# or DOM, and no credentials on anything it requests. The source directives
-# then keep it self-contained — its own inline script and styles run, but
-# `default-src 'none'` blocks every external load and `connect-src 'none'`
-# leaves it no way to phone home. This header must survive the security
-# middleware, which is why that applies its defaults with setdefault.
+# CSP for a page served to that frame. The isolation that matters is `sandbox`
+# *without* allow-same-origin: the document gets an opaque origin, so it cannot
+# read this app's cookies, storage or DOM, and no credentials ride along on
+# anything it requests. What it may *load* is deliberately not restricted much
+# — a generated app that pulls in its own stylesheet, a CDN library or a
+# webfont has to behave the way it does when you open the file locally, and
+# locking those down only produced blank pages. Restricting them would not add
+# much anyway: a page that can render its own markup can already put a
+# convincing form on screen, external script or not.
 _PREVIEW_CSP = "; ".join([
-    "sandbox allow-scripts allow-modals allow-pointer-lock",
-    "default-src 'none'",
-    "script-src 'unsafe-inline' 'unsafe-eval' blob:",
-    "style-src 'unsafe-inline'",
-    "img-src data: blob:",
-    "media-src data: blob:",
-    "font-src data:",
-    "connect-src 'none'",
-    "form-action 'none'",
-    "base-uri 'none'",
-    "frame-ancestors 'self'",
+    "sandbox allow-scripts allow-modals allow-forms allow-popups "
+    "allow-pointer-lock allow-downloads",
+    "default-src 'self' data: blob: https: http:",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http:",
+    "style-src 'self' 'unsafe-inline' data: https: http:",
+    "img-src 'self' data: blob: https: http:",
+    "font-src 'self' data: https: http:",
+    "media-src 'self' data: blob: https: http:",
+    "connect-src 'self' data: blob: https: http:",
+    "object-src 'none'",          # no plugins
+    "frame-ancestors 'self'",     # only this app may frame it
 ])
+
+# Injected at the top of a previewed page, and only there — the file on disk
+# and the source view keep the agent's exact bytes.
+_PREVIEW_SHIM = """<script>
+(function () {
+  // The frame has no origin, so localStorage, sessionStorage and document.cookie
+  // throw on first touch. Generated apps routinely read them at startup, and an
+  // exception there kills the page before it draws — stand in equivalents that
+  // live for one sitting instead.
+  function memory() {
+    var data = {};
+    return {
+      get length() { return Object.keys(data).length; },
+      key: function (i) { var k = Object.keys(data); return i < k.length ? k[i] : null; },
+      getItem: function (k) {
+        return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
+      },
+      setItem: function (k, v) { data[k] = String(v); },
+      removeItem: function (k) { delete data[k]; },
+      clear: function () { data = {}; }
+    };
+  }
+  ["localStorage", "sessionStorage"].forEach(function (name) {
+    try { window[name].getItem("__onit__"); return; } catch (e) { /* sandboxed */ }
+    try {
+      Object.defineProperty(window, name, { value: memory(), configurable: true });
+    } catch (e) { /* nothing more we can do */ }
+  });
+  try { void document.cookie; } catch (e) {
+    var jar = [];
+    try {
+      Object.defineProperty(document, "cookie", {
+        configurable: true,
+        get: function () { return jar.join("; "); },
+        set: function (v) { jar.push(String(v).split(";")[0]); }
+      });
+    } catch (e2) { /* ignore */ }
+  }
+  // Tell the host why a page came up blank: a missing file or a first-line
+  // exception is otherwise invisible from outside the sandbox.
+  function report(text) {
+    try { parent.postMessage({ __onit_preview: "issue", text: String(text).slice(0, 200) }, "*"); }
+    catch (e) { /* ignore */ }
+  }
+  window.addEventListener("error", function (ev) {
+    var el = ev.target;
+    if (el && el !== window && (el.src || el.href)) {
+      report("Could not load " + String(el.src || el.href).split("/").pop());
+    } else if (ev.message) {
+      report(ev.message);
+    }
+  }, true);
+  window.addEventListener("securitypolicyviolation", function (ev) {
+    report("Blocked by policy: " + (ev.violatedDirective || "") + " " +
+           String(ev.blockedURI || "").split("/").pop());
+  });
+})();
+</script>"""
+
+# Where the shim goes: inside <head> when there is one, else straight after
+# <html> or the doctype, so it runs before the page's own scripts.
+_HEAD_OPEN_RE = re.compile(r'<head\b[^>]*>', re.IGNORECASE)
+_HTML_OPEN_RE = re.compile(r'<html\b[^>]*>', re.IGNORECASE)
+_DOCTYPE_RE = re.compile(r'<!doctype[^>]*>', re.IGNORECASE)
+
+# Pages past this size are served untouched rather than read into memory.
+_PREVIEW_INJECT_MAX = 8 * 1024 * 1024
 
 # How much of a code file rides along in the reply payload. Past this the inset
 # shows the head of the file and points at the download for the rest — the
@@ -291,6 +360,15 @@ def _preview_image_type(path: str) -> Optional[str]:
     """MIME type if this file is an image the UI can render inline, else None."""
     mime = mimetypes.guess_type(path)[0]
     return mime if mime in _PREVIEW_IMAGE_TYPES else None
+
+
+def _inject_preview_shim(html: str) -> str:
+    """Put the preview shim before any of the page's own scripts."""
+    for pattern in (_HEAD_OPEN_RE, _HTML_OPEN_RE, _DOCTYPE_RE):
+        match = pattern.search(html)
+        if match:
+            return html[:match.end()] + _PREVIEW_SHIM + html[match.end():]
+    return _PREVIEW_SHIM + html
 
 
 def _code_preview(path: str) -> Optional[dict]:
@@ -1332,38 +1410,51 @@ class WebApiUI:
                 return FileResponse(filepath, media_type=media_type, filename=safe_name)
             return Response(content="File not found", status_code=404)
 
-        @app.get("/preview/{session_id}/{filename}")
+        @app.get("/preview/{session_id}/{filename:path}")
         async def serve_preview(session_id: str, filename: str, request: Request):
-            """Serve a generated page for the sandboxed preview frame.
+            """Serve a generated app for the sandboxed preview frame.
 
             Deliberately separate from the download route: this is the one
-            place the server hands the browser a page to *execute*, so the
-            rules live here — previews must be enabled, the file must be one
-            of this session's own .html files, and it goes out under
-            _PREVIEW_CSP, which denies it an origin and a network."""
+            place the server hands the browser something to *execute*, so the
+            rules live here — previews must be enabled, the path must resolve
+            inside this session's own directory, and everything goes out under
+            _PREVIEW_CSP, which denies the document an origin. The session
+            directory is the app's web root, not just its entry page: an app
+            the agent split into index.html + app.js + style.css has to be able
+            to load its own parts, and relative URLs resolve back to here."""
             if not self.html_preview:
                 return Response(content="Preview disabled", status_code=404)
-            safe_name = os.path.basename(urllib.parse.unquote(filename))
-            if os.path.splitext(safe_name)[1].lower() not in _PREVIEW_WEB_EXTS:
-                return Response(content="Not previewable", status_code=404)
             if session_id not in self._web_sessions:
                 return Response(content="Session not found", status_code=404)
             owner = self._auth_email(request) if self.auth_enabled else None
             if not self._can_access(session_id, owner):
                 return Response(content="Session not found", status_code=404)
-            filepath = os.path.join(self._web_sessions[session_id].data_path, safe_name)
-            if not os.path.isfile(filepath):
-                return Response(content="File not found", status_code=404)
-            return FileResponse(
-                filepath,
-                media_type="text/html",
-                headers={
-                    "Content-Security-Policy": _PREVIEW_CSP,
-                    # The SPA frames this; nothing else may.
-                    "X-Frame-Options": "SAMEORIGIN",
-                    "Cache-Control": "no-store",
-                },
+
+            # Resolve through realpath so neither "../" nor a symlink in the
+            # session directory can reach outside it.
+            base = os.path.realpath(self._web_sessions[session_id].data_path)
+            target = os.path.realpath(
+                os.path.join(base, urllib.parse.unquote(filename).lstrip("/"))
             )
+            if target != base and not target.startswith(base + os.sep):
+                return Response(content="Not found", status_code=404)
+            if not os.path.isfile(target):
+                return Response(content="File not found", status_code=404)
+
+            headers = {
+                "Content-Security-Policy": _PREVIEW_CSP,
+                "X-Frame-Options": "SAMEORIGIN",   # the SPA frames this, nothing else
+                "Cache-Control": "no-store",
+            }
+            is_page = os.path.splitext(target)[1].lower() in _PREVIEW_WEB_EXTS
+            if is_page and os.path.getsize(target) <= _PREVIEW_INJECT_MAX:
+                try:
+                    with open(target, "r", encoding="utf-8", errors="replace") as f:
+                        return HTMLResponse(_inject_preview_shim(f.read()), headers=headers)
+                except OSError:
+                    return Response(content="File not found", status_code=404)
+            media_type = mimetypes.guess_type(target)[0] or "application/octet-stream"
+            return FileResponse(target, media_type=media_type, headers=headers)
 
         @app.post("/uploads/{session_id}/")
         async def receive_upload(session_id: str, file: UploadFile = File(...)):

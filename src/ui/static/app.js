@@ -361,13 +361,32 @@
     box.className = "web-frame-box";      // drag the bottom edge to resize
     const frame = document.createElement("iframe");
     frame.className = "web-frame";
-    frame.setAttribute("sandbox", "allow-scripts allow-modals allow-pointer-lock");
+    frame.setAttribute("sandbox", "allow-scripts allow-modals allow-forms " +
+                                  "allow-popups allow-pointer-lock allow-downloads");
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.title = f.name;
     frame.src = f.preview_url;
     box.appendChild(frame);
 
-    wrap.append(head, box);
+    // A page that fails inside the sandbox just looks blank from out here, so
+    // the shim posts out what broke — a missing file, a first-line exception.
+    const issues = document.createElement("div");
+    issues.className = "web-issues";
+    issues.hidden = true;
+    const seen = new Set();
+    window.addEventListener("message", (ev) => {
+      if (ev.source !== frame.contentWindow) return;
+      const d = ev.data;
+      if (!d || d.__onit_preview !== "issue" || typeof d.text !== "string") return;
+      if (seen.has(d.text) || seen.size >= 3) return;
+      seen.add(d.text);
+      const line = document.createElement("div");
+      line.textContent = d.text;         // never innerHTML: this crossed a sandbox
+      issues.appendChild(line);
+      issues.hidden = false;
+    });
+
+    wrap.append(head, box, issues);
     root.appendChild(wrap);
 
     if (f.preview) {
