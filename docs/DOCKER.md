@@ -70,8 +70,9 @@ The container is started with hardening flags:
 - AST-based command allowlisting is enforced by default inside the container
   (`ONIT_COMMAND_ALLOWLIST`), package managers are blocked unless
   `--container-allow-installs` is passed, and installs must then be
-  version-pinned (`pip install name==1.2.3`). Repeated policy violations
-  auto-contain the bash MCP server (see README "Auto-Containment").
+  version-pinned (`pip install name==1.2.3`). Repeated policy violations can
+  additionally auto-contain the bash MCP server, but that is opt-in via
+  `ONIT_CONTAIN_THRESHOLD` (see README "Auto-Containment").
 - **The containerized web UI refuses all package installs, unconditionally**
   (`--container-allow-installs` does not apply). See
   [No package installs in web UI mode](#no-package-installs-in-web-ui-mode).
@@ -473,8 +474,9 @@ ONIT_DATA_DIR=/data/sandbox
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (they are not bridged from the
   host keychain), or run with `--no-login`.
 - **All write tools suddenly refuse calls** — the bash MCP server
-  auto-contained after repeated policy violations. Delete
-  `.onit-containment.json` from the data directory and restart (see README
-  "Auto-Containment").
+  auto-contained after repeated policy violations. Only possible when
+  `ONIT_CONTAIN_THRESHOLD` is set to a positive number (containment is off by
+  default); unset it, or delete `.onit-containment.json` from the data
+  directory and restart (see README "Auto-Containment").
 - **Let's Encrypt rate-limit errors** — you recreated the `caddy-data`
   volume too often. Keep it; certificates renew automatically.

@@ -544,7 +544,7 @@ On top of the glob rules, the bash tool can enforce a **command allowlist backed
 | `ONIT_COMMAND_ALLOWLIST` | `1` = enforce everywhere, `0` = disable. Unset: enforced inside `--container`, off on the host. |
 | `ONIT_ALLOWED_COMMANDS` | Comma-separated extra executables to allow (e.g. `mytool,deno`). |
 | `ONIT_ALLOW_PACKAGE_INSTALL` | `1` = permit package-manager installs (pinned versions only). Set by `--container-allow-installs`. |
-| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment (default `5` on the host, `0` = disabled inside `--container`). |
+| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment. Default `0` (disabled); set a positive number to enable. |
 
 The allowlist can also be extended in `settings.json` (read in the web UI, or when `ONIT_SETTINGS` is set explicitly):
 
@@ -570,15 +570,19 @@ Lockfile-driven installs (`npm ci`, bare `npm install`) are allowed since versio
 
 ### Auto-Containment
 
-Policy violations (blocked commands) are counted per server process. When the count reaches `ONIT_CONTAIN_THRESHOLD` (default 5), the bash MCP server **auto-contains**:
+**Auto-containment is off by default** (`ONIT_CONTAIN_THRESHOLD=0`) and must be opted into. Blocked commands are always blocked and logged regardless; the threshold only controls whether repeated violations escalate to a persistent server-wide lockdown.
+
+When `ONIT_CONTAIN_THRESHOLD` is set to a positive number, policy violations (blocked commands) are counted per server process, and on reaching the threshold the bash MCP server **auto-contains**:
 
 - `bash`, `serve start`, `write_file`, `edit_file`, `transform_text`, and `send_file` refuse all further calls;
-- every `serve`-managed background process is stopped;
+- `serve`-managed background processes registered at the data-directory root are stopped;
 - a marker file (`.onit-containment.json`, containing the violation log) is written to the data directory so containment **survives restarts**.
 
-Read-only tools (`read_file`, `search_*`) keep working so the session can be diagnosed. To lift containment, delete the marker file and restart the MCP server.
+Read-only tools (`read_file`, `search_*`) keep working so the session can be diagnosed. To lift containment, unset `ONIT_CONTAIN_THRESHOLD` (the check short-circuits on `0`, so a stale marker is ignored without a restart), or delete the marker file and restart the MCP server.
 
-Inside `--container` the container itself is the isolation boundary, so auto-containment is **disabled by default** and any stale marker file on the mounted data volume is ignored — the web UI keeps executing (allowlisted) commands even after blocked ones. Set `ONIT_CONTAIN_THRESHOLD` explicitly to re-enable containment in the container.
+Two properties to weigh before enabling it. The counter is a **process-lifetime total with no decay**, so violations accumulate across an entire session rather than measuring a rate. And on the host the most common violation is a benign path slip — an absolute path outside the session jail, e.g. `/etc/`, `/opt/homebrew/bin/`, or another session's data directory — not an adversarial command. A low threshold therefore tends to strand long-lived sessions over accumulated typos. Inside `--container` the container itself is already the filesystem boundary, and the path allowlist is skipped there.
+
+The marker lives at the **data-directory root, not the session jail**, so containment is deliberately server-wide: one session's violations contain every later session on that host until the marker is removed.
 
 ## MCP Tool Integration
 

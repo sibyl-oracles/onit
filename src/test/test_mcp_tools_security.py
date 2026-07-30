@@ -694,6 +694,18 @@ class TestAutoContainment:
         tool = bash_mod.bash
         return tool.fn if hasattr(tool, "fn") else tool
 
+    @pytest.fixture
+    def contained(self, monkeypatch):
+        """An already-contained server with containment opted back in.
+
+        The threshold has to be set explicitly: it is 0 (disabled) by default,
+        and _is_contained() short-circuits on that before it looks at the flag
+        or the marker. monkeypatch restores the flag so the lockdown does not
+        leak into the next test.
+        """
+        monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "5")
+        monkeypatch.setattr(bash_mod, "_CONTAINED", True)
+
     async def test_containment_after_threshold(self, enforced, monkeypatch,
                                                tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "3")
@@ -721,23 +733,27 @@ class TestAutoContainment:
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
-    async def test_container_mode_disables_containment(self, enforced, monkeypatch,
-                                                       tmp_path, bash_tool):
-        """In container mode the container is the isolation boundary: blocked
-        commands never trip containment (web UI in docker keeps executing)."""
-        monkeypatch.setenv("ONIT_CONTAINER", "1")
+    @pytest.mark.parametrize("container", ["1", None])
+    async def test_default_disables_containment(self, enforced, monkeypatch,
+                                                tmp_path, bash_tool, container):
+        """Containment is opt-in by default, on the host as well as in the
+        container: blocked commands stay blocked but never escalate to a
+        lockdown, so an accumulation of rejected paths cannot strand a
+        long-lived session."""
         monkeypatch.delenv("ONIT_CONTAIN_THRESHOLD", raising=False)
+        if container:
+            monkeypatch.setenv("ONIT_CONTAINER", "1")
         for _ in range(10):
             r = json.loads(await bash_tool(command="evilbin"))
             assert r["status"] == "blocked"
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
+        assert not os.path.isfile(bash_mod._containment_marker_path())
 
-    def test_container_mode_ignores_stale_marker(self, monkeypatch, tmp_path):
-        """A marker persisted on the mounted data volume must not lock a
-        containerized server on restart."""
+    def test_stale_marker_ignored_by_default(self, monkeypatch, tmp_path):
+        """A marker left behind by an earlier run (or by a mounted data volume
+        in the container) must not lock the server on restart."""
         (tmp_path / bash_mod._CONTAINMENT_MARKER).write_text("{}")
-        monkeypatch.setenv("ONIT_CONTAINER", "1")
         monkeypatch.delenv("ONIT_CONTAIN_THRESHOLD", raising=False)
         assert bash_mod._is_contained() is False
 
@@ -750,8 +766,7 @@ class TestAutoContainment:
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] == "contained"
 
-    def test_containment_gates_write_tools(self, tmp_path):
-        bash_mod._CONTAINED = True
+    def test_containment_gates_write_tools(self, contained, tmp_path):
         write_fn = bash_mod.write_file.fn if hasattr(bash_mod.write_file, "fn") \
             else bash_mod.write_file
         edit_fn = bash_mod.edit_file.fn if hasattr(bash_mod.edit_file, "fn") \
@@ -764,14 +779,12 @@ class TestAutoContainment:
         assert json.loads(transform_text(input_text="x", operation="sed",
                                          expression="s/x/y/"))["status"] == "contained"
 
-    def test_containment_gates_serve_start(self, tmp_path):
-        bash_mod._CONTAINED = True
+    def test_containment_gates_serve_start(self, contained, tmp_path):
         result = json.loads(bash_mod.serve(action="start", command="sleep 60",
                                            name="pytest-contained", cwd=str(tmp_path)))
         assert result["status"] == "contained"
 
-    def test_marker_persists_containment(self, enforced, tmp_path):
-        bash_mod._CONTAINED = True
+    def test_marker_persists_containment(self, enforced, contained, tmp_path):
         bash_mod._enter_containment()
         # Simulate a restart: in-memory flag cleared, marker still on disk.
         bash_mod._CONTAINED = False

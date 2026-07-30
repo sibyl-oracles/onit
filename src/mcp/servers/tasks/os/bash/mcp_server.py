@@ -833,26 +833,31 @@ def _check_command_allowlist(check_command: str) -> str | None:
 
 
 # ── Auto-containment ─────────────────────────────────────────────────────
-# After ONIT_CONTAIN_THRESHOLD blocked commands (default 5, 0 disables) the
-# server enters containment: all execution/write/send tools refuse to run and
-# managed background processes are stopped. Containment persists across
-# restarts via a marker file in DATA_PATH; delete it to lift containment.
-# In container mode the container itself is the isolation boundary, so the
-# default is 0 (disabled) and any marker left behind (DATA_PATH is a mounted
-# volume) is ignored; set ONIT_CONTAIN_THRESHOLD explicitly to re-enable.
+# After ONIT_CONTAIN_THRESHOLD blocked commands the server enters containment:
+# all execution/write/send tools refuse to run and managed background processes
+# are stopped. Containment persists across restarts via a marker file in
+# DATA_PATH; delete it (or set the threshold to 0) to lift containment.
+#
+# Disabled by default (threshold 0), everywhere. The violation counter is a
+# process-lifetime total with no decay, and on the host its most common trigger
+# is a benign path slip (an absolute path outside the session jail), so a low
+# default locked long-lived sessions out over accumulated typos rather than
+# over anything adversarial. Blocked commands are still blocked and logged —
+# only the escalation to a persistent lockdown is off. Set
+# ONIT_CONTAIN_THRESHOLD to a positive number to re-enable it.
 
-_DEFAULT_CONTAIN_THRESHOLD = 5
+_DEFAULT_CONTAIN_THRESHOLD = 0
 _CONTAINMENT_MARKER = ".onit-containment.json"
 _VIOLATIONS: list = []
 _CONTAINED = False
 
 
 def _contain_threshold() -> int:
-    default = 0 if _in_container() else _DEFAULT_CONTAIN_THRESHOLD
     try:
-        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD", default))
+        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD",
+                                  _DEFAULT_CONTAIN_THRESHOLD))
     except ValueError:
-        return default
+        return _DEFAULT_CONTAIN_THRESHOLD
 
 
 def _containment_marker_path() -> str:
@@ -898,9 +903,11 @@ def _enter_containment() -> None:
             }, f, indent=2)
     except Exception as e:
         logger.error(f"Failed to persist containment marker: {e}")
-    # Stop everything the serve tool has launched.
+    # Stop everything the serve tool has launched. Containment is server-wide
+    # and has no session context, so this reaches the DATA_PATH-root registry
+    # only — processes registered under a session jail survive.
     try:
-        registry = _load_serve_registry(base)
+        registry = _load_serve_registry()
         for entry in registry.values():
             if _process_running(entry["pid"]):
                 try:
