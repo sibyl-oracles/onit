@@ -18,6 +18,7 @@ from model.serving.chat import (
     _autodetect_fallback_model,
     _decay_old_tool_results,
     _get_model_max_context,
+    _execute_tool,
     _handle_structured_tool_calls,
     _resolve_model_id,
     chat,
@@ -112,6 +113,31 @@ class TestTurnMetrics:
         assert sink["turns"][0]["tools"] == ["local_search", "read_file"]
         assert sink["turns"][0]["tool_s"] == 1.5
 
+    def test_tool_runs_ride_alongside_the_names(self):
+        """The names drive the status line; the records are what a trajectory
+        is diagnosed from later."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=10)
+        runs = [{"name": "local_search", "ok": True, "ms": 40},
+                {"name": "read_file", "ok": False, "ms": 3}]
+        m.add_tools(["local_search", "read_file"], 1.5, runs=runs)
+
+        assert sink["turns"][0]["tools"] == ["local_search", "read_file"]
+        assert sink["turns"][0]["tool_runs"] == runs
+        assert sink["tool_calls"] == 2
+
+    def test_retries_are_counted(self):
+        """A run that retried twice and answered is not the same run as one
+        that answered first time; the turn timings cannot tell them apart."""
+        sink = {}
+        m = TurnMetrics(sink)
+        assert sink["api_retries"] == 0
+        m.add_retry()
+        m.add_retry()
+        assert sink["api_retries"] == 2
+
     def test_compaction_counted_apart_from_model_time(self):
         sink = {}
         m = TurnMetrics(sink)
@@ -142,6 +168,85 @@ class TestTurnMetrics:
         assert "1 turn(s)" in text
         assert "1 tool call(s)" in text
         assert "1,234 tok" in text
+
+
+# ── per-call tool records ───────────────────────────────────────────────────
+
+def _registry_with(name="local_search", handler=None):
+    """Minimal stand-in for ToolRegistry: what _execute_tool actually touches."""
+    registry = MagicMock()
+    registry.tools = {name} if handler is not None else set()
+    registry.tool_accepts_param.return_value = False
+    registry.__getitem__ = MagicMock(return_value=handler)
+    return registry
+
+
+async def _run_tool(registry, name="local_search", args=None, tool_log=None):
+    await _execute_tool(
+        name, args if args is not None else {"query": "scholarships"},
+        "call_1", registry, timeout=5, data_path="", chat_ui=None,
+        verbose=False, messages=[], tool_call_history=[], max_repeated=99,
+        session_id="", tool_log=tool_log,
+    )
+
+
+class TestToolCallRecords:
+    """Every path out of _execute_tool that answers a call records how it went.
+    The failures are the ones worth keeping."""
+
+    @pytest.mark.asyncio
+    async def test_a_successful_call_is_recorded(self):
+        handler = AsyncMock(return_value="four results")
+        log = []
+        await _run_tool(_registry_with(handler=handler), tool_log=log)
+        assert len(log) == 1
+        assert log[0]["name"] == "local_search"
+        assert log[0]["ok"] is True
+        assert log[0]["result_chars"] == len("four results")
+        assert log[0]["arg_keys"] == ["query"]
+
+    @pytest.mark.asyncio
+    async def test_a_raising_tool_is_recorded_as_failed(self):
+        handler = AsyncMock(side_effect=RuntimeError("upstream is down"))
+        log = []
+        await _run_tool(_registry_with(handler=handler), tool_log=log)
+        assert [(r["name"], r["ok"]) for r in log] == [("local_search", False)]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_tool_is_recorded_as_failed(self):
+        log = []
+        await _run_tool(_registry_with(handler=None), name="nope", tool_log=log)
+        assert [(r["name"], r["ok"]) for r in log] == [("nope", False)]
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_not_a_call_that_went_well(self):
+        async def _hang(**kwargs):
+            await asyncio.sleep(10)
+        registry = _registry_with(handler=_hang)
+        log = []
+        await _execute_tool(
+            "local_search", {"query": "x"}, "call_1", registry, timeout=0.01,
+            data_path="", chat_ui=None, verbose=False, messages=[],
+            tool_call_history=[], max_repeated=99, session_id="", tool_log=log,
+        )
+        assert log[0]["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_argument_values_are_not_recorded_by_default(self):
+        handler = AsyncMock(return_value="ok")
+        log = []
+        await _run_tool(_registry_with(handler=handler),
+                        args={"path": "/home/me/salary.pdf"}, tool_log=log)
+        assert log[0]["arg_keys"] == ["path"]
+        assert "salary" not in str(log[0])
+
+    @pytest.mark.asyncio
+    async def test_no_log_means_no_accounting(self):
+        """The parameter is optional, and a caller without one behaves exactly
+        as before."""
+        handler = AsyncMock(return_value="ok")
+        await _run_tool(_registry_with(handler=handler), tool_log=None)
+        handler.assert_awaited()
 
 
 # ── chat() wiring ───────────────────────────────────────────────────────────

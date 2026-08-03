@@ -631,6 +631,10 @@ class OnIt(BaseModel):
     file_server_url: str | None = Field(default=None, exclude=True)
     chat_ui: Any | None = Field(default=None, exclude=True)
     load_balancer: Any | None = Field(default=None, exclude=True)
+    # Telemetry for the run in flight.  The interactive path answers in one
+    # method and persists in another, so the sink chat() fills has to be
+    # reachable from both; process_task keeps its own and never touches this.
+    last_metrics: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     @property
     def sandbox_available(self) -> bool:
@@ -1178,7 +1182,49 @@ class OnIt(BaseModel):
             update_session(effective_sid, task=task, sessions_dir=sessions_dir)
         except Exception:
             pass
+        self._record_trajectory(task, response, _metrics,
+                                effective_session_path,
+                                session_id or self.session_id, _adapter)
         return response
+
+    def _record_trajectory(self, task: str, response: str, metrics: dict,
+                           session_path: str, session_id: str, adapter) -> None:
+        """Write what this task actually did to the trajectory store.
+
+        The session file above keeps the conversation; this keeps the run — the
+        tool calls and their outcomes, the turn-by-turn token counts, the
+        retries.  Nothing downstream of it exists yet, which is exactly why it
+        has to start now: the loops in ``docs/SELF_IMPROVEMENT.md`` can only
+        learn from runs that were recorded before they were written.
+
+        Off unless the autonomy level is ``observe`` or higher, and best-effort
+        either way — a task that answered must not be reported as failed
+        because a log line could not be written.
+        """
+        try:
+            from .learn import record_task, recording_enabled
+            if not recording_enabled(self.config_data):
+                return
+            from .sessions import _turn_count_from_jsonl, get_session_owner
+            sessions_dir = os.path.dirname(session_path)
+            record_task(
+                session_id=session_id,
+                # The session file was just appended to, so its line count is
+                # this task's turn number.
+                turn=_turn_count_from_jsonl(session_path),
+                task=task,
+                response=response,
+                metrics=metrics,
+                config_data=self.config_data,
+                tools_available=sorted(self.tool_registry.tools) if self.tool_registry else [],
+                owner=get_session_owner(session_id, sessions_dir),
+                topic_hint=self.topic,
+                # The configured model may be unset and resolved from the
+                # endpoint; the adapter carries whatever actually answered.
+                model=getattr(adapter, "model_name", None) or self.model_serving.get("model"),
+            )
+        except Exception as e:
+            logger.debug("trajectory not recorded: %s", e)
 
     async def run_loop(self) -> None:
         """Run the OnIt agent in loop mode, executing a task repeatedly."""
@@ -1201,10 +1247,12 @@ class OnIt(BaseModel):
                 instruction = await self._assistant_instruction(self.task)
 
                 # call chat directly (no queues needed)
+                _metrics: dict = {}
                 kwargs = {'console': None,
                           'chat_ui': None,
                           'cursor': AGENT_CURSOR,
                           'memories': None,
+                          'metrics': _metrics,
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
@@ -1246,6 +1294,10 @@ class OnIt(BaseModel):
                             f.write(json.dumps(session_data) + "\n")
                     except Exception:
                         pass
+                    # Loop mode runs one task over and over, which is the
+                    # workload where comparing run to run says the most.
+                    self._record_trajectory(self.task, response, _metrics,
+                                            self.session_path, self.session_id, None)
 
                 # countdown timer before next iteration
                 remaining = int(self.period)
@@ -1556,6 +1608,8 @@ class OnIt(BaseModel):
                            sessions_dir=os.path.dirname(self.session_path))
         except Exception:
             pass
+        self._record_trajectory(task, response, self.last_metrics,
+                                self.session_path, self.session_id, self.chat_ui)
 
     def _format_elapsed_time(self, elapsed_secs: float) -> str:
         """Format elapsed time string, including tokens/sec if available."""
@@ -1696,10 +1750,12 @@ class OnIt(BaseModel):
                     await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
                     await self.output_queue.put(STOP_TAG)
                     break
+                self.last_metrics.clear()
                 kwargs = {'console': self.chat_ui.console,
                           'chat_ui': self.chat_ui,
                           'cursor': AGENT_CURSOR,
                           'memories': None,
+                          'metrics': self.last_metrics,
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,

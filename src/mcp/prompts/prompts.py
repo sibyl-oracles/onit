@@ -37,6 +37,13 @@ DEFAULT_MAX_DOCUMENTS = MAX_DOCUMENT_SUMMARIES
 
 logger = logging.getLogger(__name__)
 
+# Placeholders whose value differs between requests, or between one day and the
+# next.  A template that names any of them cannot sit in the cacheable prefix:
+# its bytes are not the same on the next request, so everything after it would
+# be re-prefilled anyway.  Everything else a template may interpolate
+# (``agent_name``, ``developer``) is fixed for the life of a deployment.
+_VOLATILE_FIELDS = ("{task}", "{current_date}", "{data_path}")
+
 
 mcp_prompts = FastMCP("Prompts MCP")
 
@@ -107,8 +114,10 @@ async def build_assistant_instruction(task: str,
    # The volatile half — today's date, the working directory, the file server,
    # the task — is what actually varies, and it goes last.
    #
-   # A custom template is never split: nothing in it can be assumed stable, so
-   # it is emitted whole, in the order it always had, and gives up the reuse.
+   # A custom template is split on the same rule, decided by what it
+   # interpolates rather than by the fact that it is custom (see
+   # _VOLATILE_FIELDS): its own preamble joins whichever half it belongs in,
+   # and the standing blocks appended to it stay cacheable either way.
    default_template = """
 You are {agent_name}, an autonomous agent harness developed by {developer}, with access to tools and a file system.
 """
@@ -353,19 +362,30 @@ Never state an email address or phone number that did not appear verbatim in a t
 {task}
 """
 
-   if custom_template:
-      # Unsplit and in the original order: a custom template owns the whole
-      # preamble, and the caller keeps sending it as one user message.
-      instruction = (header + topic_block + file_block + sandbox_block
-                     + no_install_block + research_block + instructions_block)
-      if not task_in_template:
-         instruction += task_block
-      return instruction
+   # Standing rules: the same bytes on every request whichever template is in
+   # use, so they belong in the static half in both branches below.
+   rules = (topic_block + sandbox_block + no_install_block
+            + research_block + instructions_block)
+   # The file server URL carries the session's upload id, and the task is the
+   # task, so both are volatile.  A template that interpolates the task has
+   # already placed it and does not get a second copy.
+   tail = file_block + ("" if task_in_template else task_block)
 
-   static = (header + topic_block + sandbox_block + no_install_block
-             + research_block + instructions_block)
-   volatile = context_block + file_block + task_block
-   return static + INSTRUCTION_SPLIT + volatile
+   if custom_template:
+      # A custom template owns its preamble but no longer forfeits the split
+      # for it.  Where the preamble lands is decided by what it interpolates:
+      # one naming the task, the date or the working directory differs on every
+      # request and rides in the volatile half, while a fixed preamble — what
+      # an optimizer produces — is as cacheable as the default one.
+      #
+      # ``context_block`` stays out of this branch: a custom template states
+      # its own working directory, and adding a second statement of it would
+      # change what every existing template renders.
+      if any(field in template for field in _VOLATILE_FIELDS):
+         return rules + INSTRUCTION_SPLIT + header + tail
+      return header + rules + INSTRUCTION_SPLIT + tail
+
+   return header + rules + INSTRUCTION_SPLIT + context_block + tail
 
 
 # Registered directly rather than through a forwarding wrapper: fastmcp derives

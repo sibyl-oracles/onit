@@ -33,8 +33,10 @@ from typing import List, Optional, Any
 
 try:
     from ...lib.text import split_instruction
+    from ...learn import describe_tool_call, redact_tool_args
 except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
     from lib.text import split_instruction
+    from learn import describe_tool_call, redact_tool_args
 
 try:
     from ollama import AsyncClient as OllamaAsyncClient
@@ -112,7 +114,7 @@ class TurnMetrics:
         sink.clear()
         sink.update(turns=self.turns, turn_count=0, tool_calls=0,
                     model_s=0.0, tool_s=0.0, prefill_s=0.0, decode_s=0.0,
-                    compaction_s=0.0, compactions=0,
+                    compaction_s=0.0, compactions=0, api_retries=0,
                     prompt_tokens_max=0, completion_tokens=0)
         self._api_start = 0.0
         self._ttft = None
@@ -157,12 +159,27 @@ class TurnMetrics:
         self._api_start = 0.0
 
     # -- tools and compaction ----------------------------------------------
-    def add_tools(self, names: list, seconds: float) -> None:
+    def add_tools(self, names: list, seconds: float, runs: list | None = None) -> None:
+        """Record the tools a turn ran.
+
+        ``runs`` carries how each call went — ok, duration, result size — which
+        is what makes a trajectory diagnosable after the fact.  It is optional
+        because the aggregate is what the status line needs, and a caller that
+        only has the names still gets correct timing and counts.
+        """
         if self.turns:
             self.turns[-1]["tools"] = list(names)
             self.turns[-1]["tool_s"] = round(seconds, 3)
+            if runs:
+                self.turns[-1]["tool_runs"] = list(runs)
         self.sink["tool_calls"] += len(names)
         self.sink["tool_s"] = round(self.sink["tool_s"] + seconds, 3)
+
+    def add_retry(self) -> None:
+        """An API call that had to be made again.  A run that retried twice and
+        answered is not the same run as one that answered first time, and the
+        turn timings alone cannot tell them apart."""
+        self.sink["api_retries"] += 1
 
     def add_compaction(self, seconds: float) -> None:
         """Compaction is an extra LLM call the user never asked for — counted
@@ -780,12 +797,29 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                         tool_call_history: list,
                         max_repeated: int,
                         is_structured: bool = False,
-                        session_id: str = "") -> Optional[str]:
+                        session_id: str = "",
+                        tool_log: list | None = None) -> Optional[str]:
     """Execute a single tool call and append the result to messages.
 
     Returns a bail-out message string if repeated-call limit is hit,
     otherwise returns None (caller should continue).
+
+    ``tool_log``, when given, collects one record per call describing how it
+    went.  Every path out of this function that answers the call records one,
+    including the failures — a tool that errors is the case worth keeping.
     """
+    _t0 = time.monotonic()
+
+    def _log(ok: bool, result_chars: int) -> None:
+        if tool_log is None:
+            return
+        tool_log.append(describe_tool_call(
+            function_name, function_arguments, ok=ok,
+            ms=int((time.monotonic() - _t0) * 1000),
+            result_chars=result_chars,
+            redact=redact_tool_args(),
+        ))
+
     # Inject session_id / data_path into tool calls whose schema declares
     # these parameters, so callers (e.g. sandbox MCP servers) receive them
     # automatically without hardcoding tool names. These are trust boundaries:
@@ -812,6 +846,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                 chat_ui.add_tool_result(function_name, result)
                 if is_structured:
                     chat_ui.show_tool_done(function_name, result)
+            _log(True, len(result))
             return None
     if chat_ui:
         chat_ui.add_tool_call(function_name, function_arguments)
@@ -825,8 +860,10 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                         'name': function_name, 'parameters': function_arguments,
                         "tool_call_id": tool_call_id}
         messages.append(tool_message)
+        _log(False, 0)
     else:
         tool_handler = tool_registry[function_name]
+        _timed_out = False
         try:
             try:
                 # Build a log handler to forward MCP notifications/message
@@ -856,6 +893,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                     except asyncio.CancelledError:
                         pass
             except asyncio.TimeoutError:
+                _timed_out = True
                 tool_response = (f"- tool call timed out after {timeout} seconds. "
                                  "Tool might have succeeded but no response was received. "
                                  "Check expected output.")
@@ -884,6 +922,9 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             elif verbose:
                 truncated = tool_response[:500] + "..." if len(tool_response) > 500 else tool_response
                 print(f"{function_name}({function_arguments}) returned: {truncated}")
+            # A timeout answered the call — with a message saying the tool may
+            # well have succeeded — but it is not a call that went well.
+            _log(not _timed_out, len(tool_response))
         except Exception as e:
             if chat_ui:
                 if is_structured:
@@ -893,6 +934,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             tool_message = {'role': 'tool', 'content': f'Error: {e}', 'name': function_name,
                             'parameters': function_arguments, "tool_call_id": tool_call_id}
             messages.append(tool_message)
+            _log(False, 0)
 
     # Check for repeated tool calls
     call_key = (function_name, json.dumps(function_arguments, sort_keys=True))
@@ -1453,7 +1495,7 @@ async def _handle_raw_tool_call(
     last_response: str, tool_registry, timeout, data_path,
     chat_ui, verbose: bool, messages: list,
     tool_call_history: list, max_repeated: int,
-    session_id: str = "",
+    session_id: str = "", tool_log: list | None = None,
 ) -> tuple[bool, str | None]:
     """Handle a raw JSON tool call embedded in model content.
 
@@ -1475,6 +1517,7 @@ async def _handle_raw_tool_call(
                 tool_registry, timeout, data_path, chat_ui, verbose,
                 messages, tool_call_history, max_repeated,
                 is_structured=False, session_id=session_id,
+                tool_log=tool_log,
             )
             if bail:
                 return False, bail
@@ -1558,7 +1601,7 @@ def _parse_tool_arguments(tool, verbose: bool) -> dict:
 async def _execute_tools_in_parallel(
     calls: list, tool_registry, timeout, data_path, chat_ui, verbose: bool,
     messages: list, tool_call_history: list, max_repeated: int,
-    safety_queue: asyncio.Queue, session_id: str,
+    safety_queue: asyncio.Queue, session_id: str, tool_log: list | None = None,
 ) -> str | object | None:
     """Run a batch of read-only tool calls concurrently.
 
@@ -1581,6 +1624,7 @@ async def _execute_tools_in_parallel(
             name, args, call_id, tool_registry, timeout, data_path,
             chat_ui, verbose, buffers[index], tool_call_history,
             max_repeated, is_structured=True, session_id=session_id,
+            tool_log=tool_log,
         )
 
     gathered = _await_with_safety(
@@ -1619,7 +1663,7 @@ async def _handle_structured_tool_calls(
     timeout, data_path, chat_ui, verbose: bool,
     messages: list, tool_call_history: list,
     max_repeated: int, safety_queue: asyncio.Queue,
-    session_id: str = "",
+    session_id: str = "", tool_log: list | None = None,
 ) -> str | object | None:
     """Execute structured tool calls and append results to messages.
 
@@ -1639,6 +1683,7 @@ async def _handle_structured_tool_calls(
         return await _execute_tools_in_parallel(
             calls, tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated, safety_queue, session_id,
+            tool_log=tool_log,
         )
 
     for function_name, function_arguments, call_id in calls:
@@ -1652,6 +1697,7 @@ async def _handle_structured_tool_calls(
             tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated,
             is_structured=True, session_id=session_id,
+            tool_log=tool_log,
         )
         if bail:
             return bail
@@ -2217,6 +2263,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
             # Log retry attempt if we haven't exhausted retries
             if api_attempt < MAX_API_RETRIES:
+                _m.add_retry()
                 retry_msg = f"Retrying API call (attempt {api_attempt + 1}/{MAX_API_RETRIES})..."
                 logger.info(retry_msg)
                 _log_to_ui_or_verbose(retry_msg, chat_ui, verbose, level="info")
@@ -2289,15 +2336,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         if tool_calls is None or len(tool_calls) == 0:
             # No structured tool calls -- check for raw JSON tool calls in content
             _t_tools = time.monotonic()
+            _tool_log: list = []
             should_continue, bail = await _handle_raw_tool_call(
                 _content, tool_registry, timeout, data_path,
                 chat_ui, verbose, messages, tool_call_history,
                 MAX_REPEATED_TOOL_CALLS, session_id=session_id,
+                tool_log=_tool_log,
             )
             if should_continue or bail:
                 # A tool ran; its name was parsed out of the content inside the
                 # handler, so record it under the shape it arrived in.
-                _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools)
+                _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools,
+                             runs=_tool_log)
             if bail:
                 return bail
             if should_continue:
@@ -2390,14 +2440,15 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _active_max_tokens = max_tokens
         planning_continuation_count = 0
         _t_tools = time.monotonic()
+        _tool_log = []
         bail = await _handle_structured_tool_calls(
             tool_calls, _message_for_history, tool_registry,
             timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
-            safety_queue, session_id=session_id,
+            safety_queue, session_id=session_id, tool_log=_tool_log,
         )
         _m.add_tools([tc.function.name for tc in tool_calls],
-                     time.monotonic() - _t_tools)
+                     time.monotonic() - _t_tools, runs=_tool_log)
         if bail is _SAFETY_ABORT:
             return None
         if bail:

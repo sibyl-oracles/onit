@@ -27,6 +27,26 @@ serving:
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."
 
+# What the agent is allowed to change about itself. One ladder rather than a
+# switch per feature, raised one rung at a time (see docs/SELF_IMPROVEMENT.md):
+#   off       nothing is recorded, nothing is injected
+#   observe   trajectories are recorded; nothing is injected   (default)
+#   adapt     recalled episodes and the playbook are injected  (not yet built)
+#   extend    validated skills are served as tools             (not yet built)
+#   evolve    scaffold variants may be proposed                (not yet built)
+#
+# At `observe` every request is byte-for-byte what it would have been with this
+# off; the only difference is a JSONL line per task under `path` recording what
+# the run did — which tools ran, how they went, tokens per turn, retries.
+# Override with ONIT_LEARN=off for a baseline run without editing this file.
+learn:
+  autonomy: observe
+  path: "~/.onit/learned"
+  # Store a digest of each tool call's arguments rather than the arguments.
+  # Parameter *names* are kept either way; it is the values that carry file
+  # paths, search queries and the occasional pasted credential.
+  redact_tool_args: true
+
 verbose: false
 show_logs: false
 

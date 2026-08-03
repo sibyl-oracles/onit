@@ -50,7 +50,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
+from src.learn import append_rating as _append_rating
+from src.learn import normalize_rating as _normalize_rating
 from src.model.serving.chat import summarize_metrics
+from src.sessions import _turn_count_from_jsonl as _session_turn_count
 from src.sessions import delete_session as _delete_session_index
 from src.sessions import get_session_owner as _get_session_owner
 from src.sessions import list_sessions as _list_sessions
@@ -1258,6 +1261,50 @@ class WebApiUI:
             except OSError:
                 pass
             return {"cleared": True, "session_id": sid}
+
+        @app.post("/api/rating")
+        async def api_rating(request: Request):
+            """Record a thumbs up/down on an answer.
+
+            The one outcome signal no heuristic can supply: whether the person
+            who asked got what they wanted. Everything else the trajectory
+            store keeps — tool errors, retries, turn counts — describes how the
+            run went, not whether it was right.
+
+            ``turn`` defaults to the newest one, which is what a thumb on the
+            answer just received means; pass it explicitly to rate an older
+            answer. The verdict is appended to the session's trajectory file
+            rather than merged into the record it judges, so a rating arriving
+            while the agent is mid-write cannot corrupt a trajectory.
+            """
+            sid, session = self._resolve_session(request)
+            body = await request.json()
+            rating = _normalize_rating(body.get("rating"))
+            if rating is None:
+                return JSONResponse(
+                    {"detail": "rating must be +1 (up) or -1 (down)"},
+                    status_code=400,
+                )
+            turn = body.get("turn")
+            if turn is None:
+                turn = _session_turn_count(session.session_path)
+            try:
+                turn = int(turn)
+            except (TypeError, ValueError):
+                return JSONResponse({"detail": "turn must be an integer"},
+                                    status_code=400)
+            if turn < 1:
+                return JSONResponse({"detail": "no answer to rate yet"},
+                                    status_code=400)
+            path = _append_rating(
+                session_id=sid, turn=turn, rating=rating,
+                comment=body.get("comment"), source="web",
+                config_data=getattr(self._onit, "config_data", None),
+            )
+            # A rating with recording off is not an error: the UI offered a
+            # button, the deployment declined to keep the answer.
+            return {"recorded": path is not None, "session_id": sid,
+                    "turn": turn, "rating": rating}
 
         @app.post("/api/upload")
         async def api_upload(request: Request, file: UploadFile = File(...)):

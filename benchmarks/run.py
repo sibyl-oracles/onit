@@ -15,6 +15,8 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 
 from inspect_ai import eval as inspect_eval
@@ -129,6 +131,20 @@ def _find_resumable(log_dir: str, task_name: str, model: str):
     return None
 
 
+RUN_META_NAME = "run_meta.json"
+
+
+def _write_run_meta(log_dir: str, tier_name: str, model: str) -> None:
+    """Record the agent configuration a log directory was produced under."""
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, RUN_META_NAME), "w", encoding="utf-8") as f:
+            json.dump({"tier": tier_name, "model": model,
+                       "learn": bench_config.learn_level()}, f, indent=2)
+    except OSError as e:
+        print(f"[bench] could not write {RUN_META_NAME}: {e}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="benchmarks.run", description=__doc__)
     parser.add_argument("--tier", default=bench_config.DEFAULT_TIER,
@@ -184,11 +200,18 @@ def main(argv: list[str] | None = None) -> None:
 
     task_labels = [f"{n} ({bench_config.display_name(n)})" for n in task_names]
     print(f"[bench] tier={tier.name} model={model} limit={tier.limit} "
-          f"time_limit={time_limit}s")
+          f"time_limit={time_limit}s learn={bench_config.learn_level()}")
     print(f"[bench] benchmarks: {', '.join(task_labels)}")
     if resume_targets:
         print(f"[bench] resuming {len(resume_targets)} incomplete log(s): "
               f"{', '.join(i.name for i in resume_targets)}")
+
+    # Stamp how the agent was configured next to its logs. The autonomy level
+    # is not in the Inspect log, and a score is only comparable to another
+    # score if both runs allowed the agent to change itself by the same amount
+    # — reading it back from whatever environment happens to run the report
+    # would answer a different question than the one the numbers came from.
+    _write_run_meta(log_dir, tier.name, model)
 
     if resume_targets:
         inspect_eval_retry(

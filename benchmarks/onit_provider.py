@@ -53,6 +53,9 @@ def base_config_data() -> dict[str, Any]:
 
     return {
         "serving": bench_config.resolve_serving(),
+        # Off unless ONIT_BENCH/ONIT_LEARN asked otherwise: a baseline row has
+        # to be the scaffold as shipped, or it is not a baseline.
+        "learn": bench_config.resolve_learn(),
         # Headless: no streaming, no terminal ChatUI (loop=True skips UI setup).
         "stream": False,
         "loop": True,

@@ -288,17 +288,44 @@ class TestInstructionSplit:
         assert "pirate" in volatile
 
     @pytest.mark.asyncio
-    async def test_a_custom_template_is_not_split(self, tmp_path):
-        """Nothing in a custom template can be assumed stable, so it keeps the
-        old shape: one user message, byte for byte as before."""
+    async def test_a_fixed_custom_template_is_cacheable(self, tmp_path):
+        """A custom template that interpolates nothing volatile is the same bytes
+        on every request, so it belongs in the shared half like the default one."""
         template = tmp_path / "t.yaml"
         template.write_text('instruction_template: "You are a helper."')
-        result = await _assistant_fn(task="my task", data_path=str(tmp_path / "data"),
-                                     template_path=str(template))
-        assert INSTRUCTION_SPLIT not in result
-        static, volatile = split_instruction(result)
-        assert static == ""
-        assert volatile == result
+        kwargs = dict(template_path=str(template), local_search_available=True)
+        a = await _assistant_fn(task="my task",
+                                data_path=str(tmp_path / "session-a"), **kwargs)
+        b = await _assistant_fn(task="another task",
+                                data_path=str(tmp_path / "session-b"), **kwargs)
+        static_a, volatile_a = split_instruction(a)
+        static_b, volatile_b = split_instruction(b)
+        assert "You are a helper." in static_a
+        assert "## Instructions" in static_a
+        assert static_a == static_b
+        assert "my task" in volatile_a and "my task" not in static_a
+        assert volatile_a != volatile_b
+
+    @pytest.mark.asyncio
+    async def test_a_templated_custom_preamble_rides_in_the_volatile_half(self, tmp_path):
+        """A template naming the task or the working directory is different on
+        every request; only the standing blocks around it stay cacheable."""
+        template = tmp_path / "t.yaml"
+        template.write_text('instruction_template: "Work in {data_path} on {task}."')
+        kwargs = dict(template_path=str(template), local_search_available=True)
+        dp_a = str(tmp_path / "session-a")
+        a = await _assistant_fn(task="my task", data_path=dp_a, **kwargs)
+        b = await _assistant_fn(task="another task",
+                                data_path=str(tmp_path / "session-b"), **kwargs)
+        static_a, volatile_a = split_instruction(a)
+        static_b, _ = split_instruction(b)
+        # Nothing session-specific may leak into the half that is shared.
+        assert dp_a not in static_a
+        assert "my task" not in static_a
+        assert dp_a in volatile_a and "my task" in volatile_a
+        # The standing rules are still shared, which is the point of the change.
+        assert "## Instructions" in static_a
+        assert static_a == static_b
 
 
 class TestResearchFanOut:

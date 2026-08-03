@@ -24,10 +24,13 @@ from ui import auth as ui_auth
 class FakeOnit:
     """Stub of Onit.process_task that streams two tokens and returns a reply."""
 
-    def __init__(self, response="Hello world", delay=0.0):
+    def __init__(self, response="Hello world", delay=0.0, config_data=None):
         self.response = response
         self.delay = delay
         self.calls = []
+        # Real dict, pointed at a temp path by the fixture: left empty, the
+        # learn defaults would send trajectories to the developer's ~/.onit.
+        self.config_data = config_data if config_data is not None else {}
 
     async def process_task(self, task, session_path=None, data_path=None,
                            safety_queue=None, stream_callback=None,
@@ -86,7 +89,8 @@ def ui(tmp_path, bg_loop):
         title="Test Chat",
         require_auth=False,
     )
-    ui._onit = FakeOnit()
+    ui._onit = FakeOnit(config_data={
+        "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
     ui._loop = bg_loop
     ui.build_app()
     return ui
@@ -727,6 +731,80 @@ class TestClearEndpoint:
         assert os.listdir(session.data_path) == []
 
 
+class TestRatingEndpoint:
+    """The one outcome signal no heuristic can supply: whether the person who
+    asked got what they wanted."""
+
+    def _answered(self, ui, turns=1):
+        sid, session = ui._get_or_create_session()
+        with open(session.session_path, "w") as f:
+            for n in range(turns):
+                f.write(json.dumps({"task": f"t{n}", "response": "r",
+                                    "timestamp": 0}) + "\n")
+        return sid, session
+
+    def test_thumbs_up_lands_on_the_newest_answer(self, client, ui):
+        from learn import read_session
+        sid, _ = self._answered(ui, turns=2)
+        res = client.post("/api/rating", json={"rating": "up"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        body = res.json()
+        assert body == {"recorded": True, "session_id": sid, "turn": 2, "rating": 1}
+        # It is stored where the trajectory loops will look for it.
+        ratings = read_session(sid, ui._onit.config_data)
+        assert ratings == [] or ratings[-1]["signals"]["user_rating"] == 1
+
+    def test_an_older_answer_can_be_rated_explicitly(self, client, ui):
+        sid, _ = self._answered(ui, turns=3)
+        res = client.post("/api/rating", json={"rating": -1, "turn": 1},
+                          headers={"X-Session-Id": sid})
+        assert res.json()["turn"] == 1
+        assert res.json()["rating"] == -1
+
+    def test_a_comment_rides_along(self, client, ui):
+        from learn import read_session, record_task
+        sid, _ = self._answered(ui)
+        record_task(session_id=sid, turn=1, task="t0", response="r",
+                    config_data=ui._onit.config_data)
+        client.post("/api/rating",
+                    json={"rating": "down", "comment": "wrong policy"},
+                    headers={"X-Session-Id": sid})
+        record = read_session(sid, ui._onit.config_data)[0]
+        assert record["signals"]["user_rating"] == -1
+        assert record["signals"]["user_comment"] == "wrong policy"
+
+    def test_a_meaningless_rating_is_rejected(self, client, ui):
+        sid, _ = self._answered(ui)
+        res = client.post("/api/rating", json={"rating": "maybe"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 400
+
+    def test_rating_before_any_answer_is_rejected(self, client, ui):
+        sid, _ = ui._get_or_create_session()
+        res = client.post("/api/rating", json={"rating": "up"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 400
+
+    def test_a_non_numeric_turn_is_rejected(self, client, ui):
+        sid, _ = self._answered(ui)
+        res = client.post("/api/rating", json={"rating": "up", "turn": "last"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 400
+
+    def test_recording_off_answers_without_storing(self, client, ui, tmp_path):
+        """The UI offered a button and the deployment declined to keep the
+        answer — not an error, and nothing on disk."""
+        ui._onit.config_data = {"learn": {"autonomy": "off",
+                                          "path": str(tmp_path / "nope")}}
+        sid, _ = self._answered(ui)
+        res = client.post("/api/rating", json={"rating": "up"},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        assert res.json()["recorded"] is False
+        assert not (tmp_path / "nope").exists()
+
+
 class TestVerifyLinks:
     def test_malformed_urls_rejected_without_probe(self, client, ui, monkeypatch):
         def _boom(url):
@@ -957,7 +1035,8 @@ def auth_ui(tmp_path, bg_loop, monkeypatch):
         google_client_id="test-client-id.apps.googleusercontent.com",
         google_client_secret="test-secret",
     )
-    ui._onit = FakeOnit()
+    ui._onit = FakeOnit(config_data={
+        "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
     ui._loop = bg_loop
     ui.build_app()
     return ui
@@ -1026,7 +1105,8 @@ class TestForcedLogin:
             google_client_secret="test-secret",
             require_auth=False,
         )
-        ui._onit = FakeOnit()
+        ui._onit = FakeOnit(config_data={
+        "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
         ui._loop = bg_loop
         ui.build_app()
         client = TestClient(ui.app)

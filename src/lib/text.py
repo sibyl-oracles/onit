@@ -19,9 +19,10 @@ INSTRUCTION_SPLIT = "\n[[onit:session-context]]\n"
 def split_instruction(instruction: str) -> tuple[str, str]:
     """Split an instruction into its (static, volatile) halves.
 
-    An instruction with no sentinel is treated as entirely volatile, which is
-    what a custom template produces: nothing in it can be assumed stable, so
-    it keeps the pre-split behaviour of riding in the user message whole.
+    An instruction with no sentinel is treated as entirely volatile, so a
+    caller that assembled one by hand still gets a correct message list — it
+    simply forfeits the shared prefix.  Every instruction this package builds
+    carries the sentinel, custom templates included.
     """
     static, sentinel, volatile = (instruction or "").partition(INSTRUCTION_SPLIT)
     if not sentinel:

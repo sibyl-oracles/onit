@@ -91,6 +91,23 @@ def model_label() -> str:
     return serving.get("model") or serving["host"]
 
 
+def learn_level() -> str:
+    """Autonomy level the agent under test runs at.
+
+    Defaults to ``off``, not to whatever the operator's config file says. A
+    benchmark row is only comparable to another row if the two agents were
+    allowed to change themselves by the same amount, and the useful default is
+    the one that measures the scaffold as shipped. Set ``ONIT_LEARN`` to
+    measure a learning level on purpose — that is the A/B this exists for.
+    """
+    return os.environ.get("ONIT_LEARN") or "off"
+
+
+def resolve_learn() -> dict:
+    """OnIt's ``learn`` config block for a benchmark run."""
+    return {"autonomy": learn_level()}
+
+
 def bench_timeout() -> int:
     """Per-request timeout (seconds) for the agent under test.
 

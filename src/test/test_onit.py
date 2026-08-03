@@ -653,3 +653,75 @@ class TestEnterKeyListener:
         finally:
             os.close(r)
             os.close(w)
+
+
+# ── trajectory recording ────────────────────────────────────────────────────
+
+class TestRecordTrajectory:
+    """What a task leaves behind beyond its answer. Best-effort by contract:
+    a trajectory that fails to write must never turn a completed task into a
+    failed one."""
+
+    def _onit(self, tmp_path, autonomy="observe"):
+        cfg = _make_config(tmp_path, {
+            "data_path": str(tmp_path / "data"),
+            "learn": {"autonomy": autonomy, "path": str(tmp_path / "learned")},
+        })
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        onit.tool_registry = MagicMock(tools={"search", "bash"})
+        return onit
+
+    def _session_with_one_turn(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        path.write_text(json.dumps({"task": "t", "response": "r"}) + "\n")
+        return str(path)
+
+    def test_records_the_run_alongside_the_answer(self, tmp_path):
+        from learn import read_session
+        onit = self._onit(tmp_path)
+        metrics = {"turns": [{"n": 1, "prompt_tokens": 300, "finish_reason": "stop",
+                              "tool_runs": [{"name": "search", "ok": False, "ms": 9}]}],
+                   "turn_count": 1, "tool_calls": 1, "api_retries": 1}
+        onit._record_trajectory("find the policy", "here it is", metrics,
+                                self._session_with_one_turn(tmp_path), "sess-1", None)
+        records = read_session("sess-1", onit.config_data)
+        assert len(records) == 1
+        assert records[0]["task"] == "find the policy"
+        assert records[0]["turn"] == 1
+        assert records[0]["tools_available"] == ["bash", "search"]
+        assert records[0]["signals"] == {
+            "tool_errors": 1, "retries": 1, "truncations": 0, "compactions": 0,
+            "user_rating": None, "verifier": None,
+        }
+
+    def test_turn_number_follows_the_session_file(self, tmp_path):
+        from learn import read_session
+        onit = self._onit(tmp_path)
+        path = tmp_path / "s.jsonl"
+        path.write_text("".join(
+            json.dumps({"task": f"t{n}", "response": "r"}) + "\n" for n in range(3)))
+        onit._record_trajectory("t2", "r", {}, str(path), "sess-1", None)
+        assert read_session("sess-1", onit.config_data)[0]["turn"] == 3
+
+    def test_off_writes_nothing(self, tmp_path):
+        onit = self._onit(tmp_path, autonomy="off")
+        onit._record_trajectory("t", "r", {},
+                                self._session_with_one_turn(tmp_path), "sess-1", None)
+        assert not (tmp_path / "learned").exists()
+
+    def test_a_broken_store_does_not_propagate(self, tmp_path, monkeypatch):
+        onit = self._onit(tmp_path)
+        import learn.trajectory as traj
+        monkeypatch.setattr(traj.os, "makedirs",
+                            MagicMock(side_effect=OSError("read-only")))
+        onit._record_trajectory("t", "r", {},
+                                self._session_with_one_turn(tmp_path), "sess-1", None)
+
+    def test_a_missing_registry_does_not_propagate(self, tmp_path):
+        onit = self._onit(tmp_path)
+        onit.tool_registry = None
+        onit._record_trajectory("t", "r", {},
+                                self._session_with_one_turn(tmp_path), "sess-1", None)
+        from learn import read_session
+        assert read_session("sess-1", onit.config_data)[0]["tools_available"] == []

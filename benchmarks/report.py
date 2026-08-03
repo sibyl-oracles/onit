@@ -41,10 +41,27 @@ def collect(log_dir: str) -> dict[str, dict]:
     return results
 
 
-def to_markdown(results: dict[str, dict]) -> str:
-    lines = ["# OnIt benchmark summary", "",
-             "| Benchmark | Alias | Model | Samples | Metrics |",
-             "|---|---|---|---|---|"]
+def read_run_meta(log_dir: str) -> dict:
+    """Agent configuration the logs were produced under, if it was stamped.
+
+    Written by ``benchmarks.run``; absent for logs produced before it was, and
+    for ``eval`` invocations that bypassed the runner.
+    """
+    try:
+        return json.loads((Path(log_dir) / "run_meta.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def to_markdown(results: dict[str, dict], meta: dict | None = None) -> str:
+    lines = ["# OnIt benchmark summary", ""]
+    # Two runs of the same benchmark are only comparable if the agent was
+    # allowed to change itself by the same amount in both.
+    learn = (meta or {}).get("learn")
+    if learn:
+        lines += [f"Autonomy level (`learn`): **{learn}**", ""]
+    lines += ["| Benchmark | Alias | Model | Samples | Metrics |",
+              "|---|---|---|---|---|"]
     for task in sorted(results):
         r = results[task]
         # ``task`` is the Inspect task name == the CLI alias.
@@ -82,14 +99,19 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     results = collect(args.log_dir)
+    meta = read_run_meta(args.log_dir)
     out_dir = Path(args.log_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "summary.json").write_text(json.dumps(results, indent=2))
-    (out_dir / "summary.md").write_text(to_markdown(results))
-    print(to_markdown(results))
+    summary = {"run": meta, "results": results} if meta else results
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "summary.md").write_text(to_markdown(results, meta))
+    print(to_markdown(results, meta))
 
     if args.baseline:
         baseline = json.loads(Path(args.baseline).read_text())
+        # Summaries stamped with a run block nest the per-task rows; ones
+        # written before that (including the committed baselines) do not.
+        baseline = baseline.get("results", baseline)
         regressions = diff_baseline(results, baseline, args.tolerance)
         if regressions:
             print("\nREGRESSIONS:")

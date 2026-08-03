@@ -26,13 +26,25 @@ _MODE_ENV_VARS = (
     "ONIT_CONTAINER",
     "ONIT_ALLOW_PACKAGE_INSTALL",
     "ONIT_COMMAND_ALLOWLIST",
+    # Same hazard, newer knobs: a developer running with recording off would
+    # otherwise see the trajectory tests silently assert nothing, and one
+    # running with a custom path would write test data into it.
+    "ONIT_LEARN",
+    "ONIT_LEARN_PATH",
+    "ONIT_LEARN_REDACT",
 )
 
 
 @pytest.fixture(autouse=True)
-def _clean_mode_env(monkeypatch):
+def _clean_mode_env(monkeypatch, tmp_path):
     for var in _MODE_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    # Backstop, not a convenience. Recording is on by default, so any test that
+    # runs a task through a config without a `learn.path` writes a trajectory —
+    # and without this it writes into the developer's real ~/.onit/learned.
+    # A config that names its own path still wins; this only catches the ones
+    # that say nothing.
+    monkeypatch.setenv("ONIT_LEARN_PATH", str(tmp_path / "learned-default"))
 
 
 # ---------------------------------------------------------------------------
