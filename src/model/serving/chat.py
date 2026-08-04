@@ -1350,6 +1350,41 @@ def _is_planning_response(content: str) -> bool:
     return False
 
 
+# Filler a model emits when it treats a continuation prompt as an announcement to
+# accept rather than work to resume.  Matched only against short replies, so an
+# answer that happens to open with "Understood" still reaches the user intact.
+_ACK_PHRASES = (
+    "ready for the next message",
+    "ready for your next",
+    "awaiting further instructions",
+    "awaiting your next",
+    "context window management acknowledged",
+    "acknowledged. ready",
+    "understood. continuing",
+    "understood, continuing",
+    "continuing based on the context summary",
+)
+_ACK_MAX_CHARS = 200
+
+
+def _is_acknowledgment_response(content: str) -> bool:
+    """Return True if the response is content-free filler rather than an answer.
+
+    A compaction or continuation prompt asks the model to resume work.  Weaker
+    models sometimes reply "Understood. Ready for the next message." and stop,
+    which the caller would otherwise hand back as the final answer — ending a
+    long task on a non-answer.  Only short replies qualify: real work that opens
+    with an acknowledgment goes on to say something.
+    """
+    if not content:
+        return False
+    text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
+    if not text or len(text) > _ACK_MAX_CHARS:
+        return False
+    lower = text.lower()
+    return any(p in lower for p in _ACK_PHRASES)
+
+
 def _build_tool_example(tool_registry) -> str:
     """Return a filled-in JSON tool-call example using the first available tool's schema.
 
@@ -1418,6 +1453,12 @@ _FINAL_CONTINUATION_PROMPT = (
     "length limit. Continue from exactly where it stopped. Do not repeat anything "
     "you already wrote, do not restate the question, and do not add any preamble — "
     "just continue the text seamlessly."
+)
+
+# Prompt used to push past a content-free acknowledgment.
+_ACK_CONTINUATION_PROMPT = (
+    "Do not acknowledge or restate the status. Resume the task now: either call "
+    "the next tool you need, or give the final answer if the task is already done."
 )
 
 
@@ -1713,7 +1754,8 @@ async def _compact_context(
     """Summarize the conversation and return a compacted messages list.
 
     Keeps the system message, generates a dense LLM summary of all other
-    messages, and returns [system_msg, compacted_user_msg, ack_assistant_msg].
+    messages, and returns [system_msg, compacted_user_msg] — ending on the user
+    turn so the model resumes the task rather than acknowledging the summary.
     When ``instruction`` is given it is restated verbatim in the compacted
     user message, so it survives the lossy summary.
 
@@ -1818,10 +1860,11 @@ async def _compact_context(
         "role": "user",
         "content": compacted_content,
     })
-    new_messages.append({
-        "role": "assistant",
-        "content": "Understood. Continuing based on the context summary.",
-    })
+    # The compacted user message is deliberately last.  Appending a synthetic
+    # assistant acknowledgment here would leave the model generating a second
+    # consecutive assistant turn with nothing new to respond to — it answers
+    # with filler ("Ready for the next message.") and no tool call, which the
+    # loop then returns as the final answer, silently ending a long task.
     return new_messages
 
 
@@ -1947,6 +1990,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_REPEATED_TOOL_CALLS = 30
     MAX_API_RETRIES = 3
     MAX_PLANNING_CONTINUATIONS = 2
+    # Max times to push past a content-free acknowledgment before accepting the
+    # reply as-is.  Bounded low: a model that keeps acknowledging is stuck, and
+    # looping on it burns the context that compaction just freed.
+    MAX_ACK_CONTINUATIONS = 2
     # Max times to resume a final answer that was cut off by the output token
     # budget (finish_reason=length).  Each resume grants another max_tokens of
     # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
@@ -1965,6 +2012,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         CONTEXT_COMPACT_THRESHOLD = 0.90
     iteration_count = 0
     planning_continuation_count = 0
+    ack_continuation_count = 0
     tool_call_history: list = []  # list of (name, args_json) tuples
     _last_prompt_tokens: int = 0  # prompt token count from the last API response
     _force_tool_call: bool = False  # set after a planning-only response to require tool use
@@ -2419,6 +2467,22 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     "(e.g. qwen3, mistral-nemo, llama3.1, deepseek-r1)."
                 )
 
+            # Content-free acknowledgment: the model answered a compaction or
+            # continuation prompt with filler instead of resuming work.  Handing
+            # that back would end the task on a non-answer, so nudge it once.
+            if (_finish_reason != "length"
+                    and _is_acknowledgment_response(_content)
+                    and ack_continuation_count < MAX_ACK_CONTINUATIONS):
+                ack_continuation_count += 1
+                _log_to_ui_or_verbose(
+                    f"Model acknowledged instead of resuming the task (continuation "
+                    f"{ack_continuation_count}/{MAX_ACK_CONTINUATIONS}).",
+                    chat_ui, verbose, level="info",
+                )
+                messages.append({"role": "assistant", "content": _content})
+                messages.append({"role": "user", "content": _ACK_CONTINUATION_PROMPT})
+                continue
+
             _force_tool_call = False
             _active_max_tokens = max_tokens
             _final = _extract_final_response(_content, _full_reasoning, _full_content)
@@ -2439,6 +2503,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _force_tool_call = False
         _active_max_tokens = max_tokens
         planning_continuation_count = 0
+        ack_continuation_count = 0
         _t_tools = time.monotonic()
         _tool_log = []
         bail = await _handle_structured_tool_calls(

@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _is_planning_response, _build_messages,
-                                _trim_history, chat)
+                                _trim_history, _is_acknowledgment_response,
+                                _compact_context, chat)
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
@@ -339,6 +340,96 @@ class TestIsPlanningResponse:
         assert _is_planning_response(
             "I checked the repository and it is out of date. Let me update it now."
         )
+
+
+# ── _is_acknowledgment_response ────────────────────────────────────────────
+
+class TestIsAcknowledgmentResponse:
+    def test_ready_for_next_message(self):
+        assert _is_acknowledgment_response(
+            "Context window management acknowledged. Ready for the next message."
+        )
+
+    def test_understood_continuing(self):
+        assert _is_acknowledgment_response("Understood. Continuing based on the context summary.")
+
+    def test_awaiting_instructions(self):
+        assert _is_acknowledgment_response("Acknowledged — awaiting further instructions.")
+
+    def test_real_answer_returns_false(self):
+        assert not _is_acknowledgment_response("The build fails because pytest is run from src/.")
+
+    def test_short_legitimate_answer_returns_false(self):
+        assert not _is_acknowledgment_response("Done — 3 files updated.")
+
+    def test_empty_returns_false(self):
+        assert not _is_acknowledgment_response("")
+
+    def test_long_answer_opening_with_filler_is_kept(self):
+        """Filler only counts when it is the whole reply, not a lead-in to real work."""
+        answer = "Understood. Continuing based on the context summary. " + (
+            "The remaining failures are in test_web_api.py, caused by the sandbox path jail. " * 4
+        )
+        assert not _is_acknowledgment_response(answer)
+
+    def test_think_tags_stripped(self):
+        assert _is_acknowledgment_response("<think>ok</think>Ready for the next message.")
+
+
+# ── _compact_context ───────────────────────────────────────────────────────
+
+class TestCompactContext:
+    @staticmethod
+    def _client(summary="Prior work: read three files, fixed one bug."):
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=_mock_completion(summary))
+        return client
+
+    @staticmethod
+    def _messages():
+        return [
+            {"role": "system", "content": "You are OnIt."},
+            {"role": "user", "content": "Fix the failing tests."},
+            {"role": "assistant", "content": "Working on it."},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_compacted_history_ends_on_the_user_turn(self):
+        """A trailing assistant ack would make the model reply with filler and stop."""
+        out = await _compact_context(
+            self._messages(), self._client(), "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+        )
+        assert out[-1]["role"] == "user"
+        assert not any(m["role"] == "assistant" for m in out)
+
+    @pytest.mark.asyncio
+    async def test_system_message_is_preserved(self):
+        out = await _compact_context(
+            self._messages(), self._client(), "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+        )
+        assert out[0] == {"role": "system", "content": "You are OnIt."}
+
+    @pytest.mark.asyncio
+    async def test_instruction_is_restated_verbatim(self):
+        out = await _compact_context(
+            self._messages(), self._client(), "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+            instruction="Fix the failing tests.",
+        )
+        assert "Fix the failing tests." in out[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_failed_summarization_returns_original_messages(self):
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+        messages = self._messages()
+        out = await _compact_context(
+            messages, client, "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+        )
+        assert out is messages
 
 
 # ── planning-continuation integration ──────────────────────────────────────
