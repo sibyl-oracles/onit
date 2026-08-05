@@ -356,6 +356,17 @@ class TestIsAcknowledgmentResponse:
     def test_awaiting_instructions(self):
         assert _is_acknowledgment_response("Acknowledged — awaiting further instructions.")
 
+    def test_tool_mechanics_are_not_an_answer(self):
+        """Signing off on the plumbing after a long tool run says the call
+        returned, not what it found."""
+        assert _is_acknowledgment_response("Done. Tool called successfully.")
+        assert _is_acknowledgment_response("The tool executed successfully.")
+        assert _is_acknowledgment_response("All tools called successfully.")
+
+    def test_action_task_completion_is_an_answer(self):
+        """"Task completed" reports the work; only "tool" reports the plumbing."""
+        assert not _is_acknowledgment_response("Task completed successfully.")
+
     def test_real_answer_returns_false(self):
         assert not _is_acknowledgment_response("The build fails because pytest is run from src/.")
 

@@ -1363,6 +1363,20 @@ _ACK_PHRASES = (
     "understood. continuing",
     "understood, continuing",
     "continuing based on the context summary",
+    # Mechanics reported as if they were the answer.  After a long tool run a
+    # model sometimes signs off on the plumbing — "Done. Tool called
+    # successfully." — which says the call returned, not what it found.  The
+    # user asked about the task, never about the tool, so this is filler
+    # however the run went.  Anchored on "tool" on purpose: a bare "Task
+    # completed successfully" is a real answer for a task that was an action.
+    "tool called successfully",
+    "tool call succeeded",
+    "tool call was successful",
+    "tool call completed successfully",
+    "tool executed successfully",
+    "tool ran successfully",
+    "called the tool successfully",
+    "tools called successfully",
 )
 _ACK_MAX_CHARS = 200
 

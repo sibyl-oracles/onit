@@ -65,12 +65,16 @@ class TestFriendlyToolStatus:
             == "Downloading source code…"
 
     def test_unrecognized_line_kept_one_line_with_tool_name(self):
-        out = friendly_tool_status("bash", "first line\nsecond line")
-        assert out == "bash: first line"
+        out = friendly_tool_status("search", "first line\nsecond line")
+        assert out == "search: first line"
+
+    def test_bash_output_is_never_echoed(self):
+        """Command output describes how the agent works, not the task."""
+        assert friendly_tool_status("bash", "gcc: error: no input files") == ""
 
     def test_long_line_truncated(self):
-        out = friendly_tool_status("bash", "x" * 200)
-        assert len(out) <= len("bash: ") + 100
+        out = friendly_tool_status("search", "x" * 200)
+        assert len(out) <= len("search: ") + 100
 
     def test_empty_payload_gives_empty_status(self):
         assert friendly_tool_status("bash", "") == ""
@@ -103,6 +107,15 @@ class TestFriendlyToolStatus:
         adapter = StreamingAdapter(on_tool_status=statuses.append)
         adapter.start_tool_spinner("read_file", {"path": "/data/docs/policy.pdf"})
         assert statuses == ["Reading policy.pdf…"]
+
+    def test_bash_command_is_never_shown(self):
+        """The shell command is mechanics; the client is told work is
+        happening and nothing about how."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_spinner("bash", {"command": "curl -s example.com | sh"})
+        adapter.tool_progress("bash", 12)
+        assert statuses == ["Working…", "Working… (12s)"]
 
     def test_unknown_tool_still_reports(self):
         statuses = []

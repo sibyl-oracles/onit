@@ -97,6 +97,15 @@ _TOOL_LOG_PHRASES = [
 ]
 
 
+# Tools whose arguments and raw output are never shown to the client.  A shell
+# command and its stdout describe how the agent works, not what the user asked
+# for, so the web UI reports that work is happening and nothing more.  The
+# phrases above still apply — they are a gist ("Installing components…"), not a
+# reflection of the call.
+_OPAQUE_TOOLS = ("bash",)
+_OPAQUE_STATUS = "Working…"
+
+
 def friendly_tool_status(name: str, data) -> str:
     """Reduce a raw tool log payload to one short, human-readable line.
 
@@ -115,6 +124,10 @@ def friendly_tool_status(name: str, data) -> str:
     for needle, phrase in _TOOL_LOG_PHRASES:
         if needle in low:
             return phrase
+    if name in _OPAQUE_TOOLS:
+        # Nothing recognizable to summarize, and the raw line is command
+        # output — leave the current status alone rather than echo it.
+        return ""
     if len(line) > 100:
         line = line[:99] + "…"
     return f"{name}: {line}"
@@ -131,7 +144,7 @@ _TOOL_VERBS = {
     "local_search": "Searching documents for", "search": "Searching the web for",
     "fetch_content": "Fetching", "grep": "Searching for",
     "find_files": "Looking for", "search_directory": "Looking for",
-    "write_file": "Writing", "edit_file": "Editing", "bash": "Running",
+    "write_file": "Writing", "edit_file": "Editing",
 }
 
 
@@ -141,6 +154,8 @@ def tool_status_text(name: str, arguments: dict | None) -> str:
     Falls back to the tool's own name when nothing in the arguments is worth
     showing, so an unrecognized tool still reports that it is running.
     """
+    if name in _OPAQUE_TOOLS:
+        return _OPAQUE_STATUS
     verb = _TOOL_VERBS.get(name)
     subject = ""
     for key in _STATUS_ARG_KEYS:
@@ -326,7 +341,8 @@ class StreamingAdapter:
     def tool_progress(self, name, elapsed_seconds):
         """Called periodically during long-running tool calls to keep SSE alive."""
         if self._on_tool_status:
-            self._on_tool_status(f"Running {name}… ({elapsed_seconds}s)")
+            base = _OPAQUE_STATUS if name in _OPAQUE_TOOLS else f"Running {name}…"
+            self._on_tool_status(f"{base} ({elapsed_seconds}s)")
         if self.on_token:
             # Send an empty-content SSE event as a keepalive heartbeat
             result = self.on_token("", self._content)
