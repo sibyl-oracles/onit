@@ -1199,7 +1199,8 @@ async def _ollama_process_streaming_response(
     """Consume an Ollama streaming chat completion and return accumulated results.
 
     Returns (full_content, full_thinking, tool_calls_or_None, ui_was_streaming,
-    prompt_eval_count, done_reason) or None if the safety queue fired mid-stream.
+    prompt_eval_count, done_reason, eval_count) or None if the safety queue
+    fired mid-stream.
     ``done_reason`` is Ollama's stop reason from the final chunk (e.g. "stop",
     "length"); it lets the caller detect token-budget truncation and resume.
 
@@ -1213,6 +1214,7 @@ async def _ollama_process_streaming_response(
     tool_calls = None
     ui_streaming = False
     prompt_eval_count = 0
+    eval_count = 0
     done_reason = None
 
     try:
@@ -1237,10 +1239,16 @@ async def _ollama_process_streaming_response(
             if chunk.message.tool_calls:
                 tool_calls = chunk.message.tool_calls
 
-            # Capture prompt token count from final chunk for context tracking.
+            # Capture token counts from final chunk. prompt_eval_count drives
+            # context tracking; eval_count is what the turn actually generated,
+            # and without it every streamed Ollama run reports zero output
+            # tokens — the non-streaming path below has always read it.
             pec = getattr(chunk, "prompt_eval_count", None)
             if pec:
                 prompt_eval_count = pec
+            ec = getattr(chunk, "eval_count", None)
+            if ec:
+                eval_count = ec
 
             # Thinking tokens (Ollama native think support)
             thinking_tok = getattr(chunk.message, "thinking", None)
@@ -1264,7 +1272,8 @@ async def _ollama_process_streaming_response(
     except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
         logging.getLogger(__name__).warning("Ollama stream interrupted: %s", e)
 
-    return full_content, full_thinking, tool_calls, ui_streaming, prompt_eval_count, done_reason
+    return (full_content, full_thinking, tool_calls, ui_streaming,
+            prompt_eval_count, done_reason, eval_count)
 
 
 def _prose_alongside_tool_calls(full_content: str) -> str:
@@ -2218,7 +2227,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         )
                         if stream_result is None:
                             return None
-                        _full_content, _full_reasoning, _ollama_tcs, _ui_was_streaming, _ollama_prompt_tokens, _finish_reason = stream_result
+                        (_full_content, _full_reasoning, _ollama_tcs,
+                         _ui_was_streaming, _ollama_prompt_tokens, _finish_reason,
+                         _ollama_eval_count) = stream_result
+                        _completion_tokens = _ollama_eval_count
                         if _ollama_prompt_tokens:
                             _last_prompt_tokens = _ollama_prompt_tokens
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):

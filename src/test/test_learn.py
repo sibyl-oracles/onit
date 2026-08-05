@@ -232,6 +232,80 @@ class TestWriter:
         assert tasks == {"a", "b"}
 
 
+class TestReport:
+    """Recording nobody can read is indistinguishable from not recording."""
+
+    def _run(self, cfg, sid, turn, tools, **metrics):
+        traj.record_task(
+            session_id=sid, turn=turn, task="t", response="r", config_data=cfg,
+            metrics=_metrics(turns=[{"n": 1, "tool_runs": tools}], **metrics))
+
+    def test_ranks_tools_by_failure_rate(self, learn_config_data):
+        """The Phase 0 exit criterion: which tool fails most, and on what."""
+        from learn import summarize
+        cfg = learn_config_data
+        self._run(cfg, "s1", 1, [{"name": "read_file", "ok": False, "ms": 40},
+                                 {"name": "local_search", "ok": True, "ms": 800}])
+        self._run(cfg, "s1", 2, [{"name": "read_file", "ok": True, "ms": 60},
+                                 {"name": "local_search", "ok": True, "ms": 600}])
+        s = summarize(cfg)
+        assert s["tasks"] == 2 and s["sessions"] == 1
+        assert s["tools"]["read_file"] == {"calls": 2, "errors": 1, "avg_ms": 50}
+        assert s["tools"]["local_search"]["errors"] == 0
+
+    def test_totals_roll_up_across_sessions(self, learn_config_data):
+        from learn import summarize
+        cfg = learn_config_data
+        self._run(cfg, "s1", 1, [{"name": "bash", "ok": False}], api_retries=2)
+        self._run(cfg, "s2", 1, [{"name": "bash", "ok": False}], api_retries=1)
+        s = summarize(cfg)
+        assert s["sessions"] == 2
+        assert s["totals"]["tool_errors"] == 2
+        assert s["totals"]["retries"] == 3
+
+    def test_ratings_are_counted(self, learn_config_data):
+        from learn import summarize
+        cfg = learn_config_data
+        for turn in (1, 2, 3):
+            self._run(cfg, "s1", turn, [])
+        traj.append_rating(session_id="s1", turn=1, rating="up", config_data=cfg)
+        traj.append_rating(session_id="s1", turn=2, rating="down", config_data=cfg)
+        s = summarize(cfg)
+        assert s["ratings"] == {"up": 1, "down": 1}
+
+    def test_a_record_without_call_detail_invents_no_errors(self, learn_config_data):
+        """Older records carry tool names only; counting those as failures
+        would report errors that never happened."""
+        from learn import summarize
+        traj.record_task(session_id="s1", turn=1, task="t", response="r",
+                         config_data=learn_config_data,
+                         metrics=_metrics(turns=[{"n": 1, "tools": ["bash"]}]))
+        assert summarize(learn_config_data)["tools"]["bash"] == {
+            "calls": 1, "errors": 0, "avg_ms": 0}
+
+    def test_status_says_so_when_nothing_is_recorded_yet(self, learn_config_data):
+        from learn import format_status
+        text = format_status(learn_config_data)
+        assert "No trajectories recorded yet" in text
+        assert "observe" in text
+
+    def test_status_says_so_when_recording_is_off(self, tmp_path):
+        from learn import format_status
+        text = format_status({"learn": {"autonomy": "off",
+                                        "path": str(tmp_path / "l")}})
+        assert "Recording is off" in text
+        assert "ONIT_LEARN=observe" in text
+
+    def test_status_reports_what_is_there(self, learn_config_data):
+        from learn import format_status
+        self._run(learn_config_data, "s1", 1,
+                  [{"name": "read_file", "ok": False, "ms": 40}])
+        text = format_status(learn_config_data)
+        assert "1 task(s) across 1 session(s)" in text
+        assert "read_file" in text
+        assert "100%" in text
+
+
 class TestRatings:
     """A verdict arrives after the record it judges, from another process."""
 

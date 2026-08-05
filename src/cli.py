@@ -566,6 +566,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions_parser.add_argument("--clear", action="store_true",
                                  help="Delete all previous sessions and the index.")
 
+    # learn: inspect what the agent has recorded about its own runs
+    learn_parser = subparsers.add_parser(
+        "learn",
+        help="Show what OnIt has recorded about its own runs.")
+    learn_parser.add_argument("--session", type=str, default=None,
+                              metavar="ID",
+                              help="Print one session's trajectory records as JSON.")
+    learn_parser.add_argument("--json", action="store_true",
+                              help="Print the summary as JSON instead of a table.")
+
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
     resume_parser.add_argument("session", nargs="?", default="last",
@@ -1012,6 +1022,37 @@ def main():
             return
         sessions = list_sessions(sessions_dir, limit=args.limit)
         print(format_sessions_table(sessions))
+        return
+
+    # Trajectory store: read-only, and deliberately not gated on a config file
+    # or a reachable model — "is anything being recorded" has to be answerable
+    # when the rest of the stack is down.
+    if args.command == "learn":
+        from .learn import format_status, read_session, summarize
+        # Only the learn block is needed, so the file is read directly rather
+        # than run through the full resolver — that one reaches for the
+        # keychain and the MCP hosts to answer a question about a directory.
+        _learn_config_path = args.config or _find_default_config()
+        config_data = {}
+        if os.path.isfile(_learn_config_path):
+            with open(_learn_config_path, 'r') as f:
+                config_data = yaml.safe_load(f) or {}
+        if args.session:
+            records = read_session(args.session, config_data)
+            if not records:
+                print(f"No trajectory recorded for session '{args.session}'.",
+                      file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(records, indent=2))
+            return
+        if args.json:
+            summary = summarize(config_data)
+            summary["models"] = dict(summary["models"])
+            summary["ratings"] = dict(summary["ratings"])
+            summary["totals"] = dict(summary["totals"])
+            print(json.dumps(summary, indent=2))
+            return
+        print(format_status(config_data))
         return
 
     # resume subcommand: translate to --resume flag and continue normal startup

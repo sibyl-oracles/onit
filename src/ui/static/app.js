@@ -19,6 +19,7 @@
     logsOpen: false,
     logsTimer: null,
     pollTimer: null,
+    ratingEnabled: false,  // set from /api/config
   };
 
   const $ = (id) => document.getElementById(id);
@@ -476,6 +477,65 @@
     root.appendChild(meta);
   }
 
+  // 👍/👎 on an answer. The one outcome signal nothing else can supply:
+  // everything the agent records about a run says how it went, not whether it
+  // was right. Sent to /api/rating, which appends it to the session's
+  // trajectory; a second click on the same thumb takes it back.
+  function addRating(root, turn, current) {
+    if (!state.ratingEnabled || !turn) return;
+    const bar = document.createElement("div");
+    bar.className = "msg-rate";
+
+    const note = document.createElement("span");
+    note.className = "msg-rate-note";
+
+    const buttons = {};
+    function paint(value) {
+      for (const [key, btn] of Object.entries(buttons)) {
+        btn.classList.toggle("on", value === Number(key));
+        btn.setAttribute("aria-pressed", String(value === Number(key)));
+      }
+      note.textContent = value ? "Thanks — noted." : "";
+    }
+
+    for (const [value, glyph, label] of [[1, "👍", "Good answer"],
+                                         [-1, "👎", "Bad answer"]]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "msg-rate-btn";
+      btn.textContent = glyph;
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+      btn.addEventListener("click", async () => {
+        // Clicking the thumb already showing clears the verdict.
+        const next = bar.dataset.rating === String(value) ? 0 : value;
+        const previous = bar.dataset.rating;
+        bar.dataset.rating = next ? String(next) : "";
+        paint(next);
+        try {
+          const res = await api("/api/rating", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rating: next || null, turn }),
+          });
+          if (!res.ok) throw new Error(String(res.status));
+        } catch (e) {
+          // The click did not land, so the thumb must not claim it did.
+          bar.dataset.rating = previous || "";
+          paint(Number(previous) || 0);
+          note.textContent = "Could not save that.";
+        }
+      });
+      buttons[value] = btn;
+      bar.appendChild(btn);
+    }
+
+    bar.appendChild(note);
+    bar.dataset.rating = current ? String(current) : "";
+    paint(current || 0);
+    root.appendChild(bar);
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -554,6 +614,9 @@
       el.userAvatar.textContent = config.email[0].toUpperCase();
     }
     if (config.show_logs) el.logsToggle.hidden = false;
+    // Offered only where the answer will actually be kept: a deployment with
+    // recording off gets no buttons rather than buttons that drop the click.
+    state.ratingEnabled = config.rating_enabled !== false;
 
     await loadHistory();
     await refreshSessions();
@@ -576,6 +639,7 @@
         const turn = addAssistantTurn();
         renderMarkdown(turn.content, m.content);
         addFileChips(turn.root, m.files);
+        addRating(turn.root, m.turn, m.rating);
       }
     }
     scrollToBottom(true);
@@ -836,6 +900,7 @@
         }
         addFileChips(turn.root, d.files);
         addMeta(turn.root, d.elapsed, d.tok_s);
+        addRating(turn.root, d.turn, null);
         streamBlock = null;
       },
       error(d) {

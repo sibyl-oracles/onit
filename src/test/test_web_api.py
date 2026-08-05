@@ -780,6 +780,57 @@ class TestRatingEndpoint:
                           headers={"X-Session-Id": sid})
         assert res.status_code == 400
 
+    def test_a_missing_rating_is_rejected(self, client, ui):
+        sid, _ = self._answered(ui)
+        res = client.post("/api/rating", json={}, headers={"X-Session-Id": sid})
+        assert res.status_code == 400
+
+    def test_a_misclick_can_be_taken_back(self, client, ui):
+        """A thumb pressed by accident has to be undoable, so an explicit
+        nothing is a retraction rather than a malformed request."""
+        from learn import read_session, record_task
+        sid, _ = self._answered(ui)
+        record_task(session_id=sid, turn=1, task="t0", response="r",
+                    config_data=ui._onit.config_data)
+        client.post("/api/rating", json={"rating": "up"},
+                    headers={"X-Session-Id": sid})
+        res = client.post("/api/rating", json={"rating": None, "turn": 1},
+                          headers={"X-Session-Id": sid})
+        assert res.status_code == 200
+        assert res.json()["rating"] is None
+        record = read_session(sid, ui._onit.config_data)[0]
+        assert record["signals"]["user_rating"] is None
+
+    def test_the_answer_says_which_turn_to_rate(self, client, ui):
+        """The buttons need a turn number, and guessing it client-side breaks
+        as soon as history is restored."""
+        sid, _ = self._answered(ui)
+        res = client.post("/api/chat", json={"message": "hello"},
+                          headers={"X-Session-Id": sid})
+        done = [d for e, d in parse_sse(res.text) if e == "done"]
+        assert done and done[0]["turn"] == 2
+        assert done[0]["rating_enabled"] is True
+
+    def test_history_carries_turns_and_prior_verdicts(self, client, ui):
+        from learn import record_task
+        sid, _ = self._answered(ui, turns=2)
+        for turn in (1, 2):
+            record_task(session_id=sid, turn=turn, task=f"t{turn}", response="r",
+                        config_data=ui._onit.config_data)
+        client.post("/api/rating", json={"rating": "down", "turn": 1},
+                    headers={"X-Session-Id": sid})
+        messages = client.get("/api/history",
+                              headers={"X-Session-Id": sid}).json()["messages"]
+        answers = [m for m in messages if m["role"] == "assistant"]
+        assert [m["turn"] for m in answers] == [1, 2]
+        assert [m["rating"] for m in answers] == [-1, None]
+
+    def test_config_hides_the_buttons_when_nothing_is_recorded(self, client, ui, tmp_path):
+        assert client.get("/api/config").json()["rating_enabled"] is True
+        ui._onit.config_data = {"learn": {"autonomy": "off",
+                                          "path": str(tmp_path / "nope")}}
+        assert client.get("/api/config").json()["rating_enabled"] is False
+
     def test_rating_before_any_answer_is_rejected(self, client, ui):
         sid, _ = ui._get_or_create_session()
         res = client.post("/api/rating", json={"rating": "up"},

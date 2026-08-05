@@ -267,6 +267,53 @@ textarea { font-family: var(--font); }
   color: var(--text-faint);
 }
 
+/* Feedback on an answer. Quiet until hovered: it is an offer, not a prompt,
+   and a pair of buttons under every reply competes with the reply. */
+.msg-rate {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+}
+
+.msg-assistant:hover .msg-rate,
+.msg-rate:focus-within,
+.msg-rate[data-rating="1"],
+.msg-rate[data-rating="-1"] {
+  opacity: 1;
+}
+
+.msg-rate-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  filter: grayscale(1);
+  transition: filter 0.15s ease, background 0.15s ease;
+}
+
+.msg-rate-btn:hover {
+  background: var(--bg-hover);
+  filter: grayscale(0);
+}
+
+.msg-rate-btn.on {
+  filter: grayscale(0);
+  background: var(--bg-active);
+  border-color: var(--border);
+}
+
+.msg-rate-note {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+
 .msg-error {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, transparent);

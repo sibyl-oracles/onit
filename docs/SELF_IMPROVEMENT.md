@@ -486,8 +486,14 @@ Shipped:
   records one, failures included — plus an API-retry counter on `TurnMetrics`.
 - Recording wired into all three task paths in [`onit.py`](../src/onit.py): `process_task`
   (web/A2A), the interactive CLI, and loop mode.
-- `POST /api/rating` in [`src/ui/api.py`](../src/ui/api.py) — 👍/👎 plus an optional
-  comment, defaulting to the newest turn.
+- 👍/👎 under every answer in the web UI, backed by `POST /api/rating`. The buttons are
+  quiet until hovered, restore the verdict already given when history reloads, and a
+  second click on the same thumb retracts it. They are not shown at all when recording is
+  off — `/api/config` carries `rating_enabled` — so no click is ever silently dropped.
+- `onit learn` — the answer to *"is any of this working?"*. Prints the autonomy level,
+  the store path, what has been recorded, and the tool table ranked by failure rate.
+  `--json` for machines, `--session <id>` to dump one session's records. Read-only, and
+  deliberately usable when the model endpoint is down.
 - Benchmarks default to `learn=off` and stamp the level into `run_meta.json` next to the
   logs, which `benchmarks/report.py` surfaces in the summary (I5).
 - Tests: [`test_learn.py`](../src/test/test_learn.py) (51), plus tool-record coverage in
@@ -503,6 +509,23 @@ Deferred, because it needs data that does not exist yet:
 
 **Exit criterion**: a week of normal use yields trajectories rich enough to answer *"which
 tool fails most, and on what?"* — a useful result even if every later phase is cancelled.
+`onit learn` answers it:
+
+```
+Recorded     10 task(s) across 1 session(s)
+Trouble      20 tool error(s), 0 API retry/retries, 0 truncation(s)
+
+Tools (worst failure rate first)
+  tool                      calls  errors   fail   avg ms
+  read_file                   129      20   16%       20
+  bash                        300       0    0%    1,246
+```
+
+Recording also surfaced a pre-existing telemetry gap it depends on: the Ollama
+*streaming* path read `prompt_eval_count` but never `eval_count`, so every streamed
+Ollama run accounted for zero generated tokens. Fixed in
+[`_ollama_process_streaming_response`](../src/model/serving/chat.py#L1198); the
+non-streaming path had always read it.
 
 ### Phase 1 — Recall *(~3 days)* · autonomy 2
 

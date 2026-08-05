@@ -418,3 +418,63 @@ class TestHostOverrides:
                            "ollama_fallback_only": False}}
         resolved = self._resolve(tmp_path, monkeypatch, cfg, [])
         assert resolved["serving"]["ollama_fallback_only"] is False
+
+
+# ── onit learn ──────────────────────────────────────────────────────────────
+
+class TestLearnCommand:
+    """Read-only, and deliberately usable when the rest of the stack is down:
+    "is anything being recorded" must be answerable without a model."""
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONIT_LEARN_PATH", str(tmp_path / "learned"))
+        # No config file to find, so the command falls back to env + defaults.
+        monkeypatch.setattr("src.cli._find_default_config",
+                            lambda: str(tmp_path / "missing.yaml"))
+        from src.learn import record_task
+        record_task(session_id="s1", turn=1, task="what scholarships exist?",
+                    response="two", metrics={"turns": [
+                        {"n": 1, "tool_runs": [
+                            {"name": "read_file", "ok": False, "ms": 40},
+                            {"name": "local_search", "ok": True, "ms": 800}]}],
+                        "turn_count": 2, "completion_tokens": 50})
+        return tmp_path
+
+    def _run(self, argv):
+        from src.cli import main
+        with patch.object(sys, "argv", ["onit"] + argv):
+            try:
+                main()
+            except SystemExit as e:
+                if e.code:
+                    raise
+
+    def test_status_reports_the_worst_tool(self, store, capsys):
+        self._run(["learn"])
+        out = capsys.readouterr().out
+        assert "1 task(s) across 1 session(s)" in out
+        assert "read_file" in out and "100%" in out
+        assert "observe" in out
+
+    def test_json_summary_is_machine_readable(self, store, capsys):
+        self._run(["learn", "--json"])
+        data = json.loads(capsys.readouterr().out)
+        assert data["tasks"] == 1
+        assert data["tools"]["read_file"]["errors"] == 1
+
+    def test_one_session_can_be_dumped(self, store, capsys):
+        self._run(["learn", "--session", "s1"])
+        records = json.loads(capsys.readouterr().out)
+        assert records[0]["task"] == "what scholarships exist?"
+
+    def test_an_unknown_session_exits_nonzero(self, store, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(["learn", "--session", "nope"])
+        assert excinfo.value.code == 1
+
+    def test_recording_off_says_how_to_turn_it_on(self, store, capsys, monkeypatch):
+        monkeypatch.setenv("ONIT_LEARN", "off")
+        self._run(["learn"])
+        out = capsys.readouterr().out
+        assert "Recording is off" in out

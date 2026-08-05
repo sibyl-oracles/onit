@@ -52,6 +52,8 @@ from typing import Literal, Optional
 
 from src.learn import append_rating as _append_rating
 from src.learn import normalize_rating as _normalize_rating
+from src.learn import read_session as _read_trajectory
+from src.learn import recording_enabled as _recording_enabled
 from src.model.serving.chat import summarize_metrics
 from src.sessions import _turn_count_from_jsonl as _session_turn_count
 from src.sessions import delete_session as _delete_session_index
@@ -121,6 +123,11 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 # Sentinel pushed into the event queue when a chat turn is finished
 _END = ("__end__", None)
+
+# Spellings of "no verdict" that a rating request may send on purpose, to undo
+# a thumb pressed earlier. Anything else that fails to parse as a rating is a
+# malformed request, not a retraction.
+_CLEAR_RATING = ("none", "null", "0", "", "clear")
 
 # Cap on a single uploaded file. Uploads are read fully into memory before
 # being written, so an unbounded body is a trivial memory-exhaustion DoS;
@@ -832,6 +839,18 @@ class WebApiUI:
         path = session.session_path
         if not path or not os.path.exists(path):
             return messages
+        # Ratings already given, so a restored conversation shows the thumb the
+        # person pressed rather than an empty pair of buttons.
+        ratings = {}
+        try:
+            for record in _read_trajectory(session.session_id,
+                                           getattr(self._onit, "config_data", None)):
+                verdict = (record.get("signals") or {}).get("user_rating")
+                if verdict:
+                    ratings[record.get("turn")] = verdict
+        except Exception:
+            pass
+        turn = 0
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -856,10 +875,15 @@ class WebApiUI:
                         data_path=session.data_path,
                         session_id=session.session_id,
                     )
+                    # The turn number the trajectory store uses: the answer's
+                    # position in this file, counted from one.
+                    turn += 1
                     messages.append({
                         "role": "assistant",
                         "content": display,
                         "files": self._file_infos(file_paths, session.session_id),
+                        "turn": turn,
+                        "rating": ratings.get(turn),
                     })
         except Exception:
             pass
@@ -1055,6 +1079,12 @@ class WebApiUI:
                 "elapsed": round(elapsed, 2),
                 "tok_s": round(tok_s, 1),
                 "timing": _timing_summary(metrics, elapsed),
+                # Which turn a rating on this answer refers to. The agent has
+                # already appended to the session file by now, so its line
+                # count is this answer's number.
+                "turn": _session_turn_count(session.session_path),
+                "rating_enabled": _recording_enabled(
+                    getattr(self._onit, "config_data", None)),
             }))
         except Exception as e:
             logger.error("Error processing task: %s", e)
@@ -1183,6 +1213,11 @@ class WebApiUI:
                 "authenticated": authenticated,
                 "email": email,
                 "show_logs": self.show_logs,
+                # Whether to offer the 👍/👎 buttons at all. A deployment with
+                # recording off would otherwise show a control that accepts a
+                # click and drops it.
+                "rating_enabled": _recording_enabled(
+                    getattr(self._onit, "config_data", None)),
             }
 
         @app.get("/api/history")
@@ -1279,10 +1314,18 @@ class WebApiUI:
             """
             sid, session = self._resolve_session(request)
             body = await request.json()
-            rating = _normalize_rating(body.get("rating"))
-            if rating is None:
+            if "rating" not in body:
+                return JSONResponse({"detail": "rating is required"},
+                                    status_code=400)
+            raw = body["rating"]
+            rating = _normalize_rating(raw)
+            # None means two different things: "clear the verdict I gave
+            # earlier" and "that is not a verdict". A misclick has to be
+            # undoable, so the explicit spellings of nothing are accepted and
+            # everything else is rejected.
+            if rating is None and str(raw).strip().lower() not in _CLEAR_RATING:
                 return JSONResponse(
-                    {"detail": "rating must be +1 (up) or -1 (down)"},
+                    {"detail": "rating must be +1 (up), -1 (down), or null to clear"},
                     status_code=400,
                 )
             turn = body.get("turn")

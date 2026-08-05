@@ -128,6 +128,33 @@ class TestTurnMetrics:
         assert sink["turns"][0]["tool_runs"] == runs
         assert sink["tool_calls"] == 2
 
+    @pytest.mark.asyncio
+    async def test_ollama_streaming_reports_generated_tokens(self):
+        """Ollama sends eval_count only on its final chunk. Without reading it
+        every streamed Ollama run accounted for zero output tokens, which is
+        the efficiency signal, not a cosmetic one."""
+        from model.serving.chat import _ollama_process_streaming_response
+
+        def chunk(content, **extra):
+            c = MagicMock()
+            c.message.content = content
+            c.message.tool_calls = None
+            c.message.thinking = None
+            for k in ("done_reason", "prompt_eval_count", "eval_count"):
+                setattr(c, k, extra.get(k))
+            return c
+
+        async def stream():
+            yield chunk("Two ")
+            yield chunk("scholarships.", done_reason="stop",
+                        prompt_eval_count=5441, eval_count=128)
+
+        result = await _ollama_process_streaming_response(
+            stream(), asyncio.Queue(), None, False)
+        content, _, _, _, prompt_tokens, done_reason, eval_count = result
+        assert content == "Two scholarships."
+        assert (prompt_tokens, eval_count, done_reason) == (5441, 128, "stop")
+
     def test_retries_are_counted(self):
         """A run that retried twice and answered is not the same run as one
         that answered first time; the turn timings cannot tell them apart."""
