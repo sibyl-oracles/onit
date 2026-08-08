@@ -91,6 +91,42 @@ web_title: "OnIt Chat"
 web: false
 web_port: 9000
 
+# Full-duplex speech-to-speech (see docs/VOICE.md).
+#
+# Talks to an NVIDIA NemotronLabs VoiceChat container over its realtime
+# WebSocket. That model hears, thinks and speaks end to end — OnIt adds no ASR,
+# TTS or VAD. What OnIt adds is the tool registry: the voice model is given a
+# three-tool facade whose centrepiece, ask_onit, runs the full agent loop.
+#
+# The container wants a GPU with ~66 GB free and takes minutes to load, so the
+# microphone button stays hidden until /api/voice/health reports ready.
+voice:
+  enabled: false
+  # Port 9100, not the container's own default of 9000 — that collides with
+  # web_port above when both run on one host.
+  url: "ws://localhost:9100/v1/realtime"
+  # PCM16 mono, both directions. The server resamples to 16 kHz internally.
+  sample_rate: 24000
+  # Spoken the moment the model commits to a tool call, so a 20-second agent
+  # run is not 20 seconds of silence.
+  # on_hold_message: "Give me a moment while I look that up."
+  # An answer is read aloud, not scrolled: past this many characters the spoken
+  # form is cut at a sentence boundary. The full markdown still reaches the
+  # transcript, links and generated files included.
+  max_spoken_chars: 600
+  # Seconds before a runaway ask_onit is cancelled and the call moves on.
+  tool_timeout: 90
+  # The model documents that it cannot be interrupted while a tool call is
+  # outstanding, which is precisely the window an agent task occupies. With
+  # this on, OnIt measures the microphone itself and cancels the task through
+  # the same safety queue the stop button uses.
+  barge_in: true
+  # barge_in_rms: 900     # PCM16 level that counts as speech
+  # barge_in_frames: 5    # consecutive ~80 ms frames above it (~400 ms)
+  # The model can start turns with no user input and talk to itself; end the
+  # call after this many in a row.
+  max_unprompted_turns: 3
+
 # Google OAuth2 Authentication (Full Redirect Flow)
 # To set up Google OAuth2, follow these steps:
 # 1. Go to https://console.cloud.google.com/

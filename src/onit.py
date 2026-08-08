@@ -632,6 +632,9 @@ class OnIt(BaseModel):
     web_title: str = Field(default="OnIt Chat")
     web_ga_measurement_id: str | None = Field(default=None)
     web_html_preview: bool = Field(default=True)
+    # Full-duplex speech-to-speech via a NemotronLabs VoiceChat container.
+    # See src/ui/voice.py:VoiceConfig for the keys.
+    voice: dict[str, Any] = Field(default_factory=dict)
     agent_name: str = Field(default="OnIt")
     developer: str = Field(default="Rowel Atienza")
     a2a: bool = Field(default=False)
@@ -706,6 +709,7 @@ class OnIt(BaseModel):
                     verbose=self.verbose,
                     require_auth=self.web_require_auth,
                     html_preview=self.web_html_preview,
+                    voice=self.voice,
                 )
                 self.chat_ui._onit = self
             else:
@@ -962,6 +966,8 @@ class OnIt(BaseModel):
         # Generated pages run in a sandboxed frame in the reply; set false to
         # keep them as source and a download instead.
         self.web_html_preview = bool(self.config_data.get('web_html_preview', True))
+        _voice = self.config_data.get('voice') or {}
+        self.voice = _voice if isinstance(_voice, dict) else {}
         self.agent_name = self.config_data.get('agent_name', 'OnIt')
         self.developer = self.config_data.get('developer', 'Rowel Atienza')
         self.a2a = self.config_data.get('a2a', False)

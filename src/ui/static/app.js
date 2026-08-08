@@ -31,6 +31,9 @@
     input: $("input"), sendBtn: $("send-btn"), stopBtn: $("stop-btn"),
     attachBtn: $("attach-btn"), fileInput: $("file-input"),
     attachments: $("attachments"),
+    micBtn: $("mic-btn"), voiceBar: $("voice-bar"),
+    voiceStatus: $("voice-status"), voiceMute: $("voice-mute"),
+    voiceInterrupt: $("voice-interrupt"), voiceEnd: $("voice-end"),
     newChat: $("new-chat"), clearChat: $("clear-chat"), clearAll: $("clear-all"),
     themeToggle: $("theme-toggle"),
     logsToggle: $("logs-toggle"), logsDrawer: $("logs-drawer"),
@@ -620,6 +623,7 @@
 
     await loadHistory();
     await refreshSessions();
+    checkVoiceReady();
     el.input.focus();
   }
 
@@ -939,6 +943,149 @@
     setProcessing(false);
     refreshSessions();
     el.input.focus();
+  }
+
+  // ── Voice call ─────────────────────────────────────────────────
+  // Full-duplex speech-to-speech through /api/voice (src/ui/voice.py). The
+  // audio itself lives in voice.js; this only mirrors the call into the
+  // transcript so a conversation reads like a chat afterwards.
+
+  const voice = { userBubble: null, turn: null, chip: null, agentText: "" };
+
+  function voiceUserBubble() {
+    if (!voice.userBubble) {
+      const msg = addUserMessage("");
+      voice.userBubble = msg.querySelector(".msg-bubble");
+    }
+    return voice.userBubble;
+  }
+
+  function voiceAgentTurn() {
+    if (!voice.turn) {
+      voice.turn = addAssistantTurn();
+      voice.agentText = "";
+    }
+    return voice.turn;
+  }
+
+  function endVoiceTurn() {
+    voice.userBubble = null;
+    voice.turn = null;
+    voice.agentText = "";
+  }
+
+  function setVoiceState(s) {
+    el.micBtn.classList.toggle("mic-on", !!s.active);
+    el.micBtn.classList.toggle("mic-connecting", !!s.connecting);
+    el.micBtn.classList.toggle("mic-speaking", !!s.speaking);
+    el.micBtn.title = s.active ? "End voice call" : "Start voice call";
+    el.voiceBar.hidden = !(s.active || s.connecting);
+    if (s.connecting) el.voiceStatus.textContent = "Connecting…";
+    else if (s.speaking) el.voiceStatus.textContent = "Speaking…";
+    else if (s.active) el.voiceStatus.textContent = "Listening…";
+    el.voiceMute.classList.toggle("on", !!s.muted);
+  }
+
+  function initVoice() {
+    if (!window.OnItVoice) return;
+    const V = window.OnItVoice;
+
+    V.on("state", setVoiceState);
+
+    V.on("transcript", (m) => {
+      hideWelcome();
+      if (m.role === "user") {
+        const b = voiceUserBubble();
+        b.textContent = m.final ? (m.text || b.textContent) : b.textContent + (m.delta || "");
+      } else {
+        const t = voiceAgentTurn();
+        voice.agentText = m.final ? (m.text || voice.agentText)
+                                  : voice.agentText + (m.delta || "");
+        t.content.textContent = voice.agentText;
+        if (m.final) endVoiceTurn();
+      }
+      scrollToBottom();
+    });
+
+    V.on("status", (text) => {
+      const t = voiceAgentTurn();
+      if (!voice.chip) voice.chip = statusChip(t.root, text || "Working…");
+      voice.chip.set(text);
+      if (!text) { voice.chip.remove(); voice.chip = null; }
+      scrollToBottom();
+    });
+
+    // The spoken reply is a summary by necessity — an answer read aloud has to
+    // be short. The real one, with its links and generated files, lands here.
+    V.on("answer", (m) => {
+      if (voice.chip) { voice.chip.remove(); voice.chip = null; }
+      forgetEmailVerdicts();
+      const t = addAssistantTurn();
+      const block = document.createElement("div");
+      t.content.appendChild(block);
+      renderMarkdown(block, m.content || "");
+      addFileChips(t.root, m.files);
+      addMeta(t.root, m.elapsed, 0);
+      endVoiceTurn();
+      scrollToBottom(true);
+      refreshSessions();
+    });
+
+    V.on("error", (message) => {
+      const t = voiceAgentTurn();
+      const err = document.createElement("div");
+      err.className = "msg-error";
+      err.textContent = message;
+      t.content.appendChild(err);
+      endVoiceTurn();
+      scrollToBottom();
+    });
+
+    V.on("ended", () => {
+      if (voice.chip) { voice.chip.remove(); voice.chip = null; }
+      endVoiceTurn();
+    });
+
+    el.micBtn.addEventListener("click", () => {
+      if (V.active) V.stop();
+      else V.start(state.sessionId);
+    });
+    el.voiceEnd.addEventListener("click", () => V.stop());
+    el.voiceMute.addEventListener("click", () => V.setMuted(!V.status().muted));
+    el.voiceInterrupt.addEventListener("click", () => V.interrupt());
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("failed to load " + src));
+      document.body.appendChild(s);
+    });
+  }
+
+  /* The mic button appears only once the container says it can take a call.
+   * The 11B model takes minutes to load, and a socket opened against a warming
+   * container fails in a way the browser cannot explain.
+   *
+   * voice.js is fetched here rather than from a tag in index.html, so a
+   * deployment with voice off — or with the container still warming — never
+   * pays for audio code it will not run. */
+  async function checkVoiceReady() {
+    if (!state.config || !state.config.voice_enabled) return;
+    try {
+      const health = await (await api("/api/voice/health")).json();
+      if (!health.ok) {
+        console.info("Voice service not ready:", health.status);
+        return;
+      }
+      await loadScript("/static/voice.js?v=1");
+      el.micBtn.hidden = false;
+      initVoice();
+    } catch (e) {
+      console.info("Voice unavailable:", e && e.message);
+    }
   }
 
   async function readSSE(res, onEvent) {

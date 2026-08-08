@@ -72,7 +72,7 @@ from .auth import (
 logger = logging.getLogger(__name__)
 
 try:
-    from fastapi import FastAPI, File, Request, Response, UploadFile
+    from fastapi import FastAPI, File, Request, Response, UploadFile, WebSocket
     from fastapi.responses import (
         FileResponse,
         HTMLResponse,
@@ -506,8 +506,13 @@ class WebApiUI:
         verbose: bool = False,
         require_auth: bool = True,
         html_preview: bool = True,
+        voice: Optional[dict] = None,
     ) -> None:
         self.title = title
+        # Imported here, not at module scope: the bridge pulls in aiohttp, and
+        # a deployment with no voice service should not need it installed.
+        from .voice import VoiceConfig
+        self.voice_config = VoiceConfig.from_config({"voice": voice or {}})
         # Running a generated page — even sandboxed — is a capability an
         # operator may not want on a shared deployment: web_html_preview: false
         # leaves such files as source and a download.
@@ -1093,6 +1098,53 @@ class WebApiUI:
             session.processing = False
             events.put_nowait(_END)
 
+    # ------------------------------------------------------------------
+    # Voice
+    # ------------------------------------------------------------------
+
+    async def _serve_voice(self, websocket) -> None:
+        """Accept a voice call and hand it to a VoiceBridge.
+
+        Auth is enforced here rather than in the middleware because Starlette's
+        ``@app.middleware("http")`` never sees a websocket scope — the auth
+        middleware that guards every /api/ route simply does not run for this
+        one. A voice call reaches the same agent, the same tools and the same
+        files as a typed one, so it cannot be the way in that skips the login.
+        """
+        if not self.voice_config.enabled:
+            await websocket.close(code=1008, reason="Voice is not enabled")
+            return
+
+        owner = self._auth_email(websocket) if self.auth_enabled else None
+        if self.auth_enabled and not owner:
+            await websocket.close(code=1008, reason="Not authenticated")
+            return
+
+        sid = (websocket.query_params.get("session")
+               or websocket.cookies.get("onit_session"))
+        sid, session = self._get_or_create_session(sid, owner=owner)
+
+        if session.processing:
+            await websocket.close(code=1013, reason="A task is already running")
+            return
+
+        await websocket.accept()
+        from .voice import VoiceBridge
+        # _voice_ws_connect lets a test point the bridge at a fake container
+        # instead of a GPU; unset in every real deployment.
+        bridge = VoiceBridge(self, session, websocket, self.voice_config,
+                             ws_connect=getattr(self, "_voice_ws_connect", None))
+        try:
+            await bridge.run()
+        except Exception as exc:
+            logger.error("voice session %s failed: %s", sid, exc)
+        finally:
+            session.processing = False
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
     async def _event_stream(self, events: queue.Queue):
         """Async generator bridging the thread-safe event queue to SSE."""
         loop = asyncio.get_running_loop()
@@ -1218,7 +1270,22 @@ class WebApiUI:
                 # click and drops it.
                 "rating_enabled": _recording_enabled(
                     getattr(self._onit, "config_data", None)),
+                # The mic button is only drawn when a VoiceChat container is
+                # configured; whether it is *reachable* is a separate question
+                # answered by /api/voice/health (a cold 11B model takes
+                # minutes to load).
+                "voice_enabled": self.voice_config.enabled,
+                "voice_sample_rate": self.voice_config.sample_rate,
             }
+
+        @app.get("/api/voice/health")
+        async def api_voice_health():
+            from .voice import check_health
+            return await check_health(self.voice_config)
+
+        @app.websocket("/api/voice")
+        async def api_voice(websocket: WebSocket):
+            await self._serve_voice(websocket)
 
         @app.get("/api/history")
         async def api_history(request: Request):

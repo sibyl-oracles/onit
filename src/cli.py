@@ -612,6 +612,12 @@ def _build_parser() -> argparse.ArgumentParser:
     web_p.add_argument("--no-login", action="store_true", dest="no_login",
                        help="Run the web UI without requiring Google login "
                             "(sessions are open to anyone who can reach the port).")
+    web_p.add_argument("--voice", action="store_true", dest="voice",
+                       help="Enable full-duplex speech-to-speech. Requires a "
+                            "NemotronLabs VoiceChat container (see docs/VOICE.md).")
+    web_p.add_argument("--voice-url", type=str, default=None, dest="voice_url",
+                       help="VoiceChat realtime websocket URL "
+                            "(default: ws://localhost:9100/v1/realtime).")
 
     # serve gateway
     gw_p = serve_sub.add_parser("gateway",
@@ -778,6 +784,12 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
                 config_data['web_port'] = args.port
             if getattr(args, 'no_login', False):
                 config_data['web_require_auth'] = False
+            if getattr(args, 'voice', False) or getattr(args, 'voice_url', None):
+                voice_cfg = dict(config_data.get('voice') or {})
+                voice_cfg['enabled'] = True
+                if getattr(args, 'voice_url', None):
+                    voice_cfg['url'] = args.voice_url
+                config_data['voice'] = voice_cfg
         elif serve_mode == 'gateway':
             config_data['gateway'] = args.gateway_type
             if getattr(args, 'webhook_url', None):

@@ -90,7 +90,43 @@ services:
       - web-sessions:/home/onit/.onit/sessions
       - *data-volume
       - *documents-volume
+    # To enable voice, bring up the `voice` profile below and append:
+    #   "--voice", "--voice-url", "ws://voicechat:9000/v1/realtime"
+    # (service name and in-network port, not the published 9100).
     command: ["--data-path", "/home/onit/data", "--think", "serve", "web", "--port", "9000"]
+
+  # Full-duplex speech-to-speech (see docs/VOICE.md). Opt-in via the profile:
+  #   docker compose --profile voice up
+  #
+  # Wants a GPU with ~66 GB free, all to itself — it cannot share a card with a
+  # vLLM serving the text model behind ask_onit. Download the model first with
+  # `ngc registry model download-version nim/nvidia/nemotron-labs-voicechat:1.0.0`
+  # and point ONIT_VOICECHAT_MODELS at the extracted directory.
+  #
+  # Published on 9100 because the container's own default of 9000 collides with
+  # onit-web above.
+  voicechat:
+    image: nvcr.io/nim/nvidia/nemotron-labs-voicechat:latest
+    restart: unless-stopped
+    profiles: ["voice"]
+    entrypoint: /s2s/run_s2s_server.sh
+    <<: *gpu
+    shm_size: 8gb
+    environment:
+      NIM_HTTP_API_PORT: 9000
+    ports:
+      # Loopback only: the realtime socket has no auth of its own — OnIt is
+      # what stands in front of it.
+      - "127.0.0.1:9100:9000"
+    volumes:
+      - ${ONIT_VOICECHAT_MODELS:-/data/nemotron-labs-voicechat_v1.0.0}:/data/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/v1/realtime/health"]
+      # Loading an 11B model takes minutes; don't mark it unhealthy meanwhile.
+      start_period: 600s
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   onit-a2a:
     build: .

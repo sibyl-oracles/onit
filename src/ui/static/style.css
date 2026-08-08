@@ -788,6 +788,52 @@ textarea { font-family: var(--font); }
 .google-btn:active { transform: translateY(1px); }
 .login-note { font-size: 12px; color: var(--text-faint); margin-top: 16px; margin-bottom: 0; }
 
+/* ── Voice call ──────────────────────────────────────────────── */
+
+/* The mic button carries the call state, so it has to read at a glance:
+   idle (muted grey) → connecting (pulsing) → live (accent) → agent speaking
+   (ring). Hidden entirely until /api/voice/health says the container is up. */
+.mic-btn { transition: color 0.15s, background 0.15s; }
+.mic-btn.mic-on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.mic-btn.mic-connecting { animation: pulse 1.2s ease-in-out infinite; }
+.mic-btn.mic-speaking {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.voice-bar {
+  max-width: 760px;
+  margin: 0 auto 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.voice-orb {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.voice-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-action {
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.voice-action:hover { background: var(--bg-hover); color: var(--text); }
+.voice-action.on { border-color: var(--accent); color: var(--accent); }
+.voice-end { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+
 /* ── Responsive ──────────────────────────────────────────────── */
 
 @media (max-width: 720px) {

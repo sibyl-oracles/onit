@@ -55,6 +55,12 @@ gateway = [
     "python-telegram-bot",
     "aiohttp",
 ]
+# Full-duplex speech-to-speech. Only the websocket client to the VoiceChat
+# container is needed here — the model runs in that container, and audio
+# capture/playback happens in the browser.
+voice = [
+    "aiohttp",
+]
 test = [
     "pytest",
     "pytest-asyncio",
