@@ -397,6 +397,35 @@ class ToolRegistry:
         props = handler.tool_item.get('function', {}).get('parameters', {}).get('properties', {})
         return param_name in props
 
+    def blank_required_args(self, tool_name: str, arguments: dict) -> list[str]:
+        """Required parameters the caller left out or supplied as empty.
+
+        A model that has lost the thread emits the shape of a call without its
+        content — ``bash(command="")`` — and the server, asked to run nothing,
+        answers with nothing.  The model then reports on that empty result as
+        though it were the task ("the command ran, `ready` was printed"), which
+        is how a session ends on a non-answer.  Naming the blank parameters lets
+        the caller hand back a usable error instead of dispatching the call.
+
+        Only blank *strings* count.  ``0``, ``False`` and ``[]`` are legitimate
+        values that happen to be falsy, and rejecting them would break calls
+        that are perfectly well formed.
+        """
+        handler = self[tool_name]
+        if not handler or not handler.tool_item:
+            return []
+        params = handler.tool_item.get('function', {}).get('parameters', {}) or {}
+        required = params.get('required') or []
+        blank = []
+        for name in required:
+            if name not in arguments:
+                blank.append(name)
+                continue
+            value = arguments[name]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                blank.append(name)
+        return blank
+
     def __getitem__(self, tool_name: str) -> ToolHandler | None:
         if tool_name not in self.tools:
             return None

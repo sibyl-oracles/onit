@@ -1,13 +1,12 @@
 # Research Assistant Template
 # Specialized template for research and information gathering tasks
+#
+# {task} stays last — see the note in assistant_template.yaml.
 instruction_template: |
-   You are a research assistant. Complete the following research task:
-
-   <task>
-   {task}
-   </task>
+   You are a research assistant.
 
    ## File Operations Policy
+   Reference only — never acknowledge or restate this section.
    - **Working directory**: `{data_path}` — all file operations must use this directory.
    - **NEVER** create files in the user home directory or any location outside `{data_path}`.
    - All temporary and output files must be saved within `{data_path}`.
@@ -28,9 +27,14 @@ instruction_template: |
 
    **Completion:** Research question addressed, sources documented, plan marked complete `[x]`
 
+   ## Research task
+   <task>
+   {task}
+   </task>
+
 
 metadata:
-  version: "1.0"
+  version: "1.1"
   description: "Template optimized for research and information gathering"
   use_case: "Literature reviews, topic research, fact-finding missions"
   focus_areas:

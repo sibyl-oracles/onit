@@ -1,6 +1,7 @@
 """Tests for src/model/serving/chat.py — _resolve_api_key, _parse_tool_call_from_content, chat."""
 
 import asyncio
+import itertools
 import json
 import os
 import sys
@@ -13,7 +14,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _is_planning_response, _build_messages,
                                 _trim_history, _is_acknowledgment_response,
-                                _compact_context, chat)
+                                _is_meta_commentary_response, _build_tool_example,
+                                _build_planning_continuation_prompt,
+                                _is_noop_tool_call, _is_content_free_response,
+                                _content_residue, _is_answering_a_nudge,
+                                _ACK_CONTINUATION_PROMPT,
+                                _execute_tool, _compact_context, chat)
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
@@ -387,6 +393,326 @@ class TestIsAcknowledgmentResponse:
         assert _is_acknowledgment_response("<think>ok</think>Ready for the next message.")
 
 
+# ── _is_meta_commentary_response ───────────────────────────────────────────
+
+class TestIsMetaCommentaryResponse:
+    def test_narrating_the_continuation_prompt(self):
+        """The reply a stuck model gives to "do not write any text"."""
+        assert _is_meta_commentary_response(
+            "I understand you want me to call a tool without any text. I've been "
+            "calling bash with simple echo commands. However, I notice you may be "
+            "testing my ability to follow instructions precisely.\n\n"
+            "Let me know what specific command or task you'd like me to execute "
+            "with the bash tool, and I'll call it immediately without any "
+            "additional text."
+        )
+
+    def test_short_meta_reply(self):
+        assert _is_meta_commentary_response("I understand you want me to use a tool.")
+
+    def test_real_answer_returns_false(self):
+        assert not _is_meta_commentary_response(
+            "The sandbox path jail rejects absolute paths outside data_path."
+        )
+
+    def test_empty_returns_false(self):
+        assert not _is_meta_commentary_response("")
+
+    def test_long_answer_mentioning_instructions_is_kept(self):
+        """Real work that touches on the instructions still runs past the cap."""
+        answer = "I understand you want me to review the tool schemas. " + (
+            "Each server declares data_path so the session jail is applied. " * 12
+        )
+        assert not _is_meta_commentary_response(answer)
+
+    def test_think_tags_stripped(self):
+        assert _is_meta_commentary_response(
+            "<think>reasoning</think>I understand you want me to call a tool."
+        )
+
+
+# ── _is_content_free_response ──────────────────────────────────────────────
+
+_DATA_PATH = "/Users/rowel/sandbox/9f1fd947-3b60-400f-9c76-d593372c01ed"
+
+
+class TestIsContentFreeResponse:
+    """Replies pulled from real session transcripts, none of which the phrase
+    lists matched."""
+
+    def test_working_directory_read_back(self):
+        assert _is_content_free_response(
+            "Working directory confirmed: 9f1fd947-3b60-400f-9c76-d593372c01ed",
+            _DATA_PATH,
+        )
+
+    def test_working_directory_read_back_without_data_path(self):
+        """The uuid pattern carries it even when the caller passes no path."""
+        assert _is_content_free_response(
+            "Working directory confirmed: 9f1fd947-3b60-400f-9c76-d593372c01ed"
+        )
+
+    def test_bare_status_word(self):
+        assert _is_content_free_response("Ready.")
+
+    def test_status_word_plus_handback(self):
+        assert _is_content_free_response("Ready. What would you like me to do?")
+
+    def test_tool_call_mechanics(self):
+        assert _is_content_free_response("Tool call completed successfully.")
+
+    def test_mechanics_claim_is_stripped_whole(self):
+        """The success clause and its "with no errors" tail both come out, so
+        neither is left behind looking like a finding."""
+        assert _content_residue(
+            "The command ran successfully — `ready` was printed with no errors."
+        ) == []
+
+    def test_sign_off_after_real_work_survives(self):
+        """"Done" reports the work, not the exchange — the same line
+        ``_is_acknowledgment_response`` draws at "Task completed successfully."
+        A run that finished may say only this."""
+        assert not _is_content_free_response("All done!")
+        assert not _is_content_free_response("Done.")
+
+    def test_short_real_answer_survives(self):
+        assert not _is_content_free_response("Done — 3 files updated.")
+
+    def test_success_with_a_finding_survives(self):
+        """The mechanics clause is stripped, not treated as proof of filler."""
+        assert not _is_content_free_response(
+            "The command ran successfully and printed 42."
+        )
+
+    def test_real_answer_survives(self):
+        assert not _is_content_free_response(
+            "The build fails because pytest is run from src/."
+        )
+
+    def test_action_task_completion_survives(self):
+        assert not _is_content_free_response("Task completed successfully.")
+
+    def test_answer_naming_a_path_survives(self):
+        assert not _is_content_free_response(
+            "The jail rejects it in /Users/rowel/sandbox/x because realpath escapes."
+        )
+
+    def test_long_reply_is_never_filler(self):
+        answer = "Ready. " + ("The scholarship deadline is March 1 each year. " * 12)
+        assert not _is_content_free_response(answer, _DATA_PATH)
+
+    def test_empty_returns_false(self):
+        assert not _is_content_free_response("")
+
+    def test_think_tags_stripped(self):
+        assert _is_content_free_response("<think>planning</think>Ready.")
+
+
+class TestIsAnsweringANudge:
+    """The structural test is scoped to replies to harness-written prompts —
+    "All done!" means different things after "resume the task" and after a real
+    user turn."""
+
+    def test_ack_continuation_prompt(self):
+        assert _is_answering_a_nudge(
+            [{"role": "user", "content": "summarize the docs"},
+             {"role": "assistant", "content": "Ready."},
+             {"role": "user", "content": _ACK_CONTINUATION_PROMPT}]
+        )
+
+    def test_compacted_prompt(self):
+        assert _is_answering_a_nudge(
+            [{"role": "user", "content": "[CONTEXT COMPACTED]\n..."}]
+        )
+
+    def test_planning_continuation_prompt(self):
+        assert _is_answering_a_nudge(
+            [{"role": "user",
+              "content": "Task: x\nCall a tool.\nUse this exact JSON format:\n{}"}]
+        )
+
+    def test_real_user_turn(self):
+        assert not _is_answering_a_nudge(
+            [{"role": "user", "content": "## Task\nsummarize the docs"},
+             {"role": "assistant", "content": None},
+             {"role": "tool", "content": "results"}]
+        )
+
+    def test_multimodal_user_turn_is_not_a_nudge(self):
+        assert not _is_answering_a_nudge(
+            [{"role": "user", "content": [{"type": "text", "text": "describe"}]}]
+        )
+
+    def test_no_user_turn(self):
+        assert not _is_answering_a_nudge([{"role": "system", "content": "rules"}])
+
+
+# ── blank required tool arguments ──────────────────────────────────────────
+
+class TestBlankRequiredArgs:
+    class _Registry:
+        """Duck-typed like ToolRegistry, recording whether dispatch happened."""
+
+        def __init__(self):
+            self.tools = {"bash"}
+            self.called_with = None
+
+        def tool_accepts_param(self, tool_name, param_name):
+            return False
+
+        def blank_required_args(self, tool_name, arguments):
+            return [n for n in ("command",)
+                    if not str(arguments.get(n, "")).strip()]
+
+        def __getitem__(self, name):
+            async def handler(log_handler=None, **kwargs):
+                self.called_with = dict(kwargs)
+                return "ready"
+            return handler
+
+    def _run(self, args):
+        registry = self._Registry()
+        messages = []
+        asyncio.run(_execute_tool(
+            "bash", args, "call_1", registry, timeout=5, data_path=None,
+            chat_ui=None, verbose=False, messages=messages,
+            tool_call_history=[], max_repeated=30,
+        ))
+        return registry, messages
+
+    def test_blank_command_is_not_dispatched(self):
+        registry, messages = self._run({"command": ""})
+        assert registry.called_with is None
+        assert "no value for: command" in messages[-1]["content"]
+
+    def test_error_tells_the_model_not_to_repeat_it(self):
+        _, messages = self._run({"command": "   "})
+        content = messages[-1]["content"]
+        assert "do not repeat this call unchanged" in content
+        assert "do not report this error as the answer" in content
+
+    def test_real_command_still_runs(self):
+        registry, messages = self._run({"command": "ls"})
+        assert registry.called_with == {"command": "ls"}
+        assert messages[-1]["content"] == "ready"
+
+    def test_registry_without_the_method_still_dispatches(self):
+        """The check is advisory — a duck-typed registry that lacks it works."""
+
+        class _Bare:
+            def __init__(self):
+                self.tools = {"bash"}
+                self.called = False
+
+            def tool_accepts_param(self, tool_name, param_name):
+                return False
+
+            def __getitem__(self, name):
+                async def handler(log_handler=None, **kwargs):
+                    self.called = True
+                    return "ok"
+                return handler
+
+        registry = _Bare()
+        asyncio.run(_execute_tool(
+            "bash", {"command": ""}, "call_1", registry, timeout=5,
+            data_path=None, chat_ui=None, verbose=False, messages=[],
+            tool_call_history=[], max_repeated=30,
+        ))
+        assert registry.called is True
+
+
+# ── continuation prompt for stuck models ───────────────────────────────────
+
+class TestPlanningContinuationPrompt:
+    @staticmethod
+    def _registry(*names):
+        registry = MagicMock()
+        registry.tools = set(names)
+        registry.get_tool_items.return_value = [
+            {"function": {"name": "write_file",
+                          "parameters": {"properties": {"path": {"type": "string"},
+                                                        "content": {"type": "string"}}}}},
+            {"function": {"name": "bash",
+                          "parameters": {"properties": {"command": {"type": "string"}}}}},
+        ]
+        return registry
+
+    def test_non_shell_task_avoids_bash_example(self):
+        """A bash example invites a no-op echo that satisfies the format only."""
+        example = _build_tool_example(self._registry("bash", "write_file"),
+                                      "Summarize the scholarship deadlines.")
+        assert json.loads(example)["name"] == "write_file"
+
+    def test_shell_task_prefers_bash_example(self):
+        example = _build_tool_example(self._registry("bash", "write_file"),
+                                      "Run the test suite and report failures.")
+        assert json.loads(example)["name"] == "bash"
+
+    def test_bash_still_used_when_it_is_the_only_tool(self):
+        example = _build_tool_example(self._registry("bash"), "Summarize the docs.")
+        assert json.loads(example)["name"] == "bash"
+
+    def test_prompt_restates_the_task(self):
+        prompt = _build_planning_continuation_prompt(
+            self._registry("bash", "write_file"), 1, "Summarize the scholarship deadlines."
+        )
+        assert "Summarize the scholarship deadlines." in prompt
+        assert "Do not write any text" not in prompt
+
+    def test_long_task_is_trimmed(self):
+        task = "Audit every MCP server for data_path declarations. " * 20
+        prompt = _build_planning_continuation_prompt(
+            self._registry("write_file"), 1, task
+        )
+        assert "..." in prompt.splitlines()[0]
+        assert len(prompt.splitlines()[0]) < 400
+
+    def test_second_continuation_escalates_to_json_only(self):
+        prompt = _build_planning_continuation_prompt(
+            self._registry("write_file"), 2, "Write the report."
+        )
+        assert "one JSON object" in prompt
+
+    def test_missing_task_omits_the_task_line(self):
+        prompt = _build_planning_continuation_prompt(self._registry("write_file"), 1)
+        assert not prompt.startswith("Task:")
+
+
+# ── _is_noop_tool_call ─────────────────────────────────────────────────────
+
+class TestIsNoopToolCall:
+    def test_bare_echo_is_a_noop(self):
+        assert _is_noop_tool_call("bash", {"command": "echo ok"})
+
+    def test_true_and_colon_are_noops(self):
+        assert _is_noop_tool_call("bash", {"command": "true"})
+        assert _is_noop_tool_call("bash", {"command": ": "})
+
+    def test_missing_command_is_a_noop(self):
+        assert _is_noop_tool_call("bash", {})
+
+    def test_echo_with_redirect_writes_a_file(self):
+        assert not _is_noop_tool_call("bash", {"command": "echo 'x = 1' > setup.py"})
+
+    def test_echo_with_substitution_reads_the_world(self):
+        assert not _is_noop_tool_call("bash", {"command": "echo $(git rev-parse HEAD)"})
+
+    def test_echo_piped_is_real_work(self):
+        assert not _is_noop_tool_call("bash", {"command": "echo hi | wc -c"})
+
+    def test_real_command_is_not_a_noop(self):
+        assert not _is_noop_tool_call("bash", {"command": "pytest src/test -q"})
+
+    def test_echoing_tool_is_not_shell(self):
+        """Only shell tools have a no-op shape; a write always lands a file."""
+        assert not _is_noop_tool_call("write_file", {"path": "a.txt", "content": "echo"})
+
+    def test_alternate_argument_keys(self):
+        assert _is_noop_tool_call("run_command", {"cmd": "echo hello"})
+        assert not _is_noop_tool_call("shell", {"script": "make build"})
+
+
 # ── _compact_context ───────────────────────────────────────────────────────
 
 class TestCompactContext:
@@ -605,6 +931,75 @@ class TestPlanningContinuation:
         assert "unable to complete" in result.lower() or "tool" in result.lower()
         # Should have tried the initial call + MAX_PLANNING_CONTINUATIONS continuations
         assert mock_client.chat.completions.create.call_count == 3  # 1 initial + 2 continuations
+
+
+    @pytest.mark.asyncio
+    async def test_noop_tool_call_does_not_refill_the_planning_budget(self):
+        """A model that answers every nudge with `echo` is stuck, not working.
+
+        Counting the echo as progress resets the budget, so the plan → nudge →
+        echo cycle never reaches the exhaustion check and the loop runs forever.
+        """
+        planning_text = "Let me start working on the analysis."
+        echo_call = _mock_completion_with_finish(
+            content=None, tool_calls=[_mock_tool_call("bash", '{"command": "echo ok"}')]
+        )
+
+        mock_client = AsyncMock()
+        # Alternate forever: plan, echo, plan, echo, ...  The test hangs if the
+        # planning budget is refilled by the echo.
+        mock_client.chat.completions.create = AsyncMock(side_effect=itertools.chain.from_iterable(
+            itertools.repeat([_mock_completion_with_finish(content=planning_text), echo_call])
+        ))
+
+        mock_handler = AsyncMock(return_value="ok")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Analyze the repository.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            ), timeout=30)
+
+        assert "unable to complete" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_real_tool_call_still_clears_the_planning_budget(self):
+        """Progress resets the counter — a plan earlier in a working run is free."""
+        real_call = _mock_completion_with_finish(
+            content=None, tool_calls=[_mock_tool_call("bash", '{"command": "pytest -q"}')]
+        )
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(content="Let me run the tests."),  # count -> 1
+            real_call,                                                      # count -> 0
+            _mock_completion_with_finish(content="Let me check the failures."),  # count -> 1
+            real_call,                                                      # count -> 0
+            _mock_completion_with_finish(content="All 3 failures were path-jail bugs."),
+        ])
+
+        mock_handler = AsyncMock(return_value="3 failed")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Run the tests and explain the failures.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result == "All 3 failures were path-jail bugs."
 
 
 class TestHangPrevention:

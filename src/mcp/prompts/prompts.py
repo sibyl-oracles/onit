@@ -122,8 +122,15 @@ async def build_assistant_instruction(task: str,
 You are {agent_name}, an autonomous agent harness developed by {developer}, with access to tools and a file system.
 """
 
+   # Marked reference-only on purpose.  This block opens the volatile half, so
+   # it is the first thing in the user message and the only instruction-shaped
+   # text a continuation prompt or a compaction summary leaves nearby.  Without
+   # the marker a weak model treats it as something to comply with and replies
+   # "Working directory confirmed: <uuid>" — the data_path basename read back —
+   # instead of doing the task.
    context_block = f"""
 ## Context
+Reference only — never acknowledge or restate this section.
 - **Today's date**: {current_date}
 - **Working directory**: `{data_path}` - this is the agent local filesystem. If sandbox filesystem is available, use it instead and treat this as a staging area for file transfers.
 """

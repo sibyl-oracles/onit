@@ -28,6 +28,7 @@ import time
 import types
 import uuid
 import httpx
+from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
@@ -855,11 +856,53 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     elif verbose:
         print(f"{function_name}({function_arguments})")
 
+    # A call whose required arguments are blank is refused here rather than
+    # dispatched.  Sent on, it reaches a server that runs nothing and returns
+    # nothing, and the model — with an empty result and no memory of why —
+    # reports the emptiness back as the answer ("the command ran, `ready` was
+    # printed with no errors"), ending the task on a non-answer.  An explicit
+    # error names the missing arguments, which the model can act on.
+    #
+    # getattr, not a direct call: the registry is duck-typed at this boundary
+    # and test doubles implement only what they exercise.
+    _blank_args = []
+    if function_name in tool_registry.tools:
+        _blank = getattr(tool_registry, "blank_required_args", None)
+        if callable(_blank):
+            try:
+                _result = _blank(function_name, function_arguments)
+            except Exception:  # a malformed schema must not break dispatch
+                _result = None
+            # The return value is checked, not trusted: on a MagicMock registry
+            # getattr yields a callable whose result is a truthy Mock, and taking
+            # that for a list of blank arguments would refuse every call.
+            if isinstance(_result, (list, tuple)):
+                _blank_args = [str(n) for n in _result]
+
     if function_name not in tool_registry.tools:
         tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found',
                         'name': function_name, 'parameters': function_arguments,
                         "tool_call_id": tool_call_id}
         messages.append(tool_message)
+        _log(False, 0)
+    elif _blank_args:
+        _names = ", ".join(_blank_args)
+        _error = (f"Error: {function_name} was called with no value for: {_names}. "
+                  "The call was not run. Supply a real value for each of them and "
+                  "call the tool again, or use a different tool — do not repeat "
+                  "this call unchanged and do not report this error as the answer.")
+        _log_to_ui_or_verbose(
+            f"{function_name} called with blank required argument(s): {_names}",
+            chat_ui, verbose, level="warning",
+        )
+        tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
+                        'parameters': function_arguments, "tool_call_id": tool_call_id}
+        messages.append(tool_message)
+        if chat_ui:
+            chat_ui.add_tool_result(function_name, _error)
+            if is_structured:
+                chat_ui.stop_tool_spinner()
+                chat_ui.show_tool_done(function_name, _error, success=False)
         _log(False, 0)
     else:
         tool_handler = tool_registry[function_name]
@@ -1408,14 +1451,224 @@ def _is_acknowledgment_response(content: str) -> bool:
     return any(p in lower for p in _ACK_PHRASES)
 
 
-def _build_tool_example(tool_registry) -> str:
+# ── content-free replies, detected structurally ────────────────────────────
+#
+# _ACK_PHRASES and _META_PHRASES catch filler by recognising its exact wording,
+# which means each new phrasing of the same failure needs its own entry — and
+# the failure has unlimited phrasings.  "Working directory confirmed: <uuid>"
+# matched nothing; neither did "Ready.", nor "Ready. What would you like me to
+# do?", nor "The user asked me to call a tool" (the list had "you want me to
+# call a tool", one pronoun away).
+#
+# The test below is about content rather than wording: strip everything the
+# prompt itself supplied — the working directory, the date, the session uuid,
+# stock status words, stock hand-backs, claims that the plumbing worked — and
+# see whether anything is left.  A reply that says nothing the prompt did not
+# already say is filler however it is phrased.
+#
+# Deliberately conservative: a single surviving content word is enough to keep
+# a reply.  "Done — 3 files updated." keeps "3", "files", "updated" and lives;
+# "Working directory confirmed: 9f1fd947-..." keeps nothing and does not.
+
+# Session metadata the prompt states and a stuck model reads back.
+_METADATA_PHRASES = (
+    "working directory", "today's date", "todays date", "current date",
+    "agent local filesystem", "local filesystem", "sandbox filesystem",
+    "staging area for file transfers", "file operations policy",
+    "context compacted", "original instruction", "summary of prior work",
+    "reference only",
+)
+
+# Stock openers that report on the exchange instead of contributing to it.
+#
+# "done" is deliberately absent.  It reports the work rather than the exchange —
+# the same distinction that keeps "Task completed successfully." an answer — and
+# a run that finished may legitimately sign off with nothing more than "All
+# done!".  Dropping a reply on the strength of that word alone would end such a
+# run on silence, which is worse than the filler this catches.
+_STATUS_WORDS = frozenset((
+    "ready", "ok", "okay", "understood", "acknowledged", "confirmed",
+    "confirm", "noted", "sure", "certainly", "affirmative", "yes", "yep",
+))
+
+# Stock closings that hand the turn back without saying anything.
+_HANDBACK_PHRASES = (
+    "what would you like me to do", "what would you like to do",
+    "what would you like next", "what would you like me to",
+    "how can i help", "how may i help", "anything else",
+    "let me know", "please specify", "could you specify", "please provide",
+    "awaiting", "standing by", "next instruction", "next message",
+    "waiting for", "ready when you are",
+)
+
+# Claims that the plumbing worked.  Stripped rather than matched outright, so a
+# reply that reports success *and* says what came of it keeps its content:
+# "The command ran successfully and printed 42" loses the clause but keeps "42".
+_MECHANICS_RE = re.compile(
+    r"\b(?:the\s+|all\s+)?(?:tool(?:\s+call)?s?|command|script|code|call)\b"
+    r"[^.;\n]{0,40}"
+    r"\b(?:succeeded|successful|successfully|completed|complete|executed|"
+    r"ran|run|finished|printed|returned|errors?)\b",
+    re.I,
+)
+# The tail of a mechanics claim, which routinely falls outside the window above:
+# "...was printed with no errors".  Its own pattern so the claim is stripped
+# whole rather than leaving "errors" behind as if it were a finding.
+_NO_ERRORS_RE = re.compile(
+    r"\b(?:with\s+)?no\s+errors?\b|\bwithout\s+(?:any\s+)?errors?\b"
+    r"|\berror[\s-]free\b",
+    re.I,
+)
+
+# A session uuid and an absolute path are the two shapes of prompt metadata no
+# static phrase list can hold: both are minted per session.
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+_ABS_PATH_RE = re.compile(r"(?:/[\w.\-]+){2,}/?")
+
+# Words carrying no information wherever they appear.
+_FILLER_WORDS = frozenset((
+    "the", "a", "an", "and", "or", "but", "so", "then", "now", "is", "are",
+    "was", "were", "be", "been", "am", "i", "you", "it", "its", "my", "your",
+    "me", "we", "us", "this", "that", "these", "those", "to", "of", "in", "on",
+    "at", "for", "with", "from", "as", "by", "have", "has", "had", "do", "did",
+    "does", "will", "would", "should", "can", "could", "no", "not", "any",
+    "all", "up", "out", "if", "there", "here", "what", "which", "who", "how",
+    "user", "assistant", "task", "next", "further", "instructions",
+    "instruction", "message", "please", "thanks", "thank",
+))
+
+# Long enough for a short paragraph of filler, short enough that real work runs
+# past it.  Matches _META_MAX_CHARS in spirit: length is what separates a filler
+# reply from an answer that merely opens with filler.
+_CONTENT_FREE_MAX_CHARS = 400
+
+
+def _content_residue(text: str, data_path: str | None = None) -> list[str]:
+    """Words left in ``text`` once everything the prompt supplied is removed."""
+    lower = text.lower()
+    # The session's own directory first: its basename is a uuid the model quotes
+    # verbatim, and stripping the path before the generic patterns keeps a real
+    # path in an answer ("the bug is in /etc/hosts") from being mistaken for it.
+    if data_path:
+        for token in (str(data_path).lower(), Path(str(data_path)).name.lower()):
+            if token:
+                lower = lower.replace(token, " ")
+    lower = _UUID_RE.sub(" ", lower)
+    lower = _ABS_PATH_RE.sub(" ", lower)
+    lower = _MECHANICS_RE.sub(" ", lower)
+    lower = _NO_ERRORS_RE.sub(" ", lower)
+    for phrase in _METADATA_PHRASES + _HANDBACK_PHRASES:
+        lower = lower.replace(phrase, " ")
+    return [w for w in re.findall(r"[a-z0-9]+", lower)
+            if w not in _FILLER_WORDS and w not in _STATUS_WORDS]
+
+
+def _is_content_free_response(content: str, data_path: str | None = None) -> bool:
+    """Return True if the reply adds nothing the prompt did not already contain.
+
+    The wording-independent counterpart to ``_is_acknowledgment_response`` and
+    ``_is_meta_commentary_response``: those two name the filler they know, this
+    one recognises filler by the absence of anything else.
+
+    Meaningful only about a reply to a synthetic prompt — see
+    ``_is_answering_a_nudge``.  "All done!" is filler as an answer to "resume the
+    task" and a fair sign-off after a run that did the work, and nothing in the
+    text tells the two apart; what tells them apart is the question.
+    """
+    if not content:
+        return False
+    text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
+    if not text or len(text) > _CONTENT_FREE_MAX_CHARS:
+        return False
+    return not _content_residue(text, data_path)
+
+
+def _is_answering_a_nudge(messages: list) -> bool:
+    """True if the most recent user turn is one the harness wrote, not the user.
+
+    The continuation prompts and the compacted prompt all say the same thing —
+    resume the task — so a content-free reply to one of them is a refusal to
+    resume.  After a genuine user turn the same reply may be a real answer, so
+    the structural test is scoped to this case.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            return False
+        return (content in (_ACK_CONTINUATION_PROMPT, _FINAL_CONTINUATION_PROMPT)
+                or content.startswith("[CONTEXT COMPACTED]")
+                or "Use this exact JSON format:" in content)
+    return False
+
+
+# Shell tools make a poor example for a stuck model: `bash` is the one call it
+# can satisfy without doing anything ("echo ok"), which passes the format check,
+# resets the continuation counter, and advances the task not at all.  Lead with
+# them only when the task itself reads like shell work.
+_SHELL_TOOLS = ("bash", "shell", "run_command")
+_FILE_TOOLS = ("write_file", "create_file", "read_file", "list_files")
+_SHELL_TASK_HINTS = (
+    "bash", "shell", "terminal", "command", "run ", "execute", "script",
+    "install", "compile", "build", "git ", "npm", "pip ", "docker", "make ",
+)
+
+
+# A reply that discusses the instructions instead of following them.  Weaker
+# models answer a continuation prompt by narrating it back — "I understand you
+# want me to call a tool without any text" — which is neither a plan nor an
+# acknowledgment, so without this it falls through every guard and is handed to
+# the user as the final answer.
+_META_PHRASES = (
+    "i understand you want me to",
+    "i understand that you want me to",
+    "you want me to call a tool",
+    "you may be testing",
+    "testing my ability",
+    "let me know what specific",
+    "let me know what command",
+    "i'll call it immediately",
+    "i will call it immediately",
+    "without any additional text",
+    "without any extra text",
+)
+# Looser than _ACK_MAX_CHARS: this filler runs to a short paragraph, but real
+# work still runs longer than one.
+_META_MAX_CHARS = 700
+
+
+def _is_meta_commentary_response(content: str) -> bool:
+    """Return True if the reply is about the prompt rather than about the task.
+
+    Only short replies qualify, on the same reasoning as
+    ``_is_acknowledgment_response``: an answer that mentions the instructions in
+    passing goes on to say something, and length is what separates the two.
+    """
+    if not content:
+        return False
+    text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
+    if not text or len(text) > _META_MAX_CHARS:
+        return False
+    lower = text.lower()
+    return any(p in lower for p in _META_PHRASES)
+
+
+def _build_tool_example(tool_registry, task: str = "") -> str:
     """Return a filled-in JSON tool-call example using the first available tool's schema.
 
-    Prefers common action tools (bash, write_file, create_file) so the example
-    contains real argument names rather than an empty ``{}``.
+    Prefers common action tools (write_file, create_file, bash) so the example
+    contains real argument names rather than an empty ``{}``.  Shell tools lead
+    only for shell-shaped tasks (see ``_SHELL_TASK_HINTS``); otherwise they trail
+    the file tools but stay in the list, so a registry holding nothing else still
+    produces a usable example.
     """
-    preferred = ("bash", "shell", "run_command", "write_file", "create_file",
-                 "read_file", "list_files")
+    lower_task = (task or "").lower()
+    if any(hint in lower_task for hint in _SHELL_TASK_HINTS):
+        preferred = _SHELL_TOOLS + _FILE_TOOLS
+    else:
+        preferred = _FILE_TOOLS + _SHELL_TOOLS
     tool_names = sorted(tool_registry.tools) if tool_registry else []
     # Pick preferred first, otherwise fall back to first alphabetically
     chosen = next((t for t in preferred if t in tool_registry.tools), None) if tool_registry else None
@@ -1452,19 +1705,76 @@ def _build_tool_example(tool_registry) -> str:
     return json.dumps({"name": chosen, "arguments": sample_args})
 
 
-def _build_planning_continuation_prompt(tool_registry, continuation_count: int) -> str:
+# Commands that report nothing about the world and change nothing in it.  A model
+# cornered by tool_choice=required reaches for one of these to satisfy the
+# requirement: the call succeeds, the task stands still.
+_NOOP_COMMANDS = ("echo", "printf", "true", ":")
+# Shell metacharacters that make a command consequential no matter how it starts:
+# `echo x > f.py` writes a file, `echo $(git rev-parse HEAD)` reads a repo.
+_CONSEQUENTIAL_SHELL_CHARS = (">", "|", "&", ";", "$(", "`", "<")
+
+
+def _is_noop_tool_call(name: str, arguments: dict) -> bool:
+    """Return True if this call cannot advance the task.
+
+    Only shell tools qualify.  Every other tool does something observable by
+    definition — a read returns content, a write lands a file — so there is no
+    no-op shape to recognise.  A shell call is a no-op only when its whole
+    command is one of ``_NOOP_COMMANDS`` used plainly: any redirect, pipe,
+    substitution, or chaining means it is doing real work.
+    """
+    if name not in _SHELL_TOOLS:
+        return False
+    command = ""
+    for key in ("command", "cmd", "script"):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            command = value.strip()
+            break
+    if not command:
+        # A shell tool called with no command at all is the emptiest call there is.
+        return True
+    if any(c in command for c in _CONSEQUENTIAL_SHELL_CHARS):
+        return False
+    first = command.split(maxsplit=1)[0]
+    return first in _NOOP_COMMANDS
+
+
+# The task restated in the continuation prompt is trimmed to this much: enough to
+# name the work again, short enough not to re-inflate a context the model is
+# already struggling in.
+_CONTINUATION_TASK_MAX_CHARS = 300
+
+
+def _build_planning_continuation_prompt(tool_registry, continuation_count: int,
+                                        task: str = "") -> str:
     """Build a direct continuation prompt for models stuck in planning mode.
 
     Includes a concrete JSON tool-call example (with real argument shapes) so the
     raw-tool-call parser can catch it even on models that don't honour
     tool_choice=required (e.g. Ollama).
+
+    The task is restated alongside the example because that is what keeps the
+    reply on the work.  A bare format command ("Do not write any text") leaves a
+    weak model nothing to act on but the instruction itself, which it answers
+    instead of working: "I understand you want me to call a tool without any
+    text."  Naming the task gives the next call something to be about.
     """
     tool_names = sorted(tool_registry.tools)[:6] if tool_registry else []
-    example = _build_tool_example(tool_registry)
+    example = _build_tool_example(tool_registry, task)
     tools_list = ", ".join(tool_names)
-    header = "OUTPUT ONLY JSON — no prose, no explanation." if continuation_count > 1 else "Do not write any text."
+    task_text = " ".join((task or "").split())
+    if len(task_text) > _CONTINUATION_TASK_MAX_CHARS:
+        task_text = task_text[:_CONTINUATION_TASK_MAX_CHARS].rstrip() + "..."
+    task_line = f"Task: {task_text}\n" if task_text else ""
+    if continuation_count > 1:
+        lead = ("Your entire reply must be one JSON object: the tool call that "
+                "takes the next step on this task, and nothing else.")
+    else:
+        lead = ("Take the next step on this task now by calling a tool. Reply "
+                "with the tool call only.")
     return (
-        f"{header} Call a tool RIGHT NOW using this exact JSON format:\n"
+        f"{task_line}{lead}\nUse this exact JSON format:\n"
         f"{example}\n"
         f"Available tools: {tools_list}"
     )
@@ -1861,6 +2171,13 @@ async def _compact_context(
     new_messages: list = []
     if system_msg:
         new_messages.append(system_msg)
+    # The closing line says explicitly not to acknowledge.  A compacted prompt
+    # restates the session context — the working directory among it — and frames
+    # it as rules still in effect, which is exactly the cue a weak model answers
+    # with "Working directory confirmed: <uuid>" instead of resuming work.
+    _resume = ("[Resume the task now. Do not acknowledge this message, do not "
+               "restate the context or the summary — either call the next tool "
+               "you need, or give the final answer if the task is already done.]")
     if instruction:
         compacted_content = (
             "[CONTEXT COMPACTED]\n"
@@ -1870,14 +2187,13 @@ async def _compact_context(
             + instruction
             + "\n\n## Summary of prior work\n"
             + summary
-            + "\n\n[Continue the task, following the original instruction and "
-            "building on the summary above.]"
+            + "\n\n" + _resume
         )
     else:
         compacted_content = (
             "[CONTEXT COMPACTED]\nThe following is a summary of prior work:\n\n"
             + summary
-            + "\n\n[Continue the task based on the summary above.]"
+            + "\n\n" + _resume
         )
     new_messages.append({
         "role": "user",
@@ -2468,7 +2784,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     chat_ui, verbose, level="info",
                 )
                 continuation_prompt = _build_planning_continuation_prompt(
-                    tool_registry, planning_continuation_count
+                    tool_registry, planning_continuation_count, task_instruction
                 )
                 messages.append({"role": "assistant", "content": _content})
                 messages.append({"role": "user", "content": continuation_prompt})
@@ -2493,15 +2809,29 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     "(e.g. qwen3, mistral-nemo, llama3.1, deepseek-r1)."
                 )
 
-            # Content-free acknowledgment: the model answered a compaction or
-            # continuation prompt with filler instead of resuming work.  Handing
-            # that back would end the task on a non-answer, so nudge it once.
+            # Content-free acknowledgment, or commentary on the prompt itself:
+            # the model answered a compaction or continuation prompt with filler
+            # instead of resuming work.  Handing that back would end the task on a
+            # non-answer, so nudge it once.  Both share one budget — a model doing
+            # either is stuck the same way.
+            _is_ack = _is_acknowledgment_response(_content)
+            _is_meta = _is_meta_commentary_response(_content)
+            # Third test, and the one that does not depend on knowing the
+            # wording in advance: the reply carries nothing the prompt did not
+            # already state.  data_path goes in because the session directory is
+            # the metadata most often read back.
+            _is_empty = (not _is_ack and not _is_meta
+                         and _is_answering_a_nudge(messages)
+                         and _is_content_free_response(_content, data_path))
             if (_finish_reason != "length"
-                    and _is_acknowledgment_response(_content)
+                    and (_is_ack or _is_meta or _is_empty)
                     and ack_continuation_count < MAX_ACK_CONTINUATIONS):
                 ack_continuation_count += 1
+                _what = ("acknowledged" if _is_ack
+                         else "commented on the prompt" if _is_meta
+                         else "replied with nothing the prompt did not supply")
                 _log_to_ui_or_verbose(
-                    f"Model acknowledged instead of resuming the task (continuation "
+                    f"Model {_what} instead of resuming the task (continuation "
                     f"{ack_continuation_count}/{MAX_ACK_CONTINUATIONS}).",
                     chat_ui, verbose, level="info",
                 )
@@ -2526,10 +2856,30 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         # Structured tool calls: execute them and loop back.
         # Reset force/token/planning flags — the model successfully called a tool.
+        # A batch of nothing but no-ops does not clear the planning budget: that is
+        # how a stuck model launders "echo ok" into another two continuations and
+        # loops indefinitely.  The call still runs — it may be the model's own way
+        # of orienting — it just doesn't count as progress.
         _force_tool_call = False
         _active_max_tokens = max_tokens
-        planning_continuation_count = 0
-        ack_continuation_count = 0
+        _all_noop = all(
+            _is_noop_tool_call(tc.function.name, _parse_tool_arguments(tc, verbose))
+            for tc in tool_calls
+        )
+        if _all_noop:
+            _log_to_ui_or_verbose(
+                "Tool call does nothing (no-op shell command); keeping the "
+                f"planning budget at {planning_continuation_count}/"
+                f"{MAX_PLANNING_CONTINUATIONS}.",
+                chat_ui, verbose, level="info",
+            )
+        else:
+            # Only a call that did something counts as progress.  The ack budget
+            # is reset on the same condition and for the same reason: a model
+            # that acknowledges, runs "echo ok", then acknowledges again has not
+            # advanced, and refreshing its budget here lets it do that forever.
+            planning_continuation_count = 0
+            ack_continuation_count = 0
         _t_tools = time.monotonic()
         _tool_log = []
         bail = await _handle_structured_tool_calls(
