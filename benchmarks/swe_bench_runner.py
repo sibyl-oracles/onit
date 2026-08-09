@@ -206,6 +206,42 @@ async def _solve_instance(agent, inst: dict, workspace: Path, timeout: int) -> s
     return _model_patch(workspace)
 
 
+def _warn_if_servers_running(data_root: Path) -> None:
+    """Warn when MCP servers are already up, since they pin the old jail root.
+
+    Each MCP server reads ``ONIT_DATA_PATH`` into its module-level ``DATA_PATH``
+    once, at startup, and ``_ensure_mcp_servers`` skips any server whose port is
+    already bound. So servers left running by an earlier benchmark keep *that*
+    run's jail root and our ``data_path`` override is silently ignored — the run
+    then dies on the first file tool call. Saying so here is cheaper than
+    decoding the traceback later.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        from src.cli import _is_port_open
+
+        from .onit_provider import base_config_data
+    except Exception:  # noqa: BLE001 - advisory only, never block the run
+        return
+
+    running = []
+    for s in base_config_data().get("mcp", {}).get("servers", []):
+        if not s.get("enabled", True) or not s.get("url"):
+            continue
+        parsed = urlparse(s["url"])
+        host, port = parsed.hostname or "127.0.0.1", parsed.port or 80
+        if _is_port_open(host, port, timeout=0.3):
+            running.append(f"{host}:{port}")
+    if running:
+        log.warning(
+            "[swe-bench] MCP server(s) already running on %s. They keep the "
+            "DATA_PATH they started with, so file tools will fail unless that "
+            "root contains %s. Stop them first to pick up this run's root.",
+            ", ".join(running), data_root,
+        )
+
+
 def generate_predictions(args) -> tuple[Path, str]:
     """Run OnIt over the instances and write ``predictions.jsonl``."""
     from datasets import load_dataset
@@ -218,11 +254,21 @@ def generate_predictions(args) -> tuple[Path, str]:
         rows = rows[: args.limit]
 
     model_name = bench_config.model_label()
-    overrides = {"sandbox": True} if args.onit_sandbox else None
     timeout = bench_config.bench_timeout()
 
-    data_root = Path(args.data_root).expanduser()
+    data_root = Path(args.data_root).expanduser().resolve()
     data_root.mkdir(parents=True, exist_ok=True)
+
+    # The per-instance workspace is passed to OnIt as ``data_path``, and the MCP
+    # servers reject any ``data_path`` outside their own DATA_PATH (see
+    # ``_session_base`` in the bash server). So the agent's server-wide
+    # ``data_path`` must be the workspace root, not the shared bench data dir —
+    # otherwise every file tool fails with "data_path must be within the server
+    # data directory" before the agent can read a single file.
+    overrides: dict = {"data_path": str(data_root)}
+    if args.onit_sandbox:
+        overrides["sandbox"] = True
+    _warn_if_servers_running(data_root)
     preds_path = data_root / f"predictions_{args.run_id}.jsonl"
 
     # Resume: keep instances that already succeeded and re-attempt the rest. A
@@ -307,7 +353,7 @@ def grade(preds_path: Path, args, model_name: str) -> None:
         log.error("[swe-bench] report %s not found; see harness logs.", report)
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="benchmarks.swe_bench_runner", description=__doc__)
     p.add_argument("--dataset", choices=list(DATASETS), default="lite")
     p.add_argument("--split", default="test")
@@ -320,7 +366,12 @@ def main(argv: list[str] | None = None) -> None:
                         "the MCP sandbox provider; requires one configured).")
     p.add_argument("--run-id", default="onit")
     p.add_argument("--max-workers", type=int, default=4)
-    p.add_argument("--data-root", default=str(Path(tempfile.gettempdir()) / "onit-swebench"))
+    # Under the shared bench data root by default: the agent's data_path is set
+    # to this directory, and keeping it inside the root the other benchmarks use
+    # means a stale MCP server from a previous run still contains our workspaces.
+    p.add_argument("--data-root", default=str(bench_config.bench_data_root() / "swebench"),
+                   help="Where per-instance workspaces and predictions.jsonl live. "
+                        "Becomes OnIt's data_path (the file-tool jail root).")
     p.add_argument("--no-grade", action="store_true",
                    help="Only generate predictions; skip the Docker harness.")
     p.add_argument("--fresh", action="store_true",
@@ -329,7 +380,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--log-file", default=None,
                    help="Tee the run's progress, errors, and final score to this "
                         "file (in addition to the console) for easy monitoring.")
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
 
     log_path = setup_logging(args.log_file)
     if log_path:

@@ -11,7 +11,9 @@ endpoint without edits.
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,20 @@ def bench_timeout() -> int:
         return int(raw)
     except ValueError:
         return 300
+
+
+def bench_data_root() -> Path:
+    """Server-wide jail root for benchmark runs.
+
+    This is what OnIt's ``data_path`` config is set to, which the MCP servers
+    read as their ``DATA_PATH`` (via ``ONIT_DATA_PATH``). Every per-sample
+    ``data_path`` handed to ``process_task`` **must** be this directory or a
+    descendant of it, or ``_session_base`` rejects the call with
+    ``"data_path must be within the server data directory"`` and every file tool
+    fails. Callers that mint their own working directories (per-sample dirs, the
+    SWE-bench per-instance workspaces) build them under this root.
+    """
+    return Path(tempfile.gettempdir()) / "onit-bench-data"
 
 
 def _env_bool(name: str, default: bool) -> bool:

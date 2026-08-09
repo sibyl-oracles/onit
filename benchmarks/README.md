@@ -198,7 +198,7 @@ python -m benchmarks.swe_bench_runner --dataset lite --tier sampled --run-id oni
 | `--onit-sandbox` | OnIt executes code via its MCP sandbox provider | off |
 | `--run-id` | label for predictions + harness report | `onit` |
 | `--max-workers` | parallel grading containers | 4 |
-| `--data-root` | where workspaces + `predictions.jsonl` live | `$TMPDIR/onit-swebench` |
+| `--data-root` | where workspaces + `predictions.jsonl` live; becomes OnIt's `data_path` | `$TMPDIR/onit-bench-data/swebench` |
 | `--no-grade` | generate patches only, skip Docker grading | off |
 | `--fresh` | ignore existing predictions and start over (default: resume) | off |
 
@@ -234,6 +234,13 @@ Per-instance pass/fail and logs are in the harness's `logs/run_evaluation/<run_i
   `coding.swe_bench` for comparison only.
 - First run is slow: cloning repos and pulling SWE-bench images dominates. Reuse
   `--data-root` across runs to keep cloned workspaces.
+- **`data_path must be within the server data directory`**: the per-instance
+  workspace is handed to OnIt as `data_path`, and the MCP servers jail every file
+  tool to their own `DATA_PATH`. The runner sets OnIt's `data_path` to
+  `--data-root` so the two agree — but each MCP server caches `DATA_PATH` at
+  startup and `_ensure_mcp_servers` skips ports that are already bound. If you
+  pass a custom `--data-root` while servers from an earlier run are still up,
+  stop them first (the runner warns when it sees them listening).
 
 ## Notes
 

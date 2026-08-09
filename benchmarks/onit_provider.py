@@ -47,7 +47,7 @@ def base_config_data() -> dict[str, Any]:
     (host/model) and per-request timeout come from the environment.
     """
     sessions_dir = Path(tempfile.gettempdir()) / "onit-bench-sessions"
-    data_dir = Path(tempfile.gettempdir()) / "onit-bench-data"
+    data_dir = bench_config.bench_data_root()
     sessions_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -155,7 +155,7 @@ class OnItAPI(ModelAPI):
         # Per-sample isolation: unique session + data directory.
         run_id = uuid.uuid4().hex[:12]
         sessions_dir = Path(tempfile.gettempdir()) / "onit-bench-sessions"
-        data_dir = Path(tempfile.gettempdir()) / "onit-bench-data" / run_id
+        data_dir = bench_config.bench_data_root() / run_id
         data_dir.mkdir(parents=True, exist_ok=True)
 
         stats: dict[str, Any] = {}

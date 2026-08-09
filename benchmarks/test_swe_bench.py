@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 
+from pathlib import Path
+
+from benchmarks import config as bench_config
 from benchmarks.swe_bench_runner import (
     DATASETS,
     _load_existing,
     _strip_test_hunks,
     _write_predictions,
+    build_parser,
 )
 
 _DIFF = """\
@@ -44,6 +48,20 @@ def test_strip_test_hunks_empty():
 def test_dataset_ids():
     assert set(DATASETS) == {"lite", "verified", "full"}
     assert DATASETS["lite"] == "princeton-nlp/SWE-bench_Lite"
+
+
+def test_default_data_root_is_inside_the_mcp_jail():
+    """Workspaces must sit under the jail root the MCP servers enforce.
+
+    Each per-instance workspace is handed to OnIt as ``data_path``, and
+    ``_session_base`` rejects anything outside the server-wide DATA_PATH. A
+    default rooted elsewhere (it used to be ``$TMPDIR/onit-swebench``) fails
+    every file tool call with "data_path must be within the server data
+    directory" before the agent reads a line of source.
+    """
+    default = Path(build_parser().parse_args([]).data_root).resolve()
+    root = bench_config.bench_data_root().resolve()
+    assert default == root or default.is_relative_to(root)
 
 
 def test_resume_loads_completed_skips_errored_and_truncated(tmp_path):
