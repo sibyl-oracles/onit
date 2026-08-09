@@ -1,8 +1,11 @@
 # Agent Harness Capabilities — Gap Analysis and Build Plan
 
 **Status**: Proposal / RFC. Nothing in Phases 1–6 is implemented.
-**Date**: August 2026
+**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11).*
 **Source**: [Six Agent Harness Capabilities for Higher Model Performance](https://developer.nvidia.com/blog/six-agent-harness-capabilities-for-higher-model-performance/) (NVIDIA, NOOA framework)
+**Companion**: [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) — Phases 1–4 and 6 here are
+that plan's **Phase 0.5**. Its §1.1 explains why they must land before its baseline is
+pinned. Schedule from there, not from this document alone.
 
 ---
 
@@ -33,21 +36,35 @@ code-as-action with a **sandboxed interpreter** instead of a shared heap.
 
 ### Build order
 
-Ordered by (payoff ÷ effort), not by the article's numbering:
+Ordered by (payoff ÷ effort), not by the article's numbering. Phases 1–4 and 6 together
+are **Phase 0.5** of [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) — they must all land
+before that plan pins its baseline, because each one changes a metric it records:
 
 ```
-Phase 1  Typed I/O            ~1 day     fixes a live bug
-Phase 2  Harness APIs         ~1 day     small, high leverage
-Phase 3  Loop policy config   ~half day  fixes an unbounded loop
-Phase 4  Result store         ~3 days    largest token win
-Phase 5  Code as action       ~1-2 weeks largest latency win
-Phase 6  Explicit run state   ~3 days    unlocks resume + testing
+Phase 1  Typed I/O            ~1 day     fixes a live bug          ┐
+Phase 3  Loop policy config   ~half day  fixes an unbounded loop   │ Phase 0.5
+Phase 2  Harness APIs         ~1 day     small, high leverage      │ (~1 week,
+Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │  runs during
+Phase 4  Result store         ~3 days    largest token win         ┘  data accrual)
+
+Phase 5  Code as action       ~1-2 weeks largest latency win       ← after SELF_IMPROVEMENT Phase 2
 ```
 
-Phases 1–3 are independent of each other and of everything else. Phase 5 depends on
-Phase 4 (handles are what keep interpreter output out of the context). Phase 6 is
-independent but pairs naturally with `docs/SELF_IMPROVEMENT.md` Layer 0, which already
-records trajectories and wants the same state object.
+Phases 1, 2 and 3 are independent of each other and of everything else — start anywhere.
+Phase 6 before Phase 4, so the result store's bookkeeping has a typed home rather than
+three more locals in `chat()`. Phase 5 depends on Phase 4 (handles are what keep
+interpreter output out of the context).
+
+**Phase 5 is deliberately outside Phase 0.5.** It changes what a "tool call" *is*, so
+`tool_calls` per task stops being comparable across the boundary — a baseline pinned before
+it cannot survive it. It is also the largest, riskiest item and can lose accuracy on
+8B-class models. Either land it after the memory track has an honest reading, or accept
+that it forces a baseline re-pin and say so out loud when it does.
+
+**Why this schedule costs nothing.** `SELF_IMPROVEMENT.md` is blocked on trajectory
+accrual — its holdout wants ≈100 recorded tasks and `onit learn` reports 10. That is a wait
+measured in weeks of real usage. This track needs no data, so it runs inside the wait
+rather than competing for the slot after it.
 
 ---
 
@@ -116,8 +133,15 @@ names the offending parameters and tells the model not to repeat the call unchan
    `validate_arguments(schema: dict, args: dict) -> list[str]`, returning human-readable
    problems (`"depth: expected integer, got 'three'"`). Support `type`, `required`,
    `enum`, `minimum`/`maximum`, `anyOf`. That covers what MCP servers actually declare.
-   **Do not add a dependency** — `pip install jsonschema` is blocked by the user's deny
-   rules.
+
+   *Correcting an earlier note in this doc:* pydantic is **already a dependency** —
+   [`OnIt`](../src/onit.py#L586) is a `BaseModel` — so a second review's suggestion to
+   validate with pydantic is not blocked by the no-new-deps rule. It is still the harder
+   path: pydantic validates *Python types*, and what arrives here is a **JSON Schema dict
+   from an MCP server**, with no JSON-Schema→model path in pydantic core. Building models
+   dynamically per tool at discovery time is more machinery than a ~120-line validator over
+   the five keywords MCP servers actually emit. Hand-roll it — but for that reason, not for
+   a dependency reason. (`jsonschema` itself *is* blocked by the user's deny rules.)
 3. **Call it before dispatch** in [`_execute_tool`](../src/model/serving/chat.py#L795),
    folding it into the existing `_blank_args` branch so there is one refusal path, one
    error format, and one `_log(False, 0)` site.
@@ -173,6 +197,15 @@ same way `sandbox_download_file` is already intercepted at
    `data_path/.onit/notes/`. Survives compaction and decay because it lives on disk, not
    in the message list. This is the payoff for #1: seeing 85% is only useful if there is
    somewhere to put things.
+
+   **Coordinate with the memory track.** This is the harness-level primitive for
+   model-written memory; `SELF_IMPROVEMENT.md` Loops A and B are the *learned* version of
+   the same idea. From the model's side they are one tool family, and shipping them under
+   two naming schemes means it uses neither well. Share the on-disk root and the path-jail
+   implementation with Phase 4's result store. **Do not share the scope**: notes are
+   session-scoped and die with `data_path`; learned memory is cross-session and lives in
+   `~/.onit/learned/`. The path from one to the other is Loop B's Reflector — offline and
+   gated — never a shared directory, because `data_path` is a session isolation boundary.
 3. **Announce compaction to the model, not just the UI.** When
    [`_compact`](../src/model/serving/chat.py#L2364) runs, append a short `user`-role
    notice to the compacted message list saying what happened and that `note_read` is
@@ -326,6 +359,21 @@ existing path rather than copying bytes into a second file.
 - Regression: prompt tokens across a 6-tool run grow roughly linearly, not quadratically.
   `TurnMetrics` already records `prompt_tokens` per turn — assert against that.
 
+### 6.5 Baseline impact — read before scheduling
+
+This is the largest baseline shift of the five Phase 0.5 items. The trajectory schema's
+`signals` block records `truncations` and `compactions`; a working result store collapses
+both toward zero on the *same run*. Any `eval/baseline.json` pinned before this lands is
+measuring a different harness. Two consequences:
+
+- It must land **before** `SELF_IMPROVEMENT.md` freezes its holdout, or force a re-pin.
+- Do not read a post-Phase-4 drop in `compactions` as a learning win. It is this change.
+
+Corollary worth stating plainly: pass-by-reference **reduces** compaction pressure, it does
+not eliminate compaction. A second review claimed it would remove the need for the
+compaction pipeline entirely — it will not. Assistant turns and session history still
+accumulate, and `_compact_context` stays as the backstop.
+
 ---
 
 ## 7. Phase 5 — Code as action
@@ -401,7 +449,16 @@ machinery covers the case where a `print` is itself huge.
 
 ### 8.1 The gap
 
-Every piece of state describing a run lives in local variables inside `chat()` —
+**First, what is *not* the gap.** A second review concluded there is "no agent object with
+typed fields" and proposed building `src/agent.py`. That is wrong and the mistake is
+expensive: [`OnIt`](../src/onit.py#L586) is already `class OnIt(BaseModel)` with ~50 typed
+`Field()` declarations, and a new `Agent` base class would duplicate it. The accurate
+distinction is **configuration state vs. run state**. OnIt's fields are configuration —
+`web_port`, `a2a_name`, `theme`, `history_turns` — set at startup and stable for the
+process. What is missing is state describing *this run*, and that is a narrower fix inside
+`chat()`, not a new class hierarchy.
+
+Every piece of that state lives in local variables inside `chat()` —
 `iteration_count`, `tool_call_history`, `planning_continuation_count`,
 `ack_continuation_count`, `_force_tool_call`, `_final_answer_prefix`,
 `_prose_before_tools` — and dies on return. Consequences:
@@ -472,4 +529,71 @@ Standing constraints for every phase, from prior sessions:
    serve different things — notes are the model's own words, results are tool output — but
    they should share one on-disk root and one path-jail implementation.
 4. **What is the right iteration cap?** 50 is a guess. Pull the real distribution from the
-   trajectory store once enough runs are recorded.
+   trajectory store once enough runs are recorded. Note the circularity: today's
+   distribution is unbounded *because* the cap is disabled, so the first cap has to be a
+   judgment call that later data corrects.
+5. **Does the NOOA post report benchmark results?** A second review cites "+11.8 points on
+   ARC-AGI-3" for the memory subsystem. The fetch behind this document surfaced only the
+   six capabilities — no numbers, no memory section. Confirm before that figure is used to
+   justify priority, since it is currently the only quantitative claim on the table.
+
+---
+
+## 11. Reconciliation with the second review
+
+An independent analysis of the same article was produced separately. It agreed on five of
+six capabilities in substantially the same terms — including "code as action is the single
+biggest architectural gap." Recorded here are the differences that changed this document.
+
+### 11.1 What it got right that this document missed
+
+**A long-term memory subsystem, ranked #1.** This document treated
+[`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) as a footnote in Phase 6; the second review
+made it the headline, and it was right to. The convergence is real —
+[`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) already specifies `src/learn/recall.py`
+and `src/learn/playbook.py`, and [`trajectory.py:188`](../src/learn/trajectory.py#L188)
+already carries `learned_context` with `playbook_version` and `episodes_used`, wired for
+exactly this.
+
+Its sharpest point: the highest-impact next step may be **finishing a roadmap that already
+exists** rather than starting a new one. That reframing produced §1.1 of
+`SELF_IMPROVEMENT.md` and the Phase 0.5 schedule above, which is a better answer than
+either document reached alone.
+
+Two caveats retained. Memory is not one of the six capabilities — the second review says so
+itself ("plus a long-term memory subsystem"), making it an extension rather than a mapping.
+And its **SQLite-everywhere** proposal was resolved as a split, not adopted: the playbook
+stays JSON (small, delta-edited, git-diffable, matching invariants I2/I3); trajectories get
+a derived, rebuildable SQLite *index* at Phase 1, where retrieval scale actually justifies
+it. See `SELF_IMPROVEMENT.md` §4.0.
+
+### 11.2 Corrections carried into this document
+
+| Claim in the second review | Status | Where fixed |
+|---|---|---|
+| "No agent object with typed fields"; build `src/agent.py` | **Wrong** — `OnIt` is a `BaseModel` with ~50 typed fields | §8.1 |
+| Pass-by-reference "eliminates the need for compaction" | **Overclaim** — reduces pressure, doesn't remove the backstop | §6.5 |
+| Pydantic validation blocked by no-new-deps | **Wrong** — pydantic is already a dependency; hand-roll for a different reason | §3.3 step 2 |
+| Trajectories are `{task, response, timestamp}` | **Conflated** with the *session* JSONL; `build_record` writes per-turn views, signals and metrics | — |
+| Loop runs "until a limit is hit" | **Missed** that `MAX_CHAT_ITERATIONS = -1` disables it | §5.1 |
+| No validation of tool return values | **Understated** — `returns` is captured, never read, and shipped in the API payload | §3.1 |
+
+### 11.3 The genuine disagreement, and how it resolved
+
+The second review ordered by impact (memory first, weeks of work). This document ordered by
+payoff ÷ effort (bug fixes first, days of work). Neither is wrong in isolation:
+impact-first risks weeks before anything ships; effort-first defers the largest gain.
+
+The resolution came from a fact neither analysis had used: **the memory track is blocked on
+data that does not exist yet.** Its holdout wants ≈100 recorded tasks and there are 10. So
+the ordering question was malformed — there is no contested slot. The memory track keeps
+its priority; the harness track runs inside the wait it was already going to have. And the
+scheduling constraint that fell out of examining both together — that harness changes
+redefine the very metrics the memory track baselines against, so they must land *before*
+the pin — appears in neither original document.
+
+Where the two still conflict on priority: **the memory track wins on evidence** (ACE and
+Reflexion are controlled results on small open models) and **this track wins on
+availability** (no data dependency). That asymmetry is the whole argument for running them
+in this order, and it is worth re-checking if the NOOA benchmark claim in open question 5
+turns out to be real.

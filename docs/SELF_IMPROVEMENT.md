@@ -1,7 +1,9 @@
 # Self-Improving OnIt — Literature Review and Scaffold Proposal
 
-**Status**: Phase 0 implemented (see §5). Phases 1–4 are proposal / RFC.
-**Date**: August 2026
+**Status**: Phase 0 implemented (see §5). Phase 0.5 and Phases 1–4 are proposal / RFC.
+**Date**: August 2026 · *Revised August 09, 2026 — added §1.1 and Phase 0.5 (harness track).*
+**Companion**: [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md) — the harness track this
+plan now depends on. Read §1.1 before scheduling anything.
 
 ---
 
@@ -36,6 +38,62 @@ optional and not glamorous; it is the whole basis of everything else. Ship it fi
 The second thesis: **every promotion must pass a frozen, held-out benchmark before it
 goes live.** OnIt already has the fitness function — `benchmarks/` on Inspect-AI. That
 harness is the difference between self-improvement and self-delusion.
+
+The third thesis, added in the August 09 revision: **the harness must stop moving before
+the baseline is frozen.** See §1.1 — this reorders the plan.
+
+### 1.1 Relationship to the harness track
+
+A separate analysis ([`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md)) scored OnIt
+against NVIDIA's NOOA capability list and proposed six harness changes: typed I/O,
+model-callable context APIs, loop-policy config, a tool-result store, code-as-action, and
+explicit run state. Two independent reviews of that article converged on the same gaps,
+and both asked the obvious question — *does the harness track compete with this one for
+the next slot?*
+
+**It does not, and the reason is a scheduling constraint neither analysis noticed.**
+
+**1. This track is currently blocked; that one is not.** §8 says do Phase 2 next, *"but not
+until there are enough trajectories to freeze a holdout from."* The holdout wants ≈100
+tasks drawn from real sessions. `onit learn` currently reports 10 across 1 session. Phase 1
+and Phase 2 cannot honestly start for weeks of accrual. The harness work needs no data at
+all. **The harness track is what happens while trajectories accumulate** — it is not a
+competitor for the slot, it is the thing that fills the slot that is empty anyway.
+
+**2. Harness changes invalidate the baseline, so they must land first.** This is the
+load-bearing point. The trajectory schema's `signals` block records `truncations` and
+`compactions`, and `metrics` records `turn_count`, `tool_calls` and `prompt_tokens_max`.
+Every one of those is *defined by harness behavior*:
+
+| Harness change | What it does to the recorded signal |
+|---|---|
+| Result store (H4) | `truncations` and `compactions` collapse toward zero — same run, different numbers |
+| Loop-policy config (H3) | `turn_count` gains a real ceiling; today `MAX_CHAT_ITERATIONS = -1` means there is none |
+| Typed I/O (H1) | Malformed calls are refused pre-dispatch, so `tool_errors` shifts from server errors to harness refusals |
+| Code as action (H5) | One `run_code` call replaces N tool calls — `tool_calls` per task is no longer comparable at all |
+
+A baseline pinned in `eval/baseline.json` before these land is not comparable to anything
+measured after them, and I4 (quality-gated efficiency) would be reading two different
+rulers. Freezing the holdout early was already deferred for lack of data; it must now
+*also* wait for the harness to settle.
+
+**3. Three harness phases are prerequisites here, not detours.** They were designed
+independently and land on this plan's own gap list:
+
+- **H6 (explicit run state)** builds the `RunState` object that `_record_trajectory` should
+  serialize. §4.1 already says the Layer 0 change is *"to persist the sink rather than
+  log-and-drop it"* — H6 generalizes exactly that, and closes gap 2's dead `memories`
+  parameter by giving it somewhere typed to live.
+- **H2 (`note_write` / `note_read`)** is the harness-level primitive for durable
+  model-written memory. Loop A and Loop B are the *learned* version of the same idea. They
+  must share one on-disk root and one path-jail — see §4.0.
+- **H1 (typed I/O)** fixes two live bugs that corrupt Layer 0's own data: `outputSchema` is
+  captured at [`lib/tools.py:182`](../src/lib/tools.py#L182), never read, and shipped
+  inside the `tools=` payload where it is not a valid field; and the disabled iteration cap
+  lets `turn_count` run unbounded.
+
+**Revised order**: Phase 0 (done) → **Phase 0.5 (harness, §5)** → freeze holdout → Phase 1
+→ Phase 2. See §8.
 
 ---
 
@@ -247,6 +305,25 @@ One directory, one manifest:
     holdout.jsonl           # frozen; the improvement loops MUST NOT read this
     baseline.json           # pinned scores for A/B
 ```
+
+**Not in this tree, and deliberately so** — the harness track's per-session stores
+(`data_path/.onit/notes/`, `data_path/.onit/results/`) live under the **session's**
+`data_path` and die with it. They are working memory for one run, not learned knowledge.
+Keeping them out of `~/.onit/learned/` is what preserves session isolation: `data_path` is
+a trust boundary, and a note written by one session must not be readable by another. The
+promotion path from the first to the second is Loop B's Reflector — deliberate, offline,
+and gated — never a shared directory.
+
+**On SQLite.** A reviewer proposed replacing the flat JSON/JSONL stores with SQLite
+throughout. Resolved as a split:
+
+- **Playbook stays JSON** (`playbook/global.json`). It is small, hand-auditable, edited by
+  delta ops (I2), rolled back by file (I3), and diffs usefully in review. SQLite would cost
+  all four and buy nothing at this scale.
+- **Trajectories get a SQLite *index* at Phase 1**, not a replacement. `trajectories/*.jsonl`
+  stays the append-only source of truth; Loop A's retrieval over thousands of records is
+  where a linear scan stops being acceptable. Index is derived, disposable, and rebuildable
+  from the JSONL — so it never becomes a second source of truth.
 
 **Invariants** (violating any of these turns self-improvement into self-delusion):
 
@@ -500,12 +577,17 @@ Shipped:
   `test_chat_metrics.py`, the rating endpoint in `test_web_api.py`, and the `onit.py`
   wiring in `test_onit.py`.
 
-Deferred, because it needs data that does not exist yet:
+Deferred, now on **two** gates rather than one:
 
 - **Freeze `eval/holdout.jsonl` and pin `eval/baseline.json`.** The holdout is supposed to
   be ≈100 tasks drawn from real sessions; there are no recorded sessions to draw from
   until this has been running for a while. Do it after a few weeks of trajectories, and
   before Phase 1 ships anything that could be tuned against it.
+  - **Gate 1 — data.** ≈100 tasks recorded. Currently 10.
+  - **Gate 2 — a settled harness.** Phase 0.5 complete. A baseline pinned while the
+    harness is still changing measures the harness, not the learning (§1.1). Of the two
+    gates this is the one that is easy to forget, because the data gate is visible in
+    `onit learn` and this one is not.
 
 **Exit criterion**: a week of normal use yields trajectories rich enough to answer *"which
 tool fails most, and on what?"* — a useful result even if every later phase is cancelled.
@@ -527,11 +609,42 @@ Ollama run accounted for zero generated tokens. Fixed in
 [`_ollama_process_streaming_response`](../src/model/serving/chat.py#L1198); the
 non-streaming path had always read it.
 
+### Phase 0.5 — Settle the harness *(~1 week)* · autonomy 1 — **proposal**
+
+Runs *during* trajectory accrual, so it costs no calendar time against Phase 1. Full
+detail in [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md); this is the subset that
+must land before the baseline is pinned, and why.
+
+| # | Change | Why it gates the baseline | Effort |
+|---|---|---|---|
+| **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moves `tool_errors` from server stack traces to harness refusals | ~1 day |
+| **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` is unbounded today, so its distribution is not a baseline | ~½ day |
+| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ~1 day |
+| **H6** | `RunState` object | Becomes what `_record_trajectory` serializes; closes gap 2 | ~3 days |
+| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ~3 days |
+
+**H5 (code as action) is explicitly *not* in Phase 0.5.** It changes what a "tool call"
+means, so `tool_calls` per task stops being comparable across the boundary entirely. It is
+also the largest and riskiest piece, and it can *lose* accuracy on 8B-class models. Land it
+after Phase 2 has an honest reading, or accept that it forces a baseline re-pin — and say
+so out loud when it does.
+
+**Exit criterion**: `onit learn` reports the same signal set it does today, but the numbers
+are stable run-to-run on a fixed task. That stability *is* the baseline precondition.
+
+**Ordering within the phase**: H1 → H3 → H2 → H6 → H4. The first two are bug fixes worth
+shipping on their own merits; H6 before H4 so the result store's bookkeeping has a typed
+home rather than three more locals in `chat()`.
+
 ### Phase 1 — Recall *(~3 days)* · autonomy 2
 
 - Implement `memories` in `_build_messages()`; populate at the three `'memories': None`
-  sites.
+  sites — into the `RunState` from H6, not a fourth ad-hoc parameter.
 - `src/learn/recall.py` — lexical retrieval over trajectories, token-budgeted.
+- SQLite index over `trajectories/*.jsonl`, derived and rebuildable (§4.0).
+- Reconcile with H2: `note_read` (this session's own notes) and recall (prior sessions'
+  distilled outcomes) are one tool family from the model's point of view. Ship them with
+  one naming scheme, or the model will use neither well.
 - A/B on the holdout. **Ship only if it wins.**
 
 ### Phase 2 — Playbook *(~3 weeks)* · autonomy 2
@@ -596,6 +709,7 @@ fast gets its diff read by a human before it goes anywhere.
 | **Skill-library dilution** — more tools, worse selection | Benchmark delta ≥ 0 required per skill; deprecation path; description quality gate |
 | **Runaway self-modification** | Sandbox (I6); allowlisted files; PR-gated; `pinned.yaml` rollback (I3) |
 | **Forgetting** | Stability axis blocks promotion on prior-generation regressions |
+| **Baseline drift under the harness** — a learning win that is really a harness change, or a harness regression hidden by a learning win | Phase 0.5 gate before the pin (§1.1); every result row stamps the harness phase alongside `ONIT_LEARN`; any post-pin harness change to the loop, the result store or the tool contract forces an explicit re-pin, announced in `RESULTS.md` |
 | **Effort sink with no payoff** | Phase gates. Each phase must win on the holdout or the track stops. Phase 0 has standalone value regardless |
 
 **Explicit non-goals for v1**: no weight updates or finetuning; no unattended modification
@@ -606,13 +720,45 @@ network-reachable self-modification surface.
 
 ## 8. Recommendation
 
-Phase 0 is done. Do Phase 2 next (the Playbook), with Phase 1 as a cheap ride-along —
-but not until there are enough trajectories to freeze a holdout from, because a Phase 1
-or 2 tuned before the holdout exists has nothing honest to be measured against.
+*Revised August 09, 2026. The destination is unchanged — Phase 2 is still the main event.
+What changed is what happens in the weeks before it can honestly start.*
 
-Phase 2 carries low risk and captures the majority of the literature's demonstrated
-scaffold gains — ACE reports double-digit improvements on exactly this mechanism, without
-labels and without gradients, on small open models.
+Phase 0 is done. **Do Phase 0.5 next (the harness), then freeze the holdout, then Phase 2
+with Phase 1 as a cheap ride-along.**
+
+The original recommendation — Phase 2 next — was right about the destination and silent
+about a dependency. Phase 2 cannot start until there are enough trajectories to freeze a
+holdout from, and there are 10. That is a wait of weeks measured in real usage, not in
+engineering days, and nothing in this document was scheduled to fill it. Phase 0.5 fills
+it, needs no data, and removes five sources of baseline drift on the way through (§1.1).
+
+The sequencing is therefore not a compromise between two roadmaps. It is one roadmap whose
+critical path was always *data accrual*, with the harness work slotted into the wait:
+
+```
+  now ──────────────── trajectories accrue (weeks) ─────────────────▶ ≈100 tasks
+        │                                                                  │
+        └── Phase 0.5: H1 → H3 → H2 → H6 → H4 (~1 week of work) ──┐        │
+                                                                  ▼        ▼
+                                                        both gates met → freeze holdout
+                                                                           │
+                                                                           ▼
+                                                              Phase 1 + Phase 2
+```
+
+Phase 2 still carries low risk and still captures the majority of the literature's
+demonstrated scaffold gains — ACE reports double-digit improvements on exactly this
+mechanism, without labels and without gradients, on small open models. Nothing in the
+harness analysis contradicts that, and the harness track has no comparable evidence behind
+it: NOOA's capability list is a vendor framework post, not a controlled result. Where the
+two conflict on priority, **this document wins on evidence and that one wins on
+availability** — which is precisely why the answer is to run the available work during the
+wait rather than to reorder the destination.
+
+One thing to hold onto if the schedule slips: if only part of Phase 0.5 lands, **H3 and H1
+are the ones that must** (they are bug fixes, and H3's unbounded `turn_count` corrupts a
+Layer 0 metric today). H4 is the largest baseline shift and the easiest to defer, at the
+cost of a re-pin later.
 
 Phase 3 (skills) is the highest-*ceiling* work and the strongest product story — Alita's
 generated MCPs transfer across agents and lift smaller models, which is directly on
