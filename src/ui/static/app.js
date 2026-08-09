@@ -480,17 +480,66 @@
     root.appendChild(meta);
   }
 
-  // 👍/👎 on an answer. The one outcome signal nothing else can supply:
-  // everything the agent records about a run says how it went, not whether it
-  // was right. Sent to /api/rating, which appends it to the session's
-  // trajectory; a second click on the same thumb takes it back.
-  function addRating(root, turn, current) {
-    if (!state.ratingEnabled || !turn) return;
+  // Copy the answer as the model wrote it — the markdown source, not the
+  // rendered HTML: what lands in a doc or an editor should be the text, with
+  // its lists and code fences intact.
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      // No clipboard API: the page is served over plain http on a LAN, which
+      // is a normal way to run this. Fall back to the selection trick.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+  }
+
+  function copyButton(text) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-rate-btn";
+    btn.textContent = "📋";
+    btn.title = "Copy answer";
+    btn.setAttribute("aria-label", "Copy answer");
+    let revert;
+    btn.addEventListener("click", async () => {
+      const ok = await copyText(text);
+      clearTimeout(revert);
+      btn.textContent = ok ? "✅" : "⚠️";
+      btn.title = ok ? "Copied" : "Could not copy";
+      revert = setTimeout(() => {
+        btn.textContent = "📋";
+        btn.title = "Copy answer";
+      }, 1200);
+    });
+    return btn;
+  }
+
+  // The bar under an answer: copy it, and 👍/👎 it. The rating is the one
+  // outcome signal nothing else can supply — everything the agent records about
+  // a run says how it went, not whether it was right. Sent to /api/rating,
+  // which appends it to the session's trajectory; a second click on the same
+  // thumb takes it back.
+  function addActions(root, text, turn, current) {
+    const rateable = state.ratingEnabled && !!turn;
+    if (!rateable && !(text || "").trim()) return;
     const bar = document.createElement("div");
     bar.className = "msg-rate";
 
     const note = document.createElement("span");
     note.className = "msg-rate-note";
+
+    if ((text || "").trim()) bar.appendChild(copyButton(text));
 
     const buttons = {};
     function paint(value) {
@@ -501,8 +550,8 @@
       note.textContent = value ? "Thanks — noted." : "";
     }
 
-    for (const [value, glyph, label] of [[1, "👍", "Good answer"],
-                                         [-1, "👎", "Bad answer"]]) {
+    for (const [value, glyph, label] of (rateable ? [[1, "👍", "Good answer"],
+                                                     [-1, "👎", "Bad answer"]] : [])) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "msg-rate-btn";
@@ -643,7 +692,7 @@
         const turn = addAssistantTurn();
         renderMarkdown(turn.content, m.content);
         addFileChips(turn.root, m.files);
-        addRating(turn.root, m.turn, m.rating);
+        addActions(turn.root, m.content, m.turn, m.rating);
       }
     }
     scrollToBottom(true);
@@ -894,17 +943,19 @@
         forgetEmailVerdicts();
         // Final response supersedes streamed phases — unless it is empty, in
         // which case wiping would leave the turn blank. Keep what streamed.
+        let answer = streamText;
         if ((d.content || "").trim()) {
           turn.content.innerHTML = "";
           const final = document.createElement("div");
           turn.content.appendChild(final);
           renderMarkdown(final, d.content);
+          answer = d.content;
         } else if (streamBlock) {
           renderMarkdown(streamBlock, streamText);
         }
         addFileChips(turn.root, d.files);
         addMeta(turn.root, d.elapsed, d.tok_s);
-        addRating(turn.root, d.turn, null);
+        addActions(turn.root, answer, d.turn, null);
         streamBlock = null;
       },
       error(d) {
@@ -1026,6 +1077,7 @@
       renderMarkdown(block, m.content || "");
       addFileChips(t.root, m.files);
       addMeta(t.root, m.elapsed, 0);
+      addActions(t.root, m.content || "", null, null);
       endVoiceTurn();
       scrollToBottom(true);
       refreshSessions();

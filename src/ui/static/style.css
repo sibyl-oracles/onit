@@ -267,8 +267,8 @@ textarea { font-family: var(--font); }
   color: var(--text-faint);
 }
 
-/* Feedback on an answer. Quiet until hovered: it is an offer, not a prompt,
-   and a pair of buttons under every reply competes with the reply. */
+/* Copy and feedback on an answer. Quiet until hovered: they are an offer, not
+   a prompt, and a row of buttons under every reply competes with the reply. */
 .msg-rate {
   display: flex;
   align-items: center;
