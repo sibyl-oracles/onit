@@ -480,31 +480,91 @@
     root.appendChild(meta);
   }
 
-  // Copy the answer as the model wrote it — the markdown source, not the
-  // rendered HTML: what lands in a doc or an editor should be the text, with
-  // its lists and code fences intact.
-  async function copyText(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch (e) {
-      // No clipboard API: the page is served over plain http on a LAN, which
-      // is a normal way to run this. Fall back to the selection trick.
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      let ok = false;
-      try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
-      document.body.removeChild(ta);
-      return ok;
-    }
+  // The answer as rich text, for the clipboard. Markdown source pasted into a
+  // mail composer or a doc arrives as literal ## and **, so the copy carries
+  // the rendered HTML too and the receiving app picks the flavour it wants —
+  // Gmail takes the HTML, an editor or a terminal takes the markdown.
+  const COPY_STYLE = {
+    // Class names do not survive the trip: mail clients strip stylesheets and
+    // keep only inline style, so anything that carries meaning rides inline.
+    // These are light-background values on purpose — the destination is a
+    // document or a mail body, not this page's theme.
+    pre: "font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; "
+       + "background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; "
+       + "padding: 10px; white-space: pre-wrap; overflow-x: auto;",
+    code: "font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; "
+        + "background: #f6f8fa; border-radius: 4px; padding: 1px 4px;",
+    table: "border-collapse: collapse; margin: 8px 0;",
+    cell: "border: 1px solid #d0d7de; padding: 5px 9px; text-align: left;",
+    quote: "border-left: 3px solid #d0d7de; margin: 8px 0; padding: 2px 12px; color: #57606a;",
+    broken: "color: #57606a; text-decoration: line-through;",
+  };
+
+  function answerHtml(node) {
+    const clone = node.cloneNode(true);
+    // Page chrome, not part of the answer: the per-block Copy button.
+    clone.querySelectorAll(".code-head").forEach((h) => h.remove());
+    clone.querySelectorAll("pre").forEach((n) => n.setAttribute("style", COPY_STYLE.pre));
+    clone.querySelectorAll("code").forEach((n) => {
+      // A fenced block already got its box from the <pre> around it.
+      if (n.closest("pre")) n.removeAttribute("style");
+      else n.setAttribute("style", COPY_STYLE.code);
+    });
+    clone.querySelectorAll("table").forEach((n) => n.setAttribute("style", COPY_STYLE.table));
+    clone.querySelectorAll("th, td").forEach((n) => n.setAttribute("style", COPY_STYLE.cell));
+    clone.querySelectorAll("blockquote").forEach((n) => n.setAttribute("style", COPY_STYLE.quote));
+    // A URL that failed verification is struck through here; without the class
+    // it would paste as an ordinary-looking claim.
+    clone.querySelectorAll(".link-broken").forEach((n) => n.setAttribute("style", COPY_STYLE.broken));
+    // Relative /uploads/ and /static/ paths mean nothing outside this page.
+    clone.querySelectorAll("a[href], img[src]").forEach((n) => {
+      const attr = n.tagName === "IMG" ? "src" : "href";
+      const v = n.getAttribute(attr) || "";
+      if (v.startsWith("/")) n.setAttribute(attr, location.origin + v);
+    });
+    return clone.innerHTML;
   }
 
-  function copyButton(text) {
+  async function copyAnswer(text, node) {
+    const html = node ? answerHtml(node) : "";
+    if (html && window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text || node.innerText], { type: "text/plain" }),
+        })]);
+        return true;
+      } catch (e) { /* fall through to the selection route */ }
+    }
+
+    // No async clipboard: the page is served over plain http on a LAN, which
+    // is a normal way to run this and is not a secure context. Copying a live
+    // selection still works there, and a contenteditable host keeps the
+    // formatting that a <textarea> would flatten.
+    const host = document.createElement("div");
+    host.style.cssText = "position: fixed; left: -9999px; top: 0; white-space: pre-wrap;";
+    if (html) {
+      host.setAttribute("contenteditable", "true");
+      host.innerHTML = html;
+    } else {
+      host.textContent = text;
+    }
+    document.body.appendChild(host);
+    const sel = window.getSelection();
+    const saved = sel.rangeCount ? sel.getRangeAt(0) : null;
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    sel.removeAllRanges();
+    if (saved) sel.addRange(saved);
+    document.body.removeChild(host);
+    return ok;
+  }
+
+  function copyButton(text, node) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "msg-rate-btn";
@@ -513,7 +573,7 @@
     btn.setAttribute("aria-label", "Copy answer");
     let revert;
     btn.addEventListener("click", async () => {
-      const ok = await copyText(text);
+      const ok = await copyAnswer(text, node);
       clearTimeout(revert);
       btn.textContent = ok ? "✅" : "⚠️";
       btn.title = ok ? "Copied" : "Could not copy";
@@ -530,16 +590,18 @@
   // a run says how it went, not whether it was right. Sent to /api/rating,
   // which appends it to the session's trajectory; a second click on the same
   // thumb takes it back.
-  function addActions(root, text, turn, current) {
+  function addActions(root, opts) {
+    const { text, node, turn, rating: current } = opts;
     const rateable = state.ratingEnabled && !!turn;
-    if (!rateable && !(text || "").trim()) return;
+    const copyable = !!(text || "").trim() || !!(node && node.innerText.trim());
+    if (!rateable && !copyable) return;
     const bar = document.createElement("div");
     bar.className = "msg-rate";
 
     const note = document.createElement("span");
     note.className = "msg-rate-note";
 
-    if ((text || "").trim()) bar.appendChild(copyButton(text));
+    if (copyable) bar.appendChild(copyButton(text, node));
 
     const buttons = {};
     function paint(value) {
@@ -692,7 +754,9 @@
         const turn = addAssistantTurn();
         renderMarkdown(turn.content, m.content);
         addFileChips(turn.root, m.files);
-        addActions(turn.root, m.content, m.turn, m.rating);
+        addActions(turn.root, {
+          text: m.content, node: turn.content, turn: m.turn, rating: m.rating,
+        });
       }
     }
     scrollToBottom(true);
@@ -955,7 +1019,9 @@
         }
         addFileChips(turn.root, d.files);
         addMeta(turn.root, d.elapsed, d.tok_s);
-        addActions(turn.root, answer, d.turn, null);
+        addActions(turn.root, {
+          text: answer, node: turn.content, turn: d.turn, rating: null,
+        });
         streamBlock = null;
       },
       error(d) {
@@ -1077,7 +1143,7 @@
       renderMarkdown(block, m.content || "");
       addFileChips(t.root, m.files);
       addMeta(t.root, m.elapsed, 0);
-      addActions(t.root, m.content || "", null, null);
+      addActions(t.root, { text: m.content || "", node: t.content });
       endVoiceTurn();
       scrollToBottom(true);
       refreshSessions();
