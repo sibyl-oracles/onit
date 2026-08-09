@@ -6,6 +6,8 @@ import json
 
 from pathlib import Path
 
+import pytest
+
 from benchmarks import config as bench_config
 from benchmarks.swe_bench_runner import (
     DATASETS,
@@ -62,6 +64,27 @@ def test_default_data_root_is_inside_the_mcp_jail():
     default = Path(build_parser().parse_args([]).data_root).resolve()
     root = bench_config.bench_data_root().resolve()
     assert default == root or default.is_relative_to(root)
+
+
+def test_instance_timeout_cancels_the_agent(tmp_path, monkeypatch):
+    """A hung instance trips the wall-clock cap instead of stalling the run.
+
+    OnIt's turn ceiling is disabled (``MAX_CHAT_ITERATIONS = -1``), so this cap
+    is the only thing bounding one instance.
+    """
+    import asyncio
+
+    from benchmarks import swe_bench_runner as runner
+
+    class _HungAgent:
+        async def process_task(self, *a, **kw):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(runner, "_model_patch", lambda ws: "partial diff")
+    inst = {"problem_statement": "boom", "instance_id": "x"}
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(runner._solve_instance(_HungAgent(), inst, tmp_path, timeout=1))
 
 
 def test_resume_loads_completed_skips_errored_and_truncated(tmp_path):

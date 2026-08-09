@@ -198,6 +198,7 @@ python -m benchmarks.swe_bench_runner --dataset lite --tier sampled --run-id oni
 | `--onit-sandbox` | OnIt executes code via its MCP sandbox provider | off |
 | `--run-id` | label for predictions + harness report | `onit` |
 | `--max-workers` | parallel grading containers | 4 |
+| `--instance-timeout` | wall-clock cap per instance, seconds (`0` disables) | 1800 |
 | `--data-root` | where workspaces + `predictions.jsonl` live; becomes OnIt's `data_path` | `$TMPDIR/onit-bench-data/swebench` |
 | `--no-grade` | generate patches only, skip Docker grading | off |
 | `--fresh` | ignore existing predictions and start over (default: resume) | off |
@@ -234,6 +235,16 @@ Per-instance pass/fail and logs are in the harness's `logs/run_evaluation/<run_i
   `coding.swe_bench` for comparison only.
 - First run is slow: cloning repos and pulling SWE-bench images dominates. Reuse
   `--data-root` across runs to keep cloned workspaces.
+- **The workspace is a bare checkout, not an installed environment.** Cloning a
+  repo does not install its dependencies or build its C extensions, so importing
+  the package or running its suite locally usually fails (`ImportError: cannot
+  import name '_compiler' from 'astropy.utils'`), and PEP 668 blocks the agent
+  from pip-installing a fix. The prompt tells the agent not to try: the patch is
+  graded in the fully built official image, so local execution buys nothing and
+  costs turns. **This caps achievable resolve rate** — an agent that cannot run
+  tests cannot iterate against them. Closing that gap means running the agent
+  *inside* the per-instance `swebench/sweb.eval.x86_64.*` image rather than a
+  host clone; that is a real change to the edit step, not a flag.
 - **`data_path must be within the server data directory`**: the per-instance
   workspace is handed to OnIt as `data_path`, and the MCP servers jail every file
   tool to their own `DATA_PATH`. The runner sets OnIt's `data_path` to

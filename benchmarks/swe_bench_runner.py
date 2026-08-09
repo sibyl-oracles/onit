@@ -101,6 +101,16 @@ Resolve the following GitHub issue by editing the repository's source code. Make
 the smallest change that fixes the issue. Do NOT edit test files — the grader \
 supplies its own tests. When done, ensure the change is saved to disk.
 
+The checkout is source only: its dependencies are NOT installed and any C \
+extensions are NOT built, so importing the package or running its test suite \
+here will usually fail. That is expected and is not your problem to fix. Do not \
+run `pip install`, `setup.py build_ext`, or the project's test suite, and do not \
+try to repair the environment — your patch is graded in a separate, fully built \
+environment. Verify your fix by reading the code instead: find the code path the \
+issue describes, read the surrounding logic and its callers, and reason about \
+correctness. Short self-contained snippets that avoid importing the project are \
+fine. Your only deliverable is the edited source.
+
 <issue>
 {issue}
 </issue>
@@ -193,16 +203,30 @@ def _write_predictions(preds_path: Path, results: dict[str, dict]) -> None:
 
 
 async def _solve_instance(agent, inst: dict, workspace: Path, timeout: int) -> str:
+    """Run the agent on one instance and return its patch.
+
+    ``timeout`` is a wall-clock cap on the whole instance (not the per-request
+    timeout ``bench_config.bench_timeout()`` applies to a single model call).
+    OnIt's turn ceiling is currently disabled — ``MAX_CHAT_ITERATIONS = -1`` in
+    ``src/model/serving/chat.py`` — so an agent that keeps finding new things to
+    try has no internal bound, and one stuck instance would otherwise consume a
+    500-instance run. Raises ``asyncio.TimeoutError`` when the cap trips; the
+    caller keeps whatever was written to disk before that.
+    """
     prompt = _PROMPT.format(workspace=str(workspace), issue=inst["problem_statement"])
     run_id = uuid.uuid4().hex[:12]
     sessions = Path(tempfile.gettempdir()) / "onit-bench-sessions"
     sessions.mkdir(parents=True, exist_ok=True)
-    await agent.process_task(
+    task = agent.process_task(
         prompt,
         data_path=str(workspace),
         session_path=str(sessions / f"swe-{run_id}.jsonl"),
         safety_queue=asyncio.Queue(),
     )
+    if timeout and timeout > 0:
+        await asyncio.wait_for(task, timeout=timeout)
+    else:
+        await task
     return _model_patch(workspace)
 
 
@@ -254,7 +278,6 @@ def generate_predictions(args) -> tuple[Path, str]:
         rows = rows[: args.limit]
 
     model_name = bench_config.model_label()
-    timeout = bench_config.bench_timeout()
 
     data_root = Path(args.data_root).expanduser().resolve()
     data_root.mkdir(parents=True, exist_ok=True)
@@ -297,10 +320,17 @@ def generate_predictions(args) -> tuple[Path, str]:
         log.info("[swe-bench] (%d/%d) %s", i, len(rows), iid)
         try:
             _prepare_workspace(inst["repo"], inst["base_commit"], ws)
-            patch = asyncio.run(_solve_instance(agent, inst, ws, timeout))
+            patch = asyncio.run(_solve_instance(agent, inst, ws, args.instance_timeout))
             status = "ok"
             if not patch.strip():
                 log.warning("  ! %s produced an empty patch", iid)
+        except asyncio.TimeoutError:
+            # Keep whatever landed on disk before the cap — a partial edit can
+            # still resolve the instance, and it costs nothing to submit it.
+            patch = _model_patch(ws)
+            status = "timeout"
+            log.warning("  ! %s hit the %ds instance cap (%d-char partial patch kept)",
+                        iid, args.instance_timeout, len(patch))
         except Exception as exc:  # noqa: BLE001 - record error; resume retries it
             log.error("  ! %s failed: %s", iid, exc, exc_info=True)
             patch, status = "", "error"
@@ -312,9 +342,10 @@ def generate_predictions(args) -> tuple[Path, str]:
         }
         _write_predictions(preds_path, results)
 
-    errored = [iid for iid, rec in results.items() if rec.get("_onit_status") == "error"]
-    if errored:
-        log.warning("[swe-bench] %d instance(s) errored: %s", len(errored), ", ".join(errored))
+    for label in ("error", "timeout"):
+        hit = [iid for iid, rec in results.items() if rec.get("_onit_status") == label]
+        if hit:
+            log.warning("[swe-bench] %d instance(s) %s: %s", len(hit), label, ", ".join(hit))
     log.info("[swe-bench] wrote %s", preds_path)
     return preds_path, model_name
 
@@ -372,6 +403,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-root", default=str(bench_config.bench_data_root() / "swebench"),
                    help="Where per-instance workspaces and predictions.jsonl live. "
                         "Becomes OnIt's data_path (the file-tool jail root).")
+    p.add_argument("--instance-timeout", type=int, default=1800,
+                   help="Wall-clock cap per instance in seconds (0 disables). "
+                        "Distinct from ONIT_BENCH_TIMEOUT, which bounds a single "
+                        "model request; OnIt's own turn ceiling is disabled.")
     p.add_argument("--no-grade", action="store_true",
                    help="Only generate predictions; skip the Docker harness.")
     p.add_argument("--fresh", action="store_true",
