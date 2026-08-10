@@ -1,7 +1,7 @@
 # Agent Harness Capabilities — Gap Analysis and Build Plan
 
-**Status**: Proposal / RFC. Nothing in Phases 1–6 is implemented.
-**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11).*
+**Status**: **Phases 1 and 3 implemented** (see §3.5 and §5.4). Phases 2, 4, 5, 6 are proposal / RFC.
+**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped.*
 **Source**: [Six Agent Harness Capabilities for Higher Model Performance](https://developer.nvidia.com/blog/six-agent-harness-capabilities-for-higher-model-performance/) (NVIDIA, NOOA framework)
 **Companion**: [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) — Phases 1–4 and 6 here are
 that plan's **Phase 0.5**. Its §1.1 explains why they must land before its baseline is
@@ -41,11 +41,11 @@ are **Phase 0.5** of [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) — they 
 before that plan pins its baseline, because each one changes a metric it records:
 
 ```
-Phase 1  Typed I/O            ~1 day     fixes a live bug          ┐
-Phase 3  Loop policy config   ~half day  fixes an unbounded loop   │ Phase 0.5
-Phase 2  Harness APIs         ~1 day     small, high leverage      │ (~1 week,
-Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │  runs during
-Phase 4  Result store         ~3 days    largest token win         ┘  data accrual)
+Phase 1  Typed I/O            ~1 day     fixes a live bug          ┐ ✅ shipped
+Phase 3  Loop policy config   ~half day  fixes an unbounded loop   │ ✅ shipped
+Phase 2  Harness APIs         ~1 day     small, high leverage      │ Phase 0.5
+Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │
+Phase 4  Result store         ~3 days    largest token win         ┘
 
 Phase 5  Code as action       ~1-2 weeks largest latency win       ← after SELF_IMPROVEMENT Phase 2
 ```
@@ -157,10 +157,211 @@ names the offending parameters and tells the model not to repeat the call unchan
 
 - New `src/test/test_schema.py`: type mismatch, missing required, bad enum, out-of-range,
   `anyOf` accepted, coercion of `"3"`→`3`.
-- Extend `src/test/test_tool_registry.py`: `get_api_tool_items()` output has exactly the
-  keys `type` and `function`, and `function` has exactly `name`/`description`/`parameters`.
+- Extend `src/test/test_tool_registry.py`: `parameters_schema()` returns the declared
+  schema; the API payload has exactly `type` and `function`, and `function` has exactly
+  `name`/`description`/`parameters`.
 - Extend `src/test/test_chat.py`: a bad-typed call is refused before dispatch — assert the
   MCP handler was never awaited and the tool message names the parameter.
+
+### 3.5 As shipped
+
+Implemented August 09, 2026. 55 new tests; suite 966 → 1028, all green.
+
+| Piece | Where |
+|---|---|
+| Schema validator (~200 lines, no new deps) | [`src/lib/schema.py`](../src/lib/schema.py) |
+| Coerce + validate before dispatch | [`_execute_tool`](../src/model/serving/chat.py#L927) |
+| `returns` stripped from the wire | [`_api_tool_payload`](../src/model/serving/chat.py#L79) |
+| Schema accessor | [`ToolRegistry.parameters_schema`](../src/type/tools.py#L400) |
+| **`required` preserved at discovery** | [`_build_parameters`](../src/lib/tools.py#L28) |
+
+**Two decisions changed during implementation.**
+
+*The projection lives in the serving layer, not the registry.* The plan put
+`get_api_tool_items()` on `ToolRegistry`. But `type/tools.py` is a generic MCP registry,
+and "the chat-completions API accepts exactly name/description/parameters" is knowledge
+about **one provider's wire format** — it belongs next to the code that builds the request.
+It also kept 15 existing test doubles meaningful instead of forcing them to mock a second
+method.
+
+*A third bug surfaced, bigger than the one this phase was named for.*
+`_build_parameters` reconstructed each tool's schema from `inputSchema` keeping only `type`
+and `properties` — **`required` was dropped**. Two silent consequences: the model was never
+told which parameters are mandatory, and
+[`blank_required_args`](../src/type/tools.py#L426) reads `required` to refuse a call before
+dispatch, so it found an empty list for every MCP-discovered tool and **had never fired in
+production**. `$defs`/`definitions` were dropped too, dangling any `$ref` a server used.
+
+Honest scope on that fix: OnIt's own tools declare every parameter with a default
+(`command: str | None = None`), so FastMCP emits no `required` for them and this changes
+nothing for the bundled servers *today*. It is a latent-correctness fix that matters for
+any third-party MCP server that does declare `required` — and `blank_required_args` remains
+the mechanism that actually catches `bash(command="")`.
+
+**Verified against the live bash MCP server** (12 tools), not just mocks:
+
+```
+{'command': 'ls', 'timeout': 300}    -> dispatch
+{'command': 'ls', 'timeout': '300'}  -> coerced timeout: '300' → 300
+{'command': 'ls', 'cwd': 123}        -> REFUSED: cwd: expected string, got 123
+{'command': 'ls', 'timeout': True}   -> REFUSED: timeout: expected integer, got true
+```
+
+### 3.6 What the recorded trajectories said, and what it changed
+
+Layer 0 had 42 tasks / 660 turns / 848 tool calls recorded. Checking Phase 1 against them
+rather than against imagination changed the design.
+
+**The failure mode was not type errors.** 27 calls failed (3%), 24 of them `read_file` (a
+14% failure rate on that one tool). Grouped by argument names, the split is total:
+
+```
+FAILED     14x read_file(… offset …)      7x read_file(… limit, offset …)   1x read_file(… limit …)
+SUCCEEDED 106x read_file(path)           22x read_file(max_chars, path)    22x read_file(mode, path)
+```
+
+`read_file` accepts `path, mode, encoding, max_chars, table_index, output_format,
+output_dir, min_size, data_path`. It has no `offset` and no `limit` — the model is reaching
+for the signature of a *different harness's* read tool. Not a type error, not a blank
+argument: an **invented parameter**, and neither existing check looks for those.
+
+**The first cut of this phase let every one of them through.** `validate_arguments` skipped
+unknown parameters, on the stated reasoning that "servers accept extras, and the harness
+injects session_id/data_path." Both halves were wrong: FastMCP emits
+`additionalProperties: false`, and the harness injects only what `tool_accepts_param`
+confirms is declared. Fixed — unknown parameters are refused when the schema forbids them,
+and the error **names the parameters the tool does actually take**, which is what turns a
+guess into a fix. `additionalProperties` was added to `_SCHEMA_KEYS` so it survives
+discovery at all.
+
+**Replaying the 27 recorded failures through the fixed validator: 23 caught pre-dispatch,
+4 still round-trip.**
+
+**What that is worth is not the round trip.** Those 27 calls cost 0.9s of wall time in
+total — the tool rejected them fast. The cost is the **recovery turn**: the model has to
+read the error and try again, and a turn here runs a median 4.0s and 44,080 prompt tokens.
+23 avoided turns ≈ **91s of model time and ~1.0M prompt tokens re-prefilled** across those
+42 tasks. Refusing locally is cheap; the turn it saves is not.
+
+There is a prevention half too, and it may matter more than the detection half: `required`
+and `additionalProperties` now reach the model in the tool schema, so it has the
+information needed to not invent a parameter in the first place.
+
+### 3.7 Tool name collisions — fixed
+
+`ToolRegistry` merged every server offering a given tool name into one rotation and
+resolved calls with [`random.choice`](../src/type/tools.py#L514). That is right for
+**replicas** — the same tool on two hosts, which is load balancing — and wrong for
+**collisions**, the same *name* over different parameters. OnIt ships two:
+
+| Tool | Consolidated `tasks/tools` server | `os/bash` server |
+|---|---|---|
+| [`read_file`](../src/mcp/servers/tasks/tools/mcp_server.py#L234) | `path, mode, encoding, max_chars, table_index, output_format, output_dir, min_size, data_path` | `path, encoding, max_chars, data_path` |
+| `search_document` | *(differs)* | *(differs)* |
+
+Two consequences in any deployment running both, and the second is the serious one:
+
+1. `read_file(path=…, mode="tables")` succeeded or failed **on a coin flip**.
+2. `get_tool_items()` iterated `handlers`, keyed `name@url` — so the model was shown
+   **`read_file` twice, with two different parameter lists, under one name**. That is an
+   excellent way to teach a model to invent parameters, which is exactly what §3.6 caught
+   it doing.
+
+**The fix** ([`register`](../src/type/tools.py#L369)) compares the *parameter schema* of
+each incoming copy against the one already holding the name — descriptions are excluded,
+since two servers may word the same tool differently:
+
+- **Same parameters** → a replica. Joins the rotation; `random.choice` keeps load
+  balancing across hosts, which was always the intent.
+- **Different parameters** → a collision. The first registration keeps the name; the other
+  stays reachable through `get_handler_by(name, url)` but is out of the rotation and out of
+  the advertised list. `discover_tools` registers in `mcp.servers` order, so **reordering
+  the config is how an operator picks the winner** — it is no longer a race between
+  servers.
+
+`get_tool_items()` now returns one entry per name, in registration order, and always the
+one `__getitem__` will dispatch to: the advertised schema and the executed tool cannot
+disagree. Registration order also replaces set iteration, so the tool list is stable run to
+run — a reordered list unsettles the model *and* breaks the server's prefix cache.
+
+Collisions are reported at startup rather than resolved silently, because no symptom of one
+points back here.
+
+**Verified against both live servers** (worst case: both configured):
+
+```
+⚠ 2 tool name collision(s) — same name, different parameters:
+  - read_file:       using http://tools:18201/sse, ignoring http://bash:18202/sse
+  - search_document: using http://tools:18201/sse, ignoring http://bash:18202/sse
+
+19 unique tools; 26 handlers registered
+schemas advertised to the model: 19  (was 26)   duplicate names: none
+read_file advertised: path, mode, encoding, max_chars, table_index, …   dispatches to: tools
+```
+
+`fetch_content` is defined in two servers as well and is correctly *not* flagged — the two
+signatures are identical, so it is a replica.
+
+### 3.8 …and then the duplication itself, removed
+
+Collision *handling* left the duplication in place. The follow-up removed it.
+
+**Why there were two.** `tasks/tools` is a **facade**: it wraps the bash, web-search and
+local-search servers and re-registers their functions as one consolidated 14-tool server,
+merging related tools behind a `mode` parameter to keep the advertised tool count down.
+`read_file(mode=text|tables|images)` fanned out to *three* separate bash/web-search tools;
+`search_document(mode=pattern|context)` to two. The sub-servers still registered their own
+narrower versions, so each merged tool existed twice at different granularity.
+
+The blocker to unifying them was placement: `extract_pdf_images` lived in the **web-search**
+server, so only a server importing that module could offer `mode="images"`. The bash server
+could not, which is precisely why the two signatures diverged.
+
+**What changed**, following the pattern `shared.py` already documents — *"server-specific
+behavior (path validation…) is injected via callable parameters"*:
+
+| Moved to [`tasks/shared.py`](../src/mcp/servers/tasks/shared.py) | What it is |
+|---|---|
+| `extract_pdf_images_impl` | the ~108-line body, out of the web-search server |
+| `read_file_impl` | the mode router, with the three readers injected |
+| `search_document_dispatch_impl` | the mode router, with both searches injected |
+| `READ_FILE_DESCRIPTION`, `SEARCH_DOCUMENT_DESCRIPTION` | one description each, shared verbatim — differing text is itself a collision |
+
+Both servers now register the *same* consolidated definition. The registry sees identical
+parameter schemas and classifies them as **replicas**, so they join one rotation:
+
+```
+collisions: 0        unique tools: 19        schemas advertised: 19
+read_file        replicas=2
+search_document  replicas=2
+```
+
+Verified functionally through both servers — identical results for every mode, including
+`read_file(mode="images")`, which the bash server previously could not do at all:
+
+```
+bash  read_file(text/tables/images/nonsense) -> success / success / no images found / error
+tools read_file(text/tables/images/nonsense) -> success / success / no images found / error
+```
+
+**Evidence that this was hurting the model.** The bash `search_document` description had
+accumulated three warnings — `Do NOT use 'query'`, `Do NOT use 'context_chars'`,
+`Do NOT use 'max_sections'` — naming exactly the parameters of the *facade's*
+`search_document`. Someone had patched at the prompt level what was really a name
+collision: a model shown both tools under one name, guessing which it would get. Both tools
+now accept all of those parameters, and the warnings are deleted along with the condition
+that produced them.
+
+The same reading applies to §3.6's `read_file(offset=…, limit=…)`. The shared description
+now documents every parameter and states plainly that there is no offset/limit paging — a
+test asserts it, since that hallucination was a model filling a documentation gap with
+another harness's signature.
+
+**What this does not change.** The facade still exists and still merges tools; that is a
+deliberate design choice about tool count, not a defect. What is gone is the *second,
+narrower copy* of a merged tool. A bash-only sandbox deployment now offers the full
+`read_file`, so the contract is the same in every deployment rather than merely
+self-consistent within one.
 
 ---
 
@@ -274,6 +475,24 @@ they are.
   calls forever terminates at the configured cap, with a distinguishable message.
 - Extend `src/test/test_onit.py`: `serving.max_chat_iterations` reaches `chat()`; an unset
   key does not appear in `kwargs` at all.
+
+### 5.4 As shipped
+
+Implemented August 09, 2026, as specified. All six ceilings are `chat()` kwargs defaulting
+to their previous values; `MAX_CHAT_ITERATIONS` now defaults to **50** with `-1` as the
+documented opt-out. Config path is `serving:` → `SERVING_PASSTHROUGH`
+([`onit.py:63`](../src/onit.py#L63)) → `chat()`, documented inline in
+[`src/configs/default.yaml`](../src/configs/default.yaml).
+
+Two additions beyond the plan:
+
+- **`_as_positive_or_disabled`** ([chat.py:98](../src/model/serving/chat.py#L98)) — YAML
+  hands back whatever was typed, so `"25"` coerces but `"fifty"` falls back to the
+  *default*, never to disabled. A typo must not silently restore the unbounded loop.
+- **The turn limit returns partial work.** If prose was already written — a truncated
+  answer being resumed, or text streamed before a final tool call — that is returned
+  instead of an apology. The user watched it stream past; discarding it because the loop
+  ran long is a second failure on top of the first.
 
 ---
 
@@ -520,9 +739,14 @@ Standing constraints for every phase, from prior sessions:
 
 ## 10. Open questions
 
-1. **Does any MCP server in `src/mcp/servers/tasks/` declare a non-trivial
-   `outputSchema`?** If not, Phase 1 step 5 (output validation) is speculative — strip
-   `returns` from the wire and stop there.
+1. ~~**Does any MCP server declare a non-trivial `outputSchema`?**~~ **Answered during
+   Phase 1.** Yes — all 12 tools on the bash server declare one, so `returns` was genuinely
+   being populated and shipped. But it totals only **360 characters across all 12 tools**,
+   against 5,007 for `parameters`. So the token argument for stripping it, which this
+   document leaned on, is weak; the real justification is the **rejection risk** on a
+   provider that validates the tool schema strictly. Stripping it was still right, for a
+   different reason than stated. Output *validation* (step 5) stays deferred — the schemas
+   are thin wrappers with little to check.
 2. **Should `run_code` replace `bash` eventually, or coexist permanently?** Coexist for
    now; revisit only with benchmark evidence.
 3. **Is `note_write` (Phase 2) redundant once the result store (Phase 4) exists?** They

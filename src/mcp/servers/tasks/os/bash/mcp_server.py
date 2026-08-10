@@ -62,9 +62,14 @@ from src.mcp.servers.tasks.shared import (
     search_document_impl,
     search_directory_impl,
     extract_tables_impl,
+    extract_pdf_images_impl,
     find_files_impl,
     transform_text_impl,
     get_document_context_impl,
+    read_file_impl,
+    search_document_dispatch_impl,
+    READ_FILE_DESCRIPTION,
+    SEARCH_DOCUMENT_DESCRIPTION,
 )
 from src.mcp.servers.tasks.os.bash.command_policy import (
     DEFAULT_ALLOWED_COMMANDS,
@@ -1148,22 +1153,53 @@ async def bash(
 
 @mcp.tool(
     title="Read File",
-    description="""Read file contents. Supports text files and PDFs. Binary files (images, audio, video) return metadata only.
-
-Args:
-- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/report.pdf"). Always use the complete working directory path from your system prompt - never use relative paths.
-- encoding: Text encoding (default: utf-8)
-- max_chars: Max characters to read (default: 100000)
-- data_path: Session working directory — set automatically by the harness; leave unset.
-
-Returns JSON: {content, path, size_bytes, format, status} or {path, size_bytes, format, type} for binary files"""
+    description=READ_FILE_DESCRIPTION,
 )
 def read_file(
+    path: Optional[str] = None,
+    mode: str = "text",
+    encoding: str = "utf-8",
+    max_chars: int = 100000,
+    table_index: Optional[int] = None,
+    output_format: str = "json",
+    output_dir: str = "",
+    min_size: int = 100,
+    data_path: str = "",
+) -> str:
+    """Read a file, or extract tables or images from it.
+
+    Registered identically by the consolidated Tools server — same signature,
+    same description, same routing — so the two are replicas of one tool
+    rather than two tools sharing a name.  See ToolRegistry.register.
+    """
+    base = _session_base(data_path)
+    return read_file_impl(
+        path=path, mode=mode, encoding=encoding, max_chars=max_chars,
+        table_index=table_index, output_format=output_format,
+        output_dir=output_dir, min_size=min_size,
+        read_text=lambda **kw: _read_file_text(data_path=data_path, **kw),
+        extract_tables=lambda **kw: extract_tables(data_path=data_path, **kw),
+        extract_images=lambda **kw: extract_pdf_images_impl(
+            **kw,
+            validate_read_path=lambda p: _validate_read_path(p, base=base),
+            validate_write_path=lambda p: _validate_write_path(p, base=base),
+            default_output_dir=os.path.join(base, "pdf_images"),
+        ),
+    )
+
+
+def _read_file_text(
     path: Optional[str] = None,
     encoding: str = "utf-8",
     max_chars: int = 100000,
     data_path: str = "",
 ) -> str:
+    """Text/PDF/binary reading — the "text" mode of read_file above.
+
+    Not a tool in its own right: it is one branch of read_file, and
+    registering it separately is what produced two tools with the same name
+    and different parameters in the first place.
+    """
     if err := _validate_required(path=path):
         return err
     try:
@@ -2005,39 +2041,42 @@ def _run_command(command: str, cwd: str = ".", timeout: int = 60,
 
 @mcp.tool(
     title="Search Document",
-    description="""Search for a regex pattern in a single document file. Supports text, PDF, and markdown files.
-Uses grep-like regex pattern matching and returns matching lines with surrounding context.
-
-IMPORTANT - Required parameters:
-- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/report.pdf"). Always use the complete working directory path from your system prompt — never use relative paths.
-- pattern: Regex search pattern to find in the document (e.g., "error.*timeout", "subjects")
-  Do NOT use 'query' - the parameter name is 'pattern'.
-
-Optional parameters:
-- case_sensitive: Whether search is case-sensitive (default: false)
-- context_lines: Number of lines of context before/after each match (default: 3).
-  Do NOT use 'context_chars' - the parameter name is 'context_lines'.
-- max_matches: Maximum number of matches to return (default: 50).
-  Do NOT use 'max_sections' - the parameter name is 'max_matches'.
-
-Example: search_document(path="/tmp/onit/data/<session_id>/report.pdf", pattern="conclusion")
-
-Returns JSON: {matches, total_matches, file, format, status}
-Each match includes: {line_number, match, context_before, context_after}"""
+    description=SEARCH_DOCUMENT_DESCRIPTION,
 )
 def search_document(
-    path: Annotated[Optional[str], Field(description="FULL absolute file path to search")] = None,
-    pattern: Annotated[Optional[str], Field(description="Regex search pattern to find in the document (e.g., 'error.*timeout', 'subjects')")] = None,
-    case_sensitive: Annotated[bool, Field(description="Whether search is case-sensitive")] = False,
-    context_lines: Annotated[int, Field(description="Number of lines of context before/after each match")] = 3,
-    max_matches: Annotated[int, Field(description="Maximum number of matches to return")] = 50,
-    data_path: Annotated[str, Field(description="Session working directory — set automatically by the harness; leave unset")] = ""
+    path: Optional[str] = None,
+    mode: str = "pattern",
+    pattern: Optional[str] = None,
+    query: Optional[str] = None,
+    keywords: Optional[str] = None,
+    case_sensitive: bool = False,
+    context_lines: int = 3,
+    max_matches: int = 50,
+    context_chars: int = 500,
+    max_sections: int = 5,
+    data_path: str = "",
 ) -> str:
+    """Regex or keyword search within one document.
+
+    This used to take only the regex parameters, while the consolidated Tools
+    server registered a `search_document` that also took `query`,
+    `context_chars` and `max_sections`.  The description here had grown three
+    "Do NOT use 'query'" warnings to cope — a prompt-level patch for a model
+    that had been shown both tools under one name and could not tell which it
+    would get.  Both now accept all of them, so the warnings are gone with the
+    condition that caused them.
+    """
     base = _session_base(data_path)
-    return search_document_impl(
-        path=path, pattern=pattern, case_sensitive=case_sensitive,
-        context_lines=context_lines, max_matches=max_matches,
-        validate_read_path=lambda p: _validate_read_path(p, base=base),
+    _validate = lambda p: _validate_read_path(p, base=base)
+    return search_document_dispatch_impl(
+        path=path, mode=mode, pattern=pattern, query=query, keywords=keywords,
+        case_sensitive=case_sensitive, context_lines=context_lines,
+        max_matches=max_matches, context_chars=context_chars,
+        max_sections=max_sections,
+        search_pattern=lambda **kw: search_document_impl(
+            **kw, validate_read_path=_validate),
+        search_context=lambda **kw: get_document_context_impl(
+            **kw, validate_read_path=_validate),
     )
 
 

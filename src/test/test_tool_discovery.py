@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lib.tools import discover_tools, _discover_server_tools
+from lib.tools import discover_tools, _discover_server_tools, _build_parameters
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -46,6 +46,137 @@ def _mock_client(tools=None, resources=None, prompts=None):
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client
+
+
+# ── _build_parameters ───────────────────────────────────────────────────────
+
+class TestBuildParameters:
+    """What survives the trip from an MCP inputSchema into the tool record."""
+
+    @staticmethod
+    def _tool(schema):
+        tool = MagicMock()
+        tool.inputSchema = schema
+        return tool
+
+    def test_required_is_preserved(self):
+        """Regression: `required` used to be dropped, which silently disabled
+        blank_required_args for every MCP-discovered tool and left the model
+        without any signal about which parameters are mandatory."""
+        params = _build_parameters(self._tool({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        }))
+        assert params["required"] == ["command"]
+
+    def test_properties_are_preserved(self):
+        params = _build_parameters(self._tool(
+            {"properties": {"query": {"type": "string"}}}))
+        assert params["properties"] == {"query": {"type": "string"}}
+
+    def test_type_is_pinned_to_object(self):
+        params = _build_parameters(self._tool({"type": "string", "properties": {}}))
+        assert params["type"] == "object"
+
+    def test_ref_definitions_come_along(self):
+        """A $ref whose referent was dropped dangles, and nothing — model
+        included — can read the property that used it."""
+        params = _build_parameters(self._tool({
+            "properties": {"cfg": {"$ref": "#/$defs/Cfg"}},
+            "$defs": {"Cfg": {"type": "object"}},
+        }))
+        assert params["$defs"] == {"Cfg": {"type": "object"}}
+
+    def test_absent_keys_are_not_invented(self):
+        params = _build_parameters(self._tool({"properties": {}}))
+        assert "required" not in params
+        assert "$defs" not in params
+
+    def test_missing_properties_defaults_to_empty(self):
+        assert _build_parameters(self._tool({}))["properties"] == {}
+
+    def test_additional_properties_is_preserved(self):
+        """FastMCP sets it false and means it. Without it the harness cannot
+        tell "extras allowed" from "extras rejected", and has to let every such
+        call make the round trip to find out."""
+        params = _build_parameters(self._tool(
+            {"properties": {}, "additionalProperties": False}))
+        assert params["additionalProperties"] is False
+
+    def test_mcp_extras_are_dropped(self):
+        params = _build_parameters(self._tool(
+            {"properties": {}, "title": "X", "$schema": "http://json-schema.org/"}))
+        assert set(params) == {"type", "properties"}
+
+
+# ── one tool, one contract, across the servers that offer it ────────────────
+
+class TestConsolidatedToolContracts:
+    """`read_file` and `search_document` are each registered by two servers.
+
+    They used to be *different tools sharing a name*: the bash server's
+    read_file had no `mode`, so `read_file(mode="tables")` succeeded or failed
+    depending which server the registry picked, and both schemas were shown to
+    the model at once. Both now register one shared definition, which makes
+    them replicas — see TestNameCollisions in test_tool_registry.py.
+    """
+
+    @staticmethod
+    def _schemas(name):
+        import importlib
+        from lib.tools import _build_parameters
+        out = {}
+        for label, mod_path in (
+                ("tools", "src.mcp.servers.tasks.tools.mcp_server"),
+                ("bash", "src.mcp.servers.tasks.os.bash.mcp_server")):
+            mod = importlib.import_module(mod_path)
+            fn = getattr(mod, name)
+            fn = getattr(fn, "fn", fn)
+            import inspect
+            out[label] = list(inspect.signature(fn).parameters)
+        return out
+
+    def test_read_file_signatures_match(self):
+        tools, bash = self._schemas("read_file").values()
+        assert tools == bash
+
+    def test_search_document_signatures_match(self):
+        tools, bash = self._schemas("search_document").values()
+        assert tools == bash
+
+    def test_read_file_covers_all_three_modes(self):
+        params = self._schemas("read_file")["bash"]
+        # tables and images used to be reachable only through the Tools server
+        for p in ("mode", "table_index", "output_format", "output_dir", "min_size"):
+            assert p in params
+
+    def test_search_document_covers_both_modes(self):
+        params = self._schemas("search_document")["bash"]
+        for p in ("mode", "query", "keywords", "context_chars", "max_sections"):
+            assert p in params
+
+    def test_descriptions_are_the_same_object(self):
+        """Two servers offering one name with different description text is a
+        collision to ToolRegistry, so the text is shared, not copied."""
+        import importlib
+        shared = importlib.import_module("src.mcp.servers.tasks.shared")
+        tools = importlib.import_module("src.mcp.servers.tasks.tools.mcp_server")
+        bash = importlib.import_module("src.mcp.servers.tasks.os.bash.mcp_server")
+        assert tools.READ_FILE_DESCRIPTION is shared.READ_FILE_DESCRIPTION
+        assert bash.READ_FILE_DESCRIPTION is shared.READ_FILE_DESCRIPTION
+        assert tools.SEARCH_DOCUMENT_DESCRIPTION is shared.SEARCH_DOCUMENT_DESCRIPTION
+        assert bash.SEARCH_DOCUMENT_DESCRIPTION is shared.SEARCH_DOCUMENT_DESCRIPTION
+
+    def test_read_file_description_documents_every_parameter(self):
+        """The `offset`/`limit` hallucination in the recorded trajectories was a
+        model filling a documentation gap with another harness's signature."""
+        import importlib
+        shared = importlib.import_module("src.mcp.servers.tasks.shared")
+        text = shared.READ_FILE_DESCRIPTION
+        for p in self._schemas("read_file")["bash"]:
+            assert p in text, f"{p} is undocumented"
+        assert "offset" in text and "limit" in text  # says they do not exist
 
 
 # ── _discover_server_tools ──────────────────────────────────────────────────

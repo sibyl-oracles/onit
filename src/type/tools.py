@@ -19,6 +19,7 @@ ToolHandler - concrete implementation of RequestHandler that calls a tool via Fa
 '''
 
 import asyncio
+import json
 import tempfile
 import os
 import base64
@@ -343,39 +344,110 @@ def _mime_to_extension(mime_type: str) -> str:
     return 'bin'
 
 
+def _contract_of(tool_item: ToolItem | None) -> str:
+    """A stable identity for the contract a tool offers.
+
+    Only the parameter schema: that is what decides whether a call written
+    against one server's copy of a tool is valid against another's.  Two
+    servers may word the description differently and still be the same tool.
+    """
+    fn = (tool_item or {}).get('function') or {}
+    return json.dumps(fn.get('parameters') or {}, sort_keys=True, default=str)
+
+
 # create a tool registry
 class ToolRegistry:
+    """Tool name → handler, across every MCP server that offers it.
+
+    Two servers can offer the same tool name for two very different reasons,
+    and conflating them is a bug:
+
+    * **Replicas** — the same tool, same parameters, on more than one host.
+      Calls rotate across them, which is the point.
+    * **Collisions** — the same *name* for tools that take different
+      parameters.  OnIt ships one: ``read_file`` is a text reader on the bash
+      server and a text/tables/images reader on the consolidated Tools server,
+      and ``fetch_content`` is defined twice as well.  Rotating across those
+      makes an identical call succeed or fail depending on a coin flip, and
+      — worse — advertised *both* schemas to the model under one name, which
+      is an excellent way to teach it to invent parameters that exist on
+      neither.
+
+    Registration order decides which copy of a colliding name wins, so the
+    order servers appear in ``mcp.servers`` is the way to choose.
+    """
+
     def __init__(self) -> None:
         self.tools: set[str] = set()
         self.urls: dict[str, list[str]] = {}
         self.handlers: dict[str, ToolHandler] = {}
+        # Registration order, so the tool list handed to a model is stable from
+        # run to run: a set's iteration order is not, and reordering the tools
+        # both unsettles the model and breaks the server's prefix cache.
+        self.order: list[str] = []
+        # name → contract of the copy that won, for detecting collisions.
+        self._contracts: dict[str, str] = {}
+        # (name, url, winning_url) for every copy that lost, so discovery can
+        # report a misconfiguration rather than silently resolving it.
+        self.collisions: list[tuple[str, str, str]] = []
 
     def register(self, tool: ToolHandler) -> None:
-        # many need to modify to support one to many tools
-        # self.tools[tool.tool_item['function']['name']] = tool
-
         tool_name: str = tool.tool_item['function']['name']
         tool_url: str = tool.url
-        self.tools.add(tool_name)
-        if tool_name not in self.urls:
-            self.urls[tool_name] = [tool_url]
-        else:
-            self.urls[tool_name].append(tool_url)
 
-        key = f"{tool_name}@{tool_url}"
-        self.handlers[key] = tool
+        # Always addressable by name@url, winner or not: get_handler_by() is
+        # how a caller reaches a specific server's copy on purpose.
+        self.handlers[f"{tool_name}@{tool_url}"] = tool
+        contract = _contract_of(tool.tool_item)
+
+        if tool_name not in self.tools:
+            self.tools.add(tool_name)
+            self.order.append(tool_name)
+            self.urls[tool_name] = [tool_url]
+            self._contracts[tool_name] = contract
+            return
+
+        if contract == self._contracts[tool_name]:
+            # A replica. Same call, same result, wherever it lands.
+            if tool_url not in self.urls[tool_name]:
+                self.urls[tool_name].append(tool_url)
+            return
+
+        # A collision. The first registration keeps the name; this copy stays
+        # reachable by name@url and is kept out of the rotation, so dispatch
+        # and the advertised schema agree with each other.
+        self.collisions.append((tool_name, tool_url, self.urls[tool_name][0]))
+        logger.warning(
+            "Tool name collision: %r is offered by %s with different parameters "
+            "than %s. Using the first; the other is reachable only by URL. "
+            "Reorder mcp.servers to change which one wins.",
+            tool_name, tool_url, self.urls[tool_name][0])
 
     def get_url(self, tool_name: str) -> str | None:
-        """Get a random URL for the tool"""
+        """A URL serving this tool — any of them, since they are replicas."""
         if tool_name not in self.urls:
             return None
         return random.choice(self.urls[tool_name])
 
     def get_tool_items(self) -> list[ToolItem]:
-        """Get the tool items from the tool registry"""
+        """One entry per tool name, in registration order.
+
+        Iterating ``handlers`` instead listed a replicated tool once per host
+        and a colliding name once per *contract* — so a model was shown
+        ``read_file`` twice with different parameters and no way to tell which
+        it would get.  This returns exactly what ``__getitem__`` will dispatch
+        to, which is the only description of a tool that can be acted on.
+
+        The full internal record, ``returns`` included.  What goes to a model
+        server is a projection of this — see ``_api_tool_payload`` in
+        ``model/serving/chat.py``, which is where knowledge of the
+        chat-completions schema belongs.
+        """
         tool_items: list[ToolItem] = []
-        for key in self.handlers:
-            tool_items.append(self.handlers[key].get_tool())
+        for tool_name in self.order:
+            handler = self.handlers.get(f"{tool_name}@{self.urls[tool_name][0]}")
+            if handler is not None:
+                tool_items.append(handler.get_tool())
         return tool_items
 
     def get_handler_by(self, tool_name: str, url: str) -> ToolHandler | None:
@@ -396,6 +468,19 @@ class ToolRegistry:
             return False
         props = handler.tool_item.get('function', {}).get('parameters', {}).get('properties', {})
         return param_name in props
+
+    def parameters_schema(self, tool_name: str) -> dict:
+        """The JSON Schema a tool declares for its arguments, or ``{}``.
+
+        Empty for an unknown tool or a server that declared nothing, and the
+        validator treats empty as "nothing to check" — so a tool without a
+        schema keeps dispatching exactly as it did before.
+        """
+        handler = self[tool_name]
+        if not handler or not handler.tool_item:
+            return {}
+        params = handler.tool_item.get('function', {}).get('parameters')
+        return params if isinstance(params, dict) else {}
 
     def blank_required_args(self, tool_name: str, arguments: dict) -> list[str]:
         """Required parameters the caller left out or supplied as empty.
@@ -427,6 +512,12 @@ class ToolRegistry:
         return blank
 
     def __getitem__(self, tool_name: str) -> ToolHandler | None:
+        """The handler for a tool name.
+
+        ``urls[tool_name]`` holds only copies that agree on their parameters,
+        so choosing among them at random is load balancing rather than a coin
+        flip over which tool the caller gets.
+        """
         if tool_name not in self.tools:
             return None
         url = random.choice(self.urls[tool_name])
@@ -436,4 +527,4 @@ class ToolRegistry:
         return len(self.tools)
 
     def __iter__(self):
-        return iter(self.tools)
+        return iter(self.order)

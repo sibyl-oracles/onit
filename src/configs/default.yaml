@@ -23,6 +23,28 @@ serving:
   # Ollama endpoints only serve while no vLLM/OpenRouter endpoint is healthy.
   # Set false (or pass --no-ollama-fallback-only) to load-balance across them.
   # ollama_fallback_only: true
+  #
+  # ── Loop policy ──────────────────────────────────────────────────────────
+  # Ceilings on the ways the agent loop can fail to terminate. Every one is
+  # optional; the default shown is what applies when the key is absent.
+  #
+  # Total turns (one model call each) before the loop gives up and returns
+  # whatever it has. -1 disables the cap. The other ceiling below keys on the
+  # tool name *and* byte-identical arguments, so a model alternating between
+  # calls that differ by a page number or a timestamp never trips it — this is
+  # the ceiling that actually bounds such a run.
+  # max_chat_iterations: 50
+  # Identical tool calls (same name and same arguments) before bailing out.
+  # max_repeated_tool_calls: 30
+  # Retries for a transient API error, with exponential backoff.
+  # max_api_retries: 3
+  # Times to nudge a model that announces a plan but calls no tool.
+  # max_planning_continuations: 2
+  # Times to push past a content-free acknowledgment before accepting it.
+  # max_ack_continuations: 2
+  # Times to resume a final answer cut off by the output token budget. Each
+  # resume grants another max_tokens, bounding a long answer at ~(N+1)*max_tokens.
+  # max_final_continuations: 3
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."

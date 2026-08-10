@@ -609,19 +609,30 @@ Ollama run accounted for zero generated tokens. Fixed in
 [`_ollama_process_streaming_response`](../src/model/serving/chat.py#L1198); the
 non-streaming path had always read it.
 
-### Phase 0.5 — Settle the harness *(~1 week)* · autonomy 1 — **proposal**
+### Phase 0.5 — Settle the harness *(~1 week)* · autonomy 1 — **in progress**
 
 Runs *during* trajectory accrual, so it costs no calendar time against Phase 1. Full
 detail in [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md); this is the subset that
 must land before the baseline is pinned, and why.
 
-| # | Change | Why it gates the baseline | Effort |
-|---|---|---|---|
-| **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moves `tool_errors` from server stack traces to harness refusals | ~1 day |
-| **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` is unbounded today, so its distribution is not a baseline | ~½ day |
-| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ~1 day |
-| **H6** | `RunState` object | Becomes what `_record_trajectory` serializes; closes gap 2 | ~3 days |
-| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ~3 days |
+| # | Change | Why it gates the baseline | Effort | Status |
+|---|---|---|---|---|
+| **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moves `tool_errors` from server stack traces to harness refusals | ~1 day | ✅ **done** |
+| **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` is unbounded today, so its distribution is not a baseline | ~½ day | ✅ **done** |
+| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ~1 day | pending |
+| **H6** | `RunState` object | Becomes what `_record_trajectory` serializes; closes gap 2 | ~3 days | pending |
+| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ~3 days | pending |
+
+**H1 and H3 shipped August 09, 2026** (suite 966 → 1028, all green). Two findings that
+change this plan's own reading of its data:
+
+- `turn_count` was genuinely unbounded — `MAX_CHAT_ITERATIONS` was `-1`, and the only other
+  ceiling keys on byte-identical arguments. Any `turn_count` distribution recorded before
+  this fix has no ceiling in it and must not be used to set one.
+- `_build_parameters` dropped `required` from every discovered tool schema, so
+  `blank_required_args` had **never fired in production**. Layer 0's `tool_errors` signal
+  was therefore measuring a slightly different harness than the code appeared to describe.
+  Trajectories recorded before this date carry that caveat.
 
 **H5 (code as action) is explicitly *not* in Phase 0.5.** It changes what a "tool call"
 means, so `tool_calls` per task stops being comparable across the boundary entirely. It is

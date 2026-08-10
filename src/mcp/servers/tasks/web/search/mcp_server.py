@@ -50,6 +50,8 @@ from urllib3.util.retry import Retry
 
 from fastmcp import FastMCP
 
+from src.mcp.servers.tasks.shared import extract_pdf_images_impl
+
 try:
     from .web_search import WebSearch
 except ImportError:
@@ -717,102 +719,20 @@ def extract_pdf_images(
     min_size: int = 100,
     data_path: str = "",
 ) -> str:
-    if err := _validate_required(pdf_path=pdf_path):
-        return err
-    try:
-        import fitz  # PyMuPDF
-    except ImportError:
-        return json.dumps({
-            "error": "PyMuPDF not installed. Run: pip install PyMuPDF",
-            "pdf_path": pdf_path
-        })
+    """Thin wrapper over the shared implementation.
 
-    try:
-        base = _session_base(data_path)
-        # Normalize output directory (default to <jail root>/pdf_images)
-        if output_dir:
-            output_path = _validate_write_path(output_dir, base=base)
-        else:
-            output_path = os.path.join(base, "pdf_images")
-        _secure_makedirs(output_path)
-
-        # Handle URL or local path
-        if pdf_path.startswith(('http://', 'https://')):
-            # Download PDF first
-            response = requests.get(pdf_path, timeout=30)
-            response.raise_for_status()
-            expected = response.headers.get('Content-Length')
-            if expected and len(response.content) < int(expected):
-                return json.dumps({"error": f"Incomplete PDF download ({len(response.content)}/{expected} bytes)", "pdf_path": pdf_path})
-            pdf_data = response.content
-            doc = fitz.open(stream=pdf_data, filetype="pdf")
-            pdf_name = os.path.basename(urlparse(pdf_path).path) or "document"
-        else:
-            # Local file
-            local_path = _validate_read_path(pdf_path)
-            if not os.path.exists(local_path):
-                return json.dumps({"error": f"PDF not found: {local_path}"})
-            doc = fitz.open(local_path)
-            pdf_name = os.path.splitext(os.path.basename(local_path))[0]
-
-        extracted_images = []
-        image_count = 0
-
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            image_list = page.get_images(full=True)
-
-            for img_index, img_info in enumerate(image_list):
-                xref = img_info[0]
-
-                try:
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    image_ext = base_image["ext"]
-                    width = base_image["width"]
-                    height = base_image["height"]
-
-                    # Skip small images (likely icons/artifacts)
-                    if width < min_size or height < min_size:
-                        continue
-
-                    # Save image with owner-only permissions
-                    image_count += 1
-                    image_filename = f"{pdf_name}_p{page_num + 1}_img{img_index + 1}.{image_ext}"
-                    image_path = os.path.join(output_path, image_filename)
-
-                    fd = os.open(image_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(image_bytes)
-
-                    extracted_images.append({
-                        "path": image_path,
-                        "width": width,
-                        "height": height,
-                        "format": image_ext,
-                        "page": page_num + 1
-                    })
-
-                except Exception:
-                    # Skip images that can't be extracted
-                    continue
-
-        doc.close()
-
-        return json.dumps({
-            "pdf_path": pdf_path,
-            "output_dir": output_path,
-            "images": extracted_images,
-            "image_count": len(extracted_images),
-            "status": "success" if extracted_images else "no images found"
-        }, indent=2)
-
-    except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "pdf_path": pdf_path,
-            "status": "failed"
-        })
+    The body moved to ``tasks/shared.py`` so the bash server can offer
+    ``read_file(mode="images")`` too — while it lived here, only the servers
+    that imported the web-search module could extract PDF images, which is why
+    the two read_file tools disagreed about their parameters.
+    """
+    base = _session_base(data_path)
+    return extract_pdf_images_impl(
+        pdf_path=pdf_path, output_dir=output_dir, min_size=min_size,
+        validate_read_path=_validate_read_path,
+        validate_write_path=lambda p: _validate_write_path(p, base=base),
+        default_output_dir=os.path.join(base, "pdf_images"),
+    )
 
 
 # =============================================================================

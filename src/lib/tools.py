@@ -26,6 +26,25 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+# JSON Schema keywords carried over from an MCP tool's inputSchema.
+#
+# ``required`` used to be dropped here, and dropping it was silent in both
+# directions: the model was never told which parameters it had to supply, and
+# ``ToolRegistry.blank_required_args`` — which reads ``required`` to refuse a
+# call before dispatching it — found an empty list for every tool discovered
+# over MCP, so it never once fired in production.
+#
+# ``$defs``/``definitions`` come along because a server that describes a
+# parameter with ``$ref`` puts the referent there; without them the reference
+# dangles and the property cannot be read by anything, model included.
+# ``additionalProperties`` comes along because FastMCP sets it to false and
+# means it: a call carrying a parameter the tool does not define is rejected.
+# Without it the harness cannot tell "extras allowed" from "extras rejected",
+# and has to let every such call make the round trip to find out.
+_SCHEMA_KEYS = ('properties', 'required', 'additionalProperties',
+                '$defs', 'definitions')
+
+
 def _build_parameters(tool_item: Any) -> dict:
     """Extract parameter schema from a tool or resource item.
 
@@ -36,10 +55,16 @@ def _build_parameters(tool_item: Any) -> dict:
         A JSON-schema-style dict describing the tool's parameters.
     """
     if hasattr(tool_item, 'inputSchema'):
-        return {
-            'type': 'object',
-            'properties': tool_item.inputSchema['properties'],
-        }
+        schema = tool_item.inputSchema or {}
+        # ``type`` is pinned rather than copied: the chat-completions API wants
+        # an object schema here, and that is what the properties describe
+        # whatever the server nominally declared.
+        parameters: dict = {'type': 'object'}
+        for key in _SCHEMA_KEYS:
+            if key in schema:
+                parameters[key] = schema[key]
+        parameters.setdefault('properties', {})
+        return parameters
 
     if hasattr(tool_item, 'arguments') and tool_item.arguments:
         properties: dict[str, dict[str, str]] = {}
@@ -228,6 +253,10 @@ async def discover_tools(mcp_servers: list[dict]) -> ToolRegistry:
         return_exceptions=True
     )
 
+    # Registered in the order servers appear in the config, not in the order
+    # they happened to answer — that is what makes "the first registration
+    # keeps a colliding name" a decision the operator controls rather than a
+    # race between servers.
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             name = mcp_servers[i].get('name', 'Unknown')
@@ -237,6 +266,16 @@ async def discover_tools(mcp_servers: list[dict]) -> ToolRegistry:
             tool_registry.register(handler)
 
     logger.info("[discover_tools] Registered %d tools", len(tool_registry.tools))
+    if tool_registry.collisions:
+        # Loud, and on stdout rather than only in the log: a colliding name
+        # means the model is being shown one tool's parameters while some
+        # other tool may look like the obvious one to reach for, and no
+        # symptom of that points back here.
+        print(f"  ⚠ {len(tool_registry.collisions)} tool name collision(s) — "
+              f"same name, different parameters:")
+        for tool_name, losing_url, winning_url in tool_registry.collisions:
+            print(f"    - {tool_name}: using {winning_url}, ignoring {losing_url}")
+        print("    Disable one server, or reorder mcp.servers to change which wins.")
     return tool_registry
 
 

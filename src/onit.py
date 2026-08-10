@@ -61,7 +61,12 @@ STOP_TAG = "<stop></stop>"
 # ``serving:`` keys forwarded to chat() only when the config sets them, so
 # chat()'s own default stays the single place each one is defined.
 SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty',
-                       'repetition_penalty', 'num_ctx', 'think_tool_turns')
+                       'repetition_penalty', 'num_ctx', 'think_tool_turns',
+                       # Loop policy — the ceilings on the ways the agent loop
+                       # can fail to terminate.  Defaults live in chat().
+                       'max_chat_iterations', 'max_repeated_tool_calls',
+                       'max_api_retries', 'max_planning_continuations',
+                       'max_ack_continuations', 'max_final_continuations')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:

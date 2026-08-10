@@ -706,3 +706,268 @@ def get_document_context_impl(
             "path": path,
             "status": "error"
         })
+
+
+# =============================================================================
+# EXTRACT PDF IMAGES
+# =============================================================================
+
+
+def extract_pdf_images_impl(
+    pdf_path: Optional[str],
+    output_dir: str,
+    min_size: int,
+    validate_read_path: Callable[[str], str],
+    validate_write_path: Callable[[str], str],
+    default_output_dir: str,
+) -> str:
+    """Core logic for extracting embedded images from a PDF.
+
+    Lived in the web-search server, which meant the only tool that could reach
+    it was the one that server exposed — so the consolidated ``read_file``
+    could offer ``mode="images"`` and the bash server's could not, and the two
+    read_file tools disagreed about what they accepted.  It is a document
+    operation, not a web one; here both servers can offer the same contract.
+    """
+    if err := validate_required(pdf_path=pdf_path):
+        return err
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return json.dumps({
+            "error": "PyMuPDF not installed. Run: pip install PyMuPDF",
+            "pdf_path": pdf_path
+        })
+
+    try:
+        output_path = (validate_write_path(output_dir) if output_dir
+                       else default_output_dir)
+        secure_makedirs(output_path)
+
+        # Handle URL or local path
+        if pdf_path.startswith(('http://', 'https://')):
+            # Imported here rather than at module scope: this module is also
+            # the sandbox filesystem server's dependency, and it should not
+            # acquire an HTTP stack just by being imported.
+            import requests
+            from urllib.parse import urlparse
+            response = requests.get(pdf_path, timeout=30)
+            response.raise_for_status()
+            expected = response.headers.get('Content-Length')
+            if expected and len(response.content) < int(expected):
+                return json.dumps({
+                    "error": f"Incomplete PDF download "
+                             f"({len(response.content)}/{expected} bytes)",
+                    "pdf_path": pdf_path})
+            doc = fitz.open(stream=response.content, filetype="pdf")
+            pdf_name = os.path.basename(urlparse(pdf_path).path) or "document"
+        else:
+            local_path = validate_read_path(pdf_path)
+            if not os.path.exists(local_path):
+                return json.dumps({"error": f"PDF not found: {local_path}"})
+            doc = fitz.open(local_path)
+            pdf_name = os.path.splitext(os.path.basename(local_path))[0]
+
+        extracted_images = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            image_list = page.get_images(full=True)
+
+            for img_index, img_info in enumerate(image_list):
+                xref = img_info[0]
+
+                try:
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    width = base_image["width"]
+                    height = base_image["height"]
+
+                    # Skip small images (likely icons/artifacts)
+                    if width < min_size or height < min_size:
+                        continue
+
+                    image_filename = (f"{pdf_name}_p{page_num + 1}"
+                                      f"_img{img_index + 1}.{image_ext}")
+                    image_path = os.path.join(output_path, image_filename)
+
+                    # Owner-only permissions
+                    fd = os.open(image_path,
+                                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(image_bytes)
+
+                    extracted_images.append({
+                        "path": image_path,
+                        "width": width,
+                        "height": height,
+                        "format": image_ext,
+                        "page": page_num + 1
+                    })
+
+                except Exception:
+                    # Skip images that can't be extracted
+                    continue
+
+        doc.close()
+
+        return json.dumps({
+            "pdf_path": pdf_path,
+            "output_dir": output_path,
+            "images": extracted_images,
+            "image_count": len(extracted_images),
+            "status": "success" if extracted_images else "no images found"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "pdf_path": pdf_path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# READ FILE  (one definition, registered by every server that offers it)
+# =============================================================================
+
+# The single description for the read_file tool.  Shared rather than written
+# out per server on purpose: two servers offering the same name with different
+# text is a tool-name collision to ToolRegistry, and a model shown two
+# conflicting descriptions of one tool learns to guess at its parameters.
+READ_FILE_DESCRIPTION = """Read a file or extract structured content from it.
+
+Args:
+- path: FULL absolute file path within the session working directory (required).
+  Always use the complete path — never a relative one.
+- mode: What to extract — "text" (default), "tables", or "images"
+  - "text"   : Return file content. Supports text files and PDFs; binary files return metadata.
+  - "tables" : Extract tables from PDF or markdown. Returns structured rows/headers.
+  - "images" : Extract embedded images from a PDF and save them locally.
+- encoding: Text encoding for "text" mode (default: utf-8)
+- max_chars: Max characters for "text" mode (default: 100000)
+- table_index: For "tables" — specific table to return (1-based, default: all)
+- output_format: For "tables" — "json" or "markdown" (default: "json")
+- output_dir: For "images" — directory to save extracted images (default: data_path/pdf_images)
+- min_size: For "images" — minimum image dimension in pixels to extract (default: 100)
+- data_path: Session working directory — set automatically by the harness; leave unset.
+
+There is no offset/limit paging: use max_chars to bound a large file.
+
+Returns JSON, varying by mode:
+  text:   {content, path, size_bytes, format, status}
+  tables: {tables, total_tables, file, format, status}
+  images: {pdf_path, output_dir, images, image_count, status}"""
+
+READ_FILE_MODES = ("text", "tables", "images")
+
+
+def read_file_impl(
+    path: Optional[str],
+    mode: str,
+    encoding: str,
+    max_chars: int,
+    table_index: Optional[int],
+    output_format: str,
+    output_dir: str,
+    min_size: int,
+    *,
+    read_text: Callable[..., str],
+    extract_tables: Callable[..., str],
+    extract_images: Callable[..., str],
+) -> str:
+    """Route a read_file call to the reader its ``mode`` asks for.
+
+    The three readers are injected because each server jails paths its own
+    way; the routing — which mode means which reader, and what an unknown mode
+    does — is the part that has to be identical everywhere, so it lives here.
+    """
+    if err := validate_required(path=path):
+        return err
+    if mode == "text":
+        return read_text(path=path, encoding=encoding, max_chars=max_chars)
+    if mode == "tables":
+        return extract_tables(path=path, table_index=table_index,
+                              output_format=output_format)
+    if mode == "images":
+        return extract_images(pdf_path=path, output_dir=output_dir,
+                              min_size=min_size)
+    return json.dumps({
+        "error": f"Unknown mode '{mode}'. Use: {', '.join(READ_FILE_MODES)}",
+        "status": "error"
+    })
+
+
+# =============================================================================
+# SEARCH DOCUMENT  (one definition, registered by every server that offers it)
+# =============================================================================
+
+SEARCH_DOCUMENT_DESCRIPTION = """Search within a single document file. Supports text, PDF, and markdown.
+
+Args:
+- path: FULL absolute file path within the session working directory (required)
+- mode: Search strategy — "pattern" (default) or "context"
+  - "pattern" : Regex search. Returns matching lines with surrounding context lines.
+  - "context" : Keyword/query-based. Returns the most relevant text sections.
+- pattern: Regex to match (required for mode="pattern", e.g., "error.*timeout")
+- query: Question or topic (required for mode="context", e.g., "what is the conclusion?")
+- keywords: Extra keywords for mode="context" (comma-separated)
+- case_sensitive: Case-sensitive matching for mode="pattern" (default: false)
+- context_lines: Lines of context around each match for mode="pattern" (default: 3)
+- max_matches: Max matches for mode="pattern" (default: 50)
+- context_chars: Characters of context per section for mode="context" (default: 500)
+- max_sections: Max sections for mode="context" (default: 5)
+- data_path: Session working directory — set automatically by the harness; leave unset.
+
+Returns JSON:
+  pattern: {matches, total_matches, file, format, status}
+  context: {sections, total_sections, query, file, format, status}"""
+
+SEARCH_DOCUMENT_MODES = ("pattern", "context")
+
+
+def search_document_dispatch_impl(
+    path: Optional[str],
+    mode: str,
+    pattern: Optional[str],
+    query: Optional[str],
+    keywords: Optional[str],
+    case_sensitive: bool,
+    context_lines: int,
+    max_matches: int,
+    context_chars: int,
+    max_sections: int,
+    *,
+    search_pattern: Callable[..., str],
+    search_context: Callable[..., str],
+) -> str:
+    """Route a search_document call to the search its ``mode`` asks for.
+
+    Same shape as ``read_file_impl`` and for the same reason: the routing has
+    to be identical in every server that offers the tool, while the searches
+    themselves are bound to each server's own path jail.
+    """
+    if err := validate_required(path=path):
+        return err
+    if mode == "pattern":
+        if err := validate_required(pattern=pattern):
+            return err
+        return search_pattern(
+            path=path, pattern=pattern, case_sensitive=case_sensitive,
+            context_lines=context_lines, max_matches=max_matches)
+    if mode == "context":
+        # A model that reaches for "context" mode often fills in `pattern`
+        # out of habit; treat it as the query rather than refusing.
+        effective_query = query or pattern
+        if not effective_query:
+            return json.dumps({
+                "error": "query (or pattern) is required for mode='context'",
+                "status": "error"})
+        return search_context(
+            path=path, query=effective_query, keywords=keywords,
+            context_chars=context_chars, max_sections=max_sections)
+    return json.dumps({
+        "error": f"Unknown mode '{mode}'. Use: {', '.join(SEARCH_DOCUMENT_MODES)}",
+        "status": "error"
+    })

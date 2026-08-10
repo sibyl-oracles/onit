@@ -59,6 +59,8 @@ DOCUMENTS_PATH = None
 from src.mcp.servers.tasks.shared import (
     secure_makedirs as _secure_makedirs,
     validate_required as _validate_required,
+    READ_FILE_DESCRIPTION,
+    SEARCH_DOCUMENT_DESCRIPTION,
 )
 
 
@@ -210,26 +212,7 @@ async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300
 
 @mcp.tool(
     title="Read File",
-    description="""Read a file or extract structured content from it.
-
-Args:
-- path: File path within data_path folder (required)
-- mode: What to extract — "text" (default), "tables", or "images"
-  - "text"   : Return file content. Supports text files and PDFs; binary files return metadata.
-  - "tables" : Extract tables from PDF or markdown. Returns structured rows/headers.
-  - "images" : Extract embedded images from a PDF and save them locally.
-- encoding: Text encoding for "text" mode (default: utf-8)
-- max_chars: Max characters for "text" mode (default: 100000)
-- table_index: For "tables" — specific table to return (1-based, default: all)
-- output_format: For "tables" — "json" or "markdown" (default: "json")
-- output_dir: For "images" — directory to save extracted images (default: data_path/pdf_images)
-- min_size: For "images" — minimum image dimension in pixels to extract (default: 100)
-- data_path: Session working directory — set automatically by the harness; leave unset.
-
-Returns JSON varies by mode:
-  text:   {content, path, size_bytes, format, status}
-  tables: {tables, total_tables, file, format, status}
-  images: {pdf_path, output_dir, images, image_count, status}"""
+    description=READ_FILE_DESCRIPTION,
 )
 def read_file(
     path: Optional[str] = None,
@@ -242,18 +225,14 @@ def read_file(
     min_size: int = 100,
     data_path: str = "",
 ) -> str:
-    if err := _validate_required(path=path):
-        return err
-    if mode == "text":
-        return _read_file(path=path, encoding=encoding, max_chars=max_chars, data_path=data_path)
-    elif mode == "tables":
-        return _extract_tables(path=path, table_index=table_index, output_format=output_format,
-                               data_path=data_path)
-    elif mode == "images":
-        return _extract_pdf_images(pdf_path=path, output_dir=output_dir, min_size=min_size,
-                                   data_path=data_path)
-    else:
-        return json.dumps({"error": f"Unknown mode '{mode}'. Use: text, tables, images", "status": "error"})
+    """Pass-through to the bash server's read_file, which now routes all three
+    modes itself.  Signature and description are shared verbatim so the two
+    registrations are replicas of one tool rather than a name collision."""
+    return _read_file(
+        path=path, mode=mode, encoding=encoding, max_chars=max_chars,
+        table_index=table_index, output_format=output_format,
+        output_dir=output_dir, min_size=min_size, data_path=data_path,
+    )
 
 
 
@@ -462,25 +441,7 @@ def github_repo(
 
 @mcp.tool(
     title="Search Document",
-    description="""Search within a single document file. Supports text, PDF, and markdown.
-
-Args:
-- path: File path within data_path folder (required)
-- mode: Search strategy — "pattern" (default) or "context"
-  - "pattern" : Regex search. Returns matching lines with surrounding context lines.
-  - "context" : Keyword/query-based. Returns the most relevant text sections.
-- pattern: Regex to match (required for mode="pattern", e.g., "error.*timeout")
-- query: Question or topic (required for mode="context", e.g., "what is the conclusion?")
-- keywords: Extra keywords for mode="context" (comma-separated)
-- case_sensitive: Case-sensitive matching for mode="pattern" (default: false)
-- context_lines: Lines of context around each match for mode="pattern" (default: 3)
-- max_matches: Max matches for mode="pattern" (default: 50)
-- context_chars: Characters of context per section for mode="context" (default: 500)
-- max_sections: Max sections for mode="context" (default: 5)
-
-Returns JSON:
-  pattern: {matches, total_matches, file, format, status}
-  context: {sections, total_sections, query, file, format, status}"""
+    description=SEARCH_DOCUMENT_DESCRIPTION,
 )
 def search_document(
     path: Optional[str] = None,
@@ -495,27 +456,15 @@ def search_document(
     max_sections: int = 5,
     data_path: str = "",
 ) -> str:
-    if err := _validate_required(path=path):
-        return err
-    if mode == "pattern":
-        if err := _validate_required(pattern=pattern):
-            return err
-        return _search_document(
-            path=path, pattern=pattern, case_sensitive=case_sensitive,
-            context_lines=context_lines, max_matches=max_matches,
-            data_path=data_path,
-        )
-    elif mode == "context":
-        effective_query = query or pattern
-        if not effective_query:
-            return json.dumps({"error": "query (or pattern) is required for mode='context'", "status": "error"})
-        return _get_document_context(
-            path=path, query=effective_query, keywords=keywords,
-            context_chars=context_chars, max_sections=max_sections,
-            data_path=data_path,
-        )
-    else:
-        return json.dumps({"error": f"Unknown mode '{mode}'. Use: pattern, context", "status": "error"})
+    """Pass-through to the bash server's search_document, which now routes both
+    modes itself.  Signature and description are shared verbatim so the two
+    registrations are replicas of one tool rather than a name collision."""
+    return _search_document(
+        path=path, mode=mode, pattern=pattern, query=query, keywords=keywords,
+        case_sensitive=case_sensitive, context_lines=context_lines,
+        max_matches=max_matches, context_chars=context_chars,
+        max_sections=max_sections, data_path=data_path,
+    )
 
 
 # -- Local Search tools (in-house data) ----------------------------------------

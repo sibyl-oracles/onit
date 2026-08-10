@@ -34,9 +34,11 @@ from typing import List, Optional, Any
 
 try:
     from ...lib.text import split_instruction
+    from ...lib.schema import coerce_arguments, validate_arguments
     from ...learn import describe_tool_call, redact_tool_args
 except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
     from lib.text import split_instruction
+    from lib.schema import coerce_arguments, validate_arguments
     from learn import describe_tool_call, redact_tool_args
 
 try:
@@ -76,6 +78,35 @@ def _build_client_timeout(timeout, stream: bool):
     return httpx.Timeout(connect=CONNECT_TIMEOUT, read=read, write=30.0, pool=30.0)
 
 
+def _api_tool_payload(tool_items: list) -> list:
+    """Project internal tool records onto what the chat-completions API defines.
+
+    ``function`` carries exactly name/description/parameters there.  The
+    registry also records ``returns``, captured from each MCP tool's
+    outputSchema by ``_build_returns``, which is ours alone: no provider reads
+    it, and one that validates the tool schema strictly rejects the request for
+    carrying it.  Until then it is dead bytes in the payload of every request
+    of every turn, on every tool.
+
+    A projection rather than a deletion, so a field added to the internal
+    record later does not reach the wire just because nobody thought about it.
+    Anything that is not a recognizable tool record is passed through
+    untouched — test doubles hand this whatever they please, and a payload
+    builder is the wrong place to start rejecting things.
+    """
+    payload = []
+    for item in tool_items:
+        if not isinstance(item, dict) or not isinstance(item.get('function'), dict):
+            payload.append(item)
+            continue
+        fn = item['function']
+        projected = {k: fn[k] for k in ('name', 'description', 'parameters')
+                     if k in fn}
+        payload.append({**{k: v for k, v in item.items() if k != 'function'},
+                        'function': projected})
+    return payload
+
+
 def _truncate_tool_response(response: str) -> str:
     """Truncate a tool response if it exceeds MAX_TOOL_RESPONSE characters."""
     if len(response) <= MAX_TOOL_RESPONSE:
@@ -93,6 +124,22 @@ def _as_int(value) -> int:
     in tests; none of those should poison an accumulator.
     """
     return value if isinstance(value, int) else 0
+
+
+def _as_positive_or_disabled(value, default: int = 50) -> int:
+    """A loop ceiling from config: a positive count, or -1 for "no ceiling".
+
+    YAML hands back whatever was typed, so a ceiling can arrive as a string, a
+    float, or None.  Anything that is not a usable count falls back to
+    ``default`` rather than to the opt-out, because the failure this guards
+    against is a typo quietly turning a bound into an unbounded loop.  Values
+    below 1 are the explicit opt-out and normalize to -1.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if n >= 1 else -1
 
 
 class TurnMetrics:
@@ -879,6 +926,34 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             if isinstance(_result, (list, tuple)):
                 _blank_args = [str(n) for n in _result]
 
+    # Then the declared schema.  A blank argument is one specific mistake; this
+    # catches the rest — a string where a number was asked for, a value outside
+    # an enum — which would otherwise reach the server and come back as a
+    # traceback for the model to interpret.  Same duck-typed posture as above,
+    # and same rule: anything unexpected means dispatch, never refuse.
+    _schema_problems: list[str] = []
+    _coercions: list[str] = []
+    if not _blank_args and function_name in tool_registry.tools:
+        _schema_of = getattr(tool_registry, "parameters_schema", None)
+        if callable(_schema_of):
+            try:
+                _schema = _schema_of(function_name)
+                if isinstance(_schema, dict) and _schema:
+                    # Coerce first: a model that sends "3" for an integer has
+                    # made an unambiguous mistake, and refusing it costs a
+                    # round trip to fix something we can fix here.
+                    _coerced, _coercions = coerce_arguments(_schema, function_arguments)
+                    if _coercions:
+                        # In place — the injection above sets the precedent, and
+                        # the tool message records this same dict.
+                        function_arguments.clear()
+                        function_arguments.update(_coerced)
+                    _schema_problems = validate_arguments(_schema, function_arguments)
+            except Exception:  # a malformed schema must not break dispatch
+                _schema_problems, _coercions = [], []
+    if _coercions:
+        logger.debug("%s: coerced %s", function_name, "; ".join(_coercions))
+
     if function_name not in tool_registry.tools:
         tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found',
                         'name': function_name, 'parameters': function_arguments,
@@ -893,6 +968,26 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                   "this call unchanged and do not report this error as the answer.")
         _log_to_ui_or_verbose(
             f"{function_name} called with blank required argument(s): {_names}",
+            chat_ui, verbose, level="warning",
+        )
+        tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
+                        'parameters': function_arguments, "tool_call_id": tool_call_id}
+        messages.append(tool_message)
+        if chat_ui:
+            chat_ui.add_tool_result(function_name, _error)
+            if is_structured:
+                chat_ui.stop_tool_spinner()
+                chat_ui.show_tool_done(function_name, _error, success=False)
+        _log(False, 0)
+    elif _schema_problems:
+        _detail = "; ".join(_schema_problems)
+        _error = (f"Error: {function_name} was called with arguments that do not "
+                  f"match its schema: {_detail}. The call was not run. Fix the "
+                  "arguments and call the tool again, or use a different tool — "
+                  "do not repeat this call unchanged and do not report this "
+                  "error as the answer.")
+        _log_to_ui_or_verbose(
+            f"{function_name} called with invalid arguments: {_detail}",
             chat_ui, verbose, level="warning",
         )
         tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
@@ -2219,7 +2314,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
          safety_queue: Optional[asyncio.Queue] = None,
          **kwargs) -> Optional[str]:
 
-    tools = tool_registry.get_tool_items() if tool_registry else []
+    tools = _api_tool_payload(tool_registry.get_tool_items()) if tool_registry else []
     chat_ui = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
@@ -2325,18 +2420,34 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         if max_context_tokens is None:
             max_context_tokens = num_ctx
 
-    MAX_CHAT_ITERATIONS = -1
-    MAX_REPEATED_TOOL_CALLS = 30
-    MAX_API_RETRIES = 3
-    MAX_PLANNING_CONTINUATIONS = 2
+    # ── loop policy ─────────────────────────────────────────────────────────
+    #
+    # Every one of these is a ceiling on a way the loop can fail to terminate,
+    # and every one is reachable from ``serving:`` in the config (see
+    # SERVING_PASSTHROUGH in onit.py).  The default lives here, in the
+    # signature's kwargs, so there is exactly one place each is defined — a
+    # caller that does not set it does not mention it.
+    #
+    # Total turns before the loop gives up.  This was -1 (disabled) and the
+    # only thing bounding a run was MAX_REPEATED_TOOL_CALLS, which requires the
+    # same tool name *and* byte-identical arguments.  A model alternating
+    # between two calls that differ in any character — a page number, a
+    # timestamp, a retry suffix — never trips that check and never stops.  50
+    # is above any legitimate run observed so far and far below "forever";
+    # -1 restores the old unbounded behavior for anyone who wants it.
+    MAX_CHAT_ITERATIONS = _as_positive_or_disabled(
+        kwargs.get('max_chat_iterations', 50))
+    MAX_REPEATED_TOOL_CALLS = kwargs.get('max_repeated_tool_calls', 30)
+    MAX_API_RETRIES = kwargs.get('max_api_retries', 3)
+    MAX_PLANNING_CONTINUATIONS = kwargs.get('max_planning_continuations', 2)
     # Max times to push past a content-free acknowledgment before accepting the
     # reply as-is.  Bounded low: a model that keeps acknowledging is stuck, and
     # looping on it burns the context that compaction just freed.
-    MAX_ACK_CONTINUATIONS = 2
+    MAX_ACK_CONTINUATIONS = kwargs.get('max_ack_continuations', 2)
     # Max times to resume a final answer that was cut off by the output token
     # budget (finish_reason=length).  Each resume grants another max_tokens of
     # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
-    MAX_FINAL_CONTINUATIONS = 3
+    MAX_FINAL_CONTINUATIONS = kwargs.get('max_final_continuations', 3)
     # Continuation token budget: thinking models can emit thousands of reasoning tokens
     # before the tool-call JSON, so give them the full max_tokens when think=True.
     # Without thinking, 512 is still enough for any tool-call JSON payload.
@@ -2376,10 +2487,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
     while True:
         iteration_count += 1
-        if MAX_CHAT_ITERATIONS >= 0 and iteration_count > MAX_CHAT_ITERATIONS:
-            msg = f"I am sorry 😊. Could you try to rephrase or provide additional details?"
-            _log_to_ui_or_verbose(f"Chat loop exceeded {MAX_CHAT_ITERATIONS} iterations, stopping.", chat_ui, verbose, level="warning")
-            return msg
+        if MAX_CHAT_ITERATIONS > 0 and iteration_count > MAX_CHAT_ITERATIONS:
+            # Distinct from the repeated-tool-call bail-out below, which used
+            # to return this same sentence.  The two are different failures —
+            # one is a model stuck on one call, the other a model making
+            # progress too slowly to finish — and a log that cannot tell them
+            # apart cannot be used to pick a better ceiling.
+            _log_to_ui_or_verbose(
+                f"Chat loop hit its turn limit ({MAX_CHAT_ITERATIONS} turns), stopping. "
+                f"Raise serving.max_chat_iterations if this task legitimately needs more.",
+                chat_ui, verbose, level="warning")
+            _partial = _final_answer_prefix or _prose_before_tools
+            if _partial.strip():
+                # Work was done and some of it was written down; handing back
+                # nothing would throw away an answer the user already watched
+                # stream past.
+                return _partial
+            return (f"I stopped after {MAX_CHAT_ITERATIONS} steps without finishing 😅. "
+                    "Could you narrow the task, or break it into smaller pieces?")
 
         # Forced compaction: previous response was truncated (finish_reason=length).
         # Compact unconditionally so the next call fits within the context window.

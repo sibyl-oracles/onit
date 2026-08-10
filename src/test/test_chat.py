@@ -622,6 +622,220 @@ class TestBlankRequiredArgs:
         assert registry.called is True
 
 
+# ── argument validation against the declared schema ────────────────────────
+
+class TestSchemaValidationOnDispatch:
+    class _Registry:
+        """Duck-typed like ToolRegistry, recording whether dispatch happened."""
+
+        def __init__(self, params):
+            self.tools = {"search"}
+            self.params = params
+            self.called_with = None
+
+        def tool_accepts_param(self, tool_name, param_name):
+            return False
+
+        def blank_required_args(self, tool_name, arguments):
+            return []
+
+        def parameters_schema(self, tool_name):
+            return self.params
+
+        def __getitem__(self, name):
+            async def handler(log_handler=None, **kwargs):
+                self.called_with = dict(kwargs)
+                return "results"
+            return handler
+
+    _SCHEMA = {"type": "object",
+               "properties": {"query": {"type": "string"},
+                              "depth": {"type": "integer", "maximum": 10},
+                              "mode": {"type": "string", "enum": ["fast", "deep"]}},
+               "required": ["query"]}
+
+    def _run(self, args, params=None):
+        registry = self._Registry(self._SCHEMA if params is None else params)
+        messages = []
+        asyncio.run(_execute_tool(
+            "search", args, "call_1", registry, timeout=5, data_path=None,
+            chat_ui=None, verbose=False, messages=messages,
+            tool_call_history=[], max_repeated=30,
+        ))
+        return registry, messages
+
+    def test_wrong_type_is_refused_before_dispatch(self):
+        registry, messages = self._run({"query": "cats", "depth": "three"})
+        assert registry.called_with is None, "the MCP server must never see this call"
+        assert "depth" in messages[-1]["content"]
+        assert "integer" in messages[-1]["content"]
+
+    def test_bad_enum_is_refused(self):
+        registry, messages = self._run({"query": "cats", "mode": "medium"})
+        assert registry.called_with is None
+        assert "'fast'" in messages[-1]["content"]
+
+    def test_out_of_range_is_refused(self):
+        registry, messages = self._run({"query": "cats", "depth": 99})
+        assert registry.called_with is None
+        assert "<= 10" in messages[-1]["content"]
+
+    def test_error_tells_the_model_not_to_repeat_it(self):
+        _, messages = self._run({"query": "cats", "depth": "three"})
+        content = messages[-1]["content"]
+        assert "do not repeat this call unchanged" in content
+        assert "do not report this error as the answer" in content
+
+    def test_valid_call_still_dispatches(self):
+        registry, messages = self._run({"query": "cats", "depth": 3, "mode": "deep"})
+        assert registry.called_with == {"query": "cats", "depth": 3, "mode": "deep"}
+        assert messages[-1]["content"] == "results"
+
+    def test_numeric_string_is_coerced_rather_than_refused(self):
+        """Refusing "3" costs a round trip to fix something unambiguous."""
+        registry, messages = self._run({"query": "cats", "depth": "3"})
+        assert registry.called_with == {"query": "cats", "depth": 3}
+        assert messages[-1]["content"] == "results"
+
+    def test_coerced_value_is_what_the_history_records(self):
+        _, messages = self._run({"query": "cats", "depth": "3"})
+        assert messages[-1]["parameters"]["depth"] == 3
+
+    def test_multiple_problems_are_reported_together(self):
+        _, messages = self._run({"query": 5, "mode": "medium"})
+        content = messages[-1]["content"]
+        assert "query" in content and "mode" in content
+
+    def test_harness_injected_params_are_not_rejected(self):
+        """session_id/data_path are injected by the harness and are not in the
+        declared schema; refusing them would break every sandboxed tool."""
+        registry, _ = self._run({"query": "cats", "session_id": "abc",
+                                 "data_path": "/tmp/x"})
+        assert registry.called_with is not None
+
+    def test_empty_schema_dispatches_unchanged(self):
+        """A server that declared no schema keeps dispatching as it always did."""
+        registry, messages = self._run({"whatever": "unchecked"}, params={})
+        assert registry.called_with == {"whatever": "unchecked"}
+        assert messages[-1]["content"] == "results"
+
+    def test_registry_without_the_method_still_dispatches(self):
+        """Advisory, like blank_required_args — a bare duck type still works."""
+
+        class _Bare:
+            def __init__(self):
+                self.tools = {"search"}
+                self.called = False
+
+            def tool_accepts_param(self, tool_name, param_name):
+                return False
+
+            def __getitem__(self, name):
+                async def handler(log_handler=None, **kwargs):
+                    self.called = True
+                    return "ok"
+                return handler
+
+        registry = _Bare()
+        asyncio.run(_execute_tool(
+            "search", {"depth": "not a number"}, "call_1", registry, timeout=5,
+            data_path=None, chat_ui=None, verbose=False, messages=[],
+            tool_call_history=[], max_repeated=30,
+        ))
+        assert registry.called is True
+
+    def test_malformed_schema_does_not_block_dispatch(self):
+        registry, _ = self._run({"query": "cats"},
+                                params={"properties": "not a dict"})
+        assert registry.called_with is not None
+
+    def test_blank_required_arg_still_wins(self):
+        """One refusal path, one message: the blank-argument error is more
+        specific, so it must not be replaced by a generic schema complaint."""
+
+        class _Reg(self.__class__._Registry):
+            def blank_required_args(self, tool_name, arguments):
+                return ["query"]
+
+        registry = _Reg(self._SCHEMA)
+        messages = []
+        asyncio.run(_execute_tool(
+            "search", {"query": "", "depth": "three"}, "call_1", registry,
+            timeout=5, data_path=None, chat_ui=None, verbose=False,
+            messages=messages, tool_call_history=[], max_repeated=30,
+        ))
+        assert registry.called_with is None
+        assert "no value for: query" in messages[-1]["content"]
+
+
+# ── what actually goes on the wire ─────────────────────────────────────────
+
+class TestApiToolPayload:
+    def test_returns_is_stripped(self):
+        """`returns` is ours alone: no provider reads it, and a strict one
+        rejects the request for carrying it."""
+        from model.serving.chat import _api_tool_payload
+        items = [{"type": "function", "function": {
+            "name": "search", "description": "d",
+            "parameters": {"type": "object", "properties": {}},
+            "returns": {"hits": {"type": "array"}}}}]
+        payload = _api_tool_payload(items)
+        assert payload[0]["function"] == {
+            "name": "search", "description": "d",
+            "parameters": {"type": "object", "properties": {}}}
+        assert set(payload[0]) == {"type", "function"}
+
+    def test_source_items_are_not_mutated(self):
+        from model.serving.chat import _api_tool_payload
+        items = [{"type": "function",
+                  "function": {"name": "a", "returns": {"x": 1}}}]
+        _api_tool_payload(items)
+        assert "returns" in items[0]["function"]
+
+    def test_unknown_future_field_does_not_reach_the_wire(self):
+        """A projection, not a deletion — a field added later stays internal
+        until someone decides otherwise."""
+        from model.serving.chat import _api_tool_payload
+        items = [{"type": "function",
+                  "function": {"name": "a", "cost_hint": 3}}]
+        assert "cost_hint" not in _api_tool_payload(items)[0]["function"]
+
+    def test_missing_optional_keys_are_omitted_not_nulled(self):
+        from model.serving.chat import _api_tool_payload
+        payload = _api_tool_payload([{"type": "function",
+                                      "function": {"name": "a"}}])
+        assert payload[0]["function"] == {"name": "a"}
+
+    def test_non_tool_records_pass_through(self):
+        """Test doubles hand this whatever they please; a payload builder is
+        the wrong place to start rejecting things."""
+        from model.serving.chat import _api_tool_payload
+        assert _api_tool_payload(["nonsense", {"no": "function"}]) == \
+            ["nonsense", {"no": "function"}]
+
+    @pytest.mark.asyncio
+    async def test_chat_sends_the_projected_payload(self):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content="Hi"))
+        mock_registry = MagicMock()
+        mock_registry.tools = {"search"}
+        mock_registry.get_tool_items.return_value = [{
+            "type": "function",
+            "function": {"name": "search", "description": "d",
+                         "parameters": {"type": "object", "properties": {}},
+                         "returns": {"hits": {}}}}]
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=mock_registry, safety_queue=asyncio.Queue())
+
+        sent = mock_client.chat.completions.create.call_args.kwargs["tools"]
+        assert "returns" not in sent[0]["function"]
+
+
 # ── continuation prompt for stuck models ───────────────────────────────────
 
 class TestPlanningContinuationPrompt:
@@ -1000,6 +1214,250 @@ class TestPlanningContinuation:
             )
 
         assert result == "All 3 failures were path-jail bugs."
+
+
+class TestLoopPolicy:
+    """The ceilings on the ways the agent loop can fail to terminate."""
+
+    # ── _as_positive_or_disabled ────────────────────────────────────────────
+
+    def test_positive_int_passes_through(self):
+        from model.serving.chat import _as_positive_or_disabled
+        assert _as_positive_or_disabled(12) == 12
+
+    def test_yaml_string_is_coerced(self):
+        """YAML hands back whatever was typed; "25" is a ceiling, not garbage."""
+        from model.serving.chat import _as_positive_or_disabled
+        assert _as_positive_or_disabled("25") == 25
+
+    def test_negative_and_zero_are_the_opt_out(self):
+        from model.serving.chat import _as_positive_or_disabled
+        assert _as_positive_or_disabled(-1) == -1
+        assert _as_positive_or_disabled(-99) == -1
+        assert _as_positive_or_disabled(0) == -1
+
+    def test_garbage_falls_back_to_default_not_to_disabled(self):
+        """A typo must not silently turn a bound into an unbounded loop."""
+        from model.serving.chat import _as_positive_or_disabled
+        assert _as_positive_or_disabled(None, default=50) == 50
+        assert _as_positive_or_disabled("fifty", default=50) == 50
+        assert _as_positive_or_disabled([], default=7) == 7
+
+    # ── the iteration cap ───────────────────────────────────────────────────
+
+    def _alternating_registry_and_client(self, contents):
+        """A model that alternates between tool calls that are never identical.
+
+        This is the case MAX_REPEATED_TOOL_CALLS cannot catch: it keys on the
+        tool name *and* byte-identical arguments, so a counter in the argument
+        means the count never reaches its threshold.
+        """
+        calls = itertools.chain.from_iterable(
+            itertools.repeat([
+                _mock_completion_with_finish(
+                    content=None,
+                    tool_calls=[_mock_tool_call("bash", '{"command": "ls page-%d"}' % n)],
+                )
+                for n in range(2)
+            ])
+        )
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=calls)
+        mock_handler = AsyncMock(return_value="ok")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+        return mock_client, mock_registry
+
+    @pytest.mark.asyncio
+    async def test_never_repeating_tool_calls_still_terminate(self):
+        """Regression: MAX_CHAT_ITERATIONS was -1, so nothing bounded this run.
+
+        The arguments differ every turn, so the repeated-call check never fires.
+        Before the cap was restored this test hung until the timeout.
+        """
+        mock_client, mock_registry = self._alternating_registry_and_client(None)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Page through everything.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+                max_chat_iterations=5,
+            ), timeout=30)
+
+        assert result is not None
+        assert mock_client.chat.completions.create.call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_turn_limit_message_is_distinguishable(self):
+        """The turn limit and the repeated-call bail-out are different failures.
+
+        They returned the same sentence, so a log could not tell "stuck on one
+        call" from "making progress too slowly" — and neither can whoever is
+        trying to pick a better ceiling.
+        """
+        mock_client, mock_registry = self._alternating_registry_and_client(None)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Page through everything.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+                max_chat_iterations=3,
+            ), timeout=30)
+
+        assert "3 steps" in result
+        # The repeated-tool-call bail-out's wording, which this must not reuse.
+        assert "rephrase or provide additional details" not in result
+
+    @pytest.mark.asyncio
+    async def test_turn_limit_returns_partial_answer_when_one_exists(self):
+        """Work the user already watched stream past must not be thrown away."""
+        answer = "The three regressions are in the path-jail validator."
+        tool_call = _mock_completion_with_finish(
+            content=answer,
+            tool_calls=[_mock_tool_call("bash", '{"command": "pytest -q"}')],
+        )
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(tool_call))
+        mock_handler = AsyncMock(return_value="ok")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Run the tests.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+                max_chat_iterations=2,
+            ), timeout=30)
+
+        assert result == answer
+
+    @pytest.mark.asyncio
+    async def test_cap_disabled_does_not_bound_a_short_run(self):
+        """-1 restores the old unbounded behavior; a normal run is unaffected."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("bash", '{"command": "ls"}')]),
+            _mock_completion_with_finish(content="Two files."),
+        ])
+        mock_handler = AsyncMock(return_value="a\nb")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="List the files.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+                max_chat_iterations=-1,
+            )
+
+        assert result == "Two files."
+
+    # ── the other ceilings ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_planning_continuations_are_configurable(self):
+        """Raising the budget buys more continuations before the loop gives up."""
+        planning_text = "Let me start working on the analysis."
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(
+                _mock_completion_with_finish(content=planning_text)))
+
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Analyze the repository.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+                max_planning_continuations=4,
+            ), timeout=30)
+
+        assert "unable to complete" in result.lower()
+        # 1 initial + 4 continuations, rather than the default 1 + 2.
+        assert mock_client.chat.completions.create.call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_final_continuations_are_configurable(self):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(
+                content="chunk ", finish_reason="length"))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Explain forever.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_final_continuations=1,
+            ), timeout=30)
+
+        # 1 initial + 1 resume, rather than the default 1 + 3.
+        assert mock_client.chat.completions.create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_defaults_are_unchanged_when_config_is_silent(self):
+        """A caller that sets nothing gets exactly the previous behavior —
+        except for the iteration cap, which was the bug."""
+        planning_text = "Let me start working on the analysis."
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(
+                _mock_completion_with_finish(content=planning_text)))
+
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Analyze the repository.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 3  # 1 + 2
 
 
 class TestHangPrevention:

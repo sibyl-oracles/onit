@@ -451,6 +451,54 @@ class TestProcessTask:
         call_kwargs = mock_chat.call_args.kwargs
         assert call_kwargs.get("prompt_intro") == "I am a custom bot."
 
+    async def _chat_kwargs_for(self, tmp_path, overrides):
+        """Run one task and return the kwargs process_task handed to chat()."""
+        onit = _make_onit_for_async(tmp_path, overrides)
+        onit.safety_queue = asyncio.Queue()
+
+        mock_prompt_msg = MagicMock()
+        mock_prompt_msg.content.text = "Instruction text"
+        mock_prompt_result = MagicMock()
+        mock_prompt_result.messages = [mock_prompt_msg]
+
+        mock_client = AsyncMock()
+        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        mock_chat = AsyncMock(return_value="answer")
+        with patch("src.onit.Client", return_value=mock_client), \
+             patch("src.onit.chat", mock_chat):
+            await onit.process_task("test")
+        return mock_chat.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_loop_policy_reaches_chat(self, tmp_path):
+        """serving.max_chat_iterations et al. are forwarded, not dropped."""
+        kwargs = await self._chat_kwargs_for(tmp_path, {"serving": {
+            "host": "http://localhost:8000/v1",
+            "max_chat_iterations": 25,
+            "max_repeated_tool_calls": 8,
+            "max_planning_continuations": 4,
+        }})
+        assert kwargs.get("max_chat_iterations") == 25
+        assert kwargs.get("max_repeated_tool_calls") == 8
+        assert kwargs.get("max_planning_continuations") == 4
+
+    @pytest.mark.asyncio
+    async def test_unset_loop_policy_keys_are_not_forwarded(self, tmp_path):
+        """An unset key must not appear at all, so chat()'s signature stays the
+        single place each default is defined."""
+        kwargs = await self._chat_kwargs_for(tmp_path, {"serving": {
+            "host": "http://localhost:8000/v1",
+            "max_chat_iterations": 25,
+        }})
+        assert kwargs.get("max_chat_iterations") == 25
+        for absent in ("max_repeated_tool_calls", "max_api_retries",
+                       "max_planning_continuations", "max_ack_continuations",
+                       "max_final_continuations"):
+            assert absent not in kwargs
+
 
 # ── OnItA2AExecutor ─────────────────────────────────────────────────────────
 
