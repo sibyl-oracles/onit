@@ -24,10 +24,16 @@ the sentence quoting it is not.
 So the answer is checked against the evidence that produced it *after* it is
 written, not instead of writing it.  The draft still streams to the user at
 full speed — nothing here delays a token — and the check runs on the finished
-text.  Claims the evidence covers are settled from the transcript for free;
-claims it does not cover are looked up with read-only tools, but only when the
-checker asks for them.  A clean verdict returns the draft untouched, which is
-the common case and costs one small call.
+text.  A clean verdict returns the draft untouched, which is the common case
+and costs one small call.
+
+By default the check is settled from the transcript alone: the evidence the run
+already gathered against the sentences that quote it.  That is where the drift
+this catches actually happens, and it is one call with no lookups behind it.
+Chasing claims the evidence never covered is a different and far more expensive
+job — a round trip per lookup, a tool run, and another verdict call after each
+— so it is off unless ``max_tool_turns`` is raised, and without it a claim the
+evidence simply does not speak to is left alone rather than doubted.
 
 Everything here fails open: an unparseable verdict, a failed call, a revision
 that comes back empty or gutted, and the draft is what the user gets.  A
@@ -160,15 +166,48 @@ def evidence_digest(messages: list, max_chars: int = MAX_EVIDENCE_CHARS) -> str:
     return "\n\n".join(out)
 
 
-_VERDICT_SYSTEM = """\
+_CLAIM_SCOPE = """\
+What counts as a claim: quantities, dates, versions, names, locations, quotes, \
+URLs, file or code contents, and statements of cause or definition.
+What does not: tone, formatting, structure, opinions, recommendations, offers \
+of further help, and anything the draft explicitly marks as uncertain."""
+
+_VERDICT_FORMAT = """\
+When you are done checking, reply with JSON and nothing else:
+{"issues": [{"claim": "<quoted from the draft>", "problem": "contradicted|\
+unsupported", "correction": "<what is actually true, in one short phrase>"}]}
+
+Reply with {"issues": []} when every claim holds up. That is the expected \
+result for most answers."""
+
+# The default check.  It compares the draft against what the run already has
+# and stops there: no lookups, so nothing to say about a claim the evidence
+# never touched, and no reason to invite the model to speculate about one.
+_VERDICT_SYSTEM_LIGHT = f"""\
+You are a fact-checker. You are given a user's request, the evidence gathered \
+while answering it, and a draft answer. Find the claims in the draft that the \
+evidence directly contradicts.
+
+{_CLAIM_SCOPE}
+
+Rules:
+- The evidence is the ground truth. Where it contradicts the draft, the draft \
+is wrong.
+- Report only contradictions you can point to in the evidence. A claim the \
+evidence does not cover is not your concern — skip it. You have no way to look \
+anything up, so do not guess and do not manufacture doubt.
+- Do not rewrite the answer and do not comment on its style. Report only.
+
+{_VERDICT_FORMAT}"""
+
+# Used only when the caller grants tool turns.  Then an uncovered claim is
+# worth raising, because there is a way to settle it.
+_VERDICT_SYSTEM_TOOLS = f"""\
 You are a fact-checker. You are given a user's request, the evidence gathered \
 while answering it, and a draft answer. Find the claims in the draft that the \
 evidence contradicts or fails to support.
 
-What counts as a claim: quantities, dates, versions, names, locations, quotes, \
-URLs, file or code contents, and statements of cause or definition.
-What does not: tone, formatting, structure, opinions, recommendations, offers \
-of further help, and anything the draft explicitly marks as uncertain.
+{_CLAIM_SCOPE}
 
 Rules:
 - The evidence is the ground truth. Where it contradicts the draft, the draft \
@@ -180,15 +219,11 @@ it, call the tool. Do not guess, and do not report a claim as unsupported \
 without trying the tool first.
 - Do not rewrite the answer and do not comment on its style. Report only.
 
-When you are done checking, reply with JSON and nothing else:
-{"issues": [{"claim": "<quoted from the draft>", "problem": "contradicted|\
-unsupported", "correction": "<what is actually true, in one short phrase>"}]}
-
-Reply with {"issues": []} when every claim holds up. That is the expected \
-result for most answers."""
+{_VERDICT_FORMAT}"""
 
 
-def build_verdict_messages(task: str, answer: str, evidence: str) -> list[dict]:
+def build_verdict_messages(task: str, answer: str, evidence: str,
+                           with_tools: bool = False) -> list[dict]:
     """The fact-checker's opening request."""
     parts = [f"## The user asked\n{_clip(task or '', 2000)}"]
     if evidence:
@@ -199,7 +234,8 @@ def build_verdict_messages(task: str, answer: str, evidence: str) -> list[dict]:
                      "model's own knowledge)")
     parts.append(f"## Draft answer to check\n{_clip(answer, MAX_DRAFT_CHARS)}")
     return [
-        {"role": "system", "content": _VERDICT_SYSTEM},
+        {"role": "system",
+         "content": _VERDICT_SYSTEM_TOOLS if with_tools else _VERDICT_SYSTEM_LIGHT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
 
@@ -290,7 +326,12 @@ def parse_verdict(text: str) -> Optional[list[dict]]:
             continue
         cleaned.append({
             "claim": claim,
-            "problem": str(issue.get("problem", "unsupported")).strip().lower(),
+            # An issue reported without a label is taken as a contradiction:
+            # both prompts ask for those, only one of them asks for anything
+            # else, and a caller running without lookups drops the rest.  A
+            # finding a model bothered to write down should not be discarded
+            # over a missing field.
+            "problem": str(issue.get("problem", "contradicted")).strip().lower(),
             "correction": correction,
         })
     return cleaned
@@ -391,7 +432,7 @@ async def verify_answer(
     ask: Callable,
     run_tools: Optional[Callable] = None,
     tools: Optional[list] = None,
-    max_tool_turns: int = 2,
+    max_tool_turns: int = 0,
     verdict_max_tokens: int = VERDICT_MAX_TOKENS,
     revision_max_tokens: int = REVISION_MAX_TOKENS,
     log: Optional[Callable] = None,
@@ -412,8 +453,16 @@ async def verify_answer(
         if log:
             log(message, level)
 
+    with_tools = bool(run_tools and tools and max_tool_turns > 0)
     evidence = evidence_digest(messages)
-    verify_messages = build_verdict_messages(task, answer, evidence)
+    if not evidence and not with_tools:
+        # Nothing gathered and no way to gather anything: the only thing left to
+        # check the draft against is the same weights that wrote it, which is a
+        # call that cannot find what it is looking for.  Skip it.
+        _log("Fact-check skipped: the run gathered no evidence to check against.")
+        return answer, "", []
+
+    verify_messages = build_verdict_messages(task, answer, evidence, with_tools)
 
     issues: Optional[list[dict]] = None
     checked_with_tools = False
@@ -421,7 +470,7 @@ async def verify_answer(
         # Tools are offered only while there is budget left to run them; on the
         # last turn the checker is asked for its verdict and nothing else, so a
         # model that would keep looking things up forever still returns one.
-        offer_tools = tools if (run_tools and turn < max_tool_turns) else None
+        offer_tools = tools if (with_tools and turn < max_tool_turns) else None
         try:
             content, tool_calls = await ask(
                 verify_messages, tools=offer_tools, max_tokens=verdict_max_tokens)
@@ -430,7 +479,9 @@ async def verify_answer(
             _log(f"Fact-check skipped: {e}", "warning")
             return answer, "", []
 
-        if tool_calls and run_tools:
+        # Only when tools were on the table.  A model that emits a call it was
+        # never offered is not owed the round trip.
+        if tool_calls and with_tools:
             checked_with_tools = True
             try:
                 await run_tools(tool_calls, verify_messages)
@@ -442,6 +493,17 @@ async def verify_answer(
 
         issues = parse_verdict(content or "")
         break
+
+    if issues and not with_tools:
+        # Without lookups there is no evidence behind "unsupported" — only the
+        # absence of evidence, which is not a finding.  Rewriting an answer to
+        # drop or hedge a claim on that basis makes it worse, so these are
+        # counted and dropped rather than acted on.
+        kept = [i for i in issues if i.get("problem") != "unsupported"]
+        if len(kept) != len(issues):
+            _log(f"Fact-check dropped {len(issues) - len(kept)} uncovered "
+                 f"claim(s); the check ran against gathered evidence only.")
+        issues = kept
 
     if issues is None:
         _log("Fact-check returned no readable verdict; keeping the answer as written.",

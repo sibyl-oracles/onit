@@ -194,9 +194,8 @@ search result was right and the sentence quoting it is not.
 So OnIt checks the answer after it is written. The draft streams to you at full
 speed — nothing is held back — and once it is finished it is checked against the
 evidence the run actually gathered: tool output, documents read, what you typed.
-Claims the evidence settles are free; claims it does not cover can be looked up
-with read-only tools (search, file reads — never a write or a shell command).
-If a claim does not hold up, the answer is corrected and reissued with one line
+That is one small call and no lookups, which is the point — where the evidence
+contradicts the answer, the answer is corrected and reissued with one line
 saying what changed:
 
 ```
@@ -206,9 +205,17 @@ Revised after fact-check: 3.1M per the filing, not 4.2M
 ```
 
 Answers with nothing checkable in them ("I've saved the file, let me know if
-you'd like it formatted differently") skip the check, so short replies cost
-nothing. A check that fails, times out, or comes back unreadable leaves the
-draft exactly as written — it can correct an answer, never lose one.
+you'd like it formatted differently") skip the check, and so do runs that
+gathered no evidence to check against — there is nothing there but the same
+weights that wrote the draft. A check that fails, times out, or comes back
+unreadable leaves the draft exactly as written — it can correct an answer,
+never lose one.
+
+A claim the evidence simply does not cover is left alone rather than doubted.
+Chasing it means read-only lookups (search, file reads — never a write or a
+shell command), and each round is a round trip, a tool run, and another verdict
+call stacked behind an answer you are already reading. Raise
+`verify_max_tool_turns` if you want that; it is off by default.
 
 The check runs with the model's chain of thought switched off: comparing a
 sentence against a source is recognition, not deliberation, and a hybrid model
@@ -227,7 +234,7 @@ detected once and the check simply runs the way that host accepts.
 ```yaml
 serving:
   verify_answers: true       # false hands back the draft unchecked
-  verify_max_tool_turns: 2   # 0 checks against gathered evidence only
+  verify_max_tool_turns: 0   # default: gathered evidence only, no lookups
 ```
 
 The per-run log line reports it alongside the rest of the timing:

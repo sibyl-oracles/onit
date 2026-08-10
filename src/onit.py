@@ -70,8 +70,9 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        'max_ack_continuations', 'max_final_continuations',
                        # Fact-checking the finished answer.  Defaults live in
                        # chat(); `verify_answers: false` turns it off, and
-                       # `verify_max_tool_turns: 0` keeps it to the evidence
-                       # the run already gathered.
+                       # `verify_max_tool_turns` (0 by default) is what it
+                       # costs to also chase claims the run never gathered
+                       # evidence for.
                        'verify_answers', 'verify_max_tool_turns')
 
 

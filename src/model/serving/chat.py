@@ -2407,9 +2407,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # the last token and the answer being final, and what it buys is that the
     # figure on screen is the figure the tool returned.  verify_max_tool_turns
     # bounds how far the checker may go looking for evidence the run did not
-    # already gather — 0 checks against the transcript alone.
+    # already gather; it defaults to 0 — the transcript alone — because each
+    # turn beyond that is a round trip, a tool run, and another verdict call
+    # stacked behind an answer the user is already reading.
     verify_answers = kwargs.get('verify_answers', True)
-    verify_max_tool_turns = max(0, _as_int(kwargs.get('verify_max_tool_turns', 2)))
+    verify_max_tool_turns = max(0, _as_int(kwargs.get('verify_max_tool_turns', 0)))
 
     images_bytes = _load_images(images, chat_ui, verbose)
     # The standing rules go to the system message, where they stay put across

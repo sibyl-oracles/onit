@@ -54,9 +54,11 @@ serving:
   # so short replies cost nothing. Set false to hand back the draft unchecked.
   # verify_answers: true
   # How many rounds of read-only lookups the check may run for claims the
-  # gathered evidence does not cover. 0 checks against that evidence alone —
-  # no extra tool calls, no added latency beyond the one check.
-  # verify_max_tool_turns: 2
+  # gathered evidence does not cover. 0 — the default — checks against that
+  # evidence alone: one small call, no tool runs, and claims the evidence never
+  # touched are left alone. Raise it to also chase uncovered claims, at a round
+  # trip plus a tool run plus another verdict call apiece.
+  # verify_max_tool_turns: 0
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."

@@ -141,7 +141,7 @@ class TestParseVerdict:
             '<think>The draft says {revenue: 4.2M} but the evidence says 3.1M. '
             'Let me write {"issues": []} — no wait, that is wrong.</think>\n'
             '{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}')
-        assert verdict == [{"claim": "4.2M", "problem": "unsupported",
+        assert verdict == [{"claim": "4.2M", "problem": "contradicted",
                             "correction": "3.1M"}]
 
     def test_reasoning_that_never_reaches_a_verdict_is_unreadable(self):
@@ -164,7 +164,7 @@ class TestParseVerdict:
         verdict = parse_verdict(
             '{"issues": ["a bare string", {"claim": "", "correction": ""}, '
             '{"claim": "real", "correction": "fixed"}]}')
-        assert verdict == [{"claim": "real", "problem": "unsupported",
+        assert verdict == [{"claim": "real", "problem": "contradicted",
                             "correction": "fixed"}]
 
 
@@ -234,13 +234,20 @@ class _Ask:
 DRAFT = ("The company reported 4.2M in revenue for 2019, its best year since "
          "the restructuring, and has held that position ever since.")
 
+# The check runs against what the run gathered, so a test that wants it to run
+# at all has to have gathered something.  A run with an empty transcript has
+# nothing to check the draft against and skips the call entirely.
+EVIDENCE = [{"role": "tool", "name": "search",
+             "content": "Revenue was 3.1M in 2019."}]
+SEARCH_TOOL = [{"type": "function", "function": {"name": "search"}}]
+
 
 class TestVerifyAnswer:
     @pytest.mark.asyncio
     async def test_clean_verdict_returns_the_draft_untouched(self):
         ask = _Ask(('{"issues": []}', None))
         answer, note, issues = await verify_answer(
-            task="revenue?", answer=DRAFT, messages=[], ask=ask)
+            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer == DRAFT
         assert note == ""
         assert issues == []
@@ -254,7 +261,7 @@ class TestVerifyAnswer:
                     '"contradicted", "correction": "3.1M, per the filing"}]}', None),
                    (revised, None))
         answer, note, issues = await verify_answer(
-            task="revenue?", answer=DRAFT, messages=[], ask=ask)
+            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer.startswith(revised)
         assert answer.endswith(f"*{NOTE_PREFIX}3.1M, per the filing*")
         assert note == "3.1M, per the filing"
@@ -273,9 +280,8 @@ class TestVerifyAnswer:
                              "content": "Revenue was 4.2M."})
 
         answer, note, _ = await verify_answer(
-            task="revenue?", answer=DRAFT, messages=[], ask=ask,
-            run_tools=run_tools, tools=[{"type": "function",
-                                         "function": {"name": "search"}}])
+            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask,
+            run_tools=run_tools, tools=SEARCH_TOOL, max_tool_turns=1)
         assert ran == [["search"]]
         assert answer == DRAFT
         assert note == ""
@@ -289,25 +295,104 @@ class TestVerifyAnswer:
         async def run_tools(tool_calls, messages):
             messages.append({"role": "tool", "name": "search", "content": "..."})
 
-        await verify_answer(task="t", answer=DRAFT, messages=[], ask=ask,
-                            run_tools=run_tools,
-                            tools=[{"type": "function",
-                                    "function": {"name": "search"}}],
+        await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
+                            run_tools=run_tools, tools=SEARCH_TOOL,
                             max_tool_turns=1)
         assert ask.calls[0]["tools"] is not None
         assert ask.calls[1]["tools"] is None
 
     @pytest.mark.asyncio
+    async def test_lookups_are_off_unless_the_caller_pays_for_them(self):
+        """The default check is the transcript against the draft and nothing
+        else: no tools offered, and no round trip for a call it did not ask
+        for."""
+        ask = _Ask((None, [_tool_call()]))
+        ran: list = []
+
+        async def run_tools(tool_calls, messages):
+            ran.append(tool_calls)
+
+        answer, note, _ = await verify_answer(
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
+            run_tools=run_tools, tools=SEARCH_TOOL)
+        assert ask.calls[0]["tools"] is None
+        assert ran == []
+        assert len(ask.calls) == 1
+        assert answer == DRAFT
+        assert note == ""
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_evidence_is_not_checked_at_all(self):
+        """Nothing gathered and no lookups allowed leaves only the weights that
+        wrote the draft to check it against, which is not a check."""
+        ask = _Ask(('{"issues": []}', None))
+        answer, note, issues = await verify_answer(
+            task="t", answer=DRAFT, messages=[], ask=ask)
+        assert answer == DRAFT
+        assert (note, issues) == ("", [])
+        assert ask.calls == []
+
+    @pytest.mark.asyncio
+    async def test_no_evidence_still_checks_when_lookups_are_allowed(self):
+        ask = _Ask(('{"issues": []}', None))
+
+        async def run_tools(tool_calls, messages):
+            pass
+
+        await verify_answer(task="t", answer=DRAFT, messages=[], ask=ask,
+                            run_tools=run_tools, tools=SEARCH_TOOL,
+                            max_tool_turns=1)
+        assert len(ask.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_uncovered_claims_are_dropped_when_nothing_can_settle_them(self):
+        """Without a lookup, "unsupported" reports the absence of evidence, not
+        an error — acting on it rewrites a good answer to hedge a true claim."""
+        ask = _Ask(('{"issues": [{"claim": "best year", "problem": "unsupported",'
+                    ' "correction": "the evidence does not say"}]}', None))
+        answer, note, issues = await verify_answer(
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+        assert answer == DRAFT
+        assert (note, issues) == ("", [])
+        assert len(ask.calls) == 1  # no revision was attempted
+
+    @pytest.mark.asyncio
+    async def test_contradictions_are_still_acted_on_without_lookups(self):
+        revised = DRAFT.replace("4.2M", "3.1M")
+        ask = _Ask(('{"issues": [{"claim": "4.2M", "problem": "contradicted",'
+                    ' "correction": "3.1M"}]}', None), (revised, None))
+        answer, note, issues = await verify_answer(
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+        assert answer.startswith(revised)
+        assert note == "3.1M"
+        assert len(issues) == 1
+
+    @pytest.mark.asyncio
+    async def test_uncovered_claims_survive_when_lookups_were_available(self):
+        ask = _Ask(('{"issues": [{"claim": "best year", "problem": "unsupported",'
+                    ' "correction": "2021 was higher"}]}', None),
+                   (DRAFT.replace("its best year", "a strong year"), None))
+
+        async def run_tools(tool_calls, messages):
+            pass
+
+        _, note, issues = await verify_answer(
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
+            run_tools=run_tools, tools=SEARCH_TOOL, max_tool_turns=1)
+        assert note == "2021 was higher"
+        assert len(issues) == 1
+
+    @pytest.mark.asyncio
     async def test_no_tools_configured_means_no_tools_offered(self):
         ask = _Ask(('{"issues": []}', None))
-        await verify_answer(task="t", answer=DRAFT, messages=[], ask=ask)
+        await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert ask.calls[0]["tools"] is None
 
     @pytest.mark.asyncio
     async def test_unreadable_verdict_keeps_the_draft(self):
         ask = _Ask(("I checked everything and it all looks fine to me.", None))
         answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=[], ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer == DRAFT
         assert note == ""
         assert issues == []
@@ -316,7 +401,7 @@ class TestVerifyAnswer:
     async def test_a_failed_check_never_costs_the_answer(self):
         ask = _Ask(RuntimeError("endpoint down"))
         answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=[], ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer == DRAFT
         assert note == ""
 
@@ -328,8 +413,8 @@ class TestVerifyAnswer:
             raise RuntimeError("stopped")
 
         answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=[], ask=ask, run_tools=run_tools,
-            tools=[{"type": "function", "function": {"name": "search"}}])
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask, run_tools=run_tools,
+            tools=SEARCH_TOOL, max_tool_turns=1)
         assert answer == DRAFT
         assert note == ""
 
@@ -341,7 +426,7 @@ class TestVerifyAnswer:
         ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
                    ("Sorry, I cannot verify that.", None))
         answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=[], ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer.startswith(DRAFT)
         assert CORRECTION_PREFIX + "3.1M" in answer
         assert note == "3.1M"
@@ -352,7 +437,7 @@ class TestVerifyAnswer:
         ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
                    RuntimeError("endpoint down"))
         answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=[], ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer.startswith(DRAFT)
         assert CORRECTION_PREFIX in answer
         assert note == "3.1M"
@@ -365,7 +450,7 @@ class TestVerifyAnswer:
         long_draft = DRAFT + "\n\n" + ("Supporting detail, 12 of them. " * 800).strip()
         ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None))
         answer, note, issues = await verify_answer(
-            task="t", answer=long_draft, messages=[], ask=ask)
+            task="t", answer=long_draft, messages=EVIDENCE, ask=ask)
         assert answer.startswith(long_draft)
         assert CORRECTION_PREFIX + "3.1M" in answer
         assert len(ask.calls) == 1  # no revision was attempted
@@ -375,7 +460,7 @@ class TestVerifyAnswer:
     async def test_the_revision_gets_the_callers_token_budget(self):
         ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
                    (DRAFT.replace("4.2M", "3.1M"), None))
-        await verify_answer(task="t", answer=DRAFT, messages=[], ask=ask,
+        await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
                             revision_max_tokens=32768)
         assert ask.calls[1]["max_tokens"] == 32768
 
@@ -400,6 +485,19 @@ class TestPrompts:
         assert "what is the revenue?" in body
         assert DRAFT in body
         assert "Revenue was 3.1M." in body
+
+    def test_the_default_prompt_asks_only_for_contradictions(self):
+        """No lookups behind it, so it is not asked to raise claims it has no
+        way to settle."""
+        system = build_verdict_messages("t", DRAFT, "[search]\n3.1M")[0]["content"]
+        assert "contradicts" in system
+        assert "call the tool" not in system
+
+    def test_the_tool_prompt_asks_for_uncovered_claims_too(self):
+        system = build_verdict_messages("t", DRAFT, "[search]\n3.1M",
+                                        with_tools=True)[0]["content"]
+        assert "fails to support" in system
+        assert "call the tool" in system
 
     def test_verdict_prompt_says_when_nothing_was_gathered(self):
         body = build_verdict_messages("t", DRAFT, "")[1]["content"]
@@ -548,10 +646,26 @@ class TestChatWiring:
         _, client = await _run_chat([
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
-        ], tool_registry=registry)
+        ], tool_registry=registry, verify_max_tool_turns=1)
         verify_call = client.chat.completions.create.call_args_list[1]
         offered = [t["function"]["name"] for t in verify_call.kwargs["tools"]]
         assert offered == ["search"]
+
+    @pytest.mark.asyncio
+    async def test_the_check_makes_no_lookups_by_default(self):
+        """One call against what the run already gathered. Every lookup past
+        that is a round trip, a tool run, and another verdict call behind an
+        answer the user is already reading."""
+        registry = MagicMock()
+        registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "search", "parameters": {}}}]
+        registry.tools = {"search"}
+        _, client = await _run_chat([
+            _completion(content=ANSWER),
+            _completion(content='{"issues": []}'),
+        ], tool_registry=registry)
+        assert client.chat.completions.create.call_count == 2
+        assert "tools" not in client.chat.completions.create.call_args_list[1].kwargs
 
     @pytest.mark.asyncio
     async def test_a_verdict_in_the_reasoning_field_is_still_read(self):
