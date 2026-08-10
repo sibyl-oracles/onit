@@ -652,7 +652,7 @@ class TestChatWiring:
              patch("model.serving.chat._get_ollama_max_context",
                    new_callable=AsyncMock, return_value=32768):
             result = await asyncio.wait_for(chat(
-                host="https://ollama.com", instruction="q",
+                host="https://ollama.com", host_key="test-key", instruction="q",
                 safety_queue=asyncio.Queue()), timeout=30)
         assert result == ANSWER
         assert ollama.chat.call_args_list[1].kwargs["think"] is False

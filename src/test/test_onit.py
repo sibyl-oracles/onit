@@ -125,21 +125,77 @@ class TestFriendlyToolStatus:
 
     def test_batch_reports_progress_not_per_tool_noise(self):
         """Concurrent calls finish in any order, so one going quiet says
-        nothing about the others — the batch counts instead."""
+        nothing about the others — the batch counts instead.  What the batch
+        is doing is named, because "3 tools" is not something a user waits for.
+        """
         statuses = []
         adapter = StreamingAdapter(on_tool_status=statuses.append)
-        adapter.start_tool_batch(["read_file", "read_file", "search_document"])
+        adapter.start_tool_batch([
+            ("read_file", {"path": "/a.pdf"}),
+            ("read_file", {"path": "/b.pdf"}),
+            ("search", {"query": "tuition fees"}),
+        ])
         adapter.start_tool_spinner("read_file", {"path": "/a.pdf"})  # suppressed
         adapter.show_tool_done("read_file", "ok")
         adapter.stop_tool_spinner()                                  # suppressed
         adapter.show_tool_done("read_file", "ok")
         adapter.end_tool_batch()
         assert statuses == [
-            "Running 3 tools together…",
-            "1 of 3 tools done…",
-            "2 of 3 tools done…",
-            "",
+            "Reading files and searching the web — 3 at once…",
+            "Reading files and searching the web — 1 of 3 done…",
+            "Reading files and searching the web — 2 of 3 done…",
+            "Going through what it found…",
         ]
+
+    def test_batch_of_names_alone_still_describes_the_work(self):
+        """Callers that have only names (older call sites) still get words."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_batch(["read_file", "search_document"])
+        assert statuses == ["Reading files and documents — 2 at once…"]
+
+    def test_batch_of_one_kind_names_what_it_is_looking_for(self):
+        """Six searches in a turn are six angles on one question — the first
+        one says more about the wait than "searching the web" does."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_batch([
+            ("search", {"query": "Vietnam GDP 2024"}),
+            ("search", {"query": "Indonesia GDP 2024"}),
+        ])
+        adapter.show_tool_done("search", "ok")
+        assert statuses == [
+            "Searching the web for Vietnam GDP 2024 (+1 more)…",
+            "Searching the web — 1 of 2 done…",
+        ]
+
+    def test_gap_between_tools_says_what_the_model_is_doing(self):
+        """The model reading tool output is most of a long run's wall time;
+        going blank there is what makes a run look stalled."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_spinner("search", {"query": "peso rate"})
+        adapter.show_tool_done("search", "ok")
+        assert statuses == ["Searching the web for peso rate…",
+                            "Going through what it found…"]
+
+    def test_url_is_reported_as_its_site(self):
+        """A tracking-laden URL fills the line without saying anything."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.start_tool_spinner(
+            "fetch_content", {"url": "https://www.msn.com/en-ph/money/x?ocid=abc"})
+        assert statuses == ["Fetching msn.com…"]
+
+    def test_unnamed_tool_during_fact_check_reports_the_phase(self):
+        """The verifier calls things this map has no words for; "Running
+        issues…" is worse than saying which phase the run is in."""
+        statuses = []
+        adapter = StreamingAdapter(on_tool_status=statuses.append)
+        adapter.verification_start()
+        adapter.start_tool_spinner("issues", {})
+        adapter.show_tool_done("issues", "ok")
+        assert statuses == ["Checking the facts…"] * 3
 
     def test_answer_start_fires_once_after_tools_have_run(self):
         starts, tokens = [], []

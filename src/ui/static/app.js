@@ -901,18 +901,43 @@
   }
 
   // ── Status chip ────────────────────────────────────────────────
+  // Seconds a status has to hold before the chip starts timing it. A label
+  // that changes every second reads as progress on its own; one that sits
+  // still reads as a hang unless something visibly moves.
+  const STATUS_TIMER_AFTER = 3;
+
   function statusChip(parent, text) {
     const chip = document.createElement("div");
     chip.className = "status-chip";
     chip.innerHTML = `<span class="status-dot"></span><span class="status-text"></span>`;
-    chip.querySelector(".status-text").textContent = text;
+    const textEl = chip.querySelector(".status-text");
     parent.appendChild(chip);
+
+    let label = text || "";
+    let since = Date.now();
+    textEl.textContent = label;
+    chip.hidden = !label;
+
+    const paint = () => {
+      const secs = Math.floor((Date.now() - since) / 1000);
+      textEl.textContent =
+        label && secs >= STATUS_TIMER_AFTER ? `${label} · ${secs}s` : label;
+      // loadHistory() rebuilds the message list out from under a chip that
+      // was never removed by hand (the reconnect path); stop ticking with it.
+      if (!chip.isConnected) clearInterval(timer);
+    };
+    const timer = setInterval(paint, 1000);
+
     return {
       set(t) {
-        chip.querySelector(".status-text").textContent = t;
-        chip.hidden = !t;
+        const next = t || "";
+        if (next === label) return;   // same phase: keep its clock running
+        label = next;
+        since = Date.now();
+        paint();
+        chip.hidden = !label;
       },
-      remove() { chip.remove(); },
+      remove() { clearInterval(timer); chip.remove(); },
     };
   }
 
@@ -948,6 +973,7 @@
     let streamBlock = null;   // element receiving live tokens
     let streamText = "";
     let rafPending = false;
+    let answerStarted = false;
 
     const paintStream = () => {
       if (rafPending || !streamBlock) return;
@@ -987,11 +1013,13 @@
           streamBlock = null;
           streamText = "";
         }
-        chip.set("Working…");
+        chip.set("Thinking…");
       },
       status(d) {
-        chip.set(d.text || "");
-        if (!d.text && state.processing) chip.set("Working…");
+        // A blank status means "nothing specific to report", not "idle" —
+        // until the answer is on screen, in which case there is genuinely
+        // nothing left to wait for.
+        chip.set(d.text || (answerStarted || !state.processing ? "" : "Thinking…"));
       },
       answer_start() {
         // Everything committed so far was the model working, not answering.
@@ -1000,6 +1028,7 @@
         turn.content.innerHTML = "";
         streamBlock = null;
         streamText = "";
+        answerStarted = true;
         chip.set("Writing the answer…");
       },
       done(d) {

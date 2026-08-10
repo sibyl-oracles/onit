@@ -2141,7 +2141,9 @@ async def _execute_tools_in_parallel(
     """
     buffers: list = [[] for _ in calls]
     if chat_ui and hasattr(chat_ui, "start_tool_batch"):
-        chat_ui.start_tool_batch([name for name, _, _ in calls])
+        # Arguments included: what five concurrent calls are looking for is
+        # more use to someone waiting than the fact that there are five.
+        chat_ui.start_tool_batch([(name, args) for name, args, _ in calls])
 
     async def _run(index: int, name: str, args: dict, call_id: str):
         return await _execute_tool(

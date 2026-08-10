@@ -28,6 +28,7 @@ import uuid
 
 from pathlib import Path
 from typing import Union, Any
+from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field
 from fastmcp import Client
 
@@ -157,6 +158,46 @@ _TOOL_VERBS = {
     "write_file": "Writing", "edit_file": "Editing",
 }
 
+# What a tool is doing, said without its arguments.  Used when several tools
+# run at once: naming five subjects would not fit on one line, but "Searching
+# the web and reading documents" is the part a waiting user wants anyway.
+_TOOL_ACTIVITIES = {
+    "search": "searching the web",
+    "fetch_content": "reading web pages",
+    "local_search": "searching your documents",
+    "search_document": "reading documents",
+    "get_document_context": "reading documents",
+    "extract_tables": "reading documents",
+    "read_file": "reading files",
+    "write_file": "writing files",
+    "edit_file": "editing files",
+    "grep": "searching files",
+    "find_files": "looking through files",
+    "search_directory": "looking through files",
+    "bash": "working",
+}
+
+# Said while the model is generating rather than calling tools.  "Thinking" is
+# true of every one of these moments and so distinguishes none of them; what
+# the model is thinking *about* is what makes the wait legible.
+_STATUS_THINKING = "Thinking…"
+_STATUS_REVIEWING = "Going through what it found…"
+_STATUS_VERIFYING = "Checking the facts…"
+
+
+def _short_subject(key: str, value: str) -> str:
+    """Trim one argument value down to something that fits a status line."""
+    subject = value.strip()
+    if key in ("path", "file", "file_path"):
+        return os.path.basename(subject.rstrip("/")) or subject
+    if key == "url":
+        # A full URL is mostly query string and tracking; the site is the part
+        # that tells the user where the answer is coming from.
+        host = urlparse(subject).netloc
+        if host:
+            return host[4:] if host.startswith("www.") else host
+    return subject
+
 
 def tool_status_text(name: str, arguments: dict | None) -> str:
     """One line describing what a tool is doing right now.
@@ -171,15 +212,69 @@ def tool_status_text(name: str, arguments: dict | None) -> str:
     for key in _STATUS_ARG_KEYS:
         value = (arguments or {}).get(key)
         if isinstance(value, str) and value.strip():
-            subject = value.strip()
-            if key in ("path", "file", "file_path"):
-                subject = os.path.basename(subject.rstrip("/")) or subject
+            subject = _short_subject(key, value)
             break
     if not subject:
         return f"Running {name}…"
     if len(subject) > 60:
         subject = subject[:59] + "…"
     return f"{verb} {subject}…" if verb else f"{name}: {subject}…"
+
+
+def _as_pairs(calls) -> list[tuple[str, dict | None]]:
+    """Accept either tool names or ``(name, arguments)`` pairs."""
+    return [(c, None) if isinstance(c, str) else (c[0], c[1]) for c in calls]
+
+
+def tool_batch_text(calls) -> str:
+    """The line shown when a batch of concurrent tool calls starts.
+
+    Says as much as fits: one call is described in full, several calls of the
+    same kind name the first subject and count the rest, and a mixed batch
+    falls back to the kinds of work in it.
+    """
+    pairs = _as_pairs(calls)
+    if not pairs:
+        return ""
+    if len(pairs) == 1:
+        return tool_status_text(pairs[0][0], pairs[0][1])
+    first = tool_status_text(*pairs[0])
+    if (len({name for name, _ in pairs}) == 1
+            and not first.startswith(("Running ", _OPAQUE_STATUS))):
+        # Six searches in one turn are six angles on one question; showing the
+        # first is a truer picture of the wait than "searching the web" alone.
+        return f"{first.rstrip('… ')} (+{len(pairs) - 1} more)…"
+    return f"{tool_batch_activity(calls).rstrip('… ')} — {len(pairs)} at once…"
+
+
+def tool_batch_activity(calls) -> str:
+    """The kinds of work in a batch, short enough to prefix a progress count."""
+    pairs = _as_pairs(calls)
+    if not pairs:
+        return ""
+    # dict, not set: the order tools were called in is the order they are named
+    activities = list(dict.fromkeys(
+        _TOOL_ACTIVITIES.get(name, "working") for name, _ in pairs))
+    # "Reading files and reading documents" says "reading" twice for no gain;
+    # activities sharing a verb are folded into one ("reading files and
+    # documents"), which is how a person would say it.
+    by_verb: dict[str, list[str]] = {}
+    for activity in activities:
+        verb, _, rest = activity.partition(" ")
+        by_verb.setdefault(verb, [])
+        if rest and rest not in by_verb[verb]:
+            by_verb[verb].append(rest)
+    phrases = [f"{verb} {_join_words(rests)}" if rests else verb
+               for verb, rests in by_verb.items()]
+    phrase = _join_words(phrases)
+    return f"{phrase[0].upper()}{phrase[1:]}…"
+
+
+def _join_words(parts: list[str]) -> str:
+    """"a", "a and b", "a, b and c"."""
+    if len(parts) <= 2:
+        return " and ".join(parts)
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
 class StreamingAdapter:
@@ -207,6 +302,12 @@ class StreamingAdapter:
         self._answer_announced = False
         self._batch_total = 0
         self._batch_done = 0
+        self._batch_label = ""
+        self._current_label = ""
+        # Which phase the run is in, so the gaps between tool calls — where
+        # most of a long run is actually spent — say something.
+        self._saw_tool = False
+        self._verifying = False
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
@@ -301,38 +402,77 @@ class StreamingAdapter:
         if self.show_logs:
             print(f"{name}({arguments})")
 
-    def start_tool_batch(self, names):
-        """Several read-only tools are about to run at once."""
-        self._batch_total = len(names)
+    # ── phase reporting ──────────────────────────────────────────
+    def _idle_status(self) -> str:
+        """What to say between tool calls, when the model is generating.
+
+        A tool ending is not the run ending: the model is now reading what
+        came back and deciding what to do next, which on a multi-turn run is
+        where most of the waiting happens.  Saying so beats going blank.
+        """
+        if self._verifying:
+            return _STATUS_VERIFYING
+        if self._saw_tool:
+            return _STATUS_REVIEWING
+        return _STATUS_THINKING
+
+    def _tool_status(self, name: str, arguments) -> str:
+        """Status for one tool call, in the context of the current phase."""
+        text = tool_status_text(name, arguments)
+        if self._verifying and text.startswith("Running "):
+            # The fact-check sometimes calls things this map has no words for
+            # (and the model occasionally invents a name outright).  "Running
+            # issues…" tells the user nothing; the phase does.
+            return _STATUS_VERIFYING
+        return text
+
+    def start_tool_batch(self, calls):
+        """Several read-only tools are about to run at once.
+
+        ``calls`` may be tool names or ``(name, arguments)`` pairs.
+        """
+        self._batch_total = len(calls)
         self._batch_done = 0
+        self._saw_tool = True
+        # The opener says the most it can; the progress counts that follow it
+        # keep the short form, so the line does not grow past reading width.
+        self._batch_label = tool_batch_activity(calls)
         if self._on_tool_status:
-            self._on_tool_status(f"Running {len(names)} tools together…")
+            self._on_tool_status(tool_batch_text(calls))
 
     def end_tool_batch(self):
         self._batch_total = 0
         self._batch_done = 0
+        self._batch_label = ""
         if self._on_tool_status:
-            self._on_tool_status("")
+            self._on_tool_status(self._idle_status())
 
     def start_tool_spinner(self, name, arguments):
-        if self._on_tool_status and not self._batch_total:
-            self._on_tool_status(tool_status_text(name, arguments))
+        self._saw_tool = True
+        if not self._batch_total:
+            self._current_label = self._tool_status(name, arguments)
+            if self._on_tool_status:
+                self._on_tool_status(self._current_label)
 
     def stop_tool_spinner(self):
         # Inside a batch the calls finish in any order, so one of them going
         # quiet says nothing about the others; the batch counter reports
         # instead, and clearing here would only flicker.
-        if self._on_tool_status and not self._batch_total:
-            self._on_tool_status("")
+        if not self._batch_total:
+            self._current_label = ""
+            if self._on_tool_status:
+                self._on_tool_status(self._idle_status())
 
     def show_tool_done(self, name, result, success=True):
         if self._on_tool_status:
             if self._batch_total:
                 self._batch_done += 1
+                done = f"{self._batch_done} of {self._batch_total} done"
+                stem = self._batch_label.rstrip("… ")
                 self._on_tool_status(
-                    f"{self._batch_done} of {self._batch_total} tools done…")
+                    f"{stem} — {done}…" if stem else f"{done}…")
             else:
-                self._on_tool_status("")
+                self._on_tool_status(self._idle_status())
         if self.show_logs:
             truncated = result[:500] + "..." if len(result) > 500 else result
             print(f"{name} returned: {truncated}")
@@ -351,8 +491,10 @@ class StreamingAdapter:
     def tool_progress(self, name, elapsed_seconds):
         """Called periodically during long-running tool calls to keep SSE alive."""
         if self._on_tool_status:
-            base = _OPAQUE_STATUS if name in _OPAQUE_TOOLS else f"Running {name}…"
-            self._on_tool_status(f"{base} ({elapsed_seconds}s)")
+            # A slow call is exactly when the user needs to be told what is
+            # slow, so repeat what it is doing rather than its function name.
+            base = self._current_label or tool_status_text(name, None)
+            self._on_tool_status(f"{base.rstrip('… ')}… ({elapsed_seconds}s)")
         if self.on_token:
             # Send an empty-content SSE event as a keepalive heartbeat
             result = self.on_token("", self._content)
@@ -385,8 +527,9 @@ class StreamingAdapter:
         Reported as tool status rather than as answer text: the draft is
         already on the client's screen, and this is work happening behind it.
         """
+        self._verifying = True
         if self._on_tool_status:
-            self._on_tool_status("Checking the facts…")
+            self._on_tool_status(_STATUS_VERIFYING)
 
     def verification_end(self, answer: str, note: str) -> None:
         """The check is done.
@@ -394,6 +537,7 @@ class StreamingAdapter:
         Nothing to send: a corrected answer is the answer this run returns, and
         every client already replaces what it streamed with the final response.
         """
+        self._verifying = False
         if self._on_tool_status:
             self._on_tool_status("")
 
