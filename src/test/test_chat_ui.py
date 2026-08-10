@@ -1,11 +1,13 @@
 """Tests for src/ui/text.py — Message, ChatUI."""
 
+import io
 import os
+import re
 import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
-from rich.console import Group
+from rich.console import Console, Group
 from rich.panel import Panel
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -145,3 +147,84 @@ class TestChatUI:
         # Should not raise even if status is already stopped
         chat_ui.stop_status()
         chat_ui.stop_status()  # double stop is safe
+
+
+# ── fact-check display ──────────────────────────────────────────────────────
+
+class TestVerificationDisplay:
+    def test_clean_check_leaves_the_answer_alone(self, chat_ui):
+        chat_ui.add_message("assistant", "Revenue was 4.2M in 2019.")
+        chat_ui.verification_end("Revenue was 4.2M in 2019.", "")
+        assert chat_ui.messages[-1].content == "Revenue was 4.2M in 2019."
+
+    def test_revision_replaces_the_stored_answer(self, chat_ui):
+        """The panel, the session file and the block the user scrolls back to
+        must not disagree about what the answer was."""
+        chat_ui.add_message("user", "what was the revenue?")
+        chat_ui.add_message("assistant", "Revenue was 4.2M in 2019.")
+        chat_ui.verification_end("Revenue was 3.1M in 2019.", "3.1M, not 4.2M")
+        assert chat_ui.messages[-1].content == "Revenue was 3.1M in 2019."
+        assert chat_ui.messages[-1].role == "assistant"
+        assert chat_ui.messages[0].content == "what was the revenue?"
+
+    def test_replacement_is_normalized_like_a_streamed_answer(self, chat_ui):
+        """onit.py compares the returned answer against what is stored to
+        decide whether to append it again; the two must match byte for byte."""
+        chat_ui.add_message("assistant", "draft")
+        chat_ui.verification_end("<answer>Revenue was 3.1M.</answer>", "corrected")
+        assert chat_ui.messages[-1].content == "Revenue was 3.1M."
+
+    def test_revision_with_no_assistant_message_does_not_raise(self, chat_ui):
+        chat_ui.add_message("user", "hello")
+        chat_ui.verification_end("Revenue was 3.1M.", "corrected")
+        assert chat_ui.messages[-1].role == "user"
+
+    def test_verification_start_does_not_raise(self, chat_ui):
+        chat_ui.verification_start()
+
+
+# ── turn timing ─────────────────────────────────────────────────────────────
+
+class TestTurnTiming:
+    def test_meta_matches_the_web_ui_shape(self):
+        """The browser prints '12.35s · 21.5 tok/s'; the terminal must agree."""
+        assert ChatUI.format_meta(12.345, 21.47) == "12.35s · 21.5 tok/s"
+
+    def test_meta_drops_fields_it_has_no_number_for(self):
+        assert ChatUI.format_meta(3.0, 0.0) == "3.00s"
+        assert ChatUI.format_meta(0.0, 0.0) == ""
+
+    def test_turn_clock_covers_the_time_before_the_first_token(self, chat_ui):
+        """Tool calls and thinking run before streaming starts, and the user
+        waited through them — the web UI counts them, so this must too."""
+        chat_ui.turn_start()
+        chat_ui._turn_start_time -= 5.0  # 5s of tool calls
+        chat_ui.stream_start()           # first token only now
+        assert chat_ui._turn_elapsed() >= 5.0
+
+    def test_turn_clock_falls_back_to_the_stream(self, chat_ui):
+        """Entry points that never call turn_start() still get a number."""
+        chat_ui.stream_start()
+        chat_ui._stream_start_time -= 2.0
+        assert 2.0 <= chat_ui._turn_elapsed() < 3.0
+
+    def test_streamed_block_footer_carries_elapsed_and_rate(self, chat_ui):
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui._turn_start_time -= 3.0
+        chat_ui._stream_start_time -= 3.0
+        chat_ui.stream_end()
+        footer = buf.getvalue().splitlines()[-1]
+        assert re.search(r"\d+\.\d\ds · \d+\.\d tok/s", footer), footer
+
+    def test_explicit_elapsed_wins_over_the_measured_one(self, chat_ui):
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end(elapsed="9.99s")
+        assert "9.99s" in buf.getvalue()

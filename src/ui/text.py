@@ -151,6 +151,10 @@ class ChatUI:
         self._link_state = 0  # 0=normal, 1=in label [..., 2=after ](, eating URL
         self._stream_token_count = 0  # token counter for tok/s calculation
         self._stream_start_time = 0.0  # monotonic time when streaming started
+        # Monotonic time the current turn was submitted.  The web UI times a
+        # turn from the request, not from the first token, so tool calls and
+        # thinking are inside the number it prints; this is that same clock.
+        self._turn_start_time = 0.0
         self.initialize()
         
     def set_theme(self, theme: str) -> None:
@@ -627,6 +631,51 @@ class ChatUI:
             style="bold yellow",
         )
 
+    # ── Fact-check display ─────────────────────────────────────────
+
+    def verification_start(self) -> None:
+        """The answer has streamed and is now being checked against its sources."""
+        self.console.print("  🔎 Checking the facts…", style="bright_cyan")
+
+    def verification_end(self, answer: str, note: str) -> None:
+        """Report the outcome of the check, and correct the answer on screen.
+
+        A terminal cannot unprint the draft, so the correction is printed
+        under it and the stored message is swapped for the revised text —
+        which keeps the chat panel, the session file, and the block the user
+        scrolls back to from disagreeing about what the answer was.
+        """
+        if not note:
+            self.console.print("  ✓ Facts check out", style="green")
+            return
+        self.console.print(f"  ↻ {note}", style="bold yellow")
+        # Normalized the way stream_end normalizes what it stores, so the
+        # replacement is byte-identical to what onit.py will compare the
+        # returned answer against and the message is not appended twice.
+        content = re.sub(r"</?(?:answer|think|stop)>", "", answer,
+                         flags=re.IGNORECASE).strip()
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i].role == "assistant":
+                self.messages[i] = Message(
+                    role="assistant", content=content,
+                    timestamp=self.messages[i].timestamp,
+                    elapsed=self.messages[i].elapsed,
+                    name=self.messages[i].name,
+                )
+                break
+        self._render_revised_answer(content)
+
+    def _render_revised_answer(self, answer: str) -> None:
+        """Print the corrected answer in the same block style as a streamed one."""
+        ts = self.format_timestamp()
+        t = Text()
+        style = self.theme.styles.get("assistant", "magenta")
+        t.append(f"┌─ {self.agent_cursor} (revised) ", style=f"bold {style}")
+        t.append(f"[{ts}]", style=self.theme.styles.get("timestamp", "cyan"))
+        self.console.print(t)
+        self.console.print(self._strip_markdown_links(answer))
+        self.console.print("└" + "─" * 40, style=style)
+
     # ── Inline tool-call display (streaming mode) ──────────────────
 
     def show_tool_start(self, name: str, arguments: dict) -> None:
@@ -695,6 +744,36 @@ class ChatUI:
             sys.stdout.write("\033[?25h")           # restore terminal cursor
             sys.stdout.flush()
             self._stream_cursor_shown = False
+
+    # ── Turn timing ───────────────────────────────────────────────
+
+    def turn_start(self) -> None:
+        """Mark the instant the user's task was submitted.
+
+        Everything the turn spends before the first token — instruction
+        assembly, tool calls, retries — belongs to the elapsed time the user
+        experiences, so the clock starts here rather than at ``stream_start``.
+        """
+        self._turn_start_time = time.monotonic()
+
+    def _turn_elapsed(self) -> float:
+        """Seconds since the turn was submitted, or since the stream started."""
+        start = self._turn_start_time or self._stream_start_time
+        return time.monotonic() - start if start else 0.0
+
+    @staticmethod
+    def format_meta(elapsed_secs: float, tok_s: float = 0.0) -> str:
+        """Format the per-answer meta line the way the web UI does.
+
+        ``12.34s · 21.5 tok/s`` — same fields, same separator, so a turn reads
+        the same whether it was run in the terminal or in the browser.
+        """
+        parts = []
+        if elapsed_secs > 0:
+            parts.append(f"{elapsed_secs:.2f}s")
+        if tok_s > 0:
+            parts.append(f"{tok_s:.1f} tok/s")
+        return " · ".join(parts)
 
     # ── Token streaming ───────────────────────────────────────────
 
@@ -844,13 +923,14 @@ class ChatUI:
         self._trail_buf = ""
         print()  # final newline after the last token
         footer = "└" + "─" * 40
-        if elapsed:
-            footer += f"  {elapsed}"
-        # Append average tokens/sec if we tracked any tokens
+        # tok/s is a property of this stream, so it is measured from the first
+        # token; elapsed is the whole turn, matching what the web UI reports.
         stream_elapsed = time.monotonic() - self._stream_start_time if self._stream_start_time else 0
-        if stream_elapsed > 0 and self._stream_token_count > 0:
-            tok_s = self._stream_token_count / stream_elapsed
-            footer += f"  ({tok_s:.1f} tok/s)"
+        tok_s = (self._stream_token_count / stream_elapsed
+                 if stream_elapsed > 0 and self._stream_token_count > 0 else 0.0)
+        meta = elapsed or self.format_meta(self._turn_elapsed(), tok_s)
+        if meta:
+            footer += f"  {meta}"
         if self._context_pct > 0:
             t = Text()
             t.append(footer, style=self.theme.styles.get("assistant", "magenta"))

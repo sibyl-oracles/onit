@@ -278,7 +278,8 @@ When a question needs external information:
    Open one only where those leave the question unanswered — highest-ranked
    first, at most {max_documents} of them. Use {open_doc}.
 4. Search the web for what is still missing after step 3, and for public facts that
-   change over time, unless step 1 already covered it.
+   change over time. Name the gap before you search — write the sentence you cannot
+   yet support. A local hit on the topic does not close a gap it does not answer.
 5. Before you finish, check the answer against the step-2 list. Every local
    document that answers the question must appear in it.
 
@@ -306,6 +307,31 @@ When a question needs external information:
          research_block += """1. Search the web for relevant, up-to-date sources.
 """
          references = "the URL of each web source"
+
+      # Recency and authority have to be stated, not assumed. The date is in the
+      # context block but nothing here ever made it a test, so a fact that had
+      # changed since training was answered from memory and read as confident.
+      # `search` results carry no date — only `type="news"` does — so the check
+      # has to name the mode that can actually settle it, or the model has
+      # nothing to rank on and falls back on recall.
+      if web_search_available:
+         research_block += """
+### Recency and source quality
+Anything that can change — a price, a version, a head count, a ranking, a policy,
+a who-holds-what — needs a source behind it, not recall. Today's date is in the
+context below and your training data ends well before it.
+- Before stating such a fact, ask whether it could have moved since training. If it
+  could, it needs a tool result; "probably still true" is not an answer, it is a guess.
+- General `search` results are undated. When the answer turns on how current it is,
+  use `type="news"` — those results carry a `date` — or `fetch_content` the page and
+  find its date there.
+- Prefer the primary source to anyone summarizing it: the issuing body, the official
+  documentation, the filing, the release notes. An aggregator is a pointer to that
+  source, not a replacement for it.
+- When two sources disagree, lead with the better-sourced and more recent one and say
+  the other exists. When you cannot date a figure, say it is undated rather than
+  presenting it as current.
+"""
 
       if local_search_available:
          if web_search_available:

@@ -202,6 +202,82 @@ class TestResearchHierarchy:
         assert "Search the web" not in section
 
 
+class TestRecency:
+    """A fact that moves needs a source. The prompt states today's date, but
+    stating it is not the same as testing against it: a run that never asked
+    whether a figure had changed since training answered from recall and read
+    as confident. These assertions are what makes the date a test."""
+
+    @pytest.mark.asyncio
+    async def test_web_search_is_gated_on_a_named_gap(self, tmp_path):
+        """The gate was once 'unless step 1 already covered it' — an exemption
+        the model graded itself on, and skipped the web with. Naming the
+        unsupported sentence is a step it cannot satisfy by assertion."""
+        result = await _assistant_fn(
+            task="what is the current tuition",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            web_search_available=True,
+        )
+        section = result[result.index("## Research and Citations"):]
+        assert "Name the gap before you search" in section
+        assert "does not close a gap it does not answer" in section
+        assert "unless step 1 already covered it" not in section
+
+    @pytest.mark.asyncio
+    async def test_recency_guidance_names_the_mode_that_carries_dates(self, tmp_path):
+        """`search` results have no date field — only `type="news"` does. Telling
+        the model to check recency without naming that mode leaves it nothing to
+        rank on, and it falls back on training data."""
+        result = await _assistant_fn(
+            task="what is the current tuition",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            web_search_available=True,
+        )
+        section = result[result.index("### Recency and source quality"):]
+        assert 'type="news"' in section
+        assert "undated" in section
+        assert "primary source" in section
+
+    @pytest.mark.asyncio
+    async def test_recency_guidance_holds_without_local_search(self, tmp_path):
+        """It hangs off the web tool, not off the corpus: a web-only deployment
+        is the one with no internal document to fall back on."""
+        result = await _assistant_fn(
+            task="what is the current tuition",
+            data_path=str(tmp_path / "data"),
+            local_search_available=False,
+            web_search_available=True,
+        )
+        assert "### Recency and source quality" in result
+
+    @pytest.mark.asyncio
+    async def test_no_recency_guidance_without_web_search(self, tmp_path):
+        """It tells the model to call `search` with a particular mode. Without
+        that tool the advice is unfollowable, and naming an absent tool earns a
+        failed call rather than an answer."""
+        result = await _assistant_fn(
+            task="what is the current tuition",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            web_search_available=False,
+        )
+        assert "### Recency and source quality" not in result
+
+    @pytest.mark.asyncio
+    async def test_recency_block_stays_in_the_cacheable_half(self, tmp_path):
+        """It is the same bytes for every task, so it belongs ahead of the
+        split; behind it, it would be re-prefilled on every request."""
+        result = await _assistant_fn(
+            task="what is the current tuition",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            web_search_available=True,
+        )
+        assert result.index("### Recency and source quality") < result.index(INSTRUCTION_SPLIT)
+
+
 class TestPromptShape:
     """What the prompt costs to send, as opposed to what it says."""
 

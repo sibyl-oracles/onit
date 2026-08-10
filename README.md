@@ -184,6 +184,55 @@ Sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty
 
 Set `repetition_penalty: 1.0` in all cases.
 
+### Fact-checking the answer
+
+An answer is written from whatever is left in the model's context by the time it
+writes — tool results from ten turns ago, already decayed to a summary, next to
+whatever the weights remember. That is where a figure drifts by a digit: the
+search result was right and the sentence quoting it is not.
+
+So OnIt checks the answer after it is written. The draft streams to you at full
+speed — nothing is held back — and once it is finished it is checked against the
+evidence the run actually gathered: tool output, documents read, what you typed.
+Claims the evidence settles are free; claims it does not cover can be looked up
+with read-only tools (search, file reads — never a write or a shell command).
+If a claim does not hold up, the answer is corrected and reissued with one line
+saying what changed:
+
+```
+The 2019 filing puts revenue at 3.1M …
+
+Revised after fact-check: 3.1M per the filing, not 4.2M
+```
+
+Answers with nothing checkable in them ("I've saved the file, let me know if
+you'd like it formatted differently") skip the check, so short replies cost
+nothing. A check that fails, times out, or comes back unreadable leaves the
+draft exactly as written — it can correct an answer, never lose one.
+
+The check runs with the model's chain of thought switched off: comparing a
+sentence against a source is recognition, not deliberation, and a hybrid model
+left to reason its way through a verdict turns a check that runs behind a
+finished answer into a wait you notice. Measured on Qwen3.6-27B, against
+10–15s to write the answer itself:
+
+| | with thinking | without |
+|---|---:|---:|
+| clean verdict, two-paragraph answer | 6.7s | **0.2s** |
+| two wrong figures found and rewritten | 18.0s | **2.2s** |
+
+Same verdicts either way. A server whose chat template has no such switch is
+detected once and the check simply runs the way that host accepts.
+
+```yaml
+serving:
+  verify_answers: true       # false hands back the draft unchecked
+  verify_max_tool_turns: 2   # 0 checks against gathered evidence only
+```
+
+The per-run log line reports it alongside the rest of the timing:
+`… | fact-check 2.4s (1 claim(s) corrected)`.
+
 ## CLI Reference
 
 ### Interactive chat (default)

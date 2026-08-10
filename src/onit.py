@@ -66,7 +66,12 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        # can fail to terminate.  Defaults live in chat().
                        'max_chat_iterations', 'max_repeated_tool_calls',
                        'max_api_retries', 'max_planning_continuations',
-                       'max_ack_continuations', 'max_final_continuations')
+                       'max_ack_continuations', 'max_final_continuations',
+                       # Fact-checking the finished answer.  Defaults live in
+                       # chat(); `verify_answers: false` turns it off, and
+                       # `verify_max_tool_turns: 0` keeps it to the evidence
+                       # the run already gathered.
+                       'verify_answers', 'verify_max_tool_turns')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
@@ -372,6 +377,25 @@ class StreamingAdapter:
     def set_context_usage(self, pct: float, max_tokens: int = 0) -> None:
         """No-op for external clients; context % is informational only."""
         pass
+
+    # ── fact-check (runs after the answer has streamed) ──────────
+    def verification_start(self) -> None:
+        """The answer is written and is now being checked against its sources.
+
+        Reported as tool status rather than as answer text: the draft is
+        already on the client's screen, and this is work happening behind it.
+        """
+        if self._on_tool_status:
+            self._on_tool_status("Checking the facts…")
+
+    def verification_end(self, answer: str, note: str) -> None:
+        """The check is done.
+
+        Nothing to send: a corrected answer is the answer this run returns, and
+        every client already replaces what it streamed with the final response.
+        """
+        if self._on_tool_status:
+            self._on_tool_status("")
 
     def show_context_compaction(self, orig_msg_count: int, summary_chars: int) -> None:
         """Forward context compaction notice as a streaming token."""
@@ -1640,13 +1664,16 @@ class OnIt(BaseModel):
 
     def _format_elapsed_time(self, elapsed_secs: float) -> str:
         """Format elapsed time string, including tokens/sec if available."""
-        _tok_s = ""
+        _tok_s = 0.0
         if hasattr(self.chat_ui, '_stream_token_count') and hasattr(self.chat_ui, '_stream_start_time'):
             _st = self.chat_ui._stream_start_time
             _tc = self.chat_ui._stream_token_count
             if _st > 0 and _tc > 0:
-                _tok_s = f" ({_tc / (time.monotonic() - _st):.1f} tok/s)"
-        return f"{elapsed_secs:.2f} secs{_tok_s}"
+                _tok_s = _tc / (time.monotonic() - _st)
+        # Same shape as the web UI's per-answer meta line.
+        if hasattr(self.chat_ui, 'format_meta'):
+            return self.chat_ui.format_meta(elapsed_secs, _tok_s)
+        return f"{elapsed_secs:.2f}s"
 
     async def client_to_agent(self) -> None:
         """Handle client to agent communication"""
@@ -1681,6 +1708,10 @@ class OnIt(BaseModel):
 
             # submit instruction with retry on API error
             start_time = loop.time()
+            # Start the UI's own clock so streamed blocks can print elapsed
+            # time before the turn returns here.
+            if hasattr(self.chat_ui, "turn_start"):
+                self.chat_ui.turn_start()
             while True:
                 while not self.safety_queue.empty():
                     self.safety_queue.get_nowait()

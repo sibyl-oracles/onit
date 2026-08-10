@@ -419,12 +419,19 @@ local_search tool is available, call local_search first and use web search
 only for information the local documents cannot answer (news, public facts,
 verification of local results).
 
+Choosing `type`: "web" results carry NO date, so they cannot establish how current
+a fact is. When the answer depends on recency — a current figure, a latest version,
+who currently holds a position, anything that changes — use type="news", whose
+results carry a `date`, or fetch the page and read its date. Use "web" for facts
+that do not move.
+
 Args:
 - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
-- type: "news" for recent news, "web" for general search (default: "web")
+- type: "news" for dated, recent items, "web" for general undated search (default: "web")
 - max_results: Number of results (default: 5, max: 10)
 
-Returns JSON: [{title, snippet, url, source, date}]"""
+Returns JSON: [{title, snippet, url, source}] for "web";
+[{title, snippet, url, source, date}] for "news"."""
 
 
 # Register as MCP tool only when search is not disabled

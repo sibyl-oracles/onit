@@ -45,6 +45,18 @@ serving:
   # Times to resume a final answer cut off by the output token budget. Each
   # resume grants another max_tokens, bounding a long answer at ~(N+1)*max_tokens.
   # max_final_continuations: 3
+  #
+  # ── Fact-checking the answer ──────────────────────────────────────────────
+  # The answer streams to the user as it is written, then is checked against
+  # the evidence the run gathered; a claim the evidence contradicts is
+  # corrected and the answer is reissued with a one-line note saying what
+  # changed. Answers with no checkable claim in them skip the check entirely,
+  # so short replies cost nothing. Set false to hand back the draft unchecked.
+  # verify_answers: true
+  # How many rounds of read-only lookups the check may run for claims the
+  # gathered evidence does not cover. 0 checks against that evidence alone —
+  # no extra tool calls, no added latency beyond the one check.
+  # verify_max_tool_turns: 2
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."

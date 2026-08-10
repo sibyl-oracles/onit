@@ -32,6 +32,8 @@ from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
+from .verify import VERDICT_MAX_TOKENS, needs_verification, verify_answer
+
 try:
     from ...lib.text import split_instruction
     from ...lib.schema import coerce_arguments, validate_arguments
@@ -235,6 +237,20 @@ class TurnMetrics:
         self.sink["compactions"] += 1
         self.sink["compaction_s"] = round(self.sink["compaction_s"] + seconds, 3)
 
+    def add_verification(self, seconds: float, issues: int = 0,
+                         revised: bool = False) -> None:
+        """The fact-check that runs after the answer is written.
+
+        It lands after the last token the user saw, so it is time they wait
+        with a finished answer already on screen — a different kind of second
+        from the ones before it, and worth telling apart when the total looks
+        too high.
+        """
+        s = self.sink
+        s["verify_s"] = round(s.get("verify_s", 0.0) + seconds, 3)
+        s["verify_issues"] = s.get("verify_issues", 0) + issues
+        s["verify_revisions"] = s.get("verify_revisions", 0) + (1 if revised else 0)
+
 
 def summarize_metrics(m: dict) -> str:
     """One-line rendering of a TurnMetrics sink, for logs and status lines."""
@@ -251,6 +267,10 @@ def summarize_metrics(m: dict) -> str:
     ]
     if m.get("compactions"):
         parts.append(f"{m['compactions']} compaction(s) {m['compaction_s']:.1f}s")
+    if m.get("verify_s"):
+        _verdict = (f"{m['verify_issues']} claim(s) corrected"
+                    if m.get("verify_revisions") else "clean")
+        parts.append(f"fact-check {m['verify_s']:.1f}s ({_verdict})")
     return " | ".join(parts)
 
 
@@ -354,6 +374,12 @@ _MAX_CONTEXT_CACHE: dict = {}     # (host, model) -> (value, expires_at)
 _OLLAMA_CONTEXT_CACHE: dict = {}  # model -> (value, expires_at)
 _NEGATIVE_CACHE_TTL = 300.0       # seconds a "could not determine" answer sticks
 
+# Hosts that rejected chat_template_kwargs (see _verify_ask).  Learned once per
+# process rather than rediscovered on every answer: the fact-check asks the
+# template to skip thinking, and a server whose template has no such switch
+# should cost one failed call, not one per turn.
+_NO_TEMPLATE_KWARGS: set = set()
+
 
 def reset_endpoint_caches() -> None:
     """Forget every cached model id and context window.
@@ -363,6 +389,7 @@ def reset_endpoint_caches() -> None:
     _MODEL_ID_CACHE.clear()
     _MAX_CONTEXT_CACHE.clear()
     _OLLAMA_CONTEXT_CACHE.clear()
+    _NO_TEMPLATE_KWARGS.clear()
 
 
 def _cache_get(cache: dict, key) -> tuple:
@@ -2007,6 +2034,34 @@ async def _handle_raw_tool_call(
 _SAFETY_ABORT = object()  # sentinel distinct from None
 
 
+def _verify_content(message) -> str:
+    """The text of a fact-check reply, wherever the server put it.
+
+    A thinking model's verdict lands in ``content`` on one server and in
+    ``reasoning`` or ``reasoning_content`` on the next, and an endpoint that
+    splits them can leave ``content`` empty with the JSON sitting in the other
+    field.  The same fallback the streaming path already makes for a final
+    answer (see _extract_final_response), for the same reason.
+    """
+    text = getattr(message, "content", None) or ""
+    if text.strip():
+        return text
+    for field in ("reasoning_content", "reasoning", "thinking"):
+        alt = getattr(message, field, None)
+        if isinstance(alt, str) and alt.strip():
+            return alt
+    return ""
+
+
+class _VerifyStopped(Exception):
+    """The user stopped the run while the fact-check was still in flight.
+
+    Raised rather than returned so that it unwinds through the verification
+    pass the same way a failed call does — the draft the user already read is
+    what they keep, and a stop request never costs them an answer.
+    """
+
+
 async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float = 0.25):
     """Await *awaitable* while polling the safety queue.
 
@@ -2345,6 +2400,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # the cost: it is a trade of answer deliberation for latency, which is why
     # it is opt-in.
     think_tool_turns = kwargs.get('think_tool_turns', True)
+    # Fact-checking the finished answer (see verify.py).  On by default: the
+    # draft still streams at full speed, so what it costs is the pause between
+    # the last token and the answer being final, and what it buys is that the
+    # figure on screen is the figure the tool returned.  verify_max_tool_turns
+    # bounds how far the checker may go looking for evidence the run did not
+    # already gather — 0 checks against the transcript alone.
+    verify_answers = kwargs.get('verify_answers', True)
+    verify_max_tool_turns = max(0, _as_int(kwargs.get('verify_max_tool_turns', 2)))
 
     images_bytes = _load_images(images, chat_ui, verbose)
     # The standing rules go to the system message, where they stay put across
@@ -2484,6 +2547,147 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         )
         _m.add_compaction(time.monotonic() - _t0)
         return out
+
+    # ── fact-checking the answer ────────────────────────────────────────────
+    #
+    # Tools the check may use: the read-only ones, and only those.  A checker
+    # able to write a file or run a command would be a second agent acting
+    # after the user was told the work was done; this one may look things up
+    # and nothing else.
+    _verify_tools = [
+        t for t in (tools or [])
+        if isinstance(t, dict)
+        and isinstance(t.get('function'), dict)
+        and t['function'].get('name') in _READ_ONLY_TOOLS
+    ]
+
+    async def _verify_ask(msgs: list, tools: list | None = None,
+                          max_tokens: int = VERDICT_MAX_TOKENS):
+        """One non-streaming completion for the fact-check.
+
+        Deliberate at temperature 0: the check is a judgment about text that
+        already exists, and sampling it is how a clean answer acquires an
+        imaginary error on the second run.
+
+        And explicitly without thinking, which is the whole cost of the pass.
+        A hybrid model reasons its way through a verdict by default — measured
+        on Qwen3.6-27B at 18s and 1,277 tokens to report two wrong figures, and
+        6.7s to report that a correct answer was correct.  The same two calls
+        with thinking off returned the same verdicts in 1.2s and 0.1s.  Reading
+        a claim off a source and comparing it to a sentence is recognition, not
+        deliberation, and paying for a chain of thought to do it turns a check
+        that runs behind a finished answer into a wait the user notices.
+        """
+        if is_ollama:
+            _kw: dict = dict(model=model, messages=msgs, stream=False,
+                             think=False,
+                             options={"temperature": 0.0, "num_ctx": num_ctx,
+                                      "num_predict": max_tokens})
+            if tools:
+                _kw["tools"] = tools
+            resp = await _await_with_safety(ollama_client.chat(**_kw), safety_queue)
+            if resp is _SAFETY_ABORT:
+                raise _VerifyStopped()
+            _msg = resp.message
+            _raw = getattr(_msg, "tool_calls", None)
+            return (_verify_content(_msg),
+                    _adapt_ollama_tool_calls(_raw) if _raw else None)
+        _kw = dict(model=model, messages=msgs, max_tokens=max_tokens,
+                   temperature=0.0, stream=False)
+        if tools:
+            _kw["tools"] = tools
+        # Asked of the chat template, which is where a hybrid model's thinking
+        # is switched.  A template without the switch ignores an unknown
+        # variable, but a server that validates them rejects the request — so
+        # a rejection is retried plainly and remembered for the process.
+        _no_think = {"chat_template_kwargs": {"enable_thinking": False}}
+        for _attempt in (_no_think, {}):
+            if _attempt and host in _NO_TEMPLATE_KWARGS:
+                continue
+            try:
+                resp = await _await_with_safety(
+                    client.chat.completions.create(**_kw, extra_body=_attempt),
+                    safety_queue)
+                break
+            except OpenAIError as e:
+                if not _attempt:
+                    raise
+                logger.info("Host %s rejected chat_template_kwargs (%s); "
+                            "running the fact-check without it.", host, e)
+                _NO_TEMPLATE_KWARGS.add(host)
+        if resp is _SAFETY_ABORT:
+            raise _VerifyStopped()
+        _msg = resp.choices[0].message
+        return _verify_content(_msg), (_msg.tool_calls or None)
+
+    async def _verify_run_tools(tool_calls: list, msgs: list) -> None:
+        """Run the lookups the checker asked for, into its own message list.
+
+        Its own list, not the run's: the check is a separate conversation
+        about the answer, and folding its detour back into the history the
+        answer was written from would rewrite the evidence under it.
+        """
+        _args = ((lambda a: json.loads(a)) if is_ollama else (lambda a: a))
+        _history = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name,
+                              "arguments": _args(tc.function.arguments)}}
+                for tc in tool_calls
+            ],
+        }
+        _t0 = time.monotonic()
+        _tool_log: list = []
+        # A fresh call history, so a lookup the run already made during the
+        # task is not refused here as a repeat — checking a claim against the
+        # same source the answer used is the point, not a loop.
+        bail = await _handle_structured_tool_calls(
+            tool_calls, _history, tool_registry, timeout, data_path,
+            chat_ui, verbose, msgs, [], MAX_REPEATED_TOOL_CALLS,
+            safety_queue, session_id=session_id, tool_log=_tool_log,
+        )
+        _m.add_tools([tc.function.name for tc in tool_calls],
+                     time.monotonic() - _t0, runs=_tool_log)
+        if bail is _SAFETY_ABORT:
+            raise _VerifyStopped()
+
+    async def _fact_check(answer: str, msgs: list) -> str:
+        """The answer the user keeps: the draft, or a corrected version of it.
+
+        Runs after the draft has finished streaming, so the user has already
+        read it — this decides whether what they read stands.
+        """
+        if not verify_answers or not answer or not needs_verification(answer):
+            return answer
+        if not safety_queue.empty():
+            return answer
+        if chat_ui and hasattr(chat_ui, "verification_start"):
+            chat_ui.verification_start()
+        _t0 = time.monotonic()
+        try:
+            checked, note, issues = await verify_answer(
+                task=task_instruction, answer=answer, messages=msgs,
+                ask=_verify_ask,
+                run_tools=_verify_run_tools if _verify_tools else None,
+                tools=_verify_tools,
+                max_tool_turns=verify_max_tool_turns,
+                # A thinking model reasons through every claim before writing
+                # the verdict, and a budget it overruns yields no verdict at
+                # all rather than a shorter one.
+                verdict_max_tokens=min(max_tokens, 8192),
+                revision_max_tokens=max_tokens,
+                log=lambda message, level="info": _log_to_ui_or_verbose(
+                    message, chat_ui, verbose, level=level),
+            )
+        except Exception as e:
+            logger.warning("Fact-check pass failed: %s", e)
+            checked, note, issues = answer, "", []
+        _m.add_verification(time.monotonic() - _t0, len(issues), bool(note))
+        if chat_ui and hasattr(chat_ui, "verification_end"):
+            chat_ui.verification_end(checked, note)
+        return checked
 
     while True:
         iteration_count += 1
@@ -2970,7 +3174,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # Stitch on any text from earlier turns that were truncated and resumed.
             if _final_answer_prefix:
                 _final = _final_answer_prefix + _final
-            return _recover_dropped_answer(_final, _prose_before_tools)
+            # The one exit that hands back an answer about the world.  Every
+            # other return above is the loop reporting on itself — a limit hit,
+            # a model that cannot call tools — and there is nothing in those to
+            # check against evidence.
+            return await _fact_check(
+                _recover_dropped_answer(_final, _prose_before_tools), messages)
 
         # Keep the answer text written ahead of this tool call.  A model that
         # answers and then calls one last tool often signs off with "Done." —

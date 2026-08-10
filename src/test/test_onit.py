@@ -158,6 +158,19 @@ class TestFriendlyToolStatus:
         adapter.stream_token("covers tuition.")
         assert starts == [1]
 
+    def test_fact_check_reports_as_status_not_as_answer_text(self):
+        """The draft is already on the client's screen; the check is work
+        happening behind it, so it must not append to the message."""
+        statuses, tokens = [], []
+        adapter = StreamingAdapter(
+            on_token=lambda tok, full: tokens.append(tok),
+            on_tool_status=statuses.append,
+        )
+        adapter.verification_start()
+        adapter.verification_end("The corrected answer.", "3.1M, not 4.2M")
+        assert statuses == ["Checking the facts…", ""]
+        assert tokens == []
+
 
 # ── OnIt.__init__ ───────────────────────────────────────────────────────────
 
@@ -486,6 +499,16 @@ class TestProcessTask:
         assert kwargs.get("max_planning_continuations") == 4
 
     @pytest.mark.asyncio
+    async def test_fact_check_keys_are_forwarded(self, tmp_path):
+        kwargs = await self._chat_kwargs_for(tmp_path, {"serving": {
+            "host": "http://localhost:8000/v1",
+            "verify_answers": False,
+            "verify_max_tool_turns": 0,
+        }})
+        assert kwargs.get("verify_answers") is False
+        assert kwargs.get("verify_max_tool_turns") == 0
+
+    @pytest.mark.asyncio
     async def test_unset_loop_policy_keys_are_not_forwarded(self, tmp_path):
         """An unset key must not appear at all, so chat()'s signature stays the
         single place each default is defined."""
@@ -496,7 +519,8 @@ class TestProcessTask:
         assert kwargs.get("max_chat_iterations") == 25
         for absent in ("max_repeated_tool_calls", "max_api_retries",
                        "max_planning_continuations", "max_ack_continuations",
-                       "max_final_continuations"):
+                       "max_final_continuations", "verify_answers",
+                       "verify_max_tool_turns"):
             assert absent not in kwargs
 
 
