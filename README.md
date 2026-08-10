@@ -191,50 +191,69 @@ writes — tool results from ten turns ago, already decayed to a summary, next t
 whatever the weights remember. That is where a figure drifts by a digit: the
 search result was right and the sentence quoting it is not.
 
-So OnIt checks the answer after it is written. The draft streams to you at full
-speed — nothing is held back — and once it is finished it is checked against the
-evidence the run actually gathered: tool output, documents read, what you typed.
-That is one small call and no lookups, which is the point — where the evidence
-contradicts the answer, the answer is corrected and reissued with one line
-saying what changed:
+So OnIt checks the answer after it is written — in two stages, because being
+careful and being quick want opposite things.
+
+**The stage you wait for** is bounded at two seconds and usually costs nothing
+at all. Every figure in the answer that appears verbatim in a document the run
+read, or on a source trusted about that subject, is cleared by string
+comparison before any model is involved — that is where a drifting digit shows
+up, and it does not need an LLM to see. Whatever is left gets one small check
+against the gathered evidence, with no lookups behind it. Where the evidence
+contradicts the answer, the finding is flagged in a line underneath:
 
 ```
-The 2019 filing puts revenue at 3.1M …
+The 2019 filing puts revenue at 4.2M …
 
-Revised after fact-check: 3.1M per the filing, not 4.2M
+Correction after fact-check: revenue was 3.1M
 ```
+
+Flagged rather than rewritten, because rewriting means generating the whole
+answer a second time, at the same speed it was written the first time. That is
+what used to double a turn.
+
+**The stage that runs behind you** starts once the answer is yours and has no
+clock on it. It can make read-only lookups for claims the run gathered no
+evidence about (search, file reads — never a write or a shell command), and it
+does rewrite the answer when something is wrong. If it finds something, the
+answer is corrected where it stands and a line says what changed — in the
+browser, in place; in the terminal, at the top of your next turn, since a
+terminal that writes under a half-typed line is worse than one that waits. Ask
+anything else and the check is cancelled outright: a correction to an answer
+you have moved past is not worth the interruption. It only runs where there is
+somewhere to show it, so one-shot callers (A2A) never start one.
+
+Measured on Qwen3.6-27B, against 5–15s to write the answer itself:
+
+| | you wait |
+|---|---:|
+| every figure came from a document you gave it | **0.00s** — no call at all |
+| clean check against gathered evidence | **0.2–1.5s** |
+| two wrong figures found and flagged | **0.8–1.6s** |
+| endpoint slow or busy | **2.0s** ceiling, then the draft stands |
+
+The check runs with the model's chain of thought switched off: comparing a
+sentence against a source is recognition, not deliberation. The same verdicts
+that take 0.19s that way take **15–21s** with a hybrid model left to reason its
+way through them, so a server whose chat template has no such switch is detected
+— by a genuine refusal of the parameter, never by a timeout or a bad gateway —
+and given room to think instead.
 
 Answers with nothing checkable in them ("I've saved the file, let me know if
 you'd like it formatted differently") skip the check, and so do runs that
-gathered no evidence to check against — there is nothing there but the same
-weights that wrote the draft. A check that fails, times out, or comes back
-unreadable leaves the draft exactly as written — it can correct an answer,
-never lose one.
-
-A claim the evidence simply does not cover is left alone rather than doubted.
-Chasing it means read-only lookups (search, file reads — never a write or a
-shell command), and each round is a round trip, a tool run, and another verdict
-call stacked behind an answer you are already reading. Raise
-`verify_max_tool_turns` if you want that; it is off by default.
-
-The check runs with the model's chain of thought switched off: comparing a
-sentence against a source is recognition, not deliberation, and a hybrid model
-left to reason its way through a verdict turns a check that runs behind a
-finished answer into a wait you notice. Measured on Qwen3.6-27B, against
-10–15s to write the answer itself:
-
-| | with thinking | without |
-|---|---:|---:|
-| clean verdict, two-paragraph answer | 6.7s | **0.2s** |
-| two wrong figures found and rewritten | 18.0s | **2.2s** |
-
-Same verdicts either way. A server whose chat template has no such switch is
-detected once and the check simply runs the way that host accepts.
+gathered no evidence to check against. A check that fails, times out, or comes
+back unreadable leaves the answer exactly as written — it can correct an
+answer, never lose one. A claim the evidence simply does not cover is left
+alone rather than doubted, unless the background stage can look it up.
 
 ```yaml
 serving:
-  verify_answers: true       # false hands back the draft unchecked
-  verify_max_tool_turns: 0   # default: gathered evidence only, no lookups
+  verify_answers: true       # false hands back the answer unchecked
+  verify_timeout_s: 2        # the ceiling on what you wait for
+  verify_background: true    # keep checking behind the answer
+  verify_max_tool_turns: 2   # lookups the background stage may make
+  verify_trusted_domains:    # added to the built-in list
+      - "docs.internal.example.com"
 ```
 
 The per-run log line reports it alongside the rest of the timing:

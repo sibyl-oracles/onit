@@ -103,6 +103,9 @@ class ChatUI:
         self.messages = deque(maxlen=max_messages)
         self.display_messages = display_messages
         self.agent_cursor = agent_cursor
+        # Corrections from a fact-check that finished after its answer did.
+        # Held rather than printed: see verification_correction().
+        self.pending_corrections: list[str] = []
         # Input history for arrow key navigation (like bash)
         self.input_history: deque[str] = deque(maxlen=max_history)
         self.history_index = -1  # -1 means not browsing history
@@ -664,6 +667,43 @@ class ChatUI:
                 )
                 break
         self._render_revised_answer(content)
+
+    def verification_correction(self, answer: str, note: str) -> None:
+        """A correction that arrived after the answer was already final.
+
+        Not printed when it lands.  The user is at the prompt by then, quite
+        possibly mid-word, and this loop reads keystrokes in raw mode — writing
+        under the cursor would scramble the line they are typing.  So the
+        corrected text replaces the stored message and the note is queued, and
+        both appear at the top of the next turn, when ``get_user_input`` clears
+        and redraws the panel from ``self.messages`` anyway.
+
+        If the user never asks anything else, they never see it.  That is the
+        right trade: they were done with the answer, and a terminal that
+        interrupts a finished conversation to revise it is worse than one that
+        stays quiet.
+        """
+        if not note:
+            return
+        content = re.sub(r"</?(?:answer|think|stop)>", "", answer,
+                         flags=re.IGNORECASE).strip()
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i].role == "assistant":
+                self.messages[i] = Message(
+                    role="assistant", content=content,
+                    timestamp=self.messages[i].timestamp,
+                    elapsed=self.messages[i].elapsed,
+                    name=self.messages[i].name,
+                )
+                break
+        self.pending_corrections.append(note)
+
+    def flush_corrections(self) -> None:
+        """Show what the background check found, at the top of the next turn."""
+        for note in self.pending_corrections:
+            self.console.print(f"  ↻ Correction to the previous answer: {note}",
+                               style="bold yellow")
+        self.pending_corrections.clear()
 
     def _render_revised_answer(self, answer: str) -> None:
         """Print the corrected answer in the same block style as a streamed one."""
@@ -1420,6 +1460,10 @@ class ChatUI:
                 # thinking indicator so the console is free for streaming tokens.
                 self.console.print(self.render())
                 self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
+                # The panel above already shows the corrected text; this says
+                # what changed, and now is when it can be said without landing
+                # on top of a line being typed.
+                self.flush_corrections()
                 self.console.print()
                 return user_input
             # capture control-d

@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,8 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from model.serving.verify import (CORRECTION_PREFIX, NOTE_PREFIX, append_note,
                                   build_revision_messages, build_verdict_messages,
-                                  evidence_digest, needs_verification,
-                                  parse_verdict, revision_note, verify_answer)
+                                  claim_tokens, covered_by_trusted_sources,
+                                  evidence_digest, is_trusted_url,
+                                  needs_verification, parse_verdict,
+                                  revision_note, verify_answer)
 from model.serving.chat import _NO_TEMPLATE_KWARGS, chat, reset_endpoint_caches
 
 
@@ -474,6 +477,99 @@ class TestVerifyAnswer:
             assert "Revenue was 3.1M." in call["messages"][1]["content"]
 
 
+# ── the free pass ───────────────────────────────────────────────────────────
+
+class TestTrustedSources:
+    def test_figures_and_links_are_what_gets_compared(self):
+        tokens = claim_tokens('Revenue was 3.1M in 2019, per '
+                              'https://example.com/f and "the strongest quarter '
+                              'on record" — 61% margin.')
+        assert "3.1" in tokens
+        assert "2019" in tokens
+        assert "61%" in tokens
+        assert "https://example.com/f" in tokens
+        assert "the strongest quarter on record" in tokens
+
+    def test_single_digits_are_not_compared(self):
+        """They match any text mentioning any number, so requiring them proves
+        nothing — "3 files updated" is not a claim about the world."""
+        assert claim_tokens("I updated 3 files and 2 folders.") == []
+
+    def test_thousands_separators_do_not_break_a_match(self):
+        assert "4200" in claim_tokens("Headcount reached 4,200 last year.")
+
+    def test_a_document_read_is_its_own_authority(self):
+        messages = [{"role": "tool", "name": "read_file",
+                     "content": "revenue: 3.1M\nheadcount: 118"}]
+        assert covered_by_trusted_sources(
+            "Revenue was 3.1M and headcount finished at 118.", messages)
+
+    def test_a_figure_the_documents_do_not_have_is_not_cleared(self):
+        messages = [{"role": "tool", "name": "read_file",
+                     "content": "revenue: 3.1M\nheadcount: 118"}]
+        assert not covered_by_trusted_sources(
+            "Revenue was 4.2M and headcount finished at 118.", messages)
+
+    def test_what_the_user_typed_is_trusted(self):
+        """A figure they gave us is not one the model can have invented."""
+        assert covered_by_trusted_sources(
+            "Yes — 3.1M against the 2.4M you mentioned is a 29% rise.",
+            [{"role": "user",
+              "content": "we did 3.1M this year against 2.4M last year, is that 29%?"}])
+
+    def test_a_reputable_source_is_trusted(self):
+        messages = [{"role": "tool", "name": "search",
+                     "content": "https://en.wikipedia.org/wiki/Foo — founded 1876, "
+                                "population 2,300"}]
+        assert covered_by_trusted_sources(
+            "It was founded in 1876 and has a population of 2,300.", messages)
+
+    def test_a_mixed_result_page_is_not_a_reputable_source(self):
+        """One trusted link among several does not make the page trusted: there
+        is no way to tell from here which hit a given sentence came from."""
+        messages = [{"role": "tool", "name": "search",
+                     "content": "https://en.wikipedia.org/wiki/Foo founded 1876\n"
+                                "https://random-blog.example/x says 1877"}]
+        assert not covered_by_trusted_sources("It was founded in 1876.", messages)
+
+    def test_an_untrusted_site_is_not_trusted(self):
+        messages = [{"role": "tool", "name": "search",
+                     "content": "https://contentfarm.example/a — founded 1876"}]
+        assert not covered_by_trusted_sources("It was founded in 1876.", messages)
+
+    def test_government_and_academic_suffixes_are_trusted(self):
+        assert is_trusted_url("data.census.gov/table")
+        assert is_trusted_url("https://cs.stanford.edu/paper")
+        assert is_trusted_url("www.en.wikipedia.org/wiki/X")
+        assert not is_trusted_url("govern.example.com")
+        assert not is_trusted_url("notwikipedia.org")
+
+    def test_a_deployment_can_add_its_own(self):
+        messages = [{"role": "tool", "name": "search",
+                     "content": "https://docs.internal.corp/rev — revenue 3.1M"}]
+        assert covered_by_trusted_sources(
+            "Revenue was 3.1M for the year.", messages,
+            domains=("docs.internal.corp",))
+
+    def test_prose_with_nothing_comparable_is_not_cleared(self):
+        """It may still assert plenty; this pass just cannot settle it."""
+        assert not covered_by_trusted_sources(
+            "It is the only implementation that never allocates.",
+            [{"role": "tool", "name": "read_file", "content": "notes"}])
+
+    @pytest.mark.asyncio
+    async def test_a_covered_answer_costs_no_call_at_all(self):
+        ask = _Ask()  # any call at all raises
+        answer, note, issues = await verify_answer(
+            task="revenue?", answer=DRAFT.replace("4.2M", "3.1M"),
+            messages=[{"role": "tool", "name": "read_file",
+                       "content": "2019 revenue: 3.1M — best year since the "
+                                  "restructuring, held ever since"}],
+            ask=ask)
+        assert (note, issues) == ("", [])
+        assert ask.calls == []
+
+
 # ── prompts ─────────────────────────────────────────────────────────────────
 
 class TestPrompts:
@@ -534,7 +630,16 @@ REVISED = ("The 2019 filing puts revenue at 3.1M, which is the figure quoted in 
            "the summary table on page 3 of the report you asked about.")
 
 
-async def _run_chat(replies, **kwargs):
+async def _run_chat(replies, background=None, **kwargs):
+    """Drive chat() against scripted completions.
+
+    ``background`` collects the deep check chat() wants to hand off, the way a
+    caller that owns the session would.  Left out, no background check is
+    scheduled at all — which is what a surface with no way to show a late
+    correction gets.
+    """
+    if background is not None:
+        kwargs["background_verify"] = background.append
     client = AsyncMock()
     client.chat.completions.create = AsyncMock(side_effect=replies)
     with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
@@ -568,16 +673,18 @@ class TestChatWiring:
         assert client.chat.completions.create.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_a_corrected_answer_is_what_the_caller_gets(self):
-        result, _ = await _run_chat([
+    async def test_a_finding_is_flagged_without_a_second_generation(self):
+        """The stage the user waits on never rewrites: a rewrite costs the
+        answer over again, which is the whole latency this split removes."""
+        result, client = await _run_chat([
             _completion(content=ANSWER),
             _completion(content='{"issues": [{"claim": "revenue at 4.2M", '
                                 '"problem": "contradicted", "correction": '
                                 '"3.1M in the filing"}]}'),
-            _completion(content=REVISED),
         ])
-        assert result.startswith(REVISED)
-        assert f"{NOTE_PREFIX}3.1M in the filing" in result
+        assert result.startswith(ANSWER)
+        assert f"{CORRECTION_PREFIX}3.1M in the filing" in result
+        assert client.chat.completions.create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_verification_can_be_turned_off(self):
@@ -620,18 +727,27 @@ class TestChatWiring:
         assert ui.verification_end.call_args[0][1] == ""  # nothing was revised
 
     @pytest.mark.asyncio
-    async def test_the_ui_is_handed_the_revision(self):
+    async def test_the_ui_is_handed_the_late_correction(self):
+        """The rewrite happens behind the answer, so it reaches the user
+        through the correction hook rather than as the returned answer."""
         ui = MagicMock()
         ui.messages = []
-        await _run_chat([
+        checks: list = []
+        result, _ = await _run_chat([
             _completion(content=ANSWER),
+            _completion(content='{"issues": []}'),
             _completion(content='{"issues": [{"claim": "4.2M", "correction": '
                                 '"3.1M in the filing"}]}'),
             _completion(content=REVISED),
-        ], chat_ui=ui)
-        answer, note = ui.verification_end.call_args[0]
+        ], chat_ui=ui, background=checks)
+        assert result == ANSWER  # the user was not kept waiting for any of it
+        assert len(checks) == 1
+
+        answer, note = await checks[0]
         assert answer.startswith(REVISED)
         assert note == "3.1M in the filing"
+        ui.verification_correction.assert_called_once()
+        assert ui.verification_correction.call_args[0][1] == "3.1M in the filing"
 
     @pytest.mark.asyncio
     async def test_only_read_only_tools_are_offered_to_the_checker(self):
@@ -643,12 +759,15 @@ class TestChatWiring:
             {"type": "function", "function": {"name": "search", "parameters": {}}},
         ]
         registry.tools = {"bash", "search"}
+        checks: list = []
         _, client = await _run_chat([
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
-        ], tool_registry=registry, verify_max_tool_turns=1)
-        verify_call = client.chat.completions.create.call_args_list[1]
-        offered = [t["function"]["name"] for t in verify_call.kwargs["tools"]]
+            _completion(content='{"issues": []}'),
+        ], tool_registry=registry, verify_max_tool_turns=1, background=checks)
+        await checks[0]
+        deep_call = client.chat.completions.create.call_args_list[2]
+        offered = [t["function"]["name"] for t in deep_call.kwargs["tools"]]
         assert offered == ["search"]
 
     @pytest.mark.asyncio
@@ -668,6 +787,120 @@ class TestChatWiring:
         assert "tools" not in client.chat.completions.create.call_args_list[1].kwargs
 
     @pytest.mark.asyncio
+    async def test_no_deep_check_without_somewhere_to_report_it(self):
+        """A caller that cannot show a late correction — a one-shot A2A task,
+        a script — should not be paying a model to produce one."""
+        result, client = await _run_chat([
+            _completion(content=ANSWER),
+            _completion(content='{"issues": []}'),
+        ])
+        assert result == ANSWER
+        assert client.chat.completions.create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_the_deep_check_is_handed_over_not_started(self):
+        """chat() is returning the answer; a task it started here would outlive
+        it with nobody left to cancel it."""
+        checks: list = []
+        result, client = await _run_chat([
+            _completion(content=ANSWER),
+            _completion(content='{"issues": []}'),
+            _completion(content='{"issues": []}'),
+        ], background=checks)
+        assert result == ANSWER
+        # Handed over, and nothing has run it yet.
+        assert len(checks) == 1
+        assert client.chat.completions.create.call_count == 2
+        await checks[0]
+        assert client.chat.completions.create.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_flagged_answer_is_not_checked_twice(self):
+        """The fast pass already put a correction under the answer; sending the
+        same answer round again re-reports what the user is looking at."""
+        checks: list = []
+        result, _ = await _run_chat([
+            _completion(content=ANSWER),
+            _completion(content='{"issues": [{"claim": "4.2M", "correction": '
+                                '"3.1M"}]}'),
+        ], background=checks)
+        assert CORRECTION_PREFIX in result
+        assert checks == []
+
+    @pytest.mark.asyncio
+    async def test_a_slow_check_does_not_hold_the_answer(self):
+        """The ceiling is the whole point: a busy endpoint costs the answer
+        nothing, and the deep check behind it still gets to look."""
+        calls = {"n": 0}
+
+        async def _create(**_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _completion(content=ANSWER)
+            await asyncio.sleep(5)
+            return _completion(content='{"issues": []}')
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=_create)
+        checks: list = []
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            started = time.monotonic()
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1", instruction="q",
+                safety_queue=asyncio.Queue(), verify_timeout_s=0.2,
+                background_verify=checks.append), timeout=30)
+        assert result == ANSWER
+        assert time.monotonic() - started < 3
+        assert len(checks) == 1
+        checks[0].close()
+
+    @pytest.mark.asyncio
+    async def test_a_transient_error_is_not_remembered_as_a_refusal(self):
+        """A timeout is not the host saying it does not take the parameter.
+        Recording it as one buys 15-21s of reasoning on every later check."""
+        from openai import OpenAIError
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _completion(content=ANSWER),
+            OpenAIError("Request timed out."),
+        ])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1", instruction="q",
+                safety_queue=asyncio.Queue()), timeout=30)
+        assert result == ANSWER                     # the check failed open
+        assert client.chat.completions.create.call_count == 2   # and did not retry
+        assert _NO_TEMPLATE_KWARGS == {}
+
+    @pytest.mark.asyncio
+    async def test_a_remembered_refusal_expires(self):
+        _NO_TEMPLATE_KWARGS["http://localhost:8000/v1"] = time.monotonic() - 1
+        _, client = await _run_chat([
+            _completion(content=ANSWER),
+            _completion(content='{"issues": []}'),
+        ])
+        verify_call = client.chat.completions.create.call_args_list[1]
+        assert (verify_call.kwargs["extra_body"]["chat_template_kwargs"]
+                == {"enable_thinking": False})
+
+    @pytest.mark.asyncio
+    async def test_a_host_that_thinks_anyway_gets_room_for_it(self):
+        """Where the switch does not exist the verdict arrives behind a
+        thousand tokens of reasoning, and a 512 budget truncates it away."""
+        _NO_TEMPLATE_KWARGS["http://localhost:8000/v1"] = time.monotonic() + 600
+        _, client = await _run_chat([
+            _completion(content=ANSWER),
+            _completion(content='{"issues": []}'),
+        ])
+        assert client.chat.completions.create.call_args_list[1].kwargs[
+            "max_tokens"] == 4096
+
+    @pytest.mark.asyncio
     async def test_a_verdict_in_the_reasoning_field_is_still_read(self):
         """Servers split reasoning out of `content` inconsistently, and one
         that does can leave `content` empty with the JSON in the other field."""
@@ -677,15 +910,16 @@ class TestChatWiring:
         assert result == ANSWER
 
     @pytest.mark.asyncio
-    async def test_the_verdict_gets_room_to_reason(self):
-        """Measured at ~400 output tokens for three claims against one source
-        on a thinking model. A budget it overruns yields no verdict at all."""
+    async def test_the_verdict_asks_for_only_what_a_verdict_needs(self):
+        """Measured at 6 output tokens for a clean bill of health and 108 for a
+        two-claim finding, with thinking off. A model that wants more than 512
+        is reasoning, and this stage does not pay for reasoning."""
         _, client = await _run_chat([
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
         ], max_tokens=32768)
         verify_call = client.chat.completions.create.call_args_list[1]
-        assert verify_call.kwargs["max_tokens"] >= 4096
+        assert verify_call.kwargs["max_tokens"] == 512
 
     @pytest.mark.asyncio
     async def test_the_check_does_not_pay_for_thinking(self):
@@ -730,7 +964,7 @@ class TestChatWiring:
 
     @pytest.mark.asyncio
     async def test_a_remembered_rejection_skips_the_doomed_call(self):
-        _NO_TEMPLATE_KWARGS.add("http://localhost:8000/v1")
+        _NO_TEMPLATE_KWARGS["http://localhost:8000/v1"] = time.monotonic() + 600
         result, client = await _run_chat([
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),

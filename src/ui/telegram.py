@@ -60,6 +60,25 @@ class TelegramGateway:
             logger.info("Created new session %s for Telegram chat %s", session_id, chat_id)
         return self._chat_sessions[chat_id]
 
+    def _correction_sender(self, message):
+        """Deliver a fact-check that finished after the answer was sent.
+
+        As a follow-up carrying the corrected answer, not a note on its own:
+        the wrong figure is still on their screen above it, and a bare "3.1M,
+        not 4.2M" leaves them holding two numbers with no way to tell which
+        one the answer now says.
+        """
+        def _on_correction(answer: str, note: str) -> None:
+            async def _send() -> None:
+                try:
+                    text = f"\u21bb Correction to my last answer ({note}):\n\n{answer}"
+                    for chunk in split_message(text, MAX_MESSAGE_LENGTH):
+                        await self._reply_with_retry(message, chunk)
+                except Exception as e:
+                    logger.warning("Could not send the correction: %s", e)
+            asyncio.ensure_future(_send())
+        return _on_correction
+
     async def _reply_with_retry(self, message, text):
         """Send a reply, retrying on Telegram network/timeout errors."""
         for attempt in range(self.MAX_RETRIES):
@@ -122,6 +141,8 @@ class TelegramGateway:
                 text,
                 session_path=session["session_path"],
                 data_path=session["data_path"],
+                session_id=session["session_id"],
+                correction_callback=self._correction_sender(update.message),
             )
         except Exception as e:
             logger.error("Error processing task: %s", e)
@@ -195,6 +216,8 @@ class TelegramGateway:
                 images=[image_path],
                 session_path=session["session_path"],
                 data_path=session["data_path"],
+                session_id=session["session_id"],
+                correction_callback=self._correction_sender(update.message),
             )
         except Exception as e:
             logger.error("Error processing image task: %s", e)

@@ -69,11 +69,13 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        'max_api_retries', 'max_planning_continuations',
                        'max_ack_continuations', 'max_final_continuations',
                        # Fact-checking the finished answer.  Defaults live in
-                       # chat(); `verify_answers: false` turns it off, and
-                       # `verify_max_tool_turns` (0 by default) is what it
-                       # costs to also chase claims the run never gathered
-                       # evidence for.
-                       'verify_answers', 'verify_max_tool_turns')
+                       # chat(): `verify_answers: false` turns it off,
+                       # `verify_timeout_s` caps what the user waits for, and
+                       # the rest govern the check that keeps going behind the
+                       # answer once it has been handed over.
+                       'verify_answers', 'verify_max_tool_turns',
+                       'verify_timeout_s', 'verify_background',
+                       'verify_trusted_domains')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
@@ -288,7 +290,7 @@ class StreamingAdapter:
 
     def __init__(self, on_token=None, on_complete=None, show_logs=False,
                  throttle_tokens=0, on_tool_status=None, on_tool_result=None,
-                 on_answer_start=None):
+                 on_answer_start=None, on_correction=None):
         self.on_token = on_token
         self.on_complete = on_complete
         self.show_logs = show_logs
@@ -296,6 +298,7 @@ class StreamingAdapter:
         self._on_tool_status = on_tool_status
         self._on_tool_result = on_tool_result
         self._on_answer_start = on_answer_start
+        self._on_correction = on_correction
         # Set by the chat loop before each turn; the answer is the prose that
         # starts once tools have run, and the client wants to know which of
         # several streamed phases that is.
@@ -533,7 +536,7 @@ class StreamingAdapter:
             self._on_tool_status(_STATUS_VERIFYING)
 
     def verification_end(self, answer: str, note: str) -> None:
-        """The check is done.
+        """The fast check is done.
 
         Nothing to send: a corrected answer is the answer this run returns, and
         every client already replaces what it streamed with the final response.
@@ -541,6 +544,19 @@ class StreamingAdapter:
         self._verifying = False
         if self._on_tool_status:
             self._on_tool_status("")
+
+    def verification_correction(self, answer: str, note: str) -> None:
+        """A correction from the check that kept running after the answer.
+
+        Forwarded rather than handled: by now this run has returned and the
+        client has rendered what it returned, so the only thing that can amend
+        what is on their screen is the client itself.
+        """
+        if self._on_correction and note:
+            try:
+                self._on_correction(answer, note)
+            except Exception as e:
+                logger.warning("Could not forward the correction: %s", e)
 
     def show_context_compaction(self, orig_msg_count: int, summary_chars: int) -> None:
         """Forward context compaction notice as a streaming token."""
@@ -828,6 +844,14 @@ class OnIt(BaseModel):
     # method and persists in another, so the sink chat() fills has to be
     # reachable from both; process_task keeps its own and never touches this.
     last_metrics: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # Fact-checks still running behind answers that have already been handed
+    # over, one per session.  Held here because this is the only object that
+    # sees the next task arrive, and the next task is what ends them.
+    background_checks: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # The interactive path answers in one method and saves in another, so the
+    # deep check chat() hands over waits here in between — it corrects the
+    # saved answer, and there is nothing saved yet when it arrives.
+    pending_deep_checks: list[Any] = Field(default_factory=list, exclude=True)
 
     @property
     def sandbox_available(self) -> bool:
@@ -1224,6 +1248,7 @@ class OnIt(BaseModel):
                            tool_status_callback=None,
                            tool_result_callback=None,
                            answer_start_callback=None,
+                           correction_callback=None,
                            session_id: str | None = None) -> str:
         """Process a single task and return the response string.
 
@@ -1248,6 +1273,12 @@ class OnIt(BaseModel):
             answer_start_callback: Optional callback ``() -> None`` fired when
                 the model starts writing prose after its tools have run — the
                 moment the answer begins, as opposed to the moment the run ends.
+            correction_callback: Optional callback ``(answer, note) -> None``
+                called if the fact-check that keeps running after this returns
+                finds something. Passing it is what turns that check on: a
+                caller with no way to show a late correction should not be
+                paying for one. It is called at most once, and never after the
+                same session starts another task.
         """
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
         effective_session_path = session_path or self.session_path
@@ -1274,9 +1305,13 @@ class OnIt(BaseModel):
                 on_tool_status=tool_status_callback,
                 on_tool_result=tool_result_callback,
                 on_answer_start=answer_start_callback,
+                on_correction=correction_callback,
             )
 
         effective_session_id = session_id or self.session_id
+        # Whatever was still being checked for this session is about to be
+        # answering a question nobody asked any more.
+        self._cancel_background_check(effective_session_id)
         _metrics: dict = {}
         kwargs = {
             'metrics': _metrics,
@@ -1296,6 +1331,12 @@ class OnIt(BaseModel):
                 kwargs[_k] = self.model_serving[_k]
         if self.prompt_intro:
             kwargs['prompt_intro'] = self.prompt_intro
+        # Collected rather than started: the deep check amends the answer this
+        # method has not saved yet, so it is handed to the loop below only once
+        # there is a saved answer for it to amend.
+        _deep_checks: list = []
+        if correction_callback:
+            kwargs['background_verify'] = _deep_checks.append
         MAX_PROCESS_RETRIES = 3
         last_response = None
         for _pt_attempt in range(1, MAX_PROCESS_RETRIES + 1):
@@ -1357,6 +1398,8 @@ class OnIt(BaseModel):
             logger.error("chat() returned empty/None after %d retries "
                          "across hosts: %s",
                          MAX_PROCESS_RETRIES, ", ".join(self.load_balancer.hosts))
+            for _stale in _deep_checks:
+                _stale.close()
             return "I am sorry \U0001f614. Could you please rephrase your question?"
 
         response = remove_tags(last_response)
@@ -1381,7 +1424,94 @@ class OnIt(BaseModel):
         self._record_trajectory(task, response, _metrics,
                                 effective_session_path,
                                 session_id or self.session_id, _adapter)
+        # The answer is saved, so the check behind it now has something to
+        # correct.  Anything the run collected earlier belonged to an attempt
+        # that was retried over, and is closed rather than run.
+        for _stale in _deep_checks[:-1]:
+            _stale.close()
+        if _deep_checks and effective_safety_queue.empty():
+            self._schedule_background_check(
+                effective_session_id, _deep_checks[-1], effective_session_path)
         return response
+
+    # ── fact-checks that outlive the answer ────────────────────────────────
+    #
+    # The fast check decides what the user reads; this owns the slow one that
+    # keeps going behind it.  Two rules make it safe to run at all: it belongs
+    # to exactly one session, and the next thing that session does ends it.  A
+    # correction to an answer the user has already moved past is not worth the
+    # tokens, and arriving late next to a newer answer it does not describe is
+    # worse than not arriving.
+
+    def _schedule_background_check(self, session_id: str, coro,
+                                   session_path: str) -> None:
+        """Own a deep check for this session, replacing any still running.
+
+        Showing the correction is not this method's job — the check tells the
+        UI itself, through the same object that was told it had started.  What
+        happens here is the half a UI cannot do: making the saved conversation
+        agree with what the user was just shown.
+        """
+        self._cancel_background_check(session_id)
+
+        async def _run():
+            try:
+                answer, note = await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Background fact-check failed: %s", e)
+                return
+            if not note:
+                return
+            # The session file holds what the next turn is built from, so a
+            # correction that is not written there is one the model will
+            # contradict later, citing itself.
+            self._amend_last_response(session_path, answer)
+
+        task = asyncio.ensure_future(_run())
+        self.background_checks[session_id] = task
+        task.add_done_callback(
+            lambda t, sid=session_id: (
+                self.background_checks.pop(sid, None)
+                if self.background_checks.get(sid) is t else None))
+
+    def _cancel_background_check(self, session_id: str) -> None:
+        """End the check still running for this session, if there is one."""
+        task = self.background_checks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def cancel_background_checks(self) -> None:
+        """End every one of them — shutdown, or a session being torn down."""
+        for session_id in list(self.background_checks):
+            self._cancel_background_check(session_id)
+
+    @staticmethod
+    def _amend_last_response(session_path: str, answer: str) -> None:
+        """Rewrite the last saved answer in place.
+
+        The session file is append-only JSONL and the correction belongs to the
+        turn already in it, not to a new one: a second record would replay to
+        the model as though the assistant had answered twice.
+        """
+        if not session_path or not answer:
+            return
+        try:
+            with open(session_path, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            while lines and not lines[-1].strip():
+                lines.pop()
+            if not lines:
+                return
+            record = json.loads(lines[-1])
+            record["response"] = answer
+            record["fact_checked"] = True
+            lines[-1] = json.dumps(record)
+            with open(session_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception as e:
+            logger.warning("Could not amend the saved answer: %s", e)
 
     def _record_trajectory(self, task: str, response: str, metrics: dict,
                            session_path: str, session_id: str, adapter) -> None:
@@ -1806,6 +1936,13 @@ class OnIt(BaseModel):
             pass
         self._record_trajectory(task, response, self.last_metrics,
                                 self.session_path, self.session_id, self.chat_ui)
+        if self.pending_deep_checks:
+            self._schedule_background_check(
+                self.session_id, self.pending_deep_checks.pop(),
+                self.session_path)
+            for _stale in self.pending_deep_checks:
+                _stale.close()
+            self.pending_deep_checks.clear()
 
     def _format_elapsed_time(self, elapsed_secs: float) -> str:
         """Format elapsed time string, including tokens/sec if available."""
@@ -1834,10 +1971,16 @@ class OnIt(BaseModel):
                     self.chat_ui.console.print("Exiting chat session...", style="warning")
                 if agent_task and not agent_task.done():
                     agent_task.cancel()
+                self.cancel_background_checks()
                 break
             if not task or len(task) == 0:
                 task = None
                 continue
+
+            # A new question ends the check still running behind the last
+            # answer.  Anything it had to say is about a screen the user has
+            # already scrolled past, and it would land under the wrong answer.
+            self._cancel_background_check(self.session_id)
 
             # clear all queues
             while not self.input_queue.empty():
@@ -1971,6 +2114,13 @@ class OnIt(BaseModel):
                         kwargs[_k] = self.model_serving[_k]
                 if self.prompt_intro:
                     kwargs['prompt_intro'] = self.prompt_intro
+                # The terminal is handed its correction by chat() itself — the
+                # UI object there is the real one — so all that is collected
+                # here is the check, to be started once the answer is saved.
+                for _stale in self.pending_deep_checks:
+                    _stale.close()
+                self.pending_deep_checks.clear()
+                kwargs['background_verify'] = self.pending_deep_checks.append
 
                 last_response = None
                 for attempt in range(1, MAX_AGENT_RETRIES + 1):

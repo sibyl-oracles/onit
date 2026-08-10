@@ -133,6 +133,24 @@ class ViberGateway:
             ) as resp:
                 return await resp.json()
 
+    def _correction_sender(self, user_id: str):
+        """Deliver a fact-check that finished after the answer was sent.
+
+        Viber has no way to edit a message that has already arrived, so the
+        correction goes out as a follow-up carrying the corrected answer — the
+        wrong one is still on their screen above it, and a note alone would
+        leave them holding two numbers and no way to tell which is current.
+        """
+        def _on_correction(answer: str, note: str) -> None:
+            async def _send() -> None:
+                try:
+                    await self._send_text(
+                        user_id, f"\u21bb Correction to my last answer ({note}):\n\n{answer}")
+                except Exception as e:
+                    logger.warning("Could not send the correction: %s", e)
+            asyncio.ensure_future(_send())
+        return _on_correction
+
     async def _send_text(self, to: str, text: str) -> None:
         """Send a text message to a Viber user with retry logic."""
         for chunk in split_message(text, MAX_MESSAGE_LENGTH):
@@ -194,6 +212,8 @@ class ViberGateway:
                 text,
                 session_path=session["session_path"],
                 data_path=session["data_path"],
+                session_id=session["session_id"],
+                correction_callback=self._correction_sender(user_id),
             )
         except Exception as e:
             logger.error("Error processing task: %s", e)
@@ -251,6 +271,8 @@ class ViberGateway:
                 images=[image_path],
                 session_path=session["session_path"],
                 data_path=session["data_path"],
+                session_id=session["session_id"],
+                correction_callback=self._correction_sender(user_id),
             )
         except Exception as e:
             logger.error("Error processing image task: %s", e)

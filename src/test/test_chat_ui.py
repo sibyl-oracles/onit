@@ -183,6 +183,37 @@ class TestVerificationDisplay:
         chat_ui.verification_start()
 
 
+class TestLateCorrection:
+    """A correction that lands after the answer was final. The user is at the
+    prompt by then and this loop reads keystrokes in raw mode, so nothing may
+    be printed under them until the panel redraws."""
+
+    def test_the_stored_answer_is_corrected_immediately(self, chat_ui):
+        chat_ui.add_message("user", "what was the revenue?")
+        chat_ui.add_message("assistant", "Revenue was 4.2M in 2019.")
+        chat_ui.verification_correction("Revenue was 3.1M in 2019.", "3.1M, not 4.2M")
+        assert chat_ui.messages[-1].content == "Revenue was 3.1M in 2019."
+        assert chat_ui.messages[0].content == "what was the revenue?"
+
+    def test_the_note_waits_for_the_next_turn(self, chat_ui):
+        chat_ui.add_message("assistant", "Revenue was 4.2M in 2019.")
+        chat_ui.verification_correction("Revenue was 3.1M in 2019.", "3.1M, not 4.2M")
+        assert chat_ui.pending_corrections == ["3.1M, not 4.2M"]
+        chat_ui.flush_corrections()
+        assert chat_ui.pending_corrections == []
+        chat_ui.flush_corrections()  # nothing left to say, and saying it twice
+
+    def test_an_empty_note_is_not_a_correction(self, chat_ui):
+        chat_ui.add_message("assistant", "Revenue was 4.2M in 2019.")
+        chat_ui.verification_correction("Revenue was 4.2M in 2019.", "")
+        assert chat_ui.pending_corrections == []
+
+    def test_a_correction_with_no_answer_to_amend_does_not_raise(self, chat_ui):
+        chat_ui.add_message("user", "hello")
+        chat_ui.verification_correction("Revenue was 3.1M.", "corrected")
+        assert chat_ui.pending_corrections == ["corrected"]
+
+
 # ── turn timing ─────────────────────────────────────────────────────────────
 
 class TestTurnTiming:

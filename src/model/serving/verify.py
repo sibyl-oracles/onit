@@ -35,6 +35,16 @@ job — a round trip per lookup, a tool run, and another verdict call after each
 — so it is off unless ``max_tool_turns`` is raised, and without it a claim the
 evidence simply does not speak to is left alone rather than doubted.
 
+The check runs in two stages, because correctness and latency want opposite
+things.  The first stage is what the user waits for and is kept to roughly a
+second: a free local pass that clears every figure already copied verbatim out
+of a document or a reputable source, and at most one small verdict call on
+what is left, under a hard deadline, correcting by note rather than by
+rewrite.  The second stage runs behind the answer once it has been handed over
+— lookups, uncovered claims, a real revision — and reports back only if it
+finds something and the user has not moved on.  ``verify_answer`` serves both;
+the caller decides which one it is asking for by what it allows.
+
 Everything here fails open: an unparseable verdict, a failed call, a revision
 that comes back empty or gutted, and the draft is what the user gets.  A
 fact-checker that can turn a good answer into a worse one is not worth having.
@@ -59,14 +69,17 @@ MAX_EVIDENCE_PER_ITEM = 1200
 # the part a reader actually reads.
 MAX_DRAFT_CHARS = 12000
 
-# Output budget for the two calls.  A verdict is a short JSON list — 79 tokens
-# for a two-claim finding on the model this was measured against — and the
-# caller asks for it with thinking switched off.  The ceiling is nonetheless
-# set for a model that thinks anyway, because some will: a server whose chat
-# template has no such switch, or a provider that ignores it.  Too small a
-# budget there does not buy a terser verdict, it buys finish_reason=length and
-# no verdict at all.  The revision is the answer again, so it gets room for one.
-VERDICT_MAX_TOKENS = 4096
+# Output budget for the two calls.  A verdict is a short JSON list: measured at
+# 6 tokens for a clean bill of health and 108 for a two-claim finding, with
+# thinking switched off as the caller asks for it.  512 is that with room to
+# spare, and a model that overruns it was reasoning rather than reporting.
+# THINKING_VERDICT_MAX_TOKENS is for the hosts that cannot switch thinking off
+# at all: there the same verdict arrives behind 1,100–1,500 tokens of
+# reasoning, and too small a budget does not buy a terser verdict, it buys
+# finish_reason=length and no verdict.  The revision is the answer again, so it
+# gets room for one.
+VERDICT_MAX_TOKENS = 512
+THINKING_VERDICT_MAX_TOKENS = 4096
 REVISION_MAX_TOKENS = 8192
 
 # Below this, an answer is a sentence — a greeting, a confirmation, a question
@@ -115,6 +128,155 @@ def needs_verification(answer: str, min_chars: int = MIN_ANSWER_CHARS) -> bool:
     return bool(_CLAIM_RE.search(text))
 
 
+# ── the free pass ───────────────────────────────────────────────────────────
+#
+# A figure that appears verbatim in a document the run read, or on a source
+# that is reputable about the thing being claimed, has already been checked:
+# the answer copied it correctly, and that is the whole question.  Deciding
+# that takes string comparison, not a model, so it happens first and costs
+# nothing — and when it clears the answer there is no call at all, in front of
+# the user or behind them.
+#
+# Tool results that are a source in their own right.  These read something the
+# user pointed at: their files, their documents, their directories.  There is
+# no more authoritative version of the user's own file to check it against.
+TRUSTED_TOOLS = frozenset({
+    "read_file", "search_document", "get_document_context", "local_search",
+    "extract_tables", "grep", "find_files", "search_directory",
+})
+
+# Domains taken at their word.  Deliberately short and boring: reference works,
+# primary sources, and the places that publish the record rather than report on
+# it.  Entries beginning with a dot match any host ending in them, so ".gov"
+# covers a country's ministries without listing them.  Extend per deployment
+# with `verify_trusted_domains` rather than editing this.
+DEFAULT_TRUSTED_DOMAINS = (
+    ".gov", ".edu", ".int", ".mil",
+    "wikipedia.org", "wikidata.org", "britannica.com",
+    "arxiv.org", "doi.org", "pubmed.ncbi.nlm.nih.gov", "nature.com",
+    "science.org", "ieee.org", "acm.org",
+    "who.int", "un.org", "worldbank.org", "imf.org", "oecd.org",
+    "europa.eu", "iso.org", "ietf.org", "rfc-editor.org", "w3.org",
+    "python.org", "docs.python.org", "developer.mozilla.org",
+    "github.com", "gitlab.com", "pypi.org", "npmjs.com",
+)
+
+_URL_RE = re.compile(r"https?://([^\s/\"'>)\]]+)", re.IGNORECASE)
+
+# What the free pass actually compares.  Numbers are the point — a figure
+# drifting by a digit is the failure this whole file exists for — alongside the
+# things that are wrong in the same literal way: a version, a URL, an address,
+# a quoted line.  Prose is not compared: two sentences can say the same true
+# thing in different words, and demanding a byte match would clear nothing.
+_TOKEN_PATTERNS = (
+    r"\d[\d,]*(?:\.\d+)?%?",                 # 3.1 · 4,200 · 61% · 2019
+    r"https?://[^\s\"'>)\]]+",               # links
+    r"\b[\w.+-]+@[\w-]+\.[\w.]+\b",          # addresses
+    r"[\"“]([^\"”]{12,})[\"”]",              # quoted material
+)
+_TOKEN_RE = re.compile("|".join(_TOKEN_PATTERNS))
+
+# One-digit numbers are skipped: "2 files", "3 steps", a list that reached 4.
+# They match any haystack that mentions any number, so requiring them proves
+# nothing, and demanding them proves nothing either.
+_MIN_TOKEN_LEN = 2
+
+
+def _normalize(text: str) -> str:
+    """Text as the free pass compares it: lowercase, no thousands separators."""
+    return re.sub(r"(?<=\d),(?=\d)", "", (text or "").lower())
+
+
+def claim_tokens(text: str) -> list[str]:
+    """The literals in an answer that a source can confirm byte for byte."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in _TOKEN_RE.finditer(text or ""):
+        token = _normalize(match.group(1) or match.group(0)).strip().rstrip(".,;:")
+        if len(token) < _MIN_TOKEN_LEN or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def is_trusted_url(url: str, domains: tuple = DEFAULT_TRUSTED_DOMAINS) -> bool:
+    """Whether a host is one of the sources taken at its word."""
+    # Takes a bare host or a whole URL: the caller may have either, and a
+    # scheme left on the front would be read as the first path segment.
+    host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", (url or "").strip().lower())
+    host = host.split("/")[0].split("?")[0].split("@")[-1].split(":")[0].strip()
+    host = host[4:] if host.startswith("www.") else host
+    if not host:
+        return False
+    for domain in domains:
+        domain = str(domain).lower().lstrip("*").strip()
+        if not domain:
+            continue
+        if domain.startswith("."):
+            if host.endswith(domain):
+                return True
+        elif host == domain or host.endswith("." + domain):
+            return True
+    return False
+
+
+def trusted_evidence(messages: list,
+                     domains: tuple = DEFAULT_TRUSTED_DOMAINS) -> str:
+    """The part of the transcript that counts as a source in its own right.
+
+    Document tools qualify outright — they read the user's own material.  A web
+    result qualifies only when every link in it is to a trusted host: a page of
+    mixed search hits is not a reputable source just because one reputable
+    source is among them, and there is no way to tell from here which hit a
+    given sentence came from.
+
+    The user's own turns are in here too.  A figure they typed is not something
+    the model invented, and an answer quoting it back has nothing to get wrong.
+    """
+    parts: list[str] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            parts.append(_text_of(msg.get("content")))
+            continue
+        if role != "tool":
+            continue
+        body = _text_of(msg.get("content"))
+        if not body.strip():
+            continue
+        name = str(msg.get("name") or "")
+        if name in TRUSTED_TOOLS:
+            parts.append(body)
+            continue
+        hosts = _URL_RE.findall(body)
+        if hosts and all(is_trusted_url(h, domains) for h in hosts):
+            parts.append(body)
+    return "\n".join(parts)
+
+
+def covered_by_trusted_sources(answer: str, messages: list,
+                               domains: tuple = DEFAULT_TRUSTED_DOMAINS) -> bool:
+    """Whether every checkable literal in the answer is already in a source.
+
+    True means the answer copied its figures correctly out of material that is
+    itself the authority, and no call of any kind is warranted.  False is not a
+    finding — it only means something in the answer was not settled here.
+    """
+    tokens = claim_tokens(answer)
+    if not tokens:
+        # Nothing this pass can compare.  The answer may still assert plenty
+        # ("the only implementation that never allocates"), so it is handed on
+        # rather than cleared.
+        return False
+    haystack = _normalize(trusted_evidence(messages, domains))
+    if not haystack:
+        return False
+    return all(token in haystack for token in tokens)
+
+
 def _clip(text: str, limit: int) -> str:
     text = text or ""
     if len(text) <= limit:
@@ -130,7 +292,8 @@ def _text_of(content: Any) -> str:
     return str(content or "")
 
 
-def evidence_digest(messages: list, max_chars: int = MAX_EVIDENCE_CHARS) -> str:
+def evidence_digest(messages: list, max_chars: int = MAX_EVIDENCE_CHARS,
+                    focus: Optional[list] = None) -> str:
     """The sourced material from a run, newest first, as plain text.
 
     Only tool results and what the user supplied count as evidence.  The
@@ -140,25 +303,39 @@ def evidence_digest(messages: list, max_chars: int = MAX_EVIDENCE_CHARS) -> str:
 
     Newest first because the tail of a long run is what the answer was written
     from, and it is the tail that survives the character budget.
+
+    ``focus`` is the answer's own literals (see ``claim_tokens``).  Given them,
+    the results that mention one are moved to the front, so what survives the
+    budget is the evidence bearing on the figures actually being checked rather
+    than whatever happened to run last.  Prompt size is latency here: every
+    thousand characters that does not settle a claim is time the user waits.
     """
-    items: list[str] = []
+    items: list[tuple[bool, str]] = []
+    focus = [f for f in (focus or []) if len(f) >= _MIN_TOKEN_LEN]
     for msg in reversed(messages or []):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
         if role == "tool":
-            name = msg.get("name") or "tool"
-            body = _clip(_text_of(msg.get("content")).strip(), MAX_EVIDENCE_PER_ITEM)
-            if body:
-                items.append(f"[{name}]\n{body}")
+            label = f"[{msg.get('name') or 'tool'}]"
         elif role == "user":
-            body = _clip(_text_of(msg.get("content")).strip(), MAX_EVIDENCE_PER_ITEM)
-            if body:
-                items.append(f"[user said]\n{body}")
+            label = "[user said]"
+        else:
+            continue
+        body = _clip(_text_of(msg.get("content")).strip(), MAX_EVIDENCE_PER_ITEM)
+        if not body:
+            continue
+        hay = _normalize(body)
+        items.append((any(token in hay for token in focus), f"{label}\n{body}"))
+
+    if focus:
+        # Stable: within the relevant group and within the rest, newest still
+        # comes first.
+        items.sort(key=lambda pair: not pair[0])
 
     out: list[str] = []
     used = 0
-    for item in items:
+    for _, item in items:
         if used + len(item) > max_chars:
             break
         out.append(item)
@@ -435,6 +612,8 @@ async def verify_answer(
     max_tool_turns: int = 0,
     verdict_max_tokens: int = VERDICT_MAX_TOKENS,
     revision_max_tokens: int = REVISION_MAX_TOKENS,
+    allow_revision: bool = True,
+    trusted_domains: tuple = DEFAULT_TRUSTED_DOMAINS,
     log: Optional[Callable] = None,
 ) -> tuple[str, str, list[dict]]:
     """Check a finished answer against its evidence and correct it if needed.
@@ -445,6 +624,13 @@ async def verify_answer(
     to ``messages``.  Both are supplied by the caller so that provider
     handling, tool dispatch, and session policy stay where they already live.
 
+    ``allow_revision`` is what separates the stage the user waits for from the
+    one that runs behind them.  Rewriting an answer means generating it a
+    second time, at the same tokens per second it was written the first time —
+    the single most expensive thing in this file, and the one thing that cannot
+    fit in a second.  With it off, a finding is reported as a note under the
+    answer instead and the call returns immediately.
+
     Returns ``(answer, note, issues)``.  The answer is ready to hand back —
     the note, when there is one, is already appended to it.  A clean check
     returns the draft byte for byte and an empty note.
@@ -454,7 +640,15 @@ async def verify_answer(
             log(message, level)
 
     with_tools = bool(run_tools and tools and max_tool_turns > 0)
-    evidence = evidence_digest(messages)
+    if covered_by_trusted_sources(answer, messages, trusted_domains):
+        # Every figure in the answer is already sitting in a document the run
+        # read or on a source that is authoritative about it.  Nothing a model
+        # could add here, so nothing is spent asking one.
+        _log("Fact-check skipped: every figure in the answer matches a "
+             "document, a trusted source, or what you asked.")
+        return answer, "", []
+
+    evidence = evidence_digest(messages, focus=claim_tokens(answer))
     if not evidence and not with_tools:
         # Nothing gathered and no way to gather anything: the only thing left to
         # check the draft against is the same weights that wrote it, which is a
@@ -515,6 +709,15 @@ async def verify_answer(
         return answer, "", []
 
     note = revision_note(issues)
+
+    if not allow_revision:
+        # The stage the user is waiting on.  A rewrite here would cost a whole
+        # second generation of the answer, so the finding goes under it as a
+        # line instead and the turn ends now.
+        _log(f"Fact-check found {len(issues)} claim(s); flagging them under "
+             f"the answer.", "warning")
+        return append_note(answer, note, CORRECTION_PREFIX), note, issues
+
     _log(f"Fact-check found {len(issues)} claim(s) to correct; revising the answer.",
          "warning")
 

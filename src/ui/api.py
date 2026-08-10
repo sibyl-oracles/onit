@@ -483,6 +483,10 @@ class ApiSession:
     # Session-scoped on purpose: one chat's search results say nothing about
     # what another chat's model output invented.
     sourced_emails: set = field(default_factory=set)
+    # The SSE queue of the last answer, kept reachable after that answer was
+    # delivered so a fact-check finishing behind it still has somewhere to
+    # send a correction.  See _run_task.
+    open_stream: Optional[queue.Queue] = None
 
 
 class WebApiUI:
@@ -1036,6 +1040,20 @@ class WebApiUI:
                 # it is grounded for this session.
                 self._record_email_sources(session, result or "")
 
+            def _on_correction(answer, note):
+                # Arrives after `done` — the answer is already on screen and
+                # the composer is already unlocked.  The stream is still open
+                # for exactly this, and closes as soon as it has been sent.
+                display, paths = self._extract_file_paths(
+                    answer, data_path=session.data_path,
+                    session_id=session.session_id)
+                events.put_nowait(("correction", {
+                    "content": display,
+                    "note": note,
+                    "files": self._file_infos(paths, session.session_id),
+                }))
+                self._close_stream(session, events)
+
             # The user's own message counts too — an address they typed is
             # by definition not something the model made up.
             self._record_email_sources(session, task)
@@ -1053,6 +1071,7 @@ class WebApiUI:
                 tool_status_callback=_on_tool_status,
                 tool_result_callback=_on_tool_result,
                 answer_start_callback=_on_answer_start,
+                correction_callback=_on_correction,
                 session_id=session.session_id,
             )
             elapsed = time.monotonic() - start
@@ -1095,8 +1114,17 @@ class WebApiUI:
             logger.error("Error processing task: %s", e)
             events.put_nowait(("error", {"message": f"Error: {e}"}))
         finally:
+            # The turn is over as far as the user is concerned: the composer
+            # unlocks here, whatever is still being checked behind the answer.
             session.processing = False
-            events.put_nowait(_END)
+            if self._awaiting_correction(session):
+                # Held open, alone, for a correction that may never come — a
+                # keepalive every 15s and no work behind it.  Whoever ends the
+                # check ends the stream: the correction itself, or the next
+                # task cancelling it.
+                session.open_stream = events
+            else:
+                events.put_nowait(_END)
 
     # ------------------------------------------------------------------
     # Voice
@@ -1144,6 +1172,37 @@ class WebApiUI:
                 await websocket.close()
             except Exception:
                 pass
+
+    def _awaiting_correction(self, session: ApiSession) -> bool:
+        """Whether a fact-check is still running behind this session's answer."""
+        checks = getattr(self._onit, "background_checks", None) or {}
+        task = checks.get(session.session_id)
+        return bool(task and not task.done())
+
+    def _close_stream(self, session: ApiSession, events: queue.Queue) -> None:
+        """End an SSE stream that was held open past its answer."""
+        if session.open_stream is events:
+            session.open_stream = None
+        events.put_nowait(_END)
+
+    def _cancel_session_check(self, session: ApiSession) -> None:
+        """End this session's background fact-check and the stream waiting on it."""
+        self._release_open_stream(session)
+        cancel = getattr(self._onit, "_cancel_background_check", None)
+        if cancel and self._loop:
+            self._loop.call_soon_threadsafe(cancel, session.session_id)
+
+    def _release_open_stream(self, session: ApiSession) -> None:
+        """Let go of the previous answer's stream, correction or not.
+
+        Called when a session starts something new or is torn down: the check
+        that stream was waiting on is about to be cancelled, so leaving the
+        browser holding an open connection would keep it waiting for an event
+        that can no longer arrive.
+        """
+        events, session.open_stream = session.open_stream, None
+        if events is not None:
+            events.put_nowait(_END)
 
     async def _event_stream(self, events: queue.Queue):
         """Async generator bridging the thread-safe event queue to SSE."""
@@ -1322,6 +1381,11 @@ class WebApiUI:
             if safe_files:
                 task += "\nRelevant files: " + " ".join(safe_files)
 
+            # Whatever was still being checked behind the last answer is about
+            # to be cancelled by this task, so the connection that was waiting
+            # on it is let go first.
+            self._release_open_stream(session)
+
             session.processing = True
             events: queue.Queue = queue.Queue()
             asyncio.run_coroutine_threadsafe(
@@ -1343,11 +1407,15 @@ class WebApiUI:
             sid, session = self._resolve_session(request)
             if session.processing and self._loop:
                 self._loop.call_soon_threadsafe(session.safety_queue.put_nowait, True)
+            # Stop means stop, including the check still running behind the
+            # previous answer.
+            self._cancel_session_check(session)
             return {"stopped": True, "session_id": sid}
 
         @app.post("/api/clear")
         async def api_clear(request: Request):
             sid, session = self._resolve_session(request)
+            self._cancel_session_check(session)
             if session.data_path and os.path.isdir(session.data_path):
                 shutil.rmtree(session.data_path, ignore_errors=True)
                 os.makedirs(session.data_path, exist_ok=True)

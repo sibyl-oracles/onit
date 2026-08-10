@@ -2,7 +2,9 @@
  * Talks to the FastAPI backend in src/ui/api.py:
  *   GET  /api/config /api/history /api/sessions /api/logs
  *   POST /api/chat (SSE) /api/chat/stop /api/clear /api/upload /api/sessions/new
- * SSE events: token, phase_end, status, answer_start, done, error.
+ * SSE events: token, phase_end, status, answer_start, done, correction, error.
+ * The stream can outlive `done`: a fact-check may still be running behind the
+ * answer, and `correction` is how it reports back.
  */
 (function () {
   "use strict";
@@ -1052,6 +1054,31 @@
           text: answer, node: turn.content, turn: d.turn, rating: null,
         });
         streamBlock = null;
+        // The answer is final and the composer unlocks here. The stream may
+        // stay open a while longer for a `correction`, but nothing about that
+        // is worth making the user wait on.
+        setProcessing(false);
+      },
+      correction(d) {
+        // The fact-check kept going after the answer was delivered and found
+        // something. Replace the text in place — a second bubble would read
+        // as the assistant saying it twice — and say what changed underneath.
+        if ((d.content || "").trim()) {
+          turn.content.innerHTML = "";
+          const revised = document.createElement("div");
+          turn.content.appendChild(revised);
+          renderMarkdown(revised, d.content);
+          addFileChips(turn.root, d.files);
+        }
+        const note = document.createElement("div");
+        note.className = "msg-correction";
+        const label = document.createElement("span");
+        label.className = "msg-correction-label";
+        label.textContent = "Corrected after fact-check:";
+        const body = document.createElement("span");
+        body.textContent = d.note || "";
+        note.append(label, body);
+        turn.content.appendChild(note);
       },
       error(d) {
         chip.remove();

@@ -322,6 +322,27 @@ textarea { font-family: var(--font); }
   padding: 10px 14px;
 }
 
+/* A fact-check that finished after its answer did. Quiet on purpose: the
+   corrected text is already in the bubble above, and this only says why it
+   changed. */
+.msg-correction {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.msg-correction-label {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 /* streaming cursor */
 .stream-cursor {
   display: inline-block;

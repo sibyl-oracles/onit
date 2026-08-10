@@ -48,17 +48,36 @@ serving:
   #
   # ── Fact-checking the answer ──────────────────────────────────────────────
   # The answer streams to the user as it is written, then is checked against
-  # the evidence the run gathered; a claim the evidence contradicts is
-  # corrected and the answer is reissued with a one-line note saying what
-  # changed. Answers with no checkable claim in them skip the check entirely,
-  # so short replies cost nothing. Set false to hand back the draft unchecked.
+  # the evidence the run gathered. The check runs in two stages so that being
+  # careful costs the user nothing: a fast one they wait for, and a thorough
+  # one that keeps going behind the answer they already have.
+  #
+  # Set false to hand back the answer unchecked.
   # verify_answers: true
-  # How many rounds of read-only lookups the check may run for claims the
-  # gathered evidence does not cover. 0 — the default — checks against that
-  # evidence alone: one small call, no tool runs, and claims the evidence never
-  # touched are left alone. Raise it to also chase uncovered claims, at a round
-  # trip plus a tool run plus another verdict call apiece.
-  # verify_max_tool_turns: 0
+  #
+  # The fast stage. Every figure already copied verbatim out of a document the
+  # run read, or off a trusted source, is cleared for free without a model
+  # call at all. What is left gets one small check, capped at this many
+  # seconds — past it the answer stands as written. Findings here are flagged
+  # in a line under the answer rather than rewritten into it, because a
+  # rewrite means generating the whole answer a second time.
+  # verify_timeout_s: 2
+  #
+  # The background stage: read-only lookups for claims the run gathered no
+  # evidence about, and a real rewrite when something is wrong. It starts once
+  # the answer has been handed over, and is cancelled the moment that session
+  # asks anything else. Only the surfaces that can show a late correction run
+  # it (web, terminal); A2A and other one-shot callers never start it.
+  # verify_background: true
+  # Rounds of lookups that stage may run. 0 keeps it to the gathered evidence.
+  # verify_max_tool_turns: 2
+  #
+  # Sources taken at their word, added to the built-in list (reference works,
+  # standards bodies, primary sources — see verify.py). Anything the run read
+  # from the user's own files and documents is trusted already.
+  # verify_trusted_domains:
+  #     - "docs.internal.example.com"
+  #     - ".example.gov"
 
 messages:
   safety_warning:  "Press 'Enter' key to stop all tasks."

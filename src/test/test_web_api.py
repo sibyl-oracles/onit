@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -15,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from starlette.testclient import TestClient
 
-from ui.api import ApiSession, WebApiUI, _sse
+from ui.api import _END, ApiSession, WebApiUI, _sse
 from ui import auth as ui_auth
 
 
@@ -24,10 +25,16 @@ from ui import auth as ui_auth
 class FakeOnit:
     """Stub of Onit.process_task that streams two tokens and returns a reply."""
 
-    def __init__(self, response="Hello world", delay=0.0, config_data=None):
+    def __init__(self, response="Hello world", delay=0.0, config_data=None,
+                 correction=None):
         self.response = response
         self.delay = delay
         self.calls = []
+        # (answer, note) reported by a fact-check that finishes after the
+        # answer has already been delivered, plus the registry the web UI
+        # reads to know one is still running.
+        self.correction = correction
+        self.background_checks = {}
         # Real dict, pointed at a temp path by the fixture: left empty, the
         # learn defaults would send trajectories to the developer's ~/.onit.
         self.config_data = config_data if config_data is not None else {}
@@ -35,8 +42,14 @@ class FakeOnit:
     async def process_task(self, task, session_path=None, data_path=None,
                            safety_queue=None, stream_callback=None,
                            stream_complete_callback=None, stats=None,
-                           tool_status_callback=None, session_id=None, **kwargs):
+                           tool_status_callback=None, correction_callback=None,
+                           session_id=None, **kwargs):
         self.calls.append(task)
+        if self.correction and correction_callback:
+            async def _late():
+                await asyncio.sleep(0.05)
+                correction_callback(*self.correction)
+            self.background_checks[session_id] = asyncio.ensure_future(_late())
         if self.delay:
             await asyncio.sleep(self.delay)
         if tool_status_callback:
@@ -651,6 +664,46 @@ class TestChatEndpoint:
         assert history["processing"] is False
         assert [m["role"] for m in history["messages"]] == ["user", "assistant"]
         assert ui._onit.calls == ["hi"]
+
+    def test_a_late_correction_reaches_the_browser(self, client, ui):
+        """The check that keeps running behind the answer has nowhere else to
+        report: the request that carried the answer is the only channel this
+        session has, so it stays open until the check is done with it."""
+        ui._onit.correction = ("Hello corrected world", "3.1M, not 4.2M")
+        sid = client.get("/api/history").json()["session_id"]
+        res = client.post("/api/chat", json={"message": "hi"},
+                          headers={"X-Session-Id": sid})
+        events = parse_sse(res.text)
+        names = [e for e, _ in events]
+        assert names.index("done") < names.index("correction")
+        correction = dict(events)["correction"]
+        assert correction["content"] == "Hello corrected world"
+        assert correction["note"] == "3.1M, not 4.2M"
+
+    def test_a_clean_check_just_closes_the_stream(self, client, ui):
+        sid = client.get("/api/history").json()["session_id"]
+        res = client.post("/api/chat", json={"message": "hi"},
+                          headers={"X-Session-Id": sid})
+        assert "correction" not in [e for e, _ in parse_sse(res.text)]
+
+    def test_the_next_question_lets_go_of_the_held_stream(self, client, ui):
+        """The check it was waiting on is about to be cancelled, so leaving the
+        browser connected would be waiting for an event that cannot arrive."""
+        sid, session = ui._get_or_create_session()
+        held = queue.Queue()
+        session.open_stream = held
+        client.post("/api/chat", json={"message": "next"},
+                    headers={"X-Session-Id": sid})
+        assert session.open_stream is None
+        assert held.get_nowait() is _END
+
+    def test_stop_lets_go_of_the_held_stream(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        held = queue.Queue()
+        session.open_stream = held
+        client.post("/api/chat/stop", headers={"X-Session-Id": sid})
+        assert session.open_stream is None
+        assert held.get_nowait() is _END
 
     def test_chat_empty_message_rejected(self, client):
         assert client.post("/api/chat", json={"message": " "}).status_code == 400

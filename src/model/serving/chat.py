@@ -32,7 +32,8 @@ from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
-from .verify import VERDICT_MAX_TOKENS, needs_verification, verify_answer
+from .verify import (DEFAULT_TRUSTED_DOMAINS, THINKING_VERDICT_MAX_TOKENS,
+                     VERDICT_MAX_TOKENS, needs_verification, verify_answer)
 
 try:
     from ...lib.text import split_instruction
@@ -126,6 +127,14 @@ def _as_int(value) -> int:
     in tests; none of those should poison an accumulator.
     """
     return value if isinstance(value, int) else 0
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    """A duration from config, which YAML may hand over as a string or None."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _as_positive_or_disabled(value, default: int = 50) -> int:
@@ -374,11 +383,54 @@ _MAX_CONTEXT_CACHE: dict = {}     # (host, model) -> (value, expires_at)
 _OLLAMA_CONTEXT_CACHE: dict = {}  # model -> (value, expires_at)
 _NEGATIVE_CACHE_TTL = 300.0       # seconds a "could not determine" answer sticks
 
-# Hosts that rejected chat_template_kwargs (see _verify_ask).  Learned once per
-# process rather than rediscovered on every answer: the fact-check asks the
-# template to skip thinking, and a server whose template has no such switch
-# should cost one failed call, not one per turn.
-_NO_TEMPLATE_KWARGS: set = set()
+# Hosts that rejected chat_template_kwargs (see _verify_ask).  Remembered so
+# that a server whose chat template has no thinking switch costs one failed
+# call rather than one per answer.
+#
+# Held with an expiry rather than for the life of the process, and set only
+# when the server actually refused the parameter.  What it costs to get this
+# wrong is not small: with the switch, a verdict measured 0.19s; without it,
+# the same verdict arrives behind 1,100–1,500 tokens of reasoning at 15–21s.
+# Blacklisting a host on any error at all — a timeout, a 502, a dropped
+# connection — would trade every later fact-check on that host for that, which
+# is exactly what used to happen.
+_NO_TEMPLATE_KWARGS: dict = {}      # host -> expires_at
+_NO_TEMPLATE_KWARGS_TTL = 1800.0    # seconds; a re-deploy gets a fresh hearing
+
+# What a server says when it means "I do not accept that parameter", as
+# opposed to "I am busy" or "I fell over".
+_TEMPLATE_KWARGS_REJECTED = (
+    "chat_template_kwargs", "enable_thinking", "extra_body",
+    "unexpected keyword", "unrecognized", "not permitted", "unknown field",
+)
+
+
+def _template_kwargs_unsupported(host: str) -> bool:
+    """Whether this host is currently known to refuse chat_template_kwargs."""
+    expires = _NO_TEMPLATE_KWARGS.get(host)
+    if expires is None:
+        return False
+    if time.monotonic() >= expires:
+        del _NO_TEMPLATE_KWARGS[host]
+        return False
+    return True
+
+
+def _is_parameter_rejection(error: Exception) -> bool:
+    """Whether the server refused the parameter, rather than the request.
+
+    A 400 naming the parameter is the server telling us it does not take it.
+    Everything else — a timeout, a rate limit, a 5xx, a connection reset — is
+    the request failing for reasons that will be different next time, and must
+    not be remembered as a property of the host.
+    """
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    text = str(error).lower()
+    if isinstance(status, int) and not (400 <= status < 500):
+        return False
+    if isinstance(status, int) and status in (408, 409, 425, 429):
+        return False
+    return any(marker in text for marker in _TEMPLATE_KWARGS_REJECTED)
 
 
 def reset_endpoint_caches() -> None:
@@ -2402,16 +2454,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # the cost: it is a trade of answer deliberation for latency, which is why
     # it is opt-in.
     think_tool_turns = kwargs.get('think_tool_turns', True)
-    # Fact-checking the finished answer (see verify.py).  On by default: the
-    # draft still streams at full speed, so what it costs is the pause between
-    # the last token and the answer being final, and what it buys is that the
-    # figure on screen is the figure the tool returned.  verify_max_tool_turns
-    # bounds how far the checker may go looking for evidence the run did not
-    # already gather; it defaults to 0 — the transcript alone — because each
-    # turn beyond that is a round trip, a tool run, and another verdict call
-    # stacked behind an answer the user is already reading.
+    # Fact-checking the finished answer (see verify.py).  On by default, and
+    # split in two so that being careful and being quick stop competing.
+    #
+    # verify_timeout_s caps the part the user waits for: past it the draft is
+    # final and the check carries on behind them.  verify_background is that
+    # second stage — lookups and a real rewrite, cancelled the moment the user
+    # asks something else — and it happens only when the caller passed a
+    # background_verify to own the task, since a surface with no way to show a
+    # late correction should not be spending tokens producing one.
+    # verify_max_tool_turns applies to that background stage alone; the fast
+    # one never calls a tool.
     verify_answers = kwargs.get('verify_answers', True)
-    verify_max_tool_turns = max(0, _as_int(kwargs.get('verify_max_tool_turns', 0)))
+    verify_max_tool_turns = max(0, _as_int(kwargs.get('verify_max_tool_turns', 2)))
+    verify_timeout_s = max(0.0, _as_float(kwargs.get('verify_timeout_s', 2.0), 2.0))
+    verify_background = kwargs.get('verify_background', True)
+    background_verify = kwargs.get('background_verify', None)
+    verify_trusted_domains = tuple(kwargs.get('verify_trusted_domains', None)
+                                   or DEFAULT_TRUSTED_DOMAINS)
 
     images_bytes = _load_images(images, chat_ui, verbose)
     # The standing rules go to the system message, where they stay put across
@@ -2603,10 +2663,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # Asked of the chat template, which is where a hybrid model's thinking
         # is switched.  A template without the switch ignores an unknown
         # variable, but a server that validates them rejects the request — so
-        # a rejection is retried plainly and remembered for the process.
+        # a rejection is retried plainly and remembered for a while.  Only a
+        # rejection: any other failure is re-raised, because retrying it
+        # without the switch would answer a transient error by permanently
+        # buying two orders of magnitude more latency per check.
         _no_think = {"chat_template_kwargs": {"enable_thinking": False}}
         for _attempt in (_no_think, {}):
-            if _attempt and host in _NO_TEMPLATE_KWARGS:
+            if _attempt and _template_kwargs_unsupported(host):
                 continue
             try:
                 resp = await _await_with_safety(
@@ -2614,11 +2677,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     safety_queue)
                 break
             except OpenAIError as e:
-                if not _attempt:
+                if not _attempt or not _is_parameter_rejection(e):
                     raise
                 logger.info("Host %s rejected chat_template_kwargs (%s); "
                             "running the fact-check without it.", host, e)
-                _NO_TEMPLATE_KWARGS.add(host)
+                _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
         if resp is _SAFETY_ABORT:
             raise _VerifyStopped()
         _msg = resp.choices[0].message
@@ -2657,11 +2720,29 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         if bail is _SAFETY_ABORT:
             raise _VerifyStopped()
 
+    def _verdict_budget() -> int:
+        """Output room for one verdict.
+
+        A verdict is a short JSON list and 512 tokens is that with room to
+        spare — unless this host cannot switch thinking off, in which case the
+        same verdict arrives behind a thousand tokens of reasoning and a small
+        budget buys finish_reason=length instead of a shorter answer.
+        """
+        ceiling = (VERDICT_MAX_TOKENS if not _template_kwargs_unsupported(host)
+                   else THINKING_VERDICT_MAX_TOKENS)
+        return min(max_tokens, ceiling)
+
+    def _verify_log(message: str, level: str = "info") -> None:
+        _log_to_ui_or_verbose(message, chat_ui, verbose, level=level)
+
     async def _fact_check(answer: str, msgs: list) -> str:
-        """The answer the user keeps: the draft, or a corrected version of it.
+        """The answer the user keeps, decided fast.
 
         Runs after the draft has finished streaming, so the user has already
-        read it — this decides whether what they read stands.
+        read it — and it is the last thing between them and a final answer,
+        which is the whole reason it is bounded.  Everything expensive is left
+        to ``_deep_check`` behind it: no lookups here, no rewrite, and a hard
+        deadline over the one call it does make.
         """
         if not verify_answers or not answer or not needs_verification(answer):
             return answer
@@ -2671,27 +2752,111 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             chat_ui.verification_start()
         _t0 = time.monotonic()
         try:
-            checked, note, issues = await verify_answer(
-                task=task_instruction, answer=answer, messages=msgs,
-                ask=_verify_ask,
-                run_tools=_verify_run_tools if _verify_tools else None,
-                tools=_verify_tools,
-                max_tool_turns=verify_max_tool_turns,
-                # A thinking model reasons through every claim before writing
-                # the verdict, and a budget it overruns yields no verdict at
-                # all rather than a shorter one.
-                verdict_max_tokens=min(max_tokens, 8192),
-                revision_max_tokens=max_tokens,
-                log=lambda message, level="info": _log_to_ui_or_verbose(
-                    message, chat_ui, verbose, level=level),
+            checked, note, issues = await asyncio.wait_for(
+                verify_answer(
+                    task=task_instruction, answer=answer, messages=msgs,
+                    ask=_verify_ask,
+                    # No tools and no rewrite: both cost more than the budget
+                    # this stage has, and both are what the deep check is for.
+                    run_tools=None, tools=None, max_tool_turns=0,
+                    allow_revision=False,
+                    verdict_max_tokens=_verdict_budget(),
+                    trusted_domains=verify_trusted_domains,
+                    log=_verify_log,
+                ),
+                timeout=verify_timeout_s if verify_timeout_s > 0 else None,
             )
+        except asyncio.TimeoutError:
+            # The ceiling exists so that a slow endpoint costs the answer
+            # nothing.  The draft stands, and the deep check behind it still
+            # gets to look at the same claims without a clock on it.
+            logger.info("Fact-check exceeded its %.1fs budget; keeping the draft.",
+                        verify_timeout_s)
+            _verify_log("Fact-check ran long; the answer stands while the check "
+                        "continues in the background.")
+            checked, note, issues = answer, "", []
         except Exception as e:
             logger.warning("Fact-check pass failed: %s", e)
             checked, note, issues = answer, "", []
         _m.add_verification(time.monotonic() - _t0, len(issues), bool(note))
         if chat_ui and hasattr(chat_ui, "verification_end"):
             chat_ui.verification_end(checked, note)
+        _schedule_deep_check(checked, msgs, already_found=bool(issues))
         return checked
+
+    async def _deep_check(answer: str, msgs: list) -> tuple[str, str]:
+        """The check that runs after the user has their answer.
+
+        Nothing here is on anyone's clock, so this is where the expensive parts
+        live: read-only lookups for claims the run never gathered evidence for,
+        and a real revision rather than a note.  It is cancelled outright when
+        the user asks something else — a correction to an answer they have
+        stopped caring about is not worth the tokens, let alone the
+        interruption.
+
+        Returns ``(answer, note)``; an empty note means nothing came of it and
+        the caller has nothing to show.
+        """
+        _t0 = time.monotonic()
+        try:
+            checked, note, issues = await verify_answer(
+                task=task_instruction, answer=answer, messages=msgs,
+                ask=_verify_ask,
+                run_tools=_verify_run_tools if _verify_tools else None,
+                tools=_verify_tools,
+                max_tool_turns=verify_max_tool_turns,
+                verdict_max_tokens=_verdict_budget(),
+                revision_max_tokens=max_tokens,
+                allow_revision=True,
+                trusted_domains=verify_trusted_domains,
+                log=_verify_log,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Background fact-check failed: %s", e)
+            return answer, ""
+        _m.add_verification(time.monotonic() - _t0, len(issues), bool(note))
+        if not note:
+            return answer, ""
+        logger.info("Background fact-check corrected %d claim(s) after %.1fs",
+                    len(issues), time.monotonic() - _t0)
+        # Told here rather than by the caller, because this is where the UI
+        # contract already lives — the same object that was told the check had
+        # started is the one owed the outcome.  Persisting it to the session is
+        # the caller's half; showing it is this one.
+        if chat_ui and hasattr(chat_ui, "verification_correction"):
+            try:
+                chat_ui.verification_correction(checked, note)
+            except Exception as e:
+                logger.warning("Could not deliver the correction: %s", e)
+        return checked, note
+
+    def _schedule_deep_check(answer: str, msgs: list, already_found: bool) -> None:
+        """Hand the deep check to whoever owns the session's background work.
+
+        Handed over rather than started here: this function returns the
+        answer, and a task started here would outlive it with nobody left to
+        cancel it when the user types their next question.  The caller owns the
+        session, so the caller owns the task — and a caller that has no way to
+        show a late correction simply does not take it, which is why this is
+        opt-in rather than opt-out.
+        """
+        if not (verify_answers and verify_background and background_verify):
+            return
+        if not answer or not needs_verification(answer):
+            return
+        if already_found:
+            # The fast pass already found and flagged something.  Sending the
+            # same answer round again would re-report what the user is already
+            # looking at.
+            return
+        if not safety_queue.empty():
+            return
+        try:
+            background_verify(_deep_check(answer, list(msgs)))
+        except Exception as e:  # a scheduler that refuses must not fail the turn
+            logger.warning("Could not schedule the background fact-check: %s", e)
 
     while True:
         iteration_count += 1

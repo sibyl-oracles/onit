@@ -560,9 +560,15 @@ class TestProcessTask:
             "host": "http://localhost:8000/v1",
             "verify_answers": False,
             "verify_max_tool_turns": 0,
+            "verify_timeout_s": 1.5,
+            "verify_background": False,
+            "verify_trusted_domains": ["docs.internal.corp"],
         }})
         assert kwargs.get("verify_answers") is False
         assert kwargs.get("verify_max_tool_turns") == 0
+        assert kwargs.get("verify_timeout_s") == 1.5
+        assert kwargs.get("verify_background") is False
+        assert kwargs.get("verify_trusted_domains") == ["docs.internal.corp"]
 
     @pytest.mark.asyncio
     async def test_unset_loop_policy_keys_are_not_forwarded(self, tmp_path):
@@ -578,6 +584,128 @@ class TestProcessTask:
                        "max_final_continuations", "verify_answers",
                        "verify_max_tool_turns"):
             assert absent not in kwargs
+
+
+# ── fact-checks that outlive the answer ─────────────────────────────────────
+
+class TestBackgroundChecks:
+    """The deep check runs after process_task returns, so what matters is who
+    owns it: it must be cancellable, it must correct the saved answer, and it
+    must not exist at all for a caller that cannot show what it finds."""
+
+    async def _run(self, tmp_path, correction_callback=None, answer="The answer"):
+        onit = _make_onit_for_async(tmp_path)
+        onit.safety_queue = asyncio.Queue()
+        mock_prompt_msg = MagicMock()
+        mock_prompt_msg.content.text = "Instruction"
+        mock_prompt_result = MagicMock()
+        mock_prompt_result.messages = [mock_prompt_msg]
+        mock_client = AsyncMock()
+        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_chat = AsyncMock(return_value=answer)
+        with patch("src.onit.Client", return_value=mock_client), \
+             patch("src.onit.chat", mock_chat):
+            result = await onit.process_task(
+                "q", correction_callback=correction_callback)
+        return onit, mock_chat, result
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_cannot_report_gets_no_deep_check(self, tmp_path):
+        _, mock_chat, _ = await self._run(tmp_path)
+        assert "background_verify" not in mock_chat.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_can_report_is_offered_one(self, tmp_path):
+        _, mock_chat, _ = await self._run(tmp_path, correction_callback=lambda *a: None)
+        assert callable(mock_chat.call_args.kwargs.get("background_verify"))
+
+    @pytest.mark.asyncio
+    async def test_the_next_task_ends_the_check_behind_the_last_answer(self, tmp_path):
+        """A correction to an answer the user has moved past is not worth the
+        tokens, and would land under the wrong answer."""
+        onit = _make_onit_for_async(tmp_path)
+        onit.safety_queue = asyncio.Queue()
+        started = asyncio.Event()
+
+        async def _never_finishes():
+            started.set()
+            await asyncio.sleep(3600)
+
+        onit._schedule_background_check(onit.session_id, _never_finishes(),
+                                        onit.session_path)
+        await started.wait()
+        task = onit.background_checks[onit.session_id]
+
+        mock_prompt_result = MagicMock()
+        mock_prompt_result.messages = [MagicMock()]
+        mock_prompt_result.messages[0].content.text = "Instruction"
+        mock_client = AsyncMock()
+        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        with patch("src.onit.Client", return_value=mock_client), \
+             patch("src.onit.chat", new_callable=AsyncMock, return_value="next"):
+            await onit.process_task("something else")
+
+        await asyncio.sleep(0)
+        assert task.cancelled() or task.done()
+        assert onit.session_id not in onit.background_checks
+
+    @pytest.mark.asyncio
+    async def test_a_correction_rewrites_the_saved_answer(self, tmp_path):
+        """The session file is what the next turn is built from. A correction
+        that is not written there is one the model contradicts later, citing
+        itself."""
+        onit, _, _ = await self._run(tmp_path, correction_callback=lambda *a: None)
+        saved = [json.loads(line) for line
+                 in open(onit.session_path, encoding="utf-8").read().splitlines()
+                 if line.strip()]
+        assert saved[-1]["response"] == "The answer"
+
+        async def _found():
+            return "The corrected answer", "3.1M, not 4.2M"
+
+        onit._schedule_background_check(onit.session_id, _found(), onit.session_path)
+        await onit.background_checks[onit.session_id]
+
+        saved = [json.loads(line) for line
+                 in open(onit.session_path, encoding="utf-8").read().splitlines()
+                 if line.strip()]
+        assert len(saved) == 1                      # amended, not appended
+        assert saved[-1]["response"] == "The corrected answer"
+        assert saved[-1]["fact_checked"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_clean_check_leaves_the_saved_answer_alone(self, tmp_path):
+        onit, _, _ = await self._run(tmp_path, correction_callback=lambda *a: None)
+
+        async def _clean():
+            return "The answer", ""
+
+        onit._schedule_background_check(onit.session_id, _clean(), onit.session_path)
+        await onit.background_checks[onit.session_id]
+        saved = [json.loads(line) for line
+                 in open(onit.session_path, encoding="utf-8").read().splitlines()
+                 if line.strip()]
+        assert saved[-1]["response"] == "The answer"
+        assert "fact_checked" not in saved[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_check_costs_nothing(self, tmp_path):
+        onit, _, _ = await self._run(tmp_path, correction_callback=lambda *a: None)
+
+        async def _boom():
+            raise RuntimeError("endpoint down")
+
+        onit._schedule_background_check(onit.session_id, _boom(), onit.session_path)
+        await onit.background_checks[onit.session_id]
+        saved = [json.loads(line) for line
+                 in open(onit.session_path, encoding="utf-8").read().splitlines()
+                 if line.strip()]
+        assert saved[-1]["response"] == "The answer"
+
 
 
 # ── OnItA2AExecutor ─────────────────────────────────────────────────────────
