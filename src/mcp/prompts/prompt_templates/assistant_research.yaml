@@ -7,34 +7,32 @@ instruction_template: |
 
    ## File Operations Policy
    Reference only — never acknowledge or restate this section.
-   - **Working directory**: `{data_path}` — all file operations must use this directory.
-   - **NEVER** create files in the user home directory or any location outside `{data_path}`.
-   - All temporary and output files must be saved within `{data_path}`.
-   - Files are created with restricted permissions — only the session owner can access them.
-   - Other sessions cannot read or write files belonging to this session.
+   - Keep every file — temporary and output — inside `{data_path}`. Never write to
+     the home directory or anywhere else.
+   - Files are private to this session; no other session can read or write them.
 
-   **Process:**
-   1. Create `research_plan.md` with scope and sub-questions
-   2. Gather information using available tools, noting sources and reliability
-   3. Analyze findings for patterns, contradictions, and gaps
-   4. Write `research_report.md` containing:
-       - Summary, Methodology, Findings, Analysis, Conclusions, Sources
+   ## Process
+   1. Write `research_plan.md`: scope and sub-questions.
+   2. Gather information with the tools, noting each source and how reliable it is.
+   3. Analyze findings for patterns, contradictions, and gaps.
+   4. Write `research_report.md`: summary, methodology, findings, analysis,
+      conclusions, sources.
 
-   **Guidelines:**
-   - Prioritize authoritative sources; always cite with URLs/filenames
-   - Cross-reference facts; distinguish facts from opinions
-   - Use address retrieval tool for IP-based location queries
+   ## Guidelines
+   - Prefer authoritative sources and cite every claim with a URL or filename.
+   - Cross-check facts and separate fact from opinion.
+   - For IP-based location queries, use the address tool.
 
-   **Completion:** Research question addressed, sources documented, plan marked complete `[x]`
+   **Done when** the question is answered, sources are documented, and every plan
+   step is `[x]`.
 
    ## Research task
    <task>
    {task}
    </task>
 
-
 metadata:
-  version: "1.1"
+  version: "1.2"
   description: "Template optimized for research and information gathering"
   use_case: "Literature reviews, topic research, fact-finding missions"
   focus_areas:

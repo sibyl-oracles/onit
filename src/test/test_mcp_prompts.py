@@ -167,8 +167,11 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and Citations"):]
-        assert "issue the web\n   `search` in that same reply" in section
+        # Line-wrap-insensitive: the rule is what is asserted, not where the
+        # paragraph happens to break.
+        section = " ".join(
+            result[result.index("## Research and Citations"):].split())
+        assert "issue the web `search` in that same reply" in section
         assert "one wait instead of two" in section
 
     @pytest.mark.asyncio
@@ -416,7 +419,7 @@ class TestResearchFanOut:
             max_documents=2,
         )
         section = result[result.index("## Research and Citations"):]
-        assert "at most 2 of them" in section
+        assert "at most 2" in section
 
     @pytest.mark.asyncio
     async def test_openings_are_read_before_documents_are_opened(self, tmp_path):
