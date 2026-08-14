@@ -137,6 +137,26 @@ class TestConsolidatedToolContracts:
             out[label] = list(inspect.signature(fn).parameters)
         return out
 
+    @staticmethod
+    def _json_schemas(name):
+        """The advertised parameter schema from each server.
+
+        This, not the Python signature, is what ToolRegistry hashes to tell a
+        replica from a collision — and it carries defaults, so two copies
+        agreeing on parameter names alone is not enough.
+        """
+        import asyncio
+        import importlib
+        import json
+        out = {}
+        for label, mod_path in (
+                ("tools", "src.mcp.servers.tasks.tools.mcp_server"),
+                ("bash", "src.mcp.servers.tasks.os.bash.mcp_server")):
+            mcp = importlib.import_module(mod_path).mcp
+            tool = asyncio.run(mcp.get_tool(name))
+            out[label] = json.dumps(tool.parameters, sort_keys=True)
+        return out
+
     def test_read_file_signatures_match(self):
         tools, bash = self._schemas("read_file").values()
         assert tools == bash
@@ -144,6 +164,20 @@ class TestConsolidatedToolContracts:
     def test_search_document_signatures_match(self):
         tools, bash = self._schemas("search_document").values()
         assert tools == bash
+
+    def test_bash_signatures_match(self):
+        """The Tools server re-registers bash; a default that drifts from the
+        bash server's (a literal 300 against its timeout ceiling, say) splits
+        one tool into two and drops the loser out of the rotation."""
+        tools, bash = self._json_schemas("bash").values()
+        assert tools == bash
+
+    def test_bash_timeout_default_is_owned_by_one_place(self):
+        """Neither copy hardcodes the number — the bash server resolves it at
+        call time, so ONIT_BASH_TIMEOUT moves it without editing signatures."""
+        import json
+        for schema in self._json_schemas("bash").values():
+            assert json.loads(schema)["properties"]["timeout"]["default"] is None
 
     def test_read_file_covers_all_three_modes(self):
         params = self._schemas("read_file")["bash"]
