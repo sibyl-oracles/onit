@@ -103,34 +103,8 @@ if IS_WINDOWS:
 mcp = FastMCP("Bash MCP Server")
 
 # Constants
-_DEFAULT_TIMEOUT = 300   # used when the caller names no timeout
-_DEFAULT_MAX_TIMEOUT = 1800  # hard ceiling on what a caller may ask for
+DEFAULT_TIMEOUT = 300
 MAX_OUTPUT_SIZE = 100000  # 100KB max output
-
-
-def _env_int(name: str, default: int) -> int:
-    """An int from the environment, falling back on anything unparseable."""
-    try:
-        return int(os.environ[name])
-    except (KeyError, ValueError):
-        return default
-
-
-def _default_timeout() -> int:
-    """Seconds a command gets when the caller names no timeout."""
-    return _env_int("ONIT_BASH_TIMEOUT", _DEFAULT_TIMEOUT)
-
-
-def _max_timeout() -> int:
-    """The longest timeout a caller may ask for.
-
-    Nothing above this tool bounds a command: the pooled MCP client calls
-    tools without a timeout, and OnIt's request timeout defaults to none, so
-    this ceiling is the only thing standing between a command that never
-    returns and a session that hangs forever.  Raise it for hosts that run
-    long builds; do not remove it.
-    """
-    return max(_env_int("ONIT_BASH_MAX_TIMEOUT", _DEFAULT_MAX_TIMEOUT), 1)
 
 # Data path for file creation (set via options['data_path'] in run())
 # All file writes are confined to this directory. Never use home folder.
@@ -548,53 +522,20 @@ _BLOCKED_PATTERNS = [
 _HEREDOC_RE = re.compile(r"""<<-?\s*['"]?(\w+)['"]?\n(?:[^\n]*\n)*?\1\b""")
 
 
-def _kill_tree(proc) -> None:
-    """SIGKILL the command's whole process group, not just the shell.
-
-    The shell is only the parent: `python app.py &`, a spawned server, or a
-    build's worker pool all outlive a plain proc.kill().  Falls back to
-    killing the process alone on Windows, and when the group is already gone.
-    """
-    if not IS_WINDOWS:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass  # Already reaped, or never got its own group; fall through.
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass
-
-
 def _exec_shell(command: str, cwd: str, timeout: int,
                 base: str | None = None) -> subprocess.CompletedProcess:
-    """Run a command in a sandboxed shell, routing through Git Bash on Windows.
-
-    Raises subprocess.TimeoutExpired past ``timeout``, as subprocess.run does
-    — callers (_run_command) catch it.  Hand-rolled around Popen rather than
-    subprocess.run so the timeout kills the process group: run() kills only
-    the shell it started, leaving anything the command spawned orphaned.
-    """
-    argv = [_BASH_EXE, "-c", command] if (IS_WINDOWS and _BASH_EXE) else command
-    proc = subprocess.Popen(
-        argv, shell=not (IS_WINDOWS and _BASH_EXE),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        cwd=cwd, env=_get_sandbox_env(base),
-        **({} if IS_WINDOWS else {"start_new_session": True}),
+    """Run a command in a sandboxed shell, routing through Git Bash on Windows."""
+    if IS_WINDOWS and _BASH_EXE:
+        return subprocess.run(
+            [_BASH_EXE, "-c", command],
+            capture_output=True, text=True,
+            cwd=cwd, timeout=timeout, env=_get_sandbox_env(base)
+        )
+    return subprocess.run(
+        command, shell=True,
+        capture_output=True, text=True,
+        cwd=cwd, timeout=timeout, env=_get_sandbox_env(base)
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc)
-        # Drain the pipes the killed command left behind; without this the
-        # reader can block on a full buffer that nothing will ever empty.
-        try:
-            stdout, stderr = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            stdout, stderr = "", ""
-        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
-    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
 async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
@@ -606,17 +547,7 @@ async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
     Falls back to synchronous _exec_shell if ctx is None.
     """
     if ctx is None:
-        try:
-            result = _exec_shell(command, cwd, timeout, base=base)
-        except subprocess.TimeoutExpired as e:
-            # Same shape the streaming path returns, so bash() reports a
-            # timeout as a timeout here too rather than a generic error.
-            return {
-                "stdout": (e.output or "").strip(),
-                "stderr": (e.stderr or "").strip(),
-                "returncode": -1,
-                "timeout": True,
-            }
+        result = _exec_shell(command, cwd, timeout, base=base)
         return {
             "stdout": result.stdout.strip(),
             "stderr": result.stderr.strip(),
@@ -624,23 +555,19 @@ async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
         }
 
     env = _get_sandbox_env(base)
-    # Own process group (POSIX) so a timeout can kill the whole tree. Killing
-    # the shell alone leaves whatever it spawned running as an orphan, still
-    # holding the sandbox directory and whatever ports it opened.
-    group = {} if IS_WINDOWS else {"start_new_session": True}
     if IS_WINDOWS and _BASH_EXE:
         proc = await asyncio.create_subprocess_exec(
             _BASH_EXE, "-c", command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd, env=env, **group,
+            cwd=cwd, env=env,
         )
     else:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd, env=env, **group,
+            cwd=cwd, env=env,
         )
 
     stdout_lines = []
@@ -664,7 +591,7 @@ async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
         )
         await proc.wait()
     except asyncio.TimeoutError:
-        _kill_tree(proc)
+        proc.kill()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except asyncio.TimeoutError:
@@ -1129,19 +1056,17 @@ def _validate_bash_command(command: str, base: str | None = None) -> str | None:
 Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
 - cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
-- timeout: Max seconds to wait (default: 300, max: 1800). Raise it for slow work — installs, builds, full test suites — rather than letting the default kill them. A timed-out command is killed outright, along with anything it spawned.
+- timeout: Max seconds to wait (default: 300)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
-
-Long-running servers: never run one in the foreground — it will burn the whole timeout and be killed. Start it in the background (`cmd > log 2>&1 &`) and poll the log instead.
 
 Container mode (ONIT_CONTAINER=1): heavy ML packages (torch, transformers, accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, phonemizer) are NOT preinstalled. Install them on demand with `onit-install-ml [torch|hf|extras|all]` — it picks CUDA vs CPU wheels automatically and writes to the persistent data volume, so the install happens once per host."""
 )
 async def bash(
     command: Optional[str] = None,
     cwd: str = ".",
-    timeout: Optional[int] = None,
+    timeout: int = DEFAULT_TIMEOUT,
     data_path: str = "",
     ctx: Context = None,
 ) -> str:
@@ -1181,11 +1106,8 @@ async def bash(
                 "command": command
             })
 
-        # A caller may ask for longer than the default, up to the ceiling.
-        # Non-positive means "no timeout", which this tool does not offer:
-        # nothing above it would stop the command. See _max_timeout().
-        timeout = _default_timeout() if timeout is None else timeout
-        timeout = _max_timeout() if timeout <= 0 else min(timeout, _max_timeout())
+        # Cap timeout at 5 minutes
+        timeout = min(timeout, 300)
 
         # Execute command with streaming output via ctx.log()
         result = await _exec_shell_streaming(command, work_dir, timeout, ctx=ctx, base=base)

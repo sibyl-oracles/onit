@@ -198,19 +198,13 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
 Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
 - cwd: Working directory — must be within data_path (default: data_path)
-- timeout: Max seconds to wait (default: 300, max: 1800). Raise it for slow work — installs, builds, full test suites — rather than letting the default kill them. A timed-out command is killed outright, along with anything it spawned.
+- timeout: Max seconds to wait (default: 300)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {stdout, stderr, returncode, cwd, command, status}
-
-Long-running servers: never run one in the foreground — it will burn the whole timeout and be killed. Start it in the background (`cmd > log 2>&1 &`) and poll the log instead."""
+Returns JSON: {stdout, stderr, returncode, cwd, command, status}"""
 )
-async def bash(command: Optional[str] = None, cwd: str = ".", timeout: Optional[int] = None,
+async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300,
                data_path: str = "", ctx: Context = None) -> str:
-    """Pass-through to the bash server's bash, which owns timeout defaulting
-    and the ceiling.  The signature must stay identical to that one: the tool
-    registry keys replica-vs-collision off the parameter schema, so a stray
-    default here would split one tool into two."""
     if err := _validate_required(command=command):
         return err
     return await _bash(command=command, cwd=cwd, timeout=timeout, data_path=data_path, ctx=ctx)

@@ -128,7 +128,6 @@ serving:
   # model: google/gemini-2.5-pro
   think: true
   max_tokens: 32768   # max output tokens per response (fits any single answer)
-  # max_context_tokens: 262144  # context window (prompt + output); null = auto-detect
   # Sampling parameters (all optional — sensible defaults apply):
   # temperature: 1.0
   # top_p: 0.95
@@ -275,8 +274,6 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--config FILE` | Path to YAML configuration file | `configs/default.yaml` |
 | `--host URL` | LLM serving host URL. Overrides config and `ONIT_HOST` | — |
 | `--model NAME` | Model name. Skips auto-detection from endpoint | — |
-| `--max-tokens N` | Max output tokens per response. Accepts `64k` / `1.5M` shorthand. Overrides `serving.max_tokens` | `32768` |
-| `--max-context-tokens N` | Context window size in tokens. Accepts `64k` / `1.5M` shorthand. Overrides `serving.max_context_tokens` (set that key to `null` to auto-detect from the endpoint) | `262144` |
 | `--verbose` | Enable verbose logging | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--no-stream` | Disable token streaming | `false` |
