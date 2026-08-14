@@ -21,11 +21,12 @@ Requires:
     pip install fastmcp pypdf pdfplumber
 
 12 Core Tools:
-1. bash - Execute bash/shell commands with timeout and directory control
+1. bash - Execute bash/shell commands, up to 300s (longer work goes to serve)
 2. read_file - Read files (text, PDF returns content; binary files return metadata only)
 3. write_file - Write content to files (supports write/append modes)
 4. edit_file - Edit a file by replacing an exact string (targeted in-place edit)
-5. serve - Launch/stop/monitor background processes (web servers, daemons)
+5. serve - Run anything slower than 300s in the background: builds, installs,
+   test suites, training runs, plus web servers and daemons
 6. send_file - Send a file to a remote client via callback URL
 7. search_document - Search for patterns in a document (text, PDF, markdown)
 8. search_directory - Search for patterns across files in a directory
@@ -1056,10 +1057,17 @@ def _validate_bash_command(command: str, base: str | None = None) -> str | None:
 Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
 - cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
-- timeout: Max seconds to wait (default: 300)
+- timeout: Max seconds to wait (default: 300, and 300 is also the hard ceiling)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
+
+For work that may take longer than 300 seconds — installs, builds, full test
+suites, training runs — use the serve tool instead. It runs the command in the
+background with no time limit and lets you poll its logs. Raising this timeout
+cannot get you past 300; the command is killed there regardless. Servers and
+daemons likewise belong in serve: run in the foreground here they burn the whole
+timeout and are then killed.
 
 Container mode (ONIT_CONTAINER=1): heavy ML packages (torch, transformers, accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, phonemizer) are NOT preinstalled. Install them on demand with `onit-install-ml [torch|hf|extras|all]` — it picks CUDA vs CPU wheels automatically and writes to the persistent data volume, so the install happens once per host."""
 )
@@ -1639,7 +1647,15 @@ def _tail_file(path: str, lines: int) -> str:
 
 @mcp.tool(
     title="Serve",
-    description="""Manage long-running background processes such as web servers.
+    description="""Run anything that takes longer than a few minutes, in the background.
+
+USE THIS INSTEAD OF bash for any command that may run past bash's 300-second
+timeout — installs, builds, full test suites, training runs, data downloads,
+migrations — and for web servers and daemons, which never exit on their own.
+A process started here has no time limit: it is detached, so it keeps running
+between tool calls. Start it, then poll with "status" and "logs" while you do
+other work. Running such a command through bash instead just burns the timeout
+and gets the command killed partway through.
 
 Actions:
 - start   : Launch a command as a background process. Returns name, pid, and log paths.
@@ -1651,14 +1667,19 @@ Actions:
 
 Args:
 - action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
-- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080")
+- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080", "pytest -q")
 - name    : Human-readable label for the process (default: auto-generated). Used to reference it later.
 - pid     : Process ID — alternative to name for stop/status/logs
 - cwd     : Working directory for the process (default: DATA_PATH). Can be any accessible directory.
 - lines   : Number of log lines to return for "logs" action (default: 50)
 - data_path : Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON with process details and, for "logs", stdout/stderr tail."""
+Returns JSON with process details and, for "logs", stdout/stderr tail.
+
+A command that finishes on its own reports status "stopped" — that means done,
+not failed, and the exit code is not recorded. When you need to know whether it
+succeeded, append it to the command: "pytest -q; echo EXIT=$?", then read the
+tail of the log once status is "stopped"."""
 )
 def serve(
     action: Optional[str] = None,

@@ -22,11 +22,12 @@ document search, and GitHub repository management into a single MCP server.
  1. search          - Web/news search via Ollama web search API (DuckDuckGo fallback)
  2. fetch_content   - Extract text, images, videos from URLs
  3. get_weather     - Weather with auto location detection
- 4. bash            - Execute shell commands
+ 4. bash            - Execute shell commands, up to 300s (longer work goes to serve)
  5. read_file       - Read files; mode="tables" or "images" for structured extraction
  6. write_file      - Write content to files (write/append modes)
  7. edit_file       - Edit a file by replacing an exact string
- 8. serve           - Launch/stop/monitor background processes (web servers)
+ 8. serve           - Run anything slower than 300s in the background: builds,
+                      installs, test suites, plus web servers and daemons
  9. grep            - Recursive pattern search across files in a directory
 10. search_document - Search within a single document; mode="context" for semantic search
 11. send_file       - Send files via callback URL or base64
@@ -198,10 +199,17 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
 Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
 - cwd: Working directory — must be within data_path (default: data_path)
-- timeout: Max seconds to wait (default: 300)
+- timeout: Max seconds to wait (default: 300, and 300 is also the hard ceiling)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {stdout, stderr, returncode, cwd, command, status}"""
+Returns JSON: {stdout, stderr, returncode, cwd, command, status}
+
+For work that may take longer than 300 seconds — installs, builds, full test
+suites, training runs — use the serve tool instead. It runs the command in the
+background with no time limit and lets you poll its logs. Raising this timeout
+cannot get you past 300; the command is killed there regardless. Servers and
+daemons likewise belong in serve: run in the foreground here they burn the whole
+timeout and are then killed."""
 )
 async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300,
                data_path: str = "", ctx: Context = None) -> str:
@@ -290,7 +298,15 @@ def edit_file(
 
 @mcp.tool(
     title="Serve",
-    description="""Manage long-running background processes such as web servers.
+    description="""Run anything that takes longer than a few minutes, in the background.
+
+USE THIS INSTEAD OF bash for any command that may run past bash's 300-second
+timeout — installs, builds, full test suites, training runs, data downloads,
+migrations — and for web servers and daemons, which never exit on their own.
+A process started here has no time limit: it is detached, so it keeps running
+between tool calls. Start it, then poll with "status" and "logs" while you do
+other work. Running such a command through bash instead just burns the timeout
+and gets the command killed partway through.
 
 Actions:
 - start   : Launch a command as a background process. Returns name, pid, and log paths.
@@ -302,13 +318,18 @@ Actions:
 
 Args:
 - action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
-- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080")
+- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080", "pytest -q")
 - name    : Human-readable label for the process (default: auto-generated)
 - pid     : Process ID — alternative to name for stop/status/logs
 - cwd     : Working directory for the process. Can be any accessible directory.
 - lines   : Number of log lines to return for "logs" action (default: 50)
 
-Returns JSON with process details and, for "logs", stdout/stderr tail."""
+Returns JSON with process details and, for "logs", stdout/stderr tail.
+
+A command that finishes on its own reports status "stopped" — that means done,
+not failed, and the exit code is not recorded. When you need to know whether it
+succeeded, append it to the command: "pytest -q; echo EXIT=$?", then read the
+tail of the log once status is "stopped"."""
 )
 def serve(
     action: Optional[str] = None,
