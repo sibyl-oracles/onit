@@ -333,3 +333,116 @@ class TestOllamaFallbackDisabled:
         failed = [ep for ep in eps if ep.failed_at][0]
         other = eps[0] if failed is eps[1] else eps[1]
         assert lb.acquire() is other
+
+
+def _tiered():
+    """Two priority-1 vLLM servers with a priority-2 Ollama fallback."""
+    return [
+        ServerEndpoint(host="http://vllm:8000/v1", name="a", priority=1),
+        ServerEndpoint(host="http://vllm2:8000/v1", name="b", priority=1),
+        ServerEndpoint(host="https://ollama.com", name="c", priority=2),
+    ]
+
+
+class TestPriority:
+    def test_default_priority_is_not_in_use(self):
+        assert LoadBalancer(_two_endpoints()).uses_priority is False
+
+    def test_any_explicit_priority_enables_tiers(self):
+        eps = _two_endpoints()
+        eps[1].priority = 1
+        assert LoadBalancer(eps).uses_priority is True
+
+    def test_top_tier_serves_while_healthy(self):
+        eps = _tiered()
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        for _ in range(6):
+            ep = lb.acquire()
+            assert ep.priority == 1
+            lb.release(ep, success=True)
+
+    def test_load_balances_within_a_tier(self):
+        lb = LoadBalancer(_tiered(), algorithm="round_robin")
+        seen = set()
+        for _ in range(6):
+            ep = lb.acquire()
+            seen.add(ep.name)
+            lb.release(ep, success=True)
+        assert seen == {"a", "b"}
+
+    def test_lower_tier_serves_only_when_top_tier_is_down(self):
+        eps = _tiered()
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        for ep in eps[:2]:
+            lb.release(ep, success=False)
+        assert lb.acquire() is eps[2]
+
+    def test_partial_tier_outage_stays_in_tier(self):
+        eps = _tiered()
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        lb.release(eps[0], success=False)  # only one of the two fails
+        for _ in range(4):
+            ep = lb.acquire()
+            assert ep is eps[1]
+            lb.release(ep, success=True)
+
+    def test_all_unhealthy_falls_back_to_best_tier(self):
+        eps = _tiered()
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        for ep in eps:
+            lb.release(ep, success=False)
+        # Nothing is healthy, so every endpoint is a candidate again — but
+        # the ranking still applies and keeps traffic on the preferred tier.
+        assert lb.acquire().priority == 1
+
+    def test_sticky_returns_to_top_tier_after_recovery(self, monkeypatch):
+        eps = _tiered()
+        lb = LoadBalancer(eps, algorithm="sticky")
+        for ep in eps[:2]:
+            lb.release(ep, success=False)
+        assert lb.acquire(key="a") is eps[2]  # failed over to the fallback
+        monkeypatch.setattr(balancer_mod, "FAILURE_COOLDOWN", 0.0)
+        assert lb.acquire(key="a").priority == 1
+
+    def test_negative_and_sparse_numbers_rank_normally(self):
+        eps = [
+            ServerEndpoint(host="http://a/v1", name="a", priority=5),
+            ServerEndpoint(host="http://b/v1", name="b", priority=-3),
+        ]
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        assert lb.acquire() is eps[1]
+
+    def test_priority_overrides_ollama_fallback_only(self):
+        """An explicit ranking beats the implicit "Ollama last" default."""
+        eps = [
+            ServerEndpoint(host="https://ollama.com", name="ollama",
+                           priority=1),
+            ServerEndpoint(host="http://vllm:8000/v1", name="vllm",
+                           priority=2),
+        ]
+        lb = LoadBalancer(eps, algorithm="round_robin",
+                          ollama_fallback_only=True)
+        for _ in range(4):
+            ep = lb.acquire()
+            assert ep.name == "ollama"
+            lb.release(ep, success=True)
+
+    def test_least_busy_respects_tiers(self):
+        eps = _tiered()
+        lb = LoadBalancer(eps, algorithm="least_busy")
+        first = lb.acquire()
+        second = lb.acquire()
+        third = lb.acquire()  # both tier-1 servers busy — no spillover
+        assert {first.name, second.name} == {"a", "b"}
+        assert third.priority == 1
+
+    def test_preferred_endpoint(self):
+        assert LoadBalancer(_tiered()).preferred.name == "a"
+        assert LoadBalancer(_two_endpoints()).preferred.name == "server1"
+        # Without priorities, the fallback rule picks the representative.
+        assert LoadBalancer(_vllm_and_ollama()).preferred.name == "server1"
+
+    def test_describe_groups_by_tier(self):
+        assert LoadBalancer(_tiered()).describe() == "1: a, b | 2: c"
+        assert LoadBalancer(_two_endpoints()).describe() == (
+            "http://vllm:8000/v1, http://vllm2:8000/v1")

@@ -1273,10 +1273,12 @@ class TestLoopPolicy:
 
     @pytest.mark.asyncio
     async def test_never_repeating_tool_calls_still_terminate(self):
-        """Regression: MAX_CHAT_ITERATIONS was -1, so nothing bounded this run.
+        """An explicit cap bounds the run MAX_REPEATED_TOOL_CALLS cannot.
 
-        The arguments differ every turn, so the repeated-call check never fires.
-        Before the cap was restored this test hung until the timeout.
+        The arguments differ every turn, so the repeated-call check never fires
+        and nothing else stops this.  The cap is off by default — it caps
+        healthy long runs too — so this is the guarantee you opt into by
+        setting max_chat_iterations, and without it this run does not end.
         """
         mock_client, mock_registry = self._alternating_registry_and_client(None)
 
@@ -1321,7 +1323,12 @@ class TestLoopPolicy:
 
     @pytest.mark.asyncio
     async def test_turn_limit_returns_partial_answer_when_one_exists(self):
-        """Work the user already watched stream past must not be thrown away."""
+        """Work the user already watched stream past must not be thrown away.
+
+        But it must not come back bare either: the partial is the prose written
+        just before a tool call that never ran, and with nothing appended it
+        reads as a finished answer to a task that was actually abandoned.
+        """
         answer = "The three regressions are in the path-jail validator."
         tool_call = _mock_completion_with_finish(
             content=answer,
@@ -1348,7 +1355,70 @@ class TestLoopPolicy:
                 max_chat_iterations=2,
             ), timeout=30)
 
+        assert result.startswith(answer)
+        assert "2 steps" in result
+        assert "not a completed answer" in result
+
+    @pytest.mark.asyncio
+    async def test_turn_limit_tells_the_ui_not_just_the_log(self):
+        """add_log fills a panel most runs never show.
+
+        Reported through that alone, hitting the ceiling looked identical on
+        screen to finishing: the run just stopped after a step.
+        """
+        ui = MagicMock()
+        mock_client, mock_registry = self._alternating_registry_and_client(None)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Page through everything.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+                chat_ui=ui,
+                max_chat_iterations=3,
+            ), timeout=30)
+
+        ui.show_turn_limit.assert_called_once_with(3)
+
+    @pytest.mark.asyncio
+    async def test_default_lets_a_long_run_finish(self):
+        """No turn cap unless one is asked for.
+
+        A task needing more turns than the old ceiling of 50 used to be cut off
+        mid-step, returning the prose written before a tool call that never
+        ran.  Nothing here sets max_chat_iterations, so nothing bounds it.
+        """
+        answer = "Rewrote the caption builder across all five layers."
+        turns = 80
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("bash", '{"command": "sed -i s/x/y/ f%d"}' % n)])
+            for n in range(turns)
+        ] + [_mock_completion_with_finish(content=answer)])
+        mock_handler = AsyncMock(return_value="ok")
+        mock_registry = MagicMock()
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}]
+        mock_registry.tools = {"bash"}
+        mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Rewrite the caption builder.",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            ), timeout=60)
+
         assert result == answer
+        assert mock_client.chat.completions.create.call_count == turns + 1
 
     @pytest.mark.asyncio
     async def test_cap_disabled_does_not_bound_a_short_run(self):

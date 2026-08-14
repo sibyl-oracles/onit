@@ -48,7 +48,8 @@ from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruct
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
 from .model.serving.chat import chat, summarize_metrics
-from .model.serving.balancer import LoadBalancer, ServerEndpoint
+from .model.serving.balancer import (DEFAULT_PRIORITY, LoadBalancer,
+                                     ServerEndpoint)
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -560,13 +561,27 @@ class StreamingAdapter:
 
     def show_context_compaction(self, orig_msg_count: int, summary_chars: int) -> None:
         """Forward context compaction notice as a streaming token."""
-        if self.on_token:
-            msg = f"\n[Context compacted: {orig_msg_count} messages → {summary_chars:,} char summary]\n"
-            self._content += msg
-            result = self.on_token(msg, self._content)
-            if asyncio.iscoroutine(result):
-                task = asyncio.ensure_future(result)
-                self._pending.append(task)
+        self._emit_notice(
+            f"\n[Context compacted: {orig_msg_count} messages → {summary_chars:,} char summary]\n")
+
+    def show_turn_limit(self, limit: int) -> None:
+        """Forward the turn-limit stop as a streaming token.
+
+        The run ends here, so a client that only renders streamed tokens would
+        otherwise show the last step as though it were the answer.
+        """
+        self._emit_notice(
+            f"\n[Stopped at the {limit}-step turn limit — the task did not finish]\n")
+
+    def _emit_notice(self, msg: str) -> None:
+        """Push an out-of-band notice into the token stream."""
+        if not self.on_token:
+            return
+        self._content += msg
+        result = self.on_token(msg, self._content)
+        if asyncio.iscoroutine(result):
+            task = asyncio.ensure_future(result)
+            self._pending.append(task)
 
 
 class OnItA2AExecutor(AgentExecutor):
@@ -993,8 +1008,11 @@ class OnIt(BaseModel):
         self.messages = self.config_data.get('messages', {})
         self.stop_commands = list(self.config_data.get('stop_command', self.stop_commands))
         self.model_serving = self.config_data.get('serving', {})
-        # resolve host: CLI/config > env var ONIT_HOST
-        if 'host' not in self.model_serving or not self.model_serving['host']:
+        # resolve host: CLI/config > env var ONIT_HOST. Skipped when
+        # serving.endpoints supplies the hosts instead; _setup_load_balancer
+        # raises if that list turns out to hold nothing usable.
+        if (not self.model_serving.get('endpoints')
+                and not self.model_serving.get('host')):
             env_host = os.environ.get('ONIT_HOST')
             if env_host:
                 self.model_serving['host'] = env_host
@@ -1003,9 +1021,12 @@ class OnIt(BaseModel):
                     "No serving host configured. Set it via:\n"
                     "  - ONIT_HOST environment variable\n"
                     "  - --host CLI flag\n"
-                    "  - serving.host in the config YAML"
+                    "  - serving.host (or serving.endpoints) in the config YAML"
                 )
         self._setup_load_balancer()
+        # Mirror the preferred endpoint onto serving.host so config readers
+        # that expect a single host keep working under an endpoints list.
+        self.model_serving.setdefault('host', self.load_balancer.preferred.host)
         self.user_id = self.config_data.get('user_id', 'default_user')
         self.status = "initialized"
         self.verbose = self.config_data.get('verbose', False)
@@ -1020,19 +1041,90 @@ class OnIt(BaseModel):
     def _setup_load_balancer(self) -> None:
         """Build the endpoint load balancer from serving config.
 
-        A single configured host yields a one-endpoint balancer (identical
-        behavior to before). Configuring ``serving.host2`` (or ONIT_HOST2)
-        adds a second model server — any mix of vLLM, OpenRouter, or Ollama
-        cloud — and requests are distributed per ``serving.load_balancer``
-        (sticky assigns each new session a random host; round_robin, random,
-        or least_busy distribute per request). Ollama endpoints are
-        fallback-only by default: they serve requests only while no
-        vLLM/OpenRouter endpoint is healthy. Set
-        ``serving.ollama_fallback_only: false`` to put Ollama endpoints in
-        normal rotation instead. A failing endpoint is cooled down so the
-        other server takes over automatically.
+        Two config shapes are accepted. ``serving.endpoints`` is a list of any
+        number of model servers, each entry taking ``host`` plus optional
+        ``name``, ``model``, ``host_key``, and ``priority``. The legacy
+        ``serving.host`` / ``serving.host2`` pair (or ONIT_HOST / ONIT_HOST2)
+        is desugared into the same list, so existing configs are unaffected.
+
+        Requests are distributed per ``serving.load_balancer`` (sticky assigns
+        each new session a random host; round_robin, random, or least_busy
+        distribute per request), and a failing endpoint is cooled down so
+        another server takes over automatically.
+
+        ``priority`` ranks endpoints — lower is preferred, equal numbers share
+        a tier and load-balance against each other, and a higher number serves
+        only while every better tier is cooling down. Without any priority the
+        implicit default applies: Ollama endpoints are fallback-only, serving
+        requests only while no vLLM/OpenRouter endpoint is healthy, which
+        ``serving.ollama_fallback_only: false`` disables.
         """
         serving = self.model_serving
+        endpoints = self._parse_endpoint_list(serving.get('endpoints'))
+        if not endpoints:
+            if serving.get('endpoints') and not serving.get('host'):
+                raise ValueError(
+                    "serving.endpoints is configured but no entry has a "
+                    "usable 'host'. Give each entry a host URL, or fall back "
+                    "to serving.host in the config YAML."
+                )
+            endpoints = self._legacy_endpoints(serving)
+        self.load_balancer = LoadBalancer(
+            endpoints, serving.get('load_balancer', 'sticky'),
+            ollama_fallback_only=serving.get('ollama_fallback_only', True))
+        if len(endpoints) > 1:
+            print(f"  Load balancing ({self.load_balancer.algorithm}) across: "
+                  f"{self.load_balancer.describe()}")
+
+    @staticmethod
+    def _parse_endpoint_list(raw) -> list:
+        """Build ServerEndpoints from a ``serving.endpoints`` config list.
+
+        Entries without a ``host`` are skipped, as is any host already claimed
+        by an earlier entry — a duplicate would otherwise take a second share
+        of the rotation. Returns [] when no list is configured, which sends
+        the caller to the legacy host/host2 path.
+        """
+        if not isinstance(raw, list):
+            return []
+        endpoints, seen = [], set()
+        for i, entry in enumerate(raw):
+            if isinstance(entry, str):
+                entry = {'host': entry}
+            if not isinstance(entry, dict):
+                logger.warning("Ignoring serving.endpoints[%d]: expected a "
+                               "mapping or URL string, got %r", i, entry)
+                continue
+            host = str(entry.get('host') or '').strip()
+            if not host:
+                logger.warning("Ignoring serving.endpoints[%d]: no host", i)
+                continue
+            if host in seen:
+                logger.warning("Ignoring serving.endpoints[%d]: duplicate "
+                               "host %s", i, host)
+                continue
+            seen.add(host)
+            try:
+                priority = int(entry.get('priority', DEFAULT_PRIORITY))
+            except (TypeError, ValueError):
+                logger.warning("serving.endpoints[%d]: priority %r is not an "
+                               "integer, using %d", i, entry.get('priority'),
+                               DEFAULT_PRIORITY)
+                priority = DEFAULT_PRIORITY
+            endpoints.append(ServerEndpoint(
+                host=host,
+                # chat() resolves a provider-specific key (OLLAMA_API_KEY,
+                # VLLM_API_KEY, ...) when this stays "EMPTY".
+                host_key=str(entry.get('host_key') or 'EMPTY'),
+                model=entry.get('model'),
+                name=str(entry.get('name') or f'server{i + 1}'),
+                priority=priority,
+            ))
+        return endpoints
+
+    @staticmethod
+    def _legacy_endpoints(serving: dict) -> list:
+        """Desugar the host/host2 config pair into an endpoint list."""
         endpoints = [ServerEndpoint(
             host=serving['host'],
             host_key=serving.get('host_key', 'EMPTY'),
@@ -1056,12 +1148,7 @@ class OnIt(BaseModel):
                 model=serving.get('model2'),
                 name='server2',
             ))
-        self.load_balancer = LoadBalancer(
-            endpoints, serving.get('load_balancer', 'sticky'),
-            ollama_fallback_only=serving.get('ollama_fallback_only', True))
-        if len(endpoints) > 1:
-            print(f"  Load balancing ({self.load_balancer.algorithm}) across: "
-                  f"{', '.join(self.load_balancer.hosts)}")
+        return endpoints
 
     def _setup_session(self) -> None:
         """Create session ID, session file, and data directory.
@@ -1903,13 +1990,17 @@ class OnIt(BaseModel):
                 elapsed=elapsed_time,
             )
             return
-        # If streaming already persisted the message via stream_end(),
-        # just update the elapsed time instead of adding a duplicate.
+        # If streaming already persisted the message via stream_end(), replace
+        # it rather than adding a duplicate.  Matched on prefix, not equality:
+        # the run can append to what it streamed — a turn-limit notice, a
+        # resumed final answer — and an equality check treats the longer text
+        # as a second message, showing the user the same block twice.
         _last = self.chat_ui.messages[-1] if self.chat_ui.messages else None
-        if _last and hasattr(_last, 'role') and _last.role == "assistant" and _last.content == response:
+        if (_last and hasattr(_last, 'role') and _last.role == "assistant"
+                and _last.content and response.startswith(_last.content)):
             from src.ui.text import Message
             self.chat_ui.messages[-1] = Message(
-                role=_last.role, content=_last.content,
+                role=_last.role, content=response,
                 timestamp=_last.timestamp, elapsed=elapsed_time,
                 name=getattr(_last, 'name', ''),
             )

@@ -2555,15 +2555,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # signature's kwargs, so there is exactly one place each is defined — a
     # caller that does not set it does not mention it.
     #
-    # Total turns before the loop gives up.  This was -1 (disabled) and the
-    # only thing bounding a run was MAX_REPEATED_TOOL_CALLS, which requires the
-    # same tool name *and* byte-identical arguments.  A model alternating
-    # between two calls that differ in any character — a page number, a
-    # timestamp, a retry suffix — never trips that check and never stops.  50
-    # is above any legitimate run observed so far and far below "forever";
-    # -1 restores the old unbounded behavior for anyone who wants it.
+    # Total turns before the loop gives up.  Disabled by default: a turn count
+    # is not a measure of whether a task is going anywhere.  A real multi-file
+    # task legitimately runs hundreds of turns, and capping it at a fixed
+    # number stopped that work mid-step and handed back the half-sentence the
+    # model had written before its next tool call — a wrong answer to a task
+    # that was in fact progressing.  A ceiling that fires on healthy runs is
+    # worse than no ceiling.
+    #
+    # What this costs: MAX_REPEATED_TOOL_CALLS is now the only thing bounding a
+    # stuck run, and it keys on the tool name *and* byte-identical arguments,
+    # so a model alternating between calls that differ by a page number or a
+    # timestamp never trips it and never stops.  Set max_chat_iterations to a
+    # positive number to put the turn ceiling back.
+    #
+    # A typo ("fifty") resolves to the same default, so it unbounds rather than
+    # falling back to a cap — there is no safe cap to fall back to now.
     MAX_CHAT_ITERATIONS = _as_positive_or_disabled(
-        kwargs.get('max_chat_iterations', 50))
+        kwargs.get('max_chat_iterations', -1), default=-1)
     MAX_REPEATED_TOOL_CALLS = kwargs.get('max_repeated_tool_calls', 30)
     MAX_API_RETRIES = kwargs.get('max_api_retries', 3)
     MAX_PLANNING_CONTINUATIONS = kwargs.get('max_planning_continuations', 2)
@@ -2870,12 +2879,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 f"Chat loop hit its turn limit ({MAX_CHAT_ITERATIONS} turns), stopping. "
                 f"Raise serving.max_chat_iterations if this task legitimately needs more.",
                 chat_ui, verbose, level="warning")
+            # add_log only fills a panel most runs never show, so on its own the
+            # run just stops mid-thought with no stated reason.  Tell the UI as
+            # well, so a stop the user is watching for is one they are told about.
+            if chat_ui and hasattr(chat_ui, "show_turn_limit"):
+                chat_ui.show_turn_limit(MAX_CHAT_ITERATIONS)
             _partial = _final_answer_prefix or _prose_before_tools
             if _partial.strip():
                 # Work was done and some of it was written down; handing back
                 # nothing would throw away an answer the user already watched
-                # stream past.
-                return _partial
+                # stream past.  But _prose_before_tools is, by definition, a
+                # sentence announcing a tool call that never ran ("Now let me
+                # update X:") — returned bare it reads as a finished answer and
+                # silently drops the task.  The note travels with the text so
+                # every surface that stores or forwards it says so too.
+                return _partial.rstrip() + (
+                    f"\n\n⚠ I stopped after {MAX_CHAT_ITERATIONS} steps without finishing — "
+                    "the text above is where the work got to, not a completed answer. "
+                    "Raise serving.max_chat_iterations, or break the task into smaller pieces.")
             return (f"I stopped after {MAX_CHAT_ITERATIONS} steps without finishing 😅. "
                     "Could you narrow the task, or break it into smaller pieces?")
 

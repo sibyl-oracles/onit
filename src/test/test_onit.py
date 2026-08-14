@@ -350,6 +350,111 @@ class TestOnItInitialize:
         seen = {lb.acquire(key=f"s{i}").host for i in range(50)}
         assert seen == {"http://localhost:8000/v1", "https://api.ollama.com"}
 
+    def test_endpoints_list_replaces_host_pair(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"name": "gpu-a", "host": "http://gpu-a:8000/v1", "priority": 1},
+            {"name": "gpu-b", "host": "http://gpu-b:8000/v1", "priority": 1},
+            {"name": "ollama", "host": "https://ollama.com",
+             "model": "glm-5.1:cloud", "priority": 2},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        lb = onit.load_balancer
+        assert lb.uses_priority is True
+        assert [ep.name for ep in lb.endpoints] == ["gpu-a", "gpu-b", "ollama"]
+        assert lb.endpoints[2].model == "glm-5.1:cloud"
+        # serving.host is backfilled from the preferred endpoint for the
+        # config readers that still expect a single host.
+        assert onit.model_serving["host"] == "http://gpu-a:8000/v1"
+
+    def test_endpoints_list_routes_by_priority(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["load_balancer"] = "round_robin"
+        cfg["serving"]["endpoints"] = [
+            {"name": "primary", "host": "http://gpu-a:8000/v1", "priority": 1},
+            {"name": "backup", "host": "http://gpu-b:8000/v1", "priority": 2},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        lb = onit.load_balancer
+        for _ in range(4):
+            ep = lb.acquire()
+            assert ep.name == "primary"
+            lb.release(ep, success=True)
+
+    def test_endpoints_list_ranks_ollama_first_when_asked(self, tmp_path):
+        """The exact case ollama_fallback_only used to make inexpressible."""
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "https://ollama.com", "model": "glm-5.1:cloud",
+             "priority": 1},
+            {"host": "http://gpu-a:8000/v1", "priority": 2},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.acquire().host == "https://ollama.com"
+
+    def test_endpoints_list_accepts_url_strings(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = ["http://gpu-a:8000/v1",
+                                       "http://gpu-b:8000/v1"]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        lb = onit.load_balancer
+        assert lb.hosts == ["http://gpu-a:8000/v1", "http://gpu-b:8000/v1"]
+        # No priorities given — all endpoints share one tier.
+        assert lb.uses_priority is False
+
+    def test_endpoints_list_skips_bad_and_duplicate_entries(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://gpu-a:8000/v1"},
+            {"model": "no-host-here"},
+            {"host": "http://gpu-a:8000/v1"},   # duplicate
+            "http://gpu-b:8000/v1",
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.hosts == ["http://gpu-a:8000/v1",
+                                            "http://gpu-b:8000/v1"]
+
+    def test_endpoints_list_takes_precedence_over_host_pair(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["host2"] = "http://legacy2:8000/v1"
+        cfg["serving"]["endpoints"] = [{"host": "http://gpu-a:8000/v1"}]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.hosts == ["http://gpu-a:8000/v1"]
+
+    def test_endpoints_list_with_no_usable_host_raises(self, tmp_path,
+                                                       monkeypatch):
+        monkeypatch.delenv("ONIT_HOST", raising=False)
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [{"model": "no-host-here"}]
+        with _mock_discover():
+            with pytest.raises(ValueError, match="no entry has a usable"):
+                OnIt(config=cfg)
+
+    def test_endpoints_list_bad_priority_falls_back_to_default(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://gpu-a:8000/v1", "priority": "high"},
+            {"host": "http://gpu-b:8000/v1", "priority": 1},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        lb = onit.load_balancer
+        assert lb.endpoints[0].priority == 0
+        assert lb.acquire().name == "server1"  # default 0 outranks 1
+
     def test_session_path_created(self, tmp_path):
         cfg = _make_config(tmp_path)
         with _mock_discover():

@@ -24,12 +24,22 @@ All algorithms double as automatic failover: an endpoint that produced a
 failed request is put on a cooldown and skipped while any healthy endpoint
 remains available.
 
+Endpoints can be ranked explicitly with ``ServerEndpoint.priority`` (config:
+``priority`` per entry in ``serving.endpoints``); lower numbers are preferred.
+Requests go to the lowest-numbered tier that still has a healthy endpoint,
+and the chosen algorithm distributes within that tier — so same-priority
+endpoints load-balance against each other while a higher number is held back
+as a fallback. When every tier above it is cooling down, the next tier takes
+over, and traffic returns as soon as the preferred tier recovers.
+
 Ollama endpoints (cloud or local) are fallback-only by default: whenever at
 least one non-Ollama endpoint (vLLM, OpenRouter, ...) is healthy, Ollama
 endpoints are kept out of rotation and only serve requests while every
 non-Ollama endpoint is cooling down. Constructing the balancer with
 ``ollama_fallback_only=False`` (config: ``serving.ollama_fallback_only``)
-makes Ollama endpoints first-class rotation members instead.
+makes Ollama endpoints first-class rotation members instead. This implicit
+rule applies only when no endpoint declares a priority — explicit priorities
+always win, so a config that deliberately ranks Ollama first is honored.
 """
 
 import logging
@@ -48,6 +58,11 @@ FAILURE_COOLDOWN = 60.0
 ALGORITHMS = ("sticky", "round_robin", "random", "least_busy")
 DEFAULT_ALGORITHM = "sticky"
 
+# Rank assigned to an endpoint that does not declare one. An endpoint list
+# left entirely at this value counts as "no explicit priorities", which is
+# what keeps the implicit ollama_fallback_only rule in effect.
+DEFAULT_PRIORITY = 0
+
 # Cap on remembered sticky assignments; oldest sessions are evicted first.
 MAX_STICKY_KEYS = 1024
 
@@ -59,11 +74,16 @@ def _is_ollama_host(host: str) -> bool:
 
 @dataclass
 class ServerEndpoint:
-    """One model server: host URL plus its API key and optional model name."""
+    """One model server: host URL plus its API key and optional model name.
+
+    ``priority`` ranks the endpoint against its peers — lower is preferred,
+    equal numbers share a tier and load-balance against each other.
+    """
     host: str
     host_key: str = "EMPTY"
     model: str | None = None
     name: str = ""
+    priority: int = DEFAULT_PRIORITY
     # Runtime state managed by LoadBalancer
     in_flight: int = field(default=0, repr=False)
     failed_at: float = field(default=0.0, repr=False)
@@ -81,6 +101,9 @@ class ServerEndpoint:
 
 class LoadBalancer:
     """Selects a ServerEndpoint per request using a configurable algorithm.
+
+    Endpoint priority is applied first: only the lowest-numbered tier with a
+    healthy endpoint is considered, and the algorithm then chooses within it.
 
     Algorithms:
       - sticky:      each session's first request is assigned an endpoint at
@@ -113,6 +136,17 @@ class LoadBalancer:
         self.endpoints = list(endpoints)
         self.algorithm = algorithm
         self.ollama_fallback_only = ollama_fallback_only
+        # An explicit ranking states the operator's intent directly, so it
+        # supersedes the implicit "Ollama last" rule rather than stacking with
+        # it — otherwise a config that ranks Ollama first would be silently
+        # overruled by a default the operator never set.
+        self.uses_priority = any(ep.priority != DEFAULT_PRIORITY
+                                 for ep in self.endpoints)
+        if (self.uses_priority and ollama_fallback_only
+                and any(ep.is_ollama for ep in self.endpoints)):
+            logger.info(
+                "Endpoint priorities are set; ollama_fallback_only is ignored "
+                "(rank the Ollama endpoint higher to keep it as a fallback)")
         self._lock = threading.Lock()
         self._rr_index = 0
         # sticky: session key → index of its assigned endpoint
@@ -121,6 +155,33 @@ class LoadBalancer:
     @property
     def hosts(self) -> list[str]:
         return [ep.host for ep in self.endpoints]
+
+    @property
+    def preferred(self) -> ServerEndpoint:
+        """The top-ranked endpoint, ignoring health — used for display and as
+        the stand-in wherever a single representative host is expected."""
+        if self.uses_priority:
+            return min(self.endpoints, key=lambda ep: ep.priority)
+        if self.ollama_fallback_only:
+            for ep in self.endpoints:
+                if not ep.is_ollama:
+                    return ep
+        return self.endpoints[0]
+
+    def describe(self) -> str:
+        """Human-readable endpoint rundown for startup output.
+
+        Without priorities this is just the host list; with them, endpoints
+        are grouped into tiers in preference order, e.g.
+        ``1: vllm-a, vllm-b | 2: ollama``.
+        """
+        if not self.uses_priority:
+            return ", ".join(self.hosts)
+        tiers: dict[int, list[str]] = {}
+        for ep in self.endpoints:
+            tiers.setdefault(ep.priority, []).append(ep.name or ep.host)
+        return " | ".join(f"{prio}: {', '.join(names)}"
+                          for prio, names in sorted(tiers.items()))
 
     def _rr_pick(self, candidates: list[ServerEndpoint]) -> ServerEndpoint:
         """Advance the round-robin cursor and land on a candidate.
@@ -147,18 +208,26 @@ class LoadBalancer:
         unless every endpoint is unhealthy, in which case all are considered
         so the caller can still make progress.
 
-        Unless ``ollama_fallback_only`` was disabled, Ollama endpoints are
-        fallback-only: while any healthy non-Ollama endpoint exists, Ollama
-        ones are excluded from the candidates. A sticky session that failed
-        over to Ollama therefore moves back to a vLLM/OpenRouter endpoint as
-        soon as one recovers.
+        The surviving candidates are then narrowed to a single preference
+        tier. When any endpoint declares a ``priority``, that is the lowest
+        priority number still represented among the candidates — so a
+        priority-2 endpoint serves only while every priority-1 endpoint is
+        cooling down. Otherwise the implicit rule applies: unless
+        ``ollama_fallback_only`` was disabled, Ollama endpoints are held back
+        while any healthy non-Ollama endpoint exists.
+
+        Either way a sticky session that failed over to a lower tier moves
+        back up as soon as a preferred endpoint recovers.
         """
         with self._lock:
             now = time.monotonic()
             candidates = [ep for ep in self.endpoints if ep.is_healthy(now)]
             if not candidates:
                 candidates = self.endpoints
-            if self.ollama_fallback_only:
+            if self.uses_priority:
+                top = min(ep.priority for ep in candidates)
+                candidates = [ep for ep in candidates if ep.priority == top]
+            elif self.ollama_fallback_only:
                 preferred = [ep for ep in candidates if not ep.is_ollama]
                 if preferred:
                     candidates = preferred
@@ -168,9 +237,10 @@ class LoadBalancer:
                 # endpoint. Only a timeout/error (cooldown) moves it to the
                 # next healthy endpoint, which then becomes the session's new
                 # sticky target — no switching back when the failed one
-                # recovers (except back to a recovered non-Ollama endpoint,
-                # since Ollama is fallback-only). First-time keys are
-                # assigned a random candidate so load spreads across hosts.
+                # recovers, except back up to a recovered preferred tier
+                # (the assignment below cannot name an endpoint the tier
+                # filter already dropped). First-time keys are assigned a
+                # random candidate so load spreads across hosts.
                 key = key or ""
                 idx = self._sticky_map.get(key)
                 if idx is not None and self.endpoints[idx] in candidates:

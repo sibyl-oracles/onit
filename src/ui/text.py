@@ -634,6 +634,22 @@ class ChatUI:
             style="bold yellow",
         )
 
+    def show_turn_limit(self, limit: int) -> None:
+        """Print an inline warning when the chat loop stops at its turn ceiling.
+
+        Printed rather than logged: the run is about to end mid-task, and the
+        block that just streamed is a step, not an answer.  Without this the
+        stop is indistinguishable on screen from a task that finished.
+        """
+        self.console.print(
+            f"  ⚠  Stopped at the {limit}-step turn limit — the task did not finish",
+            style="bold red",
+        )
+        self.console.print(
+            "     Raise serving.max_chat_iterations, or break the task into smaller pieces.",
+            style="dim",
+        )
+
     # ── Fact-check display ─────────────────────────────────────────
 
     def verification_start(self) -> None:

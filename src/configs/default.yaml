@@ -29,11 +29,13 @@ serving:
   # optional; the default shown is what applies when the key is absent.
   #
   # Total turns (one model call each) before the loop gives up and returns
-  # whatever it has. -1 disables the cap. The other ceiling below keys on the
-  # tool name *and* byte-identical arguments, so a model alternating between
-  # calls that differ by a page number or a timestamp never trips it — this is
-  # the ceiling that actually bounds such a run.
-  # max_chat_iterations: 50
+  # whatever it has. Disabled by default (-1): a long task legitimately runs
+  # hundreds of turns, and a fixed cap stopped that work mid-step. Set a
+  # positive number to bound runs by turn count. With it disabled, the ceiling
+  # below is the only thing that stops a stuck run — and it keys on the tool
+  # name *and* byte-identical arguments, so a model alternating between calls
+  # that differ by a page number or a timestamp never trips it.
+  # max_chat_iterations: -1
   # Identical tool calls (same name and same arguments) before bailing out.
   # max_repeated_tool_calls: 30
   # Retries for a transient API error, with exponential backoff.

@@ -146,6 +146,8 @@ serving:
   # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
   # (or pass --no-ollama-fallback-only) to load-balance across them equally:
   # ollama_fallback_only: true
+  # For more than two servers, or to rank them explicitly, use an endpoints
+  # list instead of host/host2 — see "Multiple model endpoints" below.
 
 verbose: false
 timeout: 600
@@ -168,6 +170,62 @@ mcp:
       url: http://127.0.0.1:18201/sse
       enabled: true
 ```
+
+### Multiple model endpoints
+
+`serving.host` / `serving.host2` cover one or two servers. For any number of
+them — or to say explicitly which should be tried first — use a
+`serving.endpoints` list instead. It replaces `host`/`host2` entirely when
+present:
+
+```yaml
+serving:
+  endpoints:
+    - name: gpu-a                        # optional label for logs
+      host: http://10.0.0.1:8000/v1
+      priority: 1
+    - name: gpu-b
+      host: http://10.0.0.2:8000/v1
+      priority: 1                        # same tier as gpu-a → load balanced
+    - name: ollama
+      host: https://ollama.com
+      model: glm-5.1:cloud               # blank = auto-detect from endpoint
+      host_key: sk-...                   # optional; provider key used if omitted
+      priority: 2                        # only while every tier-1 host is down
+  load_balancer: least_busy              # sticky, round_robin, random, least_busy
+```
+
+**How priority works.** Lower is preferred. Requests go to the lowest-numbered
+tier that still has a healthy endpoint, and `load_balancer` distributes *within*
+that tier — so equal numbers share traffic, and a higher number is held in
+reserve. A failing endpoint cools down for 60s; when that empties a tier, the
+next one takes over, and traffic returns as soon as the preferred tier recovers.
+Omit `priority` on every entry and all endpoints share a single tier.
+
+Explicit priorities override `ollama_fallback_only`, so ranking an Ollama
+endpoint first is honored rather than silently demoted.
+
+Entries may be bare URL strings (`- http://10.0.0.1:8000/v1`) when you need
+nothing but the host. Entries without a `host`, and duplicates of a host already
+listed, are skipped with a warning.
+
+**Editing endpoints.** `onit setup` opens a small editor for this list — you
+don't have to write the YAML by hand:
+
+```
+   #  PRIO  HOST                     MODEL          NAME
+   1  1     http://10.0.0.1:8000/v1  auto-detect    gpu-a
+   2  1     http://10.0.0.2:8000/v1  auto-detect    gpu-b
+   3  2     https://ollama.com       glm-5.1:cloud  ollama
+  Commands: [a]dd  [e]dit N  [d]elete N  [p]riority N  [Enter] done
+  endpoints>
+```
+
+Rows are listed best-first, but the number identifies the endpoint and doesn't
+move when you re-rank. The wizard writes back whichever shape fits: a plain one-
+or two-server config with no priorities stays as `serving.host` / `serving.host2`,
+and it promotes to an `endpoints` list as soon as you add a third server, set a
+priority, or name an endpoint.
 
 ### Sampling parameters
 
@@ -288,9 +346,17 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 
 ### `onit setup`
 
-Interactive setup wizard. Configures the LLM endpoint (vLLM, OpenRouter, or Ollama — cloud or local), model name, an optional second model server with a load balancing algorithm, API keys, and preferences. Stores settings in `~/.onit/config.yaml` and secrets in the OS keychain.
+Interactive setup wizard, in three sections:
+
+- **Model serving** — the endpoint editor (add/edit/delete servers and rank them by priority), the load balancing algorithm, and the API keys those endpoints use (OpenRouter, Ollama, vLLM)
+- **Preferences** — theme, web UI port, request timeout
+- **Integrations** — OpenWeatherMap, Telegram, Viber, Google OAuth2, GitHub, HuggingFace
+
+Settings go to `~/.onit/config.yaml`, secrets to the OS keychain.
 
 Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.1:cloud`) or OpenRouter (e.g. `google/gemini-2.5-pro`), where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
+
+See [Multiple model endpoints](#multiple-model-endpoints) for the endpoint editor and how priority routing works.
 
 ```bash
 onit setup           # run the wizard

@@ -818,6 +818,9 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             for key in ('host2', 'model2', 'host2_key'):
                 serving_cfg.pop(key, None)
             os.environ.pop('ONIT_HOST2', None)
+        # Same reasoning for a configured endpoints list — it would otherwise
+        # take precedence over the host the user just named on the CLI.
+        serving_cfg.pop('endpoints', None)
     if args.model:
         config_data.setdefault('serving', {})['model'] = args.model
     if getattr(args, 'host2', None):
@@ -850,6 +853,9 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     serving = config_data.get('serving', {})
     host = serving.get('host') or os.environ.get('ONIT_HOST')
     host_key = serving.get('host_key', '')
+    # serving.endpoints supplies the hosts on its own; OnIt validates the list
+    # and reports per-entry problems when it builds the load balancer.
+    endpoints_configured = bool(serving.get('endpoints'))
 
     # Resolve host_key from keyring if not set via config/env. Only for
     # OpenRouter hosts — the stored host_key is an OpenRouter key, and
@@ -862,7 +868,7 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             config_data.setdefault('serving', {})['host_key'] = host_key
 
     missing = []
-    if not host:
+    if not host and not endpoints_configured:
         missing.append('ONIT_HOST (or set serving.host in config, or run: onit setup)')
     elif 'openrouter' in (host or '').lower():
         if not host_key:
