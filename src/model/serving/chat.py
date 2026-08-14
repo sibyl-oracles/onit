@@ -2138,7 +2138,19 @@ async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float
                 return _SAFETY_ABORT
     except asyncio.CancelledError:
         task.cancel()
+        # We are being torn down and cannot await the cancellation, but the
+        # task still resolves once its children unwind — a gather() resolves
+        # by *setting* CancelledError rather than entering the cancelled
+        # state, so with nobody left to await it asyncio logs the whole tool
+        # stack as "exception was never retrieved".  Claim it on completion.
+        task.add_done_callback(_retrieve_exception)
         raise
+
+
+def _retrieve_exception(fut: asyncio.Future) -> None:
+    """Mark *fut*'s exception as seen so asyncio does not log it on collection."""
+    if not fut.cancelled():
+        fut.exception()
 
 
 # Tools that only read.  A batch of these can run at once: none of them can

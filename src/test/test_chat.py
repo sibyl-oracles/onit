@@ -1593,6 +1593,45 @@ class TestHangPrevention:
         with pytest.raises(APITimeoutError):
             await _await_with_safety(boom(), asyncio.Queue(), poll=0.05)
 
+    @pytest.mark.asyncio
+    async def test_cancelled_gather_does_not_log_unretrieved_exception(self):
+        """Tearing down a parallel tool batch must not dump a stack at ERROR.
+
+        A gather() resolves a requested cancellation by *setting* CancelledError
+        once its children unwind, so nothing is left to retrieve it and asyncio
+        logs the whole tool stack as "exception was never retrieved".
+        """
+        import gc
+        from model.serving.chat import _await_with_safety
+
+        logged: list[str] = []
+        loop = asyncio.get_running_loop()
+        previous = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, ctx: logged.append(ctx.get("message", "")))
+        try:
+            async def slow_tool():
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.05)  # child unwinds after the cancel
+                    raise
+
+            outer = asyncio.ensure_future(_await_with_safety(
+                asyncio.gather(*(slow_tool() for _ in range(3)), return_exceptions=True),
+                asyncio.Queue(), poll=0.05,
+            ))
+            await asyncio.sleep(0.2)
+            outer.cancel()  # request torn down, e.g. the client disconnected
+            with pytest.raises(asyncio.CancelledError):
+                await outer
+            await asyncio.sleep(0.3)  # children unwind, gather resolves
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous)
+
+        assert not [m for m in logged if "never retrieved" in m], logged
+
 
 # ── answer text written alongside tool calls ────────────────────────────────
 

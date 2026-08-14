@@ -103,6 +103,20 @@ class RequestHandler(ABC):
 # open. MCP multiplexes concurrent requests over a single session by request
 # id, so tool calls issued in parallel share it safely.
 
+# How long to wait for a server's reply before giving up on the session.
+#
+# A pooled session can go half-dead: the SSE transport's writer task logs
+# "Error in post_writer" and closes the write stream when a POST fails, but the
+# reader keeps running, so nothing tears the session down and the client still
+# reports itself connected.  Nothing can be sent on it again, yet fastmcp
+# defaults to no request timeout — the call below would wait for a reply that
+# can never arrive, hanging the answer instead of failing it.  Bounding the
+# wait turns that into an error the retry can act on.
+#
+# Sized so a working tool never reaches it: commands that genuinely run long
+# belong on the serve tool, which returns immediately and reports progress.
+_REQUEST_TIMEOUT = 300.0
+
 
 class _PooledClient:
     """A long-lived MCP client for one server URL on one event loop."""
@@ -142,7 +156,8 @@ class _PooledClient:
             return self._client
         async with self._connect_lock:
             if self._client is None:
-                client = Client(self.url, log_handler=self._dispatch_log)
+                client = Client(self.url, log_handler=self._dispatch_log,
+                                timeout=_REQUEST_TIMEOUT)
                 await client.__aenter__()
                 self._client = client
             return self._client
@@ -170,7 +185,8 @@ class _PooledClient:
                     raise
                 except Exception:
                     # A pooled session can be closed underneath us: the server
-                    # restarted, or an idle SSE stream was reaped. Reconnect and
+                    # restarted, an idle SSE stream was reaped, or a failed POST
+                    # left it unwritable and the request timed out. Reconnect and
                     # try once more — a second failure is the tool's own error
                     # and belongs to the caller.
                     await self._discard()

@@ -286,3 +286,74 @@ class TestToolHandler:
         h = _make_handler("t")
         result = await h(images="/nonexistent/path.png")
         assert "File not found" in result
+
+
+# ── pooled session recovery ─────────────────────────────────────────────────
+
+class TestPooledClient:
+    """A pooled MCP session that stops working must fail, then heal."""
+
+    @pytest.mark.asyncio
+    async def test_session_gets_a_request_timeout(self):
+        """Without one, a half-dead session hangs the call instead of failing it.
+
+        The SSE transport closes its write stream when a POST fails but leaves
+        the session looking connected, so an untimed request waits forever.
+        """
+        from mcp.types import TextContent
+        from type.tools import _REQUEST_TIMEOUT
+
+        mock_response = MagicMock()
+        mock_response.content = [TextContent(type="text", text="ok")]
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", return_value=mock_client) as ctor:
+            await h(query="test")
+
+        assert ctor.call_args.kwargs["timeout"] == _REQUEST_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_unwritable_session_is_replaced(self):
+        """The timed-out call discards the session and retries on a fresh one."""
+        from mcp.types import TextContent
+
+        mock_response = MagicMock()
+        mock_response.content = [TextContent(type="text", text="recovered")]
+
+        dead = AsyncMock()
+        dead.call_tool = AsyncMock(side_effect=TimeoutError("no reply"))
+        dead.__aenter__ = AsyncMock(return_value=dead)
+        dead.__aexit__ = AsyncMock(return_value=False)
+
+        live = AsyncMock()
+        live.call_tool = AsyncMock(return_value=mock_response)
+        live.__aenter__ = AsyncMock(return_value=live)
+        live.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", side_effect=[dead, live]):
+            result = await h(query="test")
+
+        assert result == "recovered"
+        assert dead.__aexit__.await_count == 1  # the dead session was closed
+        assert live.call_tool.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_second_failure_reaches_the_caller(self):
+        """A tool that fails twice is the tool's own error, not a stale session."""
+        failing = AsyncMock()
+        failing.call_tool = AsyncMock(side_effect=RuntimeError("tool exploded"))
+        failing.__aenter__ = AsyncMock(return_value=failing)
+        failing.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", return_value=failing):
+            with pytest.raises(RuntimeError, match="tool exploded"):
+                await h(query="test")
+
+        assert failing.call_tool.await_count == 2
