@@ -711,12 +711,14 @@ def _build_parser() -> argparse.ArgumentParser:
                              "in the config YAML.")
     parser.add_argument("--max-tokens", "--max_tokens", type=_token_count,
                         default=None, dest="max_tokens", metavar="N",
-                        help="Max output tokens per response (default: 262144). "
+                        help="Max output tokens per response (default: 32768). "
                              "Accepts 64k / 1.5M shorthand (decimal: 64k is "
                              "64,000). Overrides serving.max_tokens in the "
                              "config YAML. Answers longer than this are "
                              "continued across follow-up calls rather than "
-                             "truncated.")
+                             "truncated. Raising it toward the context window "
+                             "makes compaction fire earlier and more often, "
+                             "which is slower overall.")
     parser.add_argument("--max-context-tokens", "--max_context_tokens",
                         type=_token_count, default=None,
                         dest="max_context_tokens", metavar="N",

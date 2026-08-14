@@ -71,7 +71,16 @@ STREAM_STALL_TIMEOUT = 300.0
 # place each default lives — callers pass these through rather than restating
 # the number.  Setting serving.max_context_tokens to null in the config falls
 # back to querying the endpoint for its real window (see _get_model_max_context).
-DEFAULT_MAX_TOKENS = 262144
+#
+# The two are deliberately far apart.  An output budget is what one answer may
+# cost, not what the window holds: CONTEXT_COMPACT_THRESHOLD reserves max_tokens
+# out of the window, so raising this buys earlier — and more frequent —
+# compaction, and compaction is both an extra LLM call and a lossy one that
+# makes the agent re-read what it had already read.  32768 fits any single
+# answer while leaving compaction at ~82% of a 262k window; raising it to the
+# full window drops that to the 50% floor.  Raise it per-run with --max-tokens
+# when an answer genuinely needs the room.
+DEFAULT_MAX_TOKENS = 32768
 DEFAULT_MAX_CONTEXT_TOKENS = 262144
 
 
