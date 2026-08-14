@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import threading
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import requests
@@ -540,12 +541,37 @@ def _merge_base(override: dict, base: dict):
             base[key] = value
 
 
-def _positive_int(value: str) -> int:
-    """argparse type for a token budget: a whole number of tokens above zero."""
+_TOKEN_SUFFIXES = {'k': 1_000, 'm': 1_000_000}
+
+
+def _token_count(value: str) -> int:
+    """argparse type for a token budget: a whole number of tokens above zero.
+
+    Accepts a plain integer or a suffixed shorthand — ``64k`` is 64,000 and
+    ``1.5M`` is 1,500,000, either case.  The suffixes are decimal, not binary,
+    so a number means what it reads as: ``262k`` is 262,000, never 268,288.
+    That direction matters — a window typed from what a model advertises lands
+    just under the real one rather than just over it, and a budget that is
+    slightly small compacts early where one that is slightly large is refused
+    by the server.
+    """
+    text = value.strip().replace('_', '')
+    multiplier = 1
+    if text and text[-1].lower() in _TOKEN_SUFFIXES:
+        multiplier = _TOKEN_SUFFIXES[text[-1].lower()]
+        text = text[:-1].strip()
     try:
-        parsed = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+        scaled = Decimal(text) * multiplier
+    except (InvalidOperation, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is not a token count (expected e.g. 262144, 64k or 1.5M)")
+    if not scaled.is_finite():
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is not a token count (expected e.g. 262144, 64k or 1.5M)")
+    if scaled != scaled.to_integral_value():
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is not a whole number of tokens (would be {scaled})")
+    parsed = int(scaled)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be greater than 0, got {parsed}")
     return parsed
@@ -683,19 +709,23 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Ollama endpoints in normal load-balancing "
                              "rotation. Overrides serving.ollama_fallback_only "
                              "in the config YAML.")
-    parser.add_argument("--max-tokens", "--max_tokens", type=_positive_int,
+    parser.add_argument("--max-tokens", "--max_tokens", type=_token_count,
                         default=None, dest="max_tokens", metavar="N",
-                        help="Max output tokens per response (default: 32768). "
-                             "Overrides serving.max_tokens in the config YAML. "
-                             "Answers longer than this are continued across "
-                             "follow-up calls rather than truncated.")
+                        help="Max output tokens per response (default: 262144). "
+                             "Accepts 64k / 1.5M shorthand (decimal: 64k is "
+                             "64,000). Overrides serving.max_tokens in the "
+                             "config YAML. Answers longer than this are "
+                             "continued across follow-up calls rather than "
+                             "truncated.")
     parser.add_argument("--max-context-tokens", "--max_context_tokens",
-                        type=_positive_int, default=None,
+                        type=_token_count, default=None,
                         dest="max_context_tokens", metavar="N",
                         help="Size of the model's context window in tokens "
-                             "(default: auto-detected from the endpoint). "
-                             "Overrides serving.max_context_tokens in the "
-                             "config YAML.")
+                             "(default: 262144). Accepts 64k / 1.5M shorthand "
+                             "(decimal: 64k is 64,000). Overrides "
+                             "serving.max_context_tokens in the config YAML; "
+                             "set that key to null to auto-detect the window "
+                             "from the endpoint instead.")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
     parser.add_argument("--think", action="store_true", default=None,

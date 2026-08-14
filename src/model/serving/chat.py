@@ -65,6 +65,15 @@ MAX_TOOL_RESPONSE = 16000
 CONNECT_TIMEOUT = 30.0
 STREAM_STALL_TIMEOUT = 300.0
 
+# Token budgets.  DEFAULT_MAX_TOKENS is the output budget for one API call;
+# DEFAULT_MAX_CONTEXT_TOKENS is the whole window (prompt + output) that
+# compaction budgets against.  Both are defined here so there is exactly one
+# place each default lives — callers pass these through rather than restating
+# the number.  Setting serving.max_context_tokens to null in the config falls
+# back to querying the endpoint for its real window (see _get_model_max_context).
+DEFAULT_MAX_TOKENS = 262144
+DEFAULT_MAX_CONTEXT_TOKENS = 262144
+
 
 def _build_client_timeout(timeout, stream: bool):
     """Return the timeout configuration for the API client.
@@ -2428,7 +2437,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
     session_id = kwargs.get('session_id', '')
-    max_tokens = kwargs.get('max_tokens', 32768)
+    max_tokens = kwargs.get('max_tokens', DEFAULT_MAX_TOKENS)
     temperature = kwargs.get('temperature', 0.6)
     top_p = kwargs.get('top_p', 0.95)
     top_k = kwargs.get('top_k', 20)
@@ -2437,7 +2446,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     repetition_penalty = kwargs.get('repetition_penalty', 1.0 if think else 1.05)
     memories = kwargs.get('memories', None)
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
-    max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
+    max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', DEFAULT_MAX_CONTEXT_TOKENS)
     num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so

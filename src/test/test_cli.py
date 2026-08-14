@@ -459,12 +459,48 @@ class TestTokenBudgetOverrides:
         assert resolved["serving"]["max_context_tokens"] == 131072
 
     def test_context_flag_absent_stays_unset(self, tmp_path, monkeypatch):
-        """Unset means auto-detect from the endpoint — don't pin a value."""
+        """No flag means no key — the serving layer owns the default."""
         resolved = self._resolve(tmp_path, monkeypatch, self._CFG, [])
         assert "max_context_tokens" not in resolved["serving"]
 
     @pytest.mark.parametrize("bad", ["0", "-1", "many"])
     def test_rejects_non_positive_values(self, bad):
+        from src.cli import _build_parser
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--max-tokens", bad])
+
+    # ── k / M shorthand ─────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("typed,tokens", [
+        ("262144", 262144),   # a plain count still means itself
+        ("64k", 64_000),
+        ("64K", 64_000),
+        ("1M", 1_000_000),
+        ("1m", 1_000_000),
+        ("1.5M", 1_500_000),
+        ("0.5k", 500),
+        ("262_144", 262144),
+    ])
+    def test_shorthand_scales(self, typed, tokens):
+        from src.cli import _token_count
+        assert _token_count(typed) == tokens
+
+    def test_suffixes_are_decimal_not_binary(self):
+        """262k is 262,000 — under a 262,144 window, never over it."""
+        from src.cli import _token_count
+        assert _token_count("262k") == 262_000
+
+    def test_shorthand_reaches_the_config(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--max-tokens", "128k",
+                                  "--max-context-tokens", "1M"])
+        assert resolved["serving"]["max_tokens"] == 128_000
+        assert resolved["serving"]["max_context_tokens"] == 1_000_000
+
+    @pytest.mark.parametrize("bad", ["k", "M", "1.5k5", "1kk", "12g", "nan",
+                                     "inf", "0k", "-2M", "1.0005k", ""])
+    def test_rejects_malformed_shorthand(self, bad):
+        """A budget that can't be read is a hard stop, not a silent default."""
         from src.cli import _build_parser
         with pytest.raises(SystemExit):
             _build_parser().parse_args(["--max-tokens", bad])

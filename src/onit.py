@@ -47,7 +47,8 @@ from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
-from .model.serving.chat import chat, summarize_metrics
+from .model.serving.chat import (chat, summarize_metrics, DEFAULT_MAX_TOKENS,
+                                 DEFAULT_MAX_CONTEXT_TOKENS)
 from .model.serving.balancer import LoadBalancer, ServerEndpoint
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -1321,8 +1322,9 @@ class OnIt(BaseModel):
             'verbose': self.verbose or self.show_logs,
             'data_path': effective_data_path,
             'session_id': effective_session_id,
-            'max_tokens': self.model_serving.get('max_tokens', 32768),
-            'max_context_tokens': self.model_serving.get('max_context_tokens', None),
+            'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
+            'max_context_tokens': self.model_serving.get('max_context_tokens',
+                                                         DEFAULT_MAX_CONTEXT_TOKENS),
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
         }
@@ -1582,8 +1584,9 @@ class OnIt(BaseModel):
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', 32768),
-                          'max_context_tokens': self.model_serving.get('max_context_tokens', None),
+                          'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
+                          'max_context_tokens': self.model_serving.get(
+                              'max_context_tokens', DEFAULT_MAX_CONTEXT_TOKENS),
                           'session_history': self.load_session_history()}
                 for _k in SERVING_PASSTHROUGH:
                     if _k in self.model_serving:
@@ -2105,8 +2108,9 @@ class OnIt(BaseModel):
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', 32768),
-                          'max_context_tokens': self.model_serving.get('max_context_tokens', None),
+                          'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
+                          'max_context_tokens': self.model_serving.get(
+                              'max_context_tokens', DEFAULT_MAX_CONTEXT_TOKENS),
                           'session_history': self.load_session_history(),
                           'stream': self.stream}
                 for _k in SERVING_PASSTHROUGH:
