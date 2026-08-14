@@ -540,6 +540,17 @@ def _merge_base(override: dict, base: dict):
             base[key] = value
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for a token budget: a whole number of tokens above zero."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0, got {parsed}")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -672,6 +683,19 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Ollama endpoints in normal load-balancing "
                              "rotation. Overrides serving.ollama_fallback_only "
                              "in the config YAML.")
+    parser.add_argument("--max-tokens", "--max_tokens", type=_positive_int,
+                        default=None, dest="max_tokens", metavar="N",
+                        help="Max output tokens per response (default: 32768). "
+                             "Overrides serving.max_tokens in the config YAML. "
+                             "Answers longer than this are continued across "
+                             "follow-up calls rather than truncated.")
+    parser.add_argument("--max-context-tokens", "--max_context_tokens",
+                        type=_positive_int, default=None,
+                        dest="max_context_tokens", metavar="N",
+                        help="Size of the model's context window in tokens "
+                             "(default: auto-detected from the endpoint). "
+                             "Overrides serving.max_context_tokens in the "
+                             "config YAML.")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
     parser.add_argument("--think", action="store_true", default=None,
@@ -829,6 +853,11 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     if getattr(args, 'ollama_fallback_only', None) is not None:
         config_data.setdefault('serving', {})['ollama_fallback_only'] = \
             args.ollama_fallback_only
+    if getattr(args, 'max_tokens', None) is not None:
+        config_data.setdefault('serving', {})['max_tokens'] = args.max_tokens
+    if getattr(args, 'max_context_tokens', None) is not None:
+        config_data.setdefault('serving', {})['max_context_tokens'] = \
+            args.max_context_tokens
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
     if args.data_path:

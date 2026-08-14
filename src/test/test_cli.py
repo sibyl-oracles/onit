@@ -420,6 +420,56 @@ class TestHostOverrides:
         assert resolved["serving"]["ollama_fallback_only"] is False
 
 
+# ── --max-tokens / --max-context-tokens ─────────────────────────────────────
+
+class TestTokenBudgetOverrides:
+    """Token budgets were config-only; the flags let a single run raise or
+    lower them without editing the YAML."""
+
+    _CFG = {"serving": {"host": "http://vllm1:8001/v1", "max_tokens": 32768}}
+
+    def _resolve(self, tmp_path, monkeypatch, cfg, cli_args):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        args = _build_parser().parse_args(["--config", str(path)] + cli_args)
+        return _parse_and_resolve_config(args)
+
+    def test_max_tokens_overrides_config(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--max-tokens", "65536"])
+        assert resolved["serving"]["max_tokens"] == 65536
+
+    def test_underscore_spelling_accepted(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--max_tokens", "4096"])
+        assert resolved["serving"]["max_tokens"] == 4096
+
+    def test_flag_absent_leaves_config_value(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG, [])
+        assert resolved["serving"]["max_tokens"] == 32768
+
+    def test_max_context_tokens_overrides_config(self, tmp_path, monkeypatch):
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--max-context-tokens", "131072"])
+        assert resolved["serving"]["max_context_tokens"] == 131072
+
+    def test_context_flag_absent_stays_unset(self, tmp_path, monkeypatch):
+        """Unset means auto-detect from the endpoint — don't pin a value."""
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG, [])
+        assert "max_context_tokens" not in resolved["serving"]
+
+    @pytest.mark.parametrize("bad", ["0", "-1", "many"])
+    def test_rejects_non_positive_values(self, bad):
+        from src.cli import _build_parser
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--max-tokens", bad])
+
+
 # ── onit learn ──────────────────────────────────────────────────────────────
 
 class TestLearnCommand:
