@@ -1535,16 +1535,51 @@ def _unify_streaming_result(
 
 
 _PLANNING_PREFIXES = (
-    "let me ", "i will ", "i'll ", "i'm going to ", "i am going to ",
-    "now i'll ", "now i will ", "first i'll ", "first i will ",
-    "next i'll ", "next i will ", "then i'll ", "then i will ",
+    "let me ", "let's ", "lets ", "i will ", "i'll ", "i'm going to ",
+    "i am going to ", "i need to ", "i should ",
     "the user wants me to ",
+)
+
+# Connectives a model parks in front of the plan: "Now let me ...", "Next, I'll
+# ...", "Alright, let's ...".  They carry nothing, but they used to defeat the
+# match — the prefix list spelled out "now i'll" and "next i will" and missed
+# "now let me", which is the single most common way a mid-task step opens.  A
+# response that opened that way fell through to the final-answer return and
+# ended the session on a sentence announcing work that never ran.  Strip the
+# connectives instead of enumerating every prefix crossed with every lead-in.
+_PLANNING_LEADINS = (
+    "now", "next", "then", "first", "finally", "so", "ok", "okay",
+    "alright", "good", "great", "perfect",
 )
 
 # A plan announcement is forward-looking from the outset.  Once this much prose
 # has gone by, a "let me ..." sentence is a follow-up step appended to an answer
 # that has already been given, and the answer is the part that matters.
 _PLANNING_LEAD_MAX_CHARS = 200
+
+# A reply ending on a colon is introducing work it never did — "Now let me update
+# the smoke test:" with nothing after it.  This is the wording-independent half
+# of the test: it catches openers no prefix list anticipated.  Bounded by length
+# because a long answer that happens to close on a colon (a heading before a
+# table the model then failed to emit) is still mostly answer, and discarding it
+# costs more than the missed continuation.
+_PLANNING_COLON_MAX_CHARS = 400
+
+
+def _strip_planning_leadin(text: str) -> str:
+    """Drop leading connectives so the planning phrase lands at position 0."""
+    for _ in range(3):  # "Ok, so now let me ..." — a few stack, never many
+        for w in _PLANNING_LEADINS:
+            for sep in (", ", " "):
+                if text.startswith(w + sep):
+                    text = text[len(w) + len(sep):].lstrip()
+                    break
+            else:
+                continue
+            break
+        else:
+            return text
+    return text
 
 
 def _is_planning_response(content: str) -> bool:
@@ -1564,15 +1599,25 @@ def _is_planning_response(content: str) -> bool:
     # Strip thinking blocks
     text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
     lower = text.lower()
-    # Check sentence-start planning phrases
-    if any(lower.startswith(p) for p in _PLANNING_PREFIXES):
+
+    # Every sentence or line start inside the lead window is a candidate opener,
+    # each checked with its connectives stripped.  Matching on sentence starts
+    # rather than on ". <prefix>" substrings is what lets "Good — X exists. Now
+    # let me update the test." register: the plan is the second sentence and the
+    # connective sits between the separator and the phrase.
+    starts = [0]
+    for sep in (". ", "\n"):
+        idx = lower.find(sep)
+        while idx != -1 and idx <= _PLANNING_LEAD_MAX_CHARS:
+            starts.append(idx + len(sep))
+            idx = lower.find(sep, idx + 1)
+    for start in starts:
+        head = _strip_planning_leadin(lower[start:].lstrip())
+        if any(head.startswith(p) for p in _PLANNING_PREFIXES):
+            return True
+
+    if lower.endswith(":") and len(text) <= _PLANNING_COLON_MAX_CHARS:
         return True
-    # Check mid-sentence planning phrases (after ". " or "\n")
-    for p in _PLANNING_PREFIXES:
-        for sep in (f". {p}", f"\n{p}"):
-            idx = lower.find(sep)
-            if idx != -1 and idx <= _PLANNING_LEAD_MAX_CHARS:
-                return True
     return False
 
 

@@ -347,6 +347,44 @@ class TestIsPlanningResponse:
             "I checked the repository and it is out of date. Let me update it now."
         )
 
+    @pytest.mark.parametrize("content", [
+        "Now let me update `captions.py` to handle the fused results:",
+        "Now let me understand the full scope of changes needed. I need to:",
+        "Next, let me update the manifest builder.",
+        "Then I'll wire the loader into the manifest builder.",
+        "Alright, let's run the tests now.",
+        "Now I need to check whether `trajectory_clauses` already exists.",
+        "Good — it exists and takes an `AcousticContext`. Now let me update the smoke test.",
+        "Ok, so now let me fix the smoke test.",
+    ])
+    def test_leadin_before_planning_phrase(self, content):
+        """A connective in front of the plan does not make it an answer.
+
+        These ended sessions early: the response fell through to the final-answer
+        return, so the user saw a sentence announcing work that never ran and had
+        to type "continue".
+        """
+        assert _is_planning_response(content)
+
+    def test_trailing_colon_is_a_plan(self):
+        """A reply that ends on a colon is introducing work it never did."""
+        assert _is_planning_response("Here is the corrected implementation:")
+
+    def test_long_answer_ending_in_colon_is_not_a_plan(self):
+        """The colon test is bounded — a long answer stays an answer."""
+        answer = ("The scholarship covers full tuition and a monthly stipend. " * 10)
+        assert not _is_planning_response(answer + "\nThe deadline is 30 June:")
+
+    @pytest.mark.parametrize("content", [
+        "Done — 3 files updated and the tests pass.",
+        "The bug was a missing await in loader.py:88; the suite is green now.",
+        "Now the tests pass and the manifest builder emits all four captions.",
+        "I updated the smoke test and it exercises every model.",
+    ])
+    def test_completed_work_is_not_a_plan(self, content):
+        """Past-tense reports of finished work must reach the user."""
+        assert not _is_planning_response(content)
+
 
 # ── _is_acknowledgment_response ────────────────────────────────────────────
 
