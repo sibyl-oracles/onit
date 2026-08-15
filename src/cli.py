@@ -2,7 +2,8 @@
 CLI entry point for the OnIt agent.
 
 Usage:
-    onit                                          # interactive terminal chat
+    onit                                          # interactive terminal chat (resumes last session)
+    onit --restart-session                        # interactive terminal chat, fresh session
     onit setup                                    # interactive setup wizard
     onit setup --show                             # show current configuration
     onit sessions                                 # list previous sessions
@@ -641,6 +642,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── General options ──────────────────────────────────────────────────────
     parser.add_argument("--resume", type=str, default=None, metavar="TAG_OR_ID",
                         help='Resume a previous session by tag, UUID, or "last" for the most recent.')
+    parser.add_argument("--restart-session", "--new-session", action="store_true",
+                        default=False, dest="restart_session",
+                        help="Start a fresh session instead of resuming the last "
+                             "one (terminal chat resumes the last session by default).")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to the configuration YAML file.")
     parser.add_argument("--host", type=str, default=None,
@@ -1101,18 +1106,40 @@ def main():
 
     config_data = _parse_and_resolve_config(args)
 
-    # Handle --resume: resolve tag/id to session_id and inject into config
-    if args.resume:
+    # Session selection.  The terminal chat continues where it left off, so an
+    # explicit --resume is optional: without one we resume the last session.
+    # --restart-session opts out and starts from scratch.  Server modes
+    # (web/a2a/gateway/loop) manage their own sessions and never auto-resume.
+    resume_target = args.resume
+    auto_resume = False
+    if not resume_target and not args.restart_session and not (
+            config_data.get('web') or config_data.get('a2a')
+            or config_data.get('gateway') or config_data.get('loop')):
+        resume_target = "last"
+        auto_resume = True
+
+    if resume_target:
         from .sessions import resolve_session
         sessions_dir = os.path.expanduser(
             config_data.get('session_path', '~/.onit/sessions'))
-        sid = resolve_session(args.resume, sessions_dir)
+        sid = resolve_session(resume_target, sessions_dir)
+        # An index entry can outlive its JSONL file; treat that as "no session".
+        if sid and not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl")):
+            sid = None
         if not sid:
-            print(f"Error: Session '{args.resume}' not found.", file=sys.stderr)
-            print("Use 'onit sessions' to list available sessions.", file=sys.stderr)
-            sys.exit(1)
-        config_data['resume_session_id'] = sid
-        print(f"Resuming session: {sid[:8]}...")
+            # Nothing to resume is only an error when the user asked for a
+            # specific session; the automatic path just starts a new one.
+            if not auto_resume:
+                print(f"Error: Session '{resume_target}' not found.", file=sys.stderr)
+                print("Use 'onit sessions' to list available sessions.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            config_data['resume_session_id'] = sid
+            if auto_resume:
+                print(f"Resuming last session: {sid[:8]}... "
+                      "(use --restart-session to start a new one)")
+            else:
+                print(f"Resuming session: {sid[:8]}...")
 
     # Must be set before MCP servers are spawned so child processes inherit it.
     if args.unrestricted:

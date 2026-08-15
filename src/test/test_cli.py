@@ -478,3 +478,90 @@ class TestLearnCommand:
         self._run(["learn"])
         out = capsys.readouterr().out
         assert "Recording is off" in out
+
+
+# ── session selection on startup ────────────────────────────────────────────
+
+class TestSessionSelection:
+    """Terminal chat picks up where it left off: a bare `onit` resumes the
+    last session, and --restart-session is the way to start over."""
+
+    @pytest.fixture
+    def sessions(self, tmp_path, monkeypatch):
+        """A config whose session_path holds two sessions, 'old' then 'new'."""
+        import yaml
+        from src import setup as setup_mod
+        from src.sessions import register_session
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        for sid, mtime in (("old-session-id", 1000), ("new-session-id", 2000)):
+            path = sessions_dir / f"{sid}.jsonl"
+            path.write_text("")
+            register_session(sid, str(sessions_dir))
+            os.utime(path, (mtime, mtime))
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "session_path": str(sessions_dir),
+            "serving": {"host": "http://localhost:8000/v1"},
+        }))
+        monkeypatch.setattr("src.cli._find_default_config", lambda: str(cfg))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        # Keep the real keychain out of credential resolution.
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        return sessions_dir
+
+    def _run(self, argv):
+        """Run main() up to dispatch and return the resolved config."""
+        from src.cli import main
+        captured = {}
+        with patch.object(sys, "argv", ["onit"] + argv), \
+                patch("src.cli._setup_servers"), \
+                patch("src.cli._dispatch_mode",
+                      side_effect=lambda cfg: captured.update(cfg)):
+            main()
+        return captured
+
+    def test_bare_invocation_resumes_the_last_session(self, sessions, capsys):
+        config = self._run([])
+        assert config["resume_session_id"] == "new-session-id"
+        assert "Resuming last session" in capsys.readouterr().out
+
+    def test_restart_session_starts_fresh(self, sessions):
+        assert "resume_session_id" not in self._run(["--restart-session"])
+
+    def test_new_session_is_an_alias_for_restart(self, sessions):
+        assert "resume_session_id" not in self._run(["--new-session"])
+
+    def test_explicit_resume_still_wins(self, sessions):
+        config = self._run(["--resume", "old-session-id"])
+        assert config["resume_session_id"] == "old-session-id"
+
+    def test_resume_subcommand_still_works(self, sessions):
+        config = self._run(["resume", "old-session-id"])
+        assert config["resume_session_id"] == "old-session-id"
+
+    def test_first_run_has_nothing_to_resume(self, sessions):
+        for f in sessions.iterdir():
+            f.unlink()
+        assert "resume_session_id" not in self._run([])
+
+    def test_stale_index_entry_is_ignored(self, sessions):
+        # The index outlives a deleted JSONL file; resuming it would crash
+        # later in _setup_session, so startup must fall back to a new session.
+        for f in sessions.glob("*.jsonl"):
+            f.unlink()
+        assert "resume_session_id" not in self._run([])
+
+    def test_unknown_session_still_errors(self, sessions):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(["--resume", "does-not-exist"])
+        assert excinfo.value.code == 1
+
+    def test_server_modes_do_not_auto_resume(self, sessions, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        assert "resume_session_id" not in self._run(["serve", "web"])
+        assert "resume_session_id" not in self._run(["serve", "a2a"])
+        assert "resume_session_id" not in self._run(["serve", "gateway", "telegram"])
+        assert "resume_session_id" not in self._run(["serve", "loop", "check things"])

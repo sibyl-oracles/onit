@@ -79,9 +79,10 @@ Add `--container` to any command to run OnIt inside a hardened Docker container 
 ## CLI at a Glance
 
 ```
-onit                                          # interactive terminal chat
+onit                                          # interactive terminal chat (resumes last session)
+onit --restart-session                        # terminal chat, starting a new session
 onit setup                                    # configure LLM endpoint, API keys
-onit resume [TAG_OR_ID]                       # continue a previous session
+onit resume [TAG_OR_ID]                       # continue a specific previous session
 onit sessions                                 # list saved sessions
 
 onit serve a2a                                # A2A protocol server (port 9001)
@@ -336,7 +337,8 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--no-stream` | Disable token streaming | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
-| `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | — |
+| `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
+| `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
 | `--sandbox` | Delegate code execution to an external MCP sandbox provider | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
@@ -377,15 +379,20 @@ onit sessions --clear                  # delete all session history
 
 ### `onit resume`
 
-Resume a previous session by tag or UUID.
+Resume a previous session by tag or UUID. Terminal chat already resumes the most
+recent session automatically, so this is for picking a *different* one.
 
 ```bash
-onit resume              # resume the most recent session
 onit resume my-chat      # resume by tag
 onit resume abc123       # resume by session UUID prefix
+onit resume              # resume the most recent session (same as bare `onit`)
 ```
 
 Equivalent to `onit --resume TAG_OR_ID`.
+
+To start from scratch instead, use `onit --restart-session`. Server modes
+(`serve web`, `serve a2a`, `serve gateway`, `serve loop`) manage their own
+sessions and never auto-resume.
 
 ### `onit ask`
 

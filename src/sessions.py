@@ -67,15 +67,88 @@ def _turn_count_from_jsonl(jsonl_path: str) -> int:
     return count
 
 
+# Filler that carries no topic: politeness, pronouns, auxiliaries, articles,
+# prepositions and question words.  Dropping these turns "can you please help
+# me fix the login bug" into "fix-login-bug".
+_TAG_STOPWORDS = frozenset("""
+a an the and or but if then than so as of to in on at for with from by into
+about over under again between within without across after before during
+through out up down off onto upon per via
+is are was were be been being am do does did doing done
+can could would should will shall may might must have has had
+i me my mine we us our ours you your yours it its they them their he she his her
+this that these those there here what which who whom whose when where why how
+please pls kindly hi hey hello thanks thank just some any all very really
+actually maybe let lets like want wants need needs help sure okay ok also
+http https www com org net io co html htm
+""".split())
+
+# A sidebar entry is only a couple of inches wide — four words is the most that
+# stays readable, and the character cap keeps long identifiers from blowing it.
+_TAG_MAX_WORDS = 4
+_TAG_MAX_CHARS = 32
+_TAG_MAX_WORD_LEN = 20
+
+
+def _tag_words(task: str) -> list[str]:
+    """Extract ordered, de-duplicated content words from *task*.
+
+    Only the first line/sentence is considered: long multi-paragraph tasks
+    describe their subject up front, and the rest is detail.
+    """
+    head = task.strip().split("\n", 1)[0]
+    for sep in (". ", "? ", "! ", "; "):
+        head = head.split(sep, 1)[0]
+
+    raw, seen = [], set()
+    for token in head.split():
+        # Keep internal dashes (well-known, re-run) but drop other punctuation,
+        # which also strips URLs and paths down to their readable parts.
+        word = "".join(c if c.isalnum() or c == "-" else " " for c in token)
+        for part in word.split():
+            part = part.strip("-").lower()
+            # Overlong tokens are hashes, URLs or base64 — never descriptive.
+            if not part or len(part) > _TAG_MAX_WORD_LEN or part in seen:
+                continue
+            seen.add(part)
+            raw.append(part)
+
+    content = [w for w in raw if w not in _TAG_STOPWORDS]
+    # A task made entirely of stopwords ("what is this?") still needs a name.
+    return content or raw
+
+
+def _fit_tag(words: list[str]) -> str:
+    """Join *words* into a slug that respects the word and character caps."""
+    tag = ""
+    for word in words[:_TAG_MAX_WORDS]:
+        candidate = f"{tag}-{word}" if tag else word
+        if tag and len(candidate) > _TAG_MAX_CHARS:
+            break
+        tag = candidate
+    return tag[:_TAG_MAX_CHARS].strip("-")
+
+
 def _make_auto_tag(task: str) -> str:
-    """Generate a short auto-tag from the first user message."""
-    # Take the first ~6 words, lowercase, replace spaces with dashes
-    words = task.strip().split()[:6]
-    tag = "-".join(w.lower() for w in words)
-    # Remove non-alphanumeric characters except dashes
-    tag = "".join(c for c in tag if c.isalnum() or c == "-")
-    # Truncate to 50 chars
-    return tag[:50] or "unnamed"
+    """Generate a short, descriptive auto-tag from the first user message."""
+    return _fit_tag(_tag_words(task)) or "unnamed"
+
+
+def _auto_tag_candidates(task: str) -> list[str]:
+    """Auto-tag options for *task*, best first.
+
+    When the preferred name is taken, later candidates slide the word window
+    forward so the sibling session gets a name that actually says something
+    different, rather than the same name with a number bolted on.
+    """
+    words = _tag_words(task)
+    candidates, seen = [], set()
+    for start in range(max(len(words) - 1, 1)):
+        tag = _fit_tag(words[start:])
+        if tag and tag not in seen:
+            seen.add(tag)
+            candidates.append(tag)
+    return candidates or ["unnamed"]
 
 
 def _existing_tags(index: dict, exclude_sid: str | None = None) -> set[str]:
@@ -90,11 +163,18 @@ def _existing_tags(index: dict, exclude_sid: str | None = None) -> set[str]:
     return tags
 
 
-def _ensure_unique_tag(tag: str, index: dict, exclude_sid: str | None = None) -> str:
-    """Append a numeric suffix if *tag* already exists in the index."""
+def _ensure_unique_tag(tag: str, index: dict, exclude_sid: str | None = None,
+                       alternates: list[str] | None = None) -> str:
+    """Return the first free name for a session.
+
+    *tag* is preferred; *alternates* are tried next so a collision produces a
+    differently-worded name instead of a numbered one.  A numeric suffix is
+    the last resort.
+    """
     used = _existing_tags(index, exclude_sid)
-    if tag.lower() not in used:
-        return tag
+    for candidate in [tag, *(alternates or [])]:
+        if candidate and candidate.lower() not in used:
+            return candidate
     for i in range(2, 10000):
         candidate = f"{tag}-{i}"
         if candidate.lower() not in used:
@@ -137,7 +217,9 @@ def update_session(session_id: str, task: str | None = None,
     if task and not meta.get("preview"):
         meta["preview"] = task[:120]
     if task and not meta.get("tag"):
-        meta["tag"] = _ensure_unique_tag(_make_auto_tag(task), index, exclude_sid=session_id)
+        options = _auto_tag_candidates(task)
+        meta["tag"] = _ensure_unique_tag(options[0], index, exclude_sid=session_id,
+                                         alternates=options[1:])
     index[session_id] = meta
     _save_index(index, sessions_dir)
 
@@ -344,8 +426,10 @@ def rebuild_index(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> dict:
         if turns == 0:
             continue  # skip empty sessions
         stat = jsonl_file.stat()
+        options = _auto_tag_candidates(first_task) if first_task else []
         index[sid] = {
-            "tag": _ensure_unique_tag(_make_auto_tag(first_task), index, exclude_sid=sid) if first_task else None,
+            "tag": _ensure_unique_tag(options[0], index, exclude_sid=sid,
+                                      alternates=options[1:]) if options else None,
             "created": stat.st_birthtime if hasattr(stat, 'st_birthtime') else stat.st_mtime,
             "updated": stat.st_mtime,
             "preview": (first_task[:120] if first_task else None),
