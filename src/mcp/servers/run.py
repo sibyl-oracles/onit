@@ -69,6 +69,18 @@ def run_server(name:str,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         force=True,
     )
+    # Anything a server writes straight to stderr (the FastMCP startup banner,
+    # rich-formatted library logs, third-party prints) has no logger to
+    # reroute, so point the file descriptor itself at the log.  Pool workers
+    # only: run_server() is also called in-process by the tests, where
+    # stealing stderr would be wrong.
+    if multiprocessing.parent_process() is not None:
+        try:
+            _stderr_sink = open(_log_file, 'a', buffering=1)
+            os.dup2(_stderr_sink.fileno(), sys.stderr.fileno())
+            sys.stderr = _stderr_sink
+        except (OSError, AttributeError, ValueError):
+            pass  # No usable stderr fd; logging still goes to the file
 
     try:
         # If port is already in use (another onit instance started this server),
@@ -106,7 +118,19 @@ def run_server(name:str,
         else:
             full_module = module  # third-party absolute module path
         server_module = __import__(full_module, fromlist=['run'])
-        
+
+        # basicConfig() above only owns the root logger.  fastmcp installs its
+        # own stderr RichHandler when it is imported (just now, under 'spawn')
+        # and sets propagate=False, so its records — one per ctx.log() call,
+        # i.e. every streamed line of bash stdout, relabelled DEBUG — would
+        # bypass the file handler.  Re-point them at it, at the level asked for
+        # here rather than fastmcp's own INFO default.
+        _fastmcp_logger = logging.getLogger('fastmcp')
+        for _hdlr in _fastmcp_logger.handlers[:]:
+            _fastmcp_logger.removeHandler(_hdlr)
+        _fastmcp_logger.propagate = True
+        _fastmcp_logger.setLevel(_log_level)
+
         # Run the server
         server_module.run(
             transport=transport, 
