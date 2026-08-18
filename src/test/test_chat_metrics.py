@@ -744,6 +744,91 @@ class TestToolResultDecay:
         assert messages[0]["content"] is parts
 
 
+# ── decay, once results are addressable ─────────────────────────────────────
+
+class TestDecayWithAResultStore:
+    """Phase 4's step 3. A trimmed result used to be told to run the tool
+    again — a network round trip to recover bytes the harness was holding."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        from model.serving.results import ResultStore
+        return ResultStore(str(tmp_path))
+
+    def _tool_msg(self, text):
+        return {"role": "tool", "content": text, "name": "local_search",
+                "tool_call_id": "c"}
+
+    def _stored_msg(self, store, size=60000):
+        return self._tool_msg(store.put("local_search", "x" * size))
+
+    def test_a_stored_result_is_cut_far_below_the_unstored_floor(self, store):
+        """6,000 is the floor for a result whose only recovery is re-running
+        the tool. A result one local read away does not need it."""
+        from model.serving.chat import TOOL_RESULT_STORED_DECAY_CHARS
+
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        body = messages[0]["content"]
+        assert len(body) < TOOL_RESULT_DECAY_CHARS
+        assert body.count("x") == TOOL_RESULT_STORED_DECAY_CHARS
+
+    def test_the_handle_survives_the_trim(self, store):
+        from model.serving.results import handle_of
+
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert handle_of(messages[0]["content"]) == "0001"
+
+    def test_the_marker_points_at_a_local_read(self, store):
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        body = messages[0]["content"]
+        assert 'result_read("0001"' in body
+        assert "call the tool again" not in body
+
+    def test_an_unstored_result_keeps_the_larger_floor_and_old_marker(self, store):
+        """Its head is all there will ever be, so it is not cut further."""
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [self._tool_msg(big), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert messages[0]["content"].endswith(_DECAY_MARKER)
+        assert messages[0]["content"].count("x") == TOOL_RESULT_DECAY_CHARS
+
+    def test_decay_is_idempotent_for_stored_results(self, store):
+        """The trailer is sliced back into the body on a second pass unless
+        an already-decayed message is recognized as one."""
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        once = messages[0]["content"]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert messages[0]["content"] == once
+
+    def test_a_fresh_preview_is_still_decayed(self, store):
+        """A preview ends in a continuation line too; treating that as "already
+        trimmed" would decay nothing at all."""
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        before = len(messages[0]["content"])
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert len(messages[0]["content"]) < before
+
+    def test_recent_stored_results_are_untouched(self, store):
+        messages = [self._stored_msg(store), self._stored_msg(store)]
+        before = [m["content"] for m in messages]
+        _decay_old_tool_results(messages, keep_full=2, store=store)
+        assert [m["content"] for m in messages] == before
+
+    def test_without_a_store_a_preview_is_left_intact(self, store):
+        """No store means no handle-aware branch, and a preview already sits at
+        the decay floor — so it is left alone rather than cut through its own
+        trailer."""
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        before = messages[0]["content"]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert messages[0]["content"] == before
+
+
 # ── prefix-cache probe ──────────────────────────────────────────────────────
 
 class TestPrefixCacheProbe:

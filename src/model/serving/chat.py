@@ -36,6 +36,7 @@ from .verify import (DEFAULT_TRUSTED_DOMAINS, THINKING_VERDICT_MAX_TOKENS,
                      VERDICT_MAX_TOKENS, needs_verification, verify_answer)
 
 from .harness import COMPACTION_NOTICE, HarnessTools
+from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
 from .state import (RunState, STOP_ANSWERED, STOP_PLANNING_EXHAUSTED,
                     STOP_REPEATED_TOOL_CALL, STOP_SAFETY_ABORT,
                     STOP_TURN_LIMIT)
@@ -873,12 +874,30 @@ TOOL_RESULT_KEEP_FULL = 3
 # no quotes, which is the one thing worse than dropping the result entirely.
 # Still trims a maximum-size (MAX_TOOL_RESPONSE) result to ~37%.
 TOOL_RESULT_DECAY_CHARS = 6000
-_DECAY_MARKER = "… [trimmed: older tool result, call the tool again for the rest]"
+# What a decayed result says when there is no handle behind it — a run with no
+# result store, or a result that was small enough to pass through whole.  The
+# instruction it gives is a network round trip; the handle-bearing version
+# (ResultStore.decay_trailer) is a local file read, which is the whole point of
+# Phase 4.  Both open with CONTINUATION_PREFIX so "already trimmed?" stays one
+# check rather than a list of known sentences.
+_DECAY_MARKER = (CONTINUATION_PREFIX
+                 + "trimmed: older tool result, call the tool again for the rest]")
+
+# What an *aged, stored* result is cut to.  Far below TOOL_RESULT_DECAY_CHARS,
+# and the handle is what makes that safe: 6,000 is the floor for a result whose
+# only recovery path is running the tool again, because everything outside the
+# head is gone for good.  A result with a handle is one local file read away in
+# full, so its head only has to say what it was about — the evidence is not
+# being discarded, it is being addressed instead of copied.  This is where the
+# quadratic prompt growth of a six-document research loop actually goes.
+TOOL_RESULT_STORED_DECAY_CHARS = 1200
 
 
 def _decay_old_tool_results(messages: list,
                             keep_full: int = TOOL_RESULT_KEEP_FULL,
-                            head_chars: int = TOOL_RESULT_DECAY_CHARS) -> None:
+                            head_chars: int = TOOL_RESULT_DECAY_CHARS,
+                            store=None,
+                            stored_head_chars: int = TOOL_RESULT_STORED_DECAY_CHARS) -> None:
     """Trim tool results the conversation has moved past.
 
     Each result may be up to MAX_TOOL_RESPONSE characters, and every one of
@@ -895,6 +914,10 @@ def _decay_old_tool_results(messages: list,
     This is deliberately cheaper than compaction, which only fires near the
     context ceiling and costs a whole extra LLM call when it does. Trimming
     here is meant to keep the conversation from reaching that ceiling at all.
+
+    ``store``, when given, changes both halves of that for a result with a
+    handle: it is cut much further, because the rest is a local file read away
+    rather than a tool re-execution away, and the marker says so.
     """
     tool_indices = [
         i for i, msg in enumerate(messages)
@@ -903,10 +926,26 @@ def _decay_old_tool_results(messages: list,
     ]
     for i in tool_indices[:-keep_full] if keep_full else tool_indices:
         content = messages[i]["content"]
-        if len(content) <= head_chars or content.endswith(_DECAY_MARKER):
-            continue
-        messages[i] = {**messages[i],
-                       "content": content[:head_chars].rstrip() + "\n\n" + _DECAY_MARKER}
+        handle = handle_of(content) if store is not None else None
+        if handle:
+            # The header line carries the handle, so it survives the trim: the
+            # body is cut and the two lines that keep the rest reachable stay.
+            # Sized against the body rather than the whole message so a second
+            # pass over an already-decayed one is a no-op.
+            if is_decayed(content):
+                continue
+            header, _, body = content.partition("\n")
+            if len(body) <= stored_head_chars:
+                continue
+            head = body[:stored_head_chars].rstrip()
+            trimmed = f"{header}\n{head}\n\n{store.decay_trailer(handle, len(head))}"
+        else:
+            # No handle: the head is all there will ever be, so it keeps the
+            # larger floor.
+            if len(content) <= head_chars or is_continued(content):
+                continue
+            trimmed = content[:head_chars].rstrip() + "\n\n" + _DECAY_MARKER
+        messages[i] = {**messages[i], "content": trimmed}
 
 
 def _strip_old_images(messages: list) -> None:
@@ -1167,7 +1206,16 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             _vision_b64, _vision_mime = None, None
             if data_path and "file_data_base64" in tool_response:
                 tool_response, _vision_b64, _vision_mime = _extract_base64_file(tool_response, data_path)
-            tool_response = _truncate_tool_response(tool_response)
+            # Pass by reference (results.py).  The full output goes to a
+            # file and a bounded preview carrying a handle goes into the
+            # message, so a large result stops being a choice between paying
+            # for all of it and losing the middle of it permanently.
+            # ``_truncate_tool_response`` stays as the fallback: a run with no
+            # data_path has nowhere to put the rest, and a hard cut is still
+            # better than an unbounded message.
+            _stored = harness.results.put(function_name, tool_response) if harness else None
+            tool_response = (_stored if _stored is not None
+                             else _truncate_tool_response(tool_response))
             if _vision_b64:
                 tool_content = [
                     {"type": "text", "text": tool_response},
@@ -2643,7 +2691,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # keep notes in a conversation that cannot outlive them will keep them.
     harness = HarnessTools(data_path=data_path,
                            max_context_tokens=max_context_tokens,
-                           enabled=bool(tools) and kwargs.get('harness_tools', True))
+                           enabled=bool(tools) and kwargs.get('harness_tools', True),
+                           result_store=kwargs.get('result_store', True))
     tools = tools + _api_tool_payload(harness.tool_items())
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so
@@ -3139,7 +3188,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 state.last_prompt_tokens = 0
 
         _strip_old_images(messages)
-        _decay_old_tool_results(messages)
+        _decay_old_tool_results(messages, store=harness.results)
         # What context_status answers with.  Read here, after the compaction
         # decisions above: a turn that just compacted has no token count until
         # the next response, and reporting the pre-compaction number would tell

@@ -1,7 +1,7 @@
 # Agent Harness Capabilities — Gap Analysis and Build Plan
 
-**Status**: **Phases 1, 2, 3 and 6 implemented** (see §3.5, §4.4, §5.4 and §8.4). Phases 4 and 5 are proposal / RFC.
-**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4), then Phase 6 shipped (§8.4).*
+**Status**: **Phases 1, 2, 3, 4 and 6 implemented** (see §3.5, §4.4, §5.4, §6.6 and §8.4). Phase 5 is proposal / RFC.
+**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4), then Phase 6 (§8.4), then Phase 4 (§6.6). **Phase 0.5 is complete.***
 **Source**: [Six Agent Harness Capabilities for Higher Model Performance](https://developer.nvidia.com/blog/six-agent-harness-capabilities-for-higher-model-performance/) (NVIDIA, NOOA framework)
 **Companion**: [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) — Phases 1–4 and 6 here are
 that plan's **Phase 0.5**. Its §1.1 explains why they must land before its baseline is
@@ -30,7 +30,7 @@ code-as-action with a **sandboxed interpreter** instead of a shared heap.
 | 1 | Typed input/output | Schemas discovered, then partly unused; arg validation is regex repair | **Large** | 1 |
 | 2 | Model-callable harness APIs | ~~None — context management is invisible to the model~~ **Shipped**: `context_status`, `note_write`/`note_read`, and a compaction the model is told about | ~~**Large**~~ | 2 ✅ |
 | 3 | Programmable loop engineering | Plain Python loop ✅, but policy constants hardcoded | Small | 3 |
-| 4 | Pass by reference | Everything serializes into context; truncation is lossy | **Large** | 4 |
+| 4 | Pass by reference | ~~Everything serializes into context; truncation is lossy~~ **Shipped**: full results on disk, a preview plus handle in context, `result_read`/`result_grep` to reach the rest | ~~**Large**~~ | 4 ✅ |
 | 5 | Code as action | `bash` only; one model round trip per step | **Large** | 5 |
 | 6 | Explicit object state | ~~Run state is locals inside `chat()`, dies on return~~ **Shipped**: `RunState`, caller-owned, persisted per session and read back on resume | ~~Medium~~ | 6 ✅ |
 
@@ -45,7 +45,7 @@ Phase 1  Typed I/O            ~1 day     fixes a live bug          ┐ ✅ shipp
 Phase 3  Loop policy config   ~half day  fixes an unbounded loop   │ ✅ shipped
 Phase 2  Harness APIs         ~1 day     small, high leverage      │ ✅ shipped
 Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │ ✅ shipped
-Phase 4  Result store         ~3 days    largest token win         ┘ Phase 0.5
+Phase 4  Result store         ~3 days    largest token win         ┘ ✅ shipped
 
 Phase 5  Code as action       ~1-2 weeks largest latency win       ← after SELF_IMPROVEMENT Phase 2
 ```
@@ -562,6 +562,8 @@ Two additions beyond the plan:
 
 **Effort**: ~3 days · **Depends on**: nothing (Phase 2's note store shares infrastructure)
 **Priority**: fourth — largest token win
+**Status**: ✅ **Shipped** — see §6.6 for what changed during implementation and the
+measured before/after.
 
 ### 6.1 The gap
 
@@ -654,6 +656,84 @@ Corollary worth stating plainly: pass-by-reference **reduces** compaction pressu
 not eliminate compaction. A second review claimed it would remove the need for the
 compaction pipeline entirely — it will not. Assistant turns and session history still
 accumulate, and `_compact_context` stays as the backstop.
+
+### 6.6 As shipped
+
+| What | Where |
+|---|---|
+| `ResultStore` | [`src/model/serving/results.py`](../src/model/serving/results.py) |
+| Stored at the point truncation used to happen | [`_execute_tool`](../src/model/serving/chat.py) |
+| Decay made handle-aware | [`_decay_old_tool_results`](../src/model/serving/chat.py) |
+| `result_read` / `result_grep` | [`HarnessTools`](../src/model/serving/harness.py), same dispatch as Phase 2 |
+| Switch | `serving.result_store` (default on; needs a `data_path`) |
+| Tests | `test_result_store.py` (53), plus `TestResultStoreInChat` (6), `TestDecayWithAResultStore` (8), `TestResultToolsOnTheHarness` (11), `TestResultStoreBlock` (6), `TestResultStoreFlag` (4) |
+
+**Measured, on a six-tool research loop** (each result ~21k chars, mock model reporting
+the size of what it was actually sent):
+
+| | prompt tokens per turn | peak | steady-state growth |
+|---|---|---|---|
+| store off | 14 → 4,036 → 8,058 → 12,080 → 13,609 → 15,139 → 16,669 | 16,669 | +1,530/turn |
+| store on | 14 → 1,567 → 3,121 → 4,675 → 5,034 → 5,394 → 5,753 | **5,753** | **+359/turn** |
+
+**−65% peak, −77% steady-state growth — and the store-on run is the lossless one.** Off,
+each 21k result was cut to 16k with the middle destroyed and then decayed to 6k with no way
+back. On, all six are on disk in full.
+
+**Four decisions changed during implementation.**
+
+*The preview is 6,000 characters, not the 2,000 §6.2 specified.* 2,000 walks straight into
+a failure this codebase has already measured and recorded: the comment on
+`TOOL_RESULT_DECAY_CHARS` says that at 1,500 characters the surviving head of a
+`local_search` result was its document summaries alone — every matched passage fell outside
+it, leaving the model a list of titles and no quotes, "the one thing worse than dropping
+the result entirely". A preview is a decayed result seen from the other end and has to
+clear the same bar. Below `RESULT_STORE_THRESHOLD` (8,000) nothing is stored at all: the
+preview would save at most 2,000 characters, which does not pay for a file, a handle line
+in every later turn, and a possible extra call to read back what was already in front of
+the model.
+
+*The token win moved from the preview to the decay.* With the preview at the decay floor,
+step 3 as written would have been dead code — a stored result would never decay further, so
+its marker would never need rewriting. The honest version is the reverse: **because** the
+rest is now one local file read away, an aged stored result can be cut to 1,200 characters
+(`TOOL_RESULT_STORED_DECAY_CHARS`) instead of 6,000. The 6,000 floor only ever existed
+because everything outside the head was gone for good. That single change is where the
+−77% in the table comes from; the preview change alone would have bought roughly a third of
+it.
+
+*The `data_path` shortcut was not taken.* §6.2 suggested pointing the handle at an existing
+file for `bash`, `read_file` and the document tools. A tool's *response* is not its file —
+`bash` returns stdout, the document tools return extracted text — so this needs a per-tool
+map of "which file did this response come from", which is exactly the tool-specific coupling
+the harness avoids everywhere else. The store writes its own copy: one local write of a few
+hundred KB against a mapping table that would be wrong the first time a tool changed its
+output format.
+
+*Idempotency needed two distinct trailers.* A fresh preview and a decayed result both end
+in a continuation line, so a single "already trimmed?" check either decays nothing or
+re-decays a message — the second pass slicing the previous trailer back into the body it is
+supposed to follow, corrupting the handle. `DECAY_MARK` separates them (`is_continued` vs
+`is_decayed`).
+
+**Security.** A handle is model input and `data_path` is a session isolation boundary, so
+it is jailed twice, per the `session-isolation-data-path` memory: a regex admitting nothing
+but digits, then a resolve-and-compare against the results directory. `test_result_store.py`
+covers `../`, absolute paths, `*`, non-strings, and a symlink out of the jail — the last is
+what the second check is for, since the *name* is fine and only the target is not.
+
+**Retention.** Results live under the session's `data_path` and die with it. No global
+cache: §6.3 step 5 is right that session isolation is load-bearing here. Past
+`MAX_STORED_RESULTS` (200) the oldest are pruned rather than the newest refused — a note may
+be turned away because the model chose to write it, but a tool result arrives whether or not
+there is room, and refusing to store one would put the lossy truncation back exactly where
+this replaced it.
+
+**Baseline impact.** §6.5's warning stands and is now live: `truncations` and `compactions`
+both drop on the same run, so any `eval/baseline.json` pinned before this commit is
+measuring a different harness. This landed before `SELF_IMPROVEMENT.md` froze its holdout,
+so no re-pin is owed — but a post-Phase-4 drop in `compactions` is this change, not a
+learning win.
 
 ---
 

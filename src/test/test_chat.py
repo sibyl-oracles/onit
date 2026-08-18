@@ -912,7 +912,8 @@ class TestHarnessToolsInChat:
     @pytest.mark.asyncio
     async def test_offered_alongside_the_mcp_tools(self, tmp_path):
         sent = await self._run(tmp_path, self._registry())
-        assert set(sent) == {"search", "context_status", "note_write", "note_read"}
+        assert set(sent) == {"search", "context_status", "note_write", "note_read",
+                             "result_read", "result_grep"}
 
     @pytest.mark.asyncio
     async def test_withheld_from_a_run_with_no_tools_of_its_own(self, tmp_path):
@@ -1983,6 +1984,247 @@ class TestProseAlongsideToolCalls:
             )
 
         assert answer.strip() in result
+
+
+# ── the result store, from inside the loop ──────────────────────────────────
+
+def _tool_registry(name="local_search", result=""):
+    """A registry whose one tool returns ``result``."""
+    handler = AsyncMock(return_value=result)
+    registry = MagicMock()
+    registry.tools = {name}
+    registry.get_tool_items.return_value = [
+        {"type": "function",
+         "function": {"name": name, "description": "d",
+                      "parameters": {"type": "object", "properties": {}}}}]
+    registry.tool_accepts_param.return_value = False
+    registry.blank_required_args.return_value = []
+    registry.parameters_schema.return_value = {}
+    registry.__getitem__ = MagicMock(return_value=handler)
+    return registry
+
+
+class TestResultStoreInChat:
+    """Phase 4: a large tool result enters the context by reference.
+
+    Every byte a tool produced used to be serialized in and then progressively
+    destroyed — and the only way back was running the tool again.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_50k_result_puts_a_bounded_preview_in_the_messages(self, tmp_path):
+        """The acceptance criterion: ≤ ~6.5k chars in, all 50k recoverable."""
+        from model.serving.results import (RESULT_PREVIEW_CHARS, ResultStore,
+                                           handle_of)
+
+        big = "HEAD-MARKER\n" + "".join(f"line {i}\n" for i in range(6000))
+        assert len(big) > 50000
+        registry = _tool_registry(result=big)
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
+            _mock_completion_with_finish(content="Done."),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(host="http://localhost:8000/v1", instruction="find it",
+                                tool_registry=registry, safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path), verify_answers=False)
+
+        assert result == "Done."
+        # What the second request carried.
+        sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        tool_msgs = [m for m in sent if isinstance(m, dict) and m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        body = tool_msgs[0]["content"]
+        assert len(body) <= RESULT_PREVIEW_CHARS + 500
+        assert "HEAD-MARKER" in body
+
+        # And all of it is still there, exactly.
+        handle = handle_of(body)
+        assert handle is not None
+        store = ResultStore(str(tmp_path))
+        recovered, offset = "", 0
+        while True:
+            out = store.read(handle, offset=offset, limit=8000)
+            chunk = out.split("\n", 1)[1].rsplit("\n", 1)[0]
+            recovered += chunk
+            offset += len(chunk)
+            if out.rstrip().endswith(f"[end of result {handle}]"):
+                break
+        assert recovered == big
+
+    @pytest.mark.asyncio
+    async def test_the_model_can_read_it_back_through_the_harness(self, tmp_path):
+        """result_read is dispatched in-process, like Phase 2's tools."""
+        big = "".join(f"line {i}\n" for i in range(6000))
+        registry = _tool_registry(result=big)
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call(
+                    "result_read", '{"handle": "0001", "offset": 40000, "limit": 200}')]),
+            _mock_completion_with_finish(content="Found it."),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(host="http://localhost:8000/v1", instruction="find it",
+                                tool_registry=registry, safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path), verify_answers=False)
+
+        assert result == "Found it."
+        sent = client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        read_back = [m for m in sent if isinstance(m, dict)
+                     and m.get("name") == "result_read"][0]["content"]
+        assert "showing 40,000–40,200" in read_back
+        # The tool was run once; the second look cost no round trip to it.
+        assert registry["local_search"].await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_small_result_is_not_stored(self, tmp_path):
+        """Below the threshold the preview would save nothing and cost a file."""
+        registry = _tool_registry(result="a short answer")
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
+            _mock_completion_with_finish(content="Done."),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=registry, safety_queue=asyncio.Queue(),
+                       data_path=str(tmp_path), verify_answers=False)
+
+        sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        tool_msg = [m for m in sent if isinstance(m, dict) and m.get("role") == "tool"][0]
+        assert tool_msg["content"] == "a short answer"
+        assert not (tmp_path / ".onit" / "results").exists()
+
+    @pytest.mark.asyncio
+    async def test_without_a_data_path_the_old_hard_cut_still_applies(self):
+        """The fallback is intact: nowhere to put the rest, so a bounded
+        message still beats an unbounded one."""
+        from model.serving.chat import MAX_TOOL_RESPONSE
+
+        registry = _tool_registry(result="x" * 50000)
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
+            _mock_completion_with_finish(content="Done."),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=registry, safety_queue=asyncio.Queue(),
+                       verify_answers=False)
+
+        sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        body = [m for m in sent if isinstance(m, dict) and m.get("role") == "tool"][0]["content"]
+        assert "[truncated" in body
+        assert len(body) < MAX_TOOL_RESPONSE + 200
+
+    @pytest.mark.asyncio
+    async def test_switching_the_store_off_restores_the_hard_cut(self, tmp_path):
+        registry = _tool_registry(result="x" * 50000)
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
+            _mock_completion_with_finish(content="Done."),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=registry, safety_queue=asyncio.Queue(),
+                       data_path=str(tmp_path), result_store=False,
+                       verify_answers=False)
+
+        sent = client.chat.completions.create.call_args_list[1].kwargs
+        body = [m for m in sent["messages"]
+                if isinstance(m, dict) and m.get("role") == "tool"][0]["content"]
+        assert "[truncated" in body
+        # And the two tools that could never resolve a handle are withheld.
+        names = [t["function"]["name"] for t in sent.get("tools", [])]
+        assert "result_read" not in names and "result_grep" not in names
+        assert "note_write" in names
+
+    # ── the growth curve ────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_prompt_growth_over_six_tool_calls_is_linear_not_quadratic(
+            self, tmp_path):
+        """The regression the phase exists to prevent.
+
+        Six documents opened one after another used to be re-sent in full on
+        every later turn. TurnMetrics records prompt_tokens per turn, so the
+        shape of the growth is assertable without a real model: the mock
+        reports the size of what it was actually given.
+        """
+        big = "".join(f"line {i} of a long document\n" for i in range(3000))
+        registry = _tool_registry(result=big)
+
+        turns = []
+
+        def _completion(**kwargs):
+            # Stand in for a tokenizer: the prompt is what it costs to send.
+            size = sum(len(str(m.get("content", ""))) for m in kwargs["messages"]) // 4
+            turns.append(size)
+            done = len(turns) > 6
+            completion = _mock_completion_with_finish(
+                content="Done." if done else None,
+                tool_calls=None if done else [_mock_tool_call(
+                    "local_search", '{"q": %d}' % len(turns))])
+            completion.usage.prompt_tokens = size
+            completion.usage.completion_tokens = 10
+            return completion
+
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=lambda **kw: _completion(**kw))
+
+        metrics = {}
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await chat(host="http://localhost:8000/v1", instruction="research it",
+                       tool_registry=registry, safety_queue=asyncio.Queue(),
+                       data_path=str(tmp_path), metrics=metrics,
+                       verify_answers=False)
+
+        prompts = [t["prompt_tokens"] for t in metrics["turns"]]
+        assert len(prompts) == 7
+
+        # Quadratic growth means every turn adds a full result. Linear means
+        # each adds a bounded preview and the older ones shrink to their
+        # handles: the last increment must be no worse than the first.
+        first_step = prompts[1] - prompts[0]
+        last_step = prompts[-1] - prompts[-2]
+        assert last_step <= first_step
+
+        # Concretely: six full results would be ~6 × 21k chars ≈ 31k tokens.
+        assert prompts[-1] < 8000
+
+        # And none of it was lost — all six are on disk in full.
+        from model.serving.results import ResultStore
+        assert len(ResultStore(str(tmp_path)).stored()) == 6
 
 
 # ── explicit run state ──────────────────────────────────────────────────────

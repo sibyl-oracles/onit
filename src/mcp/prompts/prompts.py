@@ -59,6 +59,7 @@ async def build_assistant_instruction(task: str,
                                 document_search_available: str | bool = False,
                                 web_search_available: str | bool = False,
                                 harness_tools_available: str | bool = False,
+                                result_store_available: str | bool = False,
                                 prior_attempts: str = None,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
@@ -89,6 +90,8 @@ async def build_assistant_instruction(task: str,
       web_search_available = False
    if isinstance(harness_tools_available, str) and harness_tools_available.lower() in ("false", "null", "none", "0", ""):
       harness_tools_available = False
+   if isinstance(result_store_available, str) and result_store_available.lower() in ("false", "null", "none", "0", ""):
+      result_store_available = False
    if not prior_attempts or prior_attempts == "null":
       prior_attempts = None
    if not agent_name or agent_name == "null":
@@ -356,6 +359,21 @@ decision, what is left to do. Notes are for your own conclusions, not copies of 
 output, and they last for this session only.
 """ if harness_tools_available else ""
 
+   # Gated separately from the block above: the store can be switched off on
+   # its own, and describing two tools the run does not offer is how a model
+   # ends up calling one and being told it does not exist.
+   result_block = """
+## Large tool results
+A result too large to sit in the conversation is stored whole and appears as its
+opening under a `[result:NNNN · tool · N chars]` line. The rest is not lost — it is
+addressed rather than copied.
+- `result_grep(handle, pattern)` — find the lines you need. Reach for this first.
+- `result_read(handle, offset, limit)` — read further into it, a window at a time.
+
+Reading one back is a local file read, so it is cheap and it is exact. Never re-run a
+tool to recover output you already hold a handle for.
+""" if result_store_available else ""
+
    instructions_block = f"""
 ## Instructions
 1. If the answer is straightforward — a greeting, a follow-up, anything the
@@ -386,7 +404,7 @@ output, and they last for this session only.
    # Standing rules: the same bytes on every request whichever template is in
    # use, so they belong in the static half in both branches below.
    rules = (topic_block + sandbox_block + no_install_block
-            + research_block + harness_block + instructions_block)
+            + research_block + harness_block + result_block + instructions_block)
    # The file server URL carries the session's upload id, and the task is the
    # task, so both are volatile.  A template that interpolates the task has
    # already placed it and does not get a second copy.

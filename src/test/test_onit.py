@@ -1405,3 +1405,45 @@ class TestRunState:
             result = await onit.process_task("hi")
 
         assert result == "The answer"
+
+
+class TestResultStoreFlag:
+    """The prompt may only claim tools chat() will actually offer."""
+
+    @staticmethod
+    def _args(cfg, tmp_path):
+        captured = {}
+
+        async def _fake(**args):
+            captured.update(args)
+            return "instruction"
+
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        with patch("src.onit.build_assistant_instruction", new=_fake):
+            asyncio.run(onit._assistant_instruction("task", str(tmp_path / "data")))
+        return captured
+
+    def test_claimed_by_default(self, tmp_path):
+        assert self._args(_make_config(tmp_path), tmp_path)["result_store_available"] is True
+
+    def test_withdrawn_when_the_store_is_off(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["result_store"] = False
+        args = self._args(cfg, tmp_path)
+        assert args["result_store_available"] is False
+        # The note tools are unaffected — the two switches are independent.
+        assert args["harness_tools_available"] is True
+
+    def test_the_harness_switch_withdraws_it_too(self, tmp_path):
+        """No harness tools means no dispatch for result_read either."""
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["harness_tools"] = False
+        assert self._args(cfg, tmp_path)["result_store_available"] is False
+
+    def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
+        from src.onit import SERVING_PASSTHROUGH
+        assert "result_store" in SERVING_PASSTHROUGH
+        with _mock_discover():
+            onit = OnIt(config=_make_config(tmp_path))
+        assert "result_store" not in onit.model_serving

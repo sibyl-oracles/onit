@@ -568,3 +568,53 @@ class TestPriorAttemptsBlock:
             result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
                                          prior_attempts=value)
             assert "Earlier in this session" not in result
+
+
+class TestResultStoreBlock:
+    """Phase 4: the model is told large results are addressed, not copied."""
+
+    @pytest.mark.asyncio
+    async def test_absent_by_default(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "result_read" not in result
+
+    @pytest.mark.asyncio
+    async def test_present_when_available(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     result_store_available=True)
+        assert "result_read" in result and "result_grep" in result
+        assert "[result:NNNN" in result
+
+    @pytest.mark.asyncio
+    async def test_gated_separately_from_the_note_tools(self, tmp_path):
+        """The store switches off on its own; describing two tools the run does
+        not offer is how a model calls one and is told it does not exist."""
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     harness_tools_available=True,
+                                     result_store_available=False)
+        assert "note_write" in result
+        assert "result_read" not in result
+
+    @pytest.mark.asyncio
+    async def test_rides_in_the_cacheable_half(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     result_store_available=True)
+        static, volatile = split_instruction(result)
+        assert "result_read" in static
+        assert "result_read" not in volatile
+
+    @pytest.mark.asyncio
+    async def test_it_says_not_to_re_run_the_tool(self, tmp_path):
+        """The one instruction the phase exists to make true."""
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     result_store_available=True)
+        assert "Never re-run a" in result
+        assert "tool to recover output you already hold a handle for" in result
+
+    @pytest.mark.asyncio
+    async def test_string_falsy_values_are_normalized(self, tmp_path):
+        """Arriving over MCP, every argument is a string."""
+        for value in ("false", "null", "none", "0", ""):
+            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                         result_store_available=value)
+            assert "result_read" not in result

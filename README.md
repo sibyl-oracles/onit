@@ -820,6 +820,35 @@ it does; nothing crosses between sessions. They are offered only to a run that
 has tools of its own, and `serving.harness_tools: false` withdraws them along
 with the prompt block that describes them.
 
+### Large tool results
+
+A tool result over ~8,000 characters is written whole to
+`<data_path>/.onit/results/` and enters the conversation as its first 6,000
+characters under a handle:
+
+```
+[result:0007 · local_search · 48,320 chars · showing the first 6,000]
+<the opening of the result>
+… [rest of this result: result_read("0007", offset=6000) or result_grep("0007", "pattern")]
+```
+
+| Tool | Parameters | Purpose |
+|------|------------|---------|
+| `result_read` | **`handle`**, `offset`, `limit` | A window of a stored result, up to 8,000 characters at a time. |
+| `result_grep` | **`handle`**, **`pattern`**, `context` | Matching lines with surrounding context — faster than paging when you know what you are looking for. |
+
+Before this, a large result was cut to 16,000 characters with the middle
+discarded permanently, and the only way to recover any of it was running the
+tool again — a network round trip for bytes the harness had already been given.
+Now nothing is lost and recovery is a local file read, so a result the
+conversation has moved past can be trimmed to ~1,200 characters instead of
+6,000. On a six-tool research loop that takes peak prompt size down about 65%
+and per-turn growth about 77%.
+
+Results are session state on the same terms as notes: under the session's
+`data_path`, gone when it goes, never shared between sessions. The oldest are
+pruned past 200. `serving.result_store: false` restores the old hard cut.
+
 ## Local Search over In-House Data
 
 OnIt includes a local search toolkit modeled on the [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/): a composable pipeline that unifies **ingestion** (parse → chunk → embed/index) and **retrieval** (BM25 sparse, dense embeddings, hybrid fusion) behind a single interface. Everything runs on your own infrastructure — documents, index, and embeddings never leave your machine, so the agent can answer questions from private company data that web search cannot see.

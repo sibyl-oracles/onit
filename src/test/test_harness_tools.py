@@ -22,8 +22,10 @@ def _harness(tmp_path, **kwargs):
 # ── what the run offers ─────────────────────────────────────────────────────
 
 class TestAvailability:
-    def test_all_three_with_a_data_path(self, tmp_path):
-        assert set(_harness(tmp_path).names) == {"context_status", "note_write", "note_read"}
+    def test_the_full_set_with_a_data_path(self, tmp_path):
+        assert set(_harness(tmp_path).names) == {
+            "context_status", "note_write", "note_read",
+            "result_read", "result_grep"}
 
     def test_notes_withheld_without_a_data_path(self):
         """A tool that could only fail is worse than one that is not offered."""
@@ -293,3 +295,80 @@ class TestRawToolCallParsing:
         content = '{"name": "note_write", "arguments": {"key": "k", "text": "v"}}'
         assert _parse_tool_call_from_content(content, registry,
                                              HarnessTools(data_path="")) is None
+
+
+# ── the result tools ────────────────────────────────────────────────────────
+
+class TestResultToolsOnTheHarness:
+    """Phase 4's two tools, dispatched in-process exactly like Phase 2's."""
+
+    @staticmethod
+    def _stored(tmp_path, text=None, tool="local_search"):
+        harness = _harness(tmp_path)
+        text = text or "".join(f"line {i} NEEDLE\n" if i == 500
+                               else f"line {i}\n" for i in range(4000))
+        preview = harness.results.put(tool, text)
+        return harness, preview, text
+
+    def test_withheld_when_the_store_is_off(self, tmp_path):
+        """Nothing is ever stored, so a handle could never resolve — two
+        schemas on every request buying nothing."""
+        names = set(_harness(tmp_path, result_store=False).names)
+        assert "result_read" not in names and "result_grep" not in names
+        assert "note_write" in names
+
+    def test_withheld_without_a_data_path(self):
+        assert set(HarnessTools().names) == {"context_status"}
+
+    def test_read_dispatches_to_the_store(self, tmp_path):
+        harness, preview, text = self._stored(tmp_path)
+        out = harness.dispatch("result_read", {"handle": "0001", "offset": 0,
+                                               "limit": 100})
+        assert not out.startswith("Error:")
+        assert "line 0" in out
+
+    def test_read_defaults_are_applied(self, tmp_path):
+        harness, _, _ = self._stored(tmp_path)
+        out = harness.dispatch("result_read", {"handle": "0001"})
+        assert "showing 0–4,000" in out
+
+    def test_grep_dispatches_to_the_store(self, tmp_path):
+        harness, _, _ = self._stored(tmp_path)
+        out = harness.dispatch("result_grep", {"handle": "0001", "pattern": "NEEDLE"})
+        assert "NEEDLE" in out
+
+    def test_arguments_are_validated_against_the_schema(self, tmp_path):
+        """These bypass _execute_tool's checks by intercepting ahead of them."""
+        harness, _, _ = self._stored(tmp_path)
+        out = harness.dispatch("result_read", {})
+        assert out.startswith("Error:")
+        assert "handle" in out
+
+    def test_a_string_offset_is_coerced_like_the_mcp_path(self, tmp_path):
+        harness, _, _ = self._stored(tmp_path)
+        out = harness.dispatch("result_read", {"handle": "0001", "offset": "100"})
+        assert not out.startswith("Error:")
+        assert "showing 100–" in out
+
+    def test_a_traversal_handle_is_refused_through_dispatch(self, tmp_path):
+        harness, _, _ = self._stored(tmp_path)
+        out = harness.dispatch("result_read", {"handle": "../../etc/passwd"})
+        assert out.startswith("Error:")
+
+    def test_context_status_lists_the_handles(self, tmp_path):
+        """Discovery without a sixth tool — the same call that reports how full
+        the window is reports what can be read back."""
+        harness, _, _ = self._stored(tmp_path)
+        status = json.loads(harness.context_status())
+        assert status["results_stored"] == [
+            {"handle": "0001", "tool": "local_search",
+             "chars": status["results_stored"][0]["chars"]}]
+
+    def test_context_status_reports_nothing_stored_as_empty(self, tmp_path):
+        assert json.loads(_harness(tmp_path).context_status())["results_stored"] == []
+
+    def test_the_compaction_notice_mentions_stored_results(self):
+        """A summary can drop the handle lines; the notice says where to get
+        them back."""
+        assert "result_read" in COMPACTION_NOTICE
+        assert "context_status" in COMPACTION_NOTICE

@@ -59,6 +59,16 @@ serving:
   # has tools of its own. Set false to withdraw them and their prompt block.
   # harness_tools: true
   #
+  # ── Result store ──────────────────────────────────────────────────────────
+  # A tool result larger than ~8,000 characters is written whole to
+  # <data_path>/.onit/results/ and enters the conversation as its first 6,000
+  # characters plus a handle. The model reads the rest with result_read /
+  # result_grep — a local file read instead of running the tool again — and an
+  # aged result is cut to ~1,200 characters because the rest stays reachable.
+  # Set false to go back to a hard cut at 16,000 characters with the middle
+  # discarded permanently. Needs a data_path; rides with harness_tools.
+  # result_store: true
+  #
   # ── Fact-checking the answer ──────────────────────────────────────────────
   # The answer streams to the user as it is written, then is checked against
   # the evidence the run gathered. The check runs in two stages so that being

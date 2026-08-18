@@ -42,6 +42,8 @@ import os
 import re
 from pathlib import Path
 
+from .results import DEFAULT_READ_CHARS, MAX_READ_CHARS, ResultStore
+
 try:
     from ...lib.schema import coerce_arguments, validate_arguments
 except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
@@ -132,21 +134,77 @@ HARNESS_TOOL_ITEMS: list[dict] = [
     },
 ]
 
+_RESULT_HANDLE_SCHEMA = {
+    "type": "string",
+    "description": "The handle from a [result:NNNN …] line, e.g. '0007'.",
+}
+
+HARNESS_TOOL_ITEMS += [
+    {
+        "type": "function",
+        "function": {
+            "name": "result_read",
+            "description": (
+                "Read a window of a large tool result that was stored instead of "
+                "being pasted in full. The [result:NNNN …] line above a truncated "
+                "result carries its handle."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "handle": _RESULT_HANDLE_SCHEMA,
+                    "offset": {"type": "integer", "minimum": 0,
+                               "description": "Character to start from. Default 0."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_READ_CHARS,
+                              "description": f"Characters to return, up to "
+                                             f"{MAX_READ_CHARS}. Default {DEFAULT_READ_CHARS}."},
+                },
+                "required": ["handle"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "result_grep",
+            "description": (
+                "Find lines matching a pattern in a stored tool result, with "
+                "surrounding context. Faster than paging through it with result_read "
+                "when you know what you are looking for."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "handle": _RESULT_HANDLE_SCHEMA,
+                    "pattern": {"type": "string",
+                                "description": "Regular expression, or a plain string."},
+                    "context": {"type": "integer", "minimum": 0, "maximum": 10,
+                                "description": "Lines to show around each match. Default 3."},
+                },
+                "required": ["handle", "pattern"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
 _SPEC_BY_NAME = {item["function"]["name"]: item for item in HARNESS_TOOL_ITEMS}
 
 # context_status needs nothing but the loop's own counters; the note tools need
 # somewhere on disk to write.  A run without a data_path gets the first and not
 # the other two — offering a tool that can only fail is worse than not offering it.
 ALWAYS_AVAILABLE = ("context_status",)
-NEEDS_DATA_PATH = ("note_write", "note_read")
+NEEDS_DATA_PATH = ("note_write", "note_read", "result_read", "result_grep")
 
 # Appended to the compacted conversation so the model learns what just happened
 # to its context.  The UI already gets ``show_context_compaction``; this is the
 # model-facing twin, and without it compaction is an event only the human sees.
 COMPACTION_NOTICE = (
     "[The conversation above was summarized to free context. Anything not in "
-    "the summary is gone. Notes you saved with note_write are unaffected — "
-    "call context_status for the keys, note_read to get one back, and "
+    "the summary is gone. Notes you saved with note_write are unaffected, and "
+    "so are stored tool results — call context_status for the note keys and "
+    "the result handles, note_read or result_read to get one back, and "
     "note_write now for anything you still need later.]"
 )
 
@@ -172,10 +230,16 @@ class HarnessTools:
     """
 
     def __init__(self, data_path: str = "", max_context_tokens: int | None = None,
-                 enabled: bool = True):
+                 enabled: bool = True, result_store: bool = True):
         self.enabled = bool(enabled)
         self.data_path = data_path or ""
         self.max_context_tokens = max_context_tokens
+        # Large tool results, kept on disk and reached by handle (results.py).
+        # Owned here rather than beside here so the loop threads one object:
+        # ``_execute_tool`` already receives this one, and it is the function
+        # that has a result to store.
+        self.results = ResultStore(self.data_path,
+                                   enabled=self.enabled and bool(result_store))
         # Run state, kept current by the loop.
         self.prompt_tokens = 0
         self.turns = 0
@@ -186,12 +250,21 @@ class HarnessTools:
 
     @property
     def names(self) -> tuple[str, ...]:
-        """The tools this run actually offers."""
+        """The tools this run actually offers.
+
+        The result tools need the store switched on as well as a data_path:
+        with ``serving.result_store: false`` nothing is ever stored, so a
+        handle could never resolve and the two schemas would be paid for on
+        every request to buy nothing.
+        """
         if not self.enabled:
             return ()
         if not self.data_path:
             return ALWAYS_AVAILABLE
-        return ALWAYS_AVAILABLE + NEEDS_DATA_PATH
+        offered = ALWAYS_AVAILABLE + NEEDS_DATA_PATH
+        if not self.results.enabled:
+            offered = tuple(n for n in offered if not n.startswith("result_"))
+        return offered
 
     def handles(self, name: str) -> bool:
         """Whether ``name`` is a harness tool this run offers.
@@ -276,6 +349,10 @@ class HarnessTools:
             "tool_calls_made": self.tools_called,
             "compactions": self.compactions,
             "notes_saved": self.note_keys(),
+            # Same reason notes_saved is here rather than a note_list tool: a
+            # model that needs a handle after a compaction should not spend a
+            # turn discovering that handles exist.
+            "results_stored": self.results.stored(),
         }
         # The numbers come from the previous API response, so there is nothing
         # to report on the opening turn or on the turn straight after a
@@ -371,4 +448,11 @@ class HarnessTools:
             return self.context_status()
         if name == "note_write":
             return self.note_write(arguments["key"], arguments["text"])
+        if name == "result_read":
+            return self.results.read(arguments["handle"],
+                                     arguments.get("offset", 0),
+                                     arguments.get("limit", DEFAULT_READ_CHARS))
+        if name == "result_grep":
+            return self.results.grep(arguments["handle"], arguments["pattern"],
+                                     arguments.get("context", 3))
         return self.note_read(arguments["key"])

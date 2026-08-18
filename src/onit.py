@@ -81,7 +81,11 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        # The harness's own tools — context_status and the note
                        # scratchpad.  Off turns them off everywhere: the prompt
                        # block below is gated on the same key.
-                       'harness_tools')
+                       'harness_tools',
+                       # Large tool results kept on disk and passed by handle.
+                       # Off restores the old behavior: a hard cut at
+                       # MAX_TOOL_RESPONSE with the middle gone for good.
+                       'result_store')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
@@ -1997,6 +2001,11 @@ class OnIt(BaseModel):
             # switched off by `serving.harness_tools: false`.
             "harness_tools_available": (bool(data_path or self.data_path)
                                         and self.model_serving.get('harness_tools', True)),
+            # Same rule again, and one more switch: the store can be turned off
+            # without withdrawing the note tools.
+            "result_store_available": (bool(data_path or self.data_path)
+                                       and self.model_serving.get('harness_tools', True)
+                                       and self.model_serving.get('result_store', True)),
             "agent_name": self.agent_name,
             "developer": self.developer,
             "max_documents": self.max_documents,
