@@ -54,6 +54,11 @@ from typing import Any, Dict, Optional, Tuple
 from fastmcp import FastMCP
 
 try:
+    from ...shared import uvicorn_config
+except ImportError:
+    from mcp.servers.tasks.shared import uvicorn_config
+
+try:
     from .toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
                           DEFAULT_CHUNK_OVERLAP, MAX_DOCUMENT_SUMMARIES,
                           RRF_K, cap_per_file, file_content_hash)
@@ -797,7 +802,7 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config={"access_log": False, "log_level": "warning"} if quiet else {})
+            uvicorn_config=uvicorn_config(quiet=quiet))
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ import requests
 from fastmcp import FastMCP
 
 from src.mcp.servers.tasks.shared import validate_required as _validate_required
+from src.mcp.servers.tasks.shared import uvicorn_config
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -281,7 +282,7 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config={"access_log": False, "log_level": "warning"} if not verbose else {})
+            uvicorn_config=uvicorn_config(quiet=not verbose))
 
 
 if __name__ == "__main__":

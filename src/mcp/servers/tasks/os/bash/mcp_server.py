@@ -57,6 +57,7 @@ from pydantic import Field
 from fastmcp import FastMCP, Context
 
 from src.mcp.servers.tasks.shared import (
+    uvicorn_config,
     truncate_output as _truncate_output,
     secure_makedirs as _secure_makedirs,
     validate_required as _validate_required,
@@ -2358,7 +2359,7 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config={"access_log": False, "log_level": "warning"} if quiet else {})
+            uvicorn_config=uvicorn_config(quiet=quiet))
 
 if __name__ == "__main__":
     run()

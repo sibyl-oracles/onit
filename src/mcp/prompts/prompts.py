@@ -25,10 +25,12 @@ try:
     from ...lib.text import INSTRUCTION_SPLIT
     from ..servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
     from ..servers.tasks.os.bash.command_policy import installs_sealed
+    from ..servers.tasks.shared import uvicorn_config
 except ImportError:  # server started as a script rather than a package module
     from lib.text import INSTRUCTION_SPLIT
     from mcp.servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
     from mcp.servers.tasks.os.bash.command_policy import installs_sealed
+    from mcp.servers.tasks.shared import uvicorn_config
 
 # How many documents an answer may open. Tied to the number a result page
 # describes: a smaller budget silently truncates the very list the prompt just
@@ -406,4 +408,4 @@ def run(
 
     logger.info(f"Starting Prompts MCP Server at {host}:{port}{path}")
     mcp_prompts.run(transport=transport, host=host, port=port, path=path,
-                    uvicorn_config={"access_log": False, "log_level": "warning"} if quiet else {})
+                    uvicorn_config=uvicorn_config(quiet=quiet))

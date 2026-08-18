@@ -357,3 +357,132 @@ class TestPooledClient:
                 await h(query="test")
 
         assert failing.call_tool.await_count == 2
+
+
+# ── connection hygiene ──────────────────────────────────────────────────────
+
+# Long enough that a hung call would fail the test's own timeout first.
+_REQUEST_TIMEOUT_STANDIN = 30
+
+class TestConnectionHygiene:
+    """The client must not POST into a connection the server is closing.
+
+    httpx and uvicorn both expire an idle connection after 5s by default, so a
+    tool call arriving near that mark could be written into a socket the server
+    had already closed — "Error in post_writer ... httpx.ReadError", and a
+    session that looked connected but could never be written to again.
+    """
+
+    def test_client_gives_up_a_connection_before_any_server_does(self):
+        import httpx
+        from type.tools import _http_client_factory, _KEEPALIVE_EXPIRY
+
+        with patch("type.tools.httpx.AsyncClient") as ctor:
+            _http_client_factory()
+
+        limits = ctor.call_args.kwargs["limits"]
+        assert limits.keepalive_expiry == _KEEPALIVE_EXPIRY
+        # uvicorn's default idle close is 5s; ours has to land clear of it.
+        assert limits.keepalive_expiry < httpx._config.DEFAULT_LIMITS.keepalive_expiry
+
+    def test_server_holds_connections_longer_than_the_client_reuses_them(self):
+        """The two timers that used to collide, checked against each other."""
+        from src.mcp.servers.tasks.shared import uvicorn_config
+        from type.tools import _KEEPALIVE_EXPIRY
+
+        assert uvicorn_config()["timeout_keep_alive"] > _KEEPALIVE_EXPIRY
+        # Quiet mode must not drop the setting.
+        assert uvicorn_config(quiet=False)["timeout_keep_alive"] > _KEEPALIVE_EXPIRY
+
+    def test_sse_url_gets_a_transport_carrying_our_http_client(self):
+        from fastmcp.client.transports import SSETransport
+        from type.tools import _transport_for, _http_client_factory
+
+        transport = _transport_for("http://127.0.0.1:18201/sse")
+        assert isinstance(transport, SSETransport)
+        assert transport.httpx_client_factory is _http_client_factory
+
+    def test_non_http_target_is_left_for_fastmcp_to_infer(self):
+        from type.tools import _transport_for
+
+        assert _transport_for("server.py") == "server.py"
+
+    def test_post_writer_traceback_is_collapsed_to_one_line(self):
+        """The SDK logs the whole stack at ERROR; recovery happens here."""
+        import logging
+        from type.tools import _PostWriterNoise
+
+        def record(msg):
+            return logging.LogRecord(
+                "mcp.client.sse", logging.ERROR, __file__, 1, msg, None,
+                (RuntimeError, RuntimeError("read error"), None))
+
+        assert _PostWriterNoise().filter(record("Error in post_writer")) is False
+        assert _PostWriterNoise().filter(record("Error in sse_reader")) is True
+
+
+class TestSessionWatchdog:
+    """A call in flight when the session dies must not wait out the timeout."""
+
+    @pytest.mark.asyncio
+    async def test_unwritable_session_is_caught_mid_call(self):
+        import asyncio
+        from anyio import ClosedResourceError
+        from mcp.types import TextContent
+
+        mock_response = MagicMock()
+        mock_response.content = [TextContent(type="text", text="recovered")]
+
+        async def never_answers(*args, **kwargs):
+            await asyncio.sleep(_REQUEST_TIMEOUT_STANDIN)
+
+        dead = AsyncMock()
+        dead.call_tool = AsyncMock(side_effect=never_answers)
+        # What a ping does once post_writer has closed the write stream.
+        dead.ping = AsyncMock(side_effect=ClosedResourceError())
+        dead.__aenter__ = AsyncMock(return_value=dead)
+        dead.__aexit__ = AsyncMock(return_value=False)
+
+        live = AsyncMock()
+        live.call_tool = AsyncMock(return_value=mock_response)
+        live.__aenter__ = AsyncMock(return_value=live)
+        live.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", side_effect=[dead, live]), \
+             patch("type.tools._HEALTH_INTERVAL", 0.01):
+            result = await asyncio.wait_for(h(query="test"), timeout=5)
+
+        assert result == "recovered"
+        assert dead.__aexit__.await_count == 1  # the dead session was closed
+
+    @pytest.mark.asyncio
+    async def test_a_busy_server_is_not_treated_as_a_dead_one(self):
+        """A ping that never answers means the server is working, not gone."""
+        import asyncio
+        from mcp.types import TextContent
+
+        mock_response = MagicMock()
+        mock_response.content = [TextContent(type="text", text="slow but fine")]
+
+        async def slow_tool(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return mock_response
+
+        async def unanswered_ping(*args, **kwargs):
+            await asyncio.sleep(_REQUEST_TIMEOUT_STANDIN)
+
+        busy = AsyncMock()
+        busy.call_tool = AsyncMock(side_effect=slow_tool)
+        busy.ping = AsyncMock(side_effect=unanswered_ping)
+        busy.__aenter__ = AsyncMock(return_value=busy)
+        busy.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", return_value=busy), \
+             patch("type.tools._HEALTH_INTERVAL", 0.01):
+            result = await asyncio.wait_for(h(query="test"), timeout=5)
+
+        assert result == "slow but fine"
+        assert busy.__aexit__.await_count == 0  # session kept
+

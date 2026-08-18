@@ -26,6 +26,7 @@ import base64
 import mimetypes
 import wave
 import random
+import httpx
 from fastmcp import Client
 from abc import ABC, abstractmethod
 from mcp.types import ImageContent, TextContent, AudioContent
@@ -117,6 +118,99 @@ class RequestHandler(ABC):
 # belong on the serve tool, which returns immediately and reports progress.
 _REQUEST_TIMEOUT = 300.0
 
+# How long the client may reuse an idle HTTP connection to an MCP server.
+#
+# This is the other half of the half-dead session described above, and the
+# reason one keeps appearing.  httpx expires a pooled connection after 5s and
+# uvicorn closes an idle keep-alive connection after 5s, so the two timers fire
+# at the same mark: when the gap between two tool calls lands near five seconds
+# — an ordinary model turn — the client hands out a connection it still counts
+# as fresh while the server has already sent a FIN for it.  The POST goes into
+# that socket, nothing comes back, and the SDK's post_writer dies with
+# "httpx.ReadError" and closes the session's write stream for good.
+#
+# Expiring our end well before any server's timer removes the overlap.  OnIt's
+# own servers hold theirs open for KEEPALIVE_TIMEOUT (see
+# src/mcp/servers/tasks/shared.py), which covers third-party servers left on
+# uvicorn's 5s default too.  A reconnect costs a localhost TCP handshake; a
+# lost session costs the answer.
+_KEEPALIVE_EXPIRY = 2.0
+
+# How often a call in flight checks that its session can still be written to.
+#
+# The request timeout above is a backstop, not a recovery: a call that was in
+# flight when the write stream closed waits out the full five minutes before
+# anything notices.  A ping on a closed write stream raises at once, so asking
+# for one periodically turns that wait into a retry within seconds.  A ping on
+# a *busy* server simply doesn't come back, and that is the correct reading —
+# a server working on a long tool is not a broken one.
+_HEALTH_INTERVAL = 15.0
+
+
+def _http_client_factory(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """The httpx client MCP transports use, with connection reuse bounded.
+
+    Mirrors the SDK's own defaults (redirects followed, 30s connect / 300s
+    read) and adds the keepalive expiry that keeps a POST off a connection the
+    server is about to close.
+    """
+    return httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+        headers=headers or {},
+        auth=auth,
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20,
+                            keepalive_expiry=_KEEPALIVE_EXPIRY),
+    )
+
+
+def _transport_for(url: str):
+    """The transport to connect to ``url`` with.
+
+    Returns the URL unchanged — letting fastmcp infer the transport at its own
+    connection defaults — for anything that is not an HTTP MCP server, or if
+    this fastmcp cannot be told which httpx client to use.
+    """
+    if not isinstance(url, str) or not url.startswith("http"):
+        return url
+    try:
+        from fastmcp.client.transports import (SSETransport,
+                                               StreamableHttpTransport)
+        # Matches fastmcp's own inference: a /sse endpoint is SSE, the rest is
+        # streamable HTTP.
+        cls = SSETransport if url.rstrip("/").endswith("/sse") else StreamableHttpTransport
+        return cls(url, httpx_client_factory=_http_client_factory)
+    except Exception:
+        logger.debug("using inferred transport for %s", url, exc_info=True)
+        return url
+
+
+class _PostWriterNoise(logging.Filter):
+    """Replace the SDK's post_writer traceback with one line.
+
+    When a POST fails, mcp.client.sse logs the whole stack at ERROR and carries
+    on.  It lands on the user's terminal looking like a crash, while the actual
+    handling — discard the session, reconnect, retry — happens here and works.
+    Keep the cause, drop the wall of frames; the frames stay available at DEBUG.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not record.getMessage().startswith("Error in post_writer"):
+            return True
+        exc = record.exc_info[1] if record.exc_info else None
+        logger.warning(
+            "MCP write channel closed (%s); reconnecting on the next call",
+            type(exc).__name__ if exc is not None else "unknown cause")
+        logger.debug("post_writer failure", exc_info=record.exc_info)
+        return False
+
+
+logging.getLogger("mcp.client.sse").addFilter(_PostWriterNoise())
+
 
 class _PooledClient:
     """A long-lived MCP client for one server URL on one event loop."""
@@ -156,7 +250,8 @@ class _PooledClient:
             return self._client
         async with self._connect_lock:
             if self._client is None:
-                client = Client(self.url, log_handler=self._dispatch_log,
+                client = Client(_transport_for(self.url),
+                                log_handler=self._dispatch_log,
                                 timeout=_REQUEST_TIMEOUT)
                 await client.__aenter__()
                 self._client = client
@@ -170,6 +265,45 @@ class _PooledClient:
             except Exception:
                 pass
 
+    async def _watch_session(self, client: Client, call: asyncio.Future) -> None:
+        """Ping until ``call`` finishes, raising once the session is unwritable.
+
+        The SSE transport closes its write stream when a POST fails and leaves
+        everything else standing, so the session still reports itself
+        connected while nothing can be sent on it again.  A ping is the
+        cheapest thing that has to travel that stream: it raises immediately
+        once the stream is closed, and on a server that is merely busy it just
+        never answers, which leaves the call alone as it should.
+        """
+        while not call.done():
+            await asyncio.sleep(_HEALTH_INTERVAL)
+            if call.done():
+                return
+            await client.ping()
+
+    async def _call_watched(self, client: Client, name: str, arguments: dict):
+        """Run one tool call, failing it as soon as its session stops working."""
+        call = asyncio.ensure_future(client.call_tool(name, arguments))
+        watchdog = asyncio.ensure_future(self._watch_session(client, call))
+        try:
+            await asyncio.wait({call, watchdog},
+                               return_when=asyncio.FIRST_COMPLETED)
+            if call.done():
+                return call.result()
+            # Only a failed ping ends the watchdog before the call: the reply
+            # this call is waiting for can no longer arrive, so fail now rather
+            # than sit out the request timeout.
+            exc = watchdog.exception()
+            if exc is None:
+                return await call
+            raise ConnectionError(
+                f"MCP session to {self.url} is no longer usable: {exc!r}") from exc
+        finally:
+            for task in (call, watchdog):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(call, watchdog, return_exceptions=True)
+
     async def call_tool(self, name: str, arguments: dict,
                         log_handler: Callable | None = None):
         token = self._next_token
@@ -180,7 +314,7 @@ class _PooledClient:
             for attempt in (1, 2):
                 client = await self._connect()
                 try:
-                    return await client.call_tool(name, arguments)
+                    return await self._call_watched(client, name, arguments)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

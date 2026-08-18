@@ -58,6 +58,7 @@ DOCUMENTS_PATH = None
 
 
 from src.mcp.servers.tasks.shared import (
+    uvicorn_config,
     secure_makedirs as _secure_makedirs,
     validate_required as _validate_required,
     READ_FILE_DESCRIPTION,
@@ -583,7 +584,7 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config={"access_log": False, "log_level": "warning"} if not verbose else {})
+            uvicorn_config=uvicorn_config(quiet=not verbose))
 
 
 if __name__ == "__main__":

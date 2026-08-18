@@ -1,5 +1,10 @@
 from fastmcp import FastMCP
 
+try:
+    from ..servers.tasks.shared import uvicorn_config
+except ImportError:
+    from mcp.servers.tasks.shared import uvicorn_config
+
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -73,4 +78,4 @@ def run(
 
     logger.info(f"Starting VLM Tools MCP server on {host}:{port}{path} with transport {transport}")
     vlm_tools_mcp.run(transport=transport, host=host, port=port, path=path,
-                      uvicorn_config={"access_log": False, "log_level": "warning"} if quiet else {})
+                      uvicorn_config=uvicorn_config(quiet=quiet))

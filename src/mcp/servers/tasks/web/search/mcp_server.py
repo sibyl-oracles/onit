@@ -50,7 +50,7 @@ from urllib3.util.retry import Retry
 
 from fastmcp import FastMCP
 
-from src.mcp.servers.tasks.shared import extract_pdf_images_impl
+from src.mcp.servers.tasks.shared import extract_pdf_images_impl, uvicorn_config
 
 try:
     from .web_search import WebSearch
@@ -781,7 +781,7 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config={"access_log": False, "log_level": "warning"} if quiet else {})
+            uvicorn_config=uvicorn_config(quiet=quiet))
 
 
 if __name__ == "__main__":

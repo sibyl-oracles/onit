@@ -35,6 +35,37 @@ logger = logging.getLogger(__name__)
 # Default constants (servers may override via their own module-level values)
 MAX_OUTPUT_SIZE = 100000  # 100KB max output
 
+# How long a server holds an idle keep-alive connection open before closing it.
+#
+# uvicorn closes one after 5s by default and httpx expires a pooled connection
+# after 5s as well, so both timers fire at the same mark.  When the gap between
+# two tool calls lands near five seconds — an ordinary model turn — the client
+# picks a connection it still believes is good, writes a POST into one the
+# server has just sent a FIN for, and reads back nothing.  On the client that
+# surfaces as "Error in post_writer ... httpx.ReadError", and it leaves the MCP
+# session half-dead: its write stream closes while the SSE reader keeps running,
+# so the client still reports itself connected.
+#
+# Holding the server end open far longer than any client will reuse a
+# connection removes the overlap.  The client expires its own end early
+# (_KEEPALIVE_EXPIRY in src/type/tools.py) so nothing is left dangling.
+KEEPALIVE_TIMEOUT = 300
+
+
+def uvicorn_config(quiet: bool = True) -> Dict[str, Any]:
+    """The uvicorn settings every OnIt MCP server runs with.
+
+    Args:
+        quiet: When True, silence the access log and drop uvicorn to warnings.
+
+    Returns:
+        Keyword settings for ``mcp.run(uvicorn_config=...)``.
+    """
+    config: Dict[str, Any] = {"timeout_keep_alive": KEEPALIVE_TIMEOUT}
+    if quiet:
+        config.update({"access_log": False, "log_level": "warning"})
+    return config
+
 
 # =============================================================================
 # SHARED HELPER FUNCTIONS
