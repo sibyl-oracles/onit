@@ -1340,6 +1340,24 @@ def _adapt_ollama_tool_calls(tool_calls) -> list:
     return adapted
 
 
+# Where a server puts the model's thinking.  vLLM 0.27 streams it as
+# ``reasoning`` on the delta, older builds and other OpenAI-compatible hosts
+# use ``reasoning_content``, and Ollama calls it ``thinking``.  Reading only
+# one of the three loses the entire channel on a host that picked another: the
+# UI shows a blank pause for as long as the model thinks, and the empty-content
+# fallback in _extract_final_response has nothing left to fall back to.
+_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")
+
+
+def _reasoning_text(obj) -> str:
+    """The thinking text on a delta or message, whatever field it arrived in."""
+    for field in _REASONING_FIELDS:
+        value = getattr(obj, field, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 async def _process_streaming_response(
     chat_completion, safety_queue: asyncio.Queue,
     chat_ui, think: bool, on_first_token=None,
@@ -1383,7 +1401,7 @@ async def _process_streaming_response(
         delta = choice.delta
 
         if on_first_token and (delta.tool_calls or delta.content
-                               or getattr(delta, 'reasoning_content', None)):
+                               or _reasoning_text(delta)):
             on_first_token()
             on_first_token = None
 
@@ -1401,8 +1419,9 @@ async def _process_streaming_response(
                     if tc.function.arguments:
                         full_tool_calls[idx]["arguments"] += tc.function.arguments
 
-        # vLLM/OpenAI reasoning_content: thinking tokens in a dedicated field
-        reasoning_tok = getattr(delta, 'reasoning_content', None)
+        # vLLM/OpenAI: thinking tokens in a dedicated field, named differently
+        # from one host to the next -- see _REASONING_FIELDS.
+        reasoning_tok = _reasoning_text(delta)
         if reasoning_tok and not full_tool_calls:
             full_reasoning += reasoning_tok
             if chat_ui:
@@ -2045,12 +2064,14 @@ def _build_planning_continuation_prompt(tool_registry, continuation_count: int,
     )
 
 
-# Prompt used to resume a final answer that hit the output token limit mid-stream.
+# Prompt used to resume a final answer that was cut off mid-stream — by the
+# output token limit, or by a host that dropped the tail (see _looks_incomplete).
+# It does not name a cause: the model is being asked to finish a sentence, and
+# telling it why the sentence stopped invites a reply about the interruption.
 _FINAL_CONTINUATION_PROMPT = (
-    "Your previous reply was cut off mid-sentence because it reached the output "
-    "length limit. Continue from exactly where it stopped. Do not repeat anything "
-    "you already wrote, do not restate the question, and do not add any preamble — "
-    "just continue the text seamlessly."
+    "Your previous reply was cut off mid-sentence. Continue from exactly where "
+    "it stopped. Do not repeat anything you already wrote, do not restate the "
+    "question, and do not add any preamble — just continue the text seamlessly."
 )
 
 # Prompt used to push past a content-free acknowledgment.
@@ -2060,12 +2081,31 @@ _ACK_CONTINUATION_PROMPT = (
 )
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Remove thinking from an answer that carries it inline.
+
+    Complete ``<think>…</think>`` pairs go first, wherever they sit — a model
+    that pauses to think in the middle of an answer leaves one there, and
+    splitting on the first closing tag would return the middle of the answer
+    and drop everything after it.  What can remain after that is an orphan
+    closing tag, from a server that stripped the opener but not the closer;
+    there the answer is what follows the last one.
+    """
+    text = _THINK_BLOCK_RE.sub("", text)
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return text
+
+
 def _extract_final_response(content: str | None, full_reasoning: str, full_content: str) -> str:
     """Clean up the final text response, stripping think tags and applying fallbacks."""
     last_response = content or ""
     if "</think>" in last_response:
-        last_response = last_response.split("</think>")[1]
-    # Fallback: if delta.content was empty but reasoning_content had the answer,
+        last_response = _strip_think_blocks(last_response)
+    # Fallback: if the content was empty but the thinking field had the answer,
     # surface the reasoning so the user gets a non-empty reply.
     if not last_response or not last_response.strip():
         if full_reasoning and full_reasoning.strip():
@@ -2076,6 +2116,46 @@ def _extract_final_response(content: str | None, full_reasoning: str, full_conte
             if think_body:
                 last_response = think_body
     return last_response
+
+
+# Delimiters that come in pairs.  An answer holding one of these open on its
+# last line stopped in the middle of writing it.
+_UNCLOSED_PAIRS = (("(", ")"), ("[", "]"))
+# A fenced code block's opening or closing line, in either markdown spelling.
+_FENCE_RE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.MULTILINE)
+
+
+def _looks_incomplete(text: str) -> bool:
+    """True when a finished-looking response actually stops mid-thought.
+
+    ``finish_reason="length"`` is the honest report of a truncated answer and
+    is handled on its own.  This is for the dishonest case: a server-side
+    reasoning parser that swallows the rest of the answer and still closes the
+    stream with ``"stop"``.  vLLM does exactly that when the model opens a
+    ``<think>`` block partway through an answer and generation ends before the
+    closing tag — the usage figures report thousands of tokens the text does
+    not contain, and nothing in the response says anything went wrong.
+
+    So the text itself is the only evidence, and only an unclosed pair counts
+    as evidence.  Ending without a full stop does not: answers legitimately
+    end on a bare URL, a table row, or a path.  An unclosed code fence, bold
+    marker, backtick or bracket is a different thing — the model was mid-token
+    when it was cut off, and no finished answer looks like that.
+    """
+    body = (text or "").rstrip()
+    if not body:
+        return False
+    if len(_FENCE_RE.findall(body)) % 2:
+        return True
+    line = body.rsplit("\n", 1)[-1].strip()
+    # A closing fence is the most common way for a good answer to end, and its
+    # three backticks read as an unclosed span to the checks below.
+    if not line or _FENCE_RE.match(line):
+        return False
+    if line.count("**") % 2 or line.count("`") % 2:
+        return True
+    return any(line.count(opener) > line.count(closer)
+               for opener, closer in _UNCLOSED_PAIRS)
 
 
 # Prose only counts as the dropped answer if there is enough of it to be one.
@@ -2190,11 +2270,8 @@ def _verify_content(message) -> str:
     text = getattr(message, "content", None) or ""
     if text.strip():
         return text
-    for field in ("reasoning_content", "reasoning", "thinking"):
-        alt = getattr(message, field, None)
-        if isinstance(alt, str) and alt.strip():
-            return alt
-    return ""
+    alt = _reasoning_text(message)
+    return alt if alt.strip() else ""
 
 
 class _VerifyStopped(Exception):
@@ -3332,6 +3409,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             if is_ollama:
                 _msg = chat_completion.message
                 _content = _msg.content
+                _full_reasoning = _reasoning_text(_msg)  # Ollama: .thinking
                 _raw_tcs = getattr(_msg, "tool_calls", None)
                 _tool_calls = _adapt_ollama_tool_calls(_raw_tcs) if _raw_tcs else None
                 _finish_reason = getattr(chat_completion, "done_reason", None)
@@ -3359,6 +3437,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _choice = chat_completion.choices[0]
                 _msg = _choice.message
                 _content = _msg.content
+                # Same split the streaming path handles: a host that puts the
+                # thinking in its own field can hand back an empty content with
+                # the answer sitting in the other one.
+                _full_reasoning = _reasoning_text(_msg)
                 _tool_calls = _msg.tool_calls if _msg.tool_calls else None
                 _finish_reason = _choice.finish_reason
                 _message_for_history = _msg
@@ -3409,22 +3491,35 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 continue
 
             # Truncated final answer: the model produced plain-text output (not a
-            # tool call) that was cut off by the output token budget
-            # (finish_reason=length).  Resume generation from the partial text so
-            # the user gets the complete response, stitching the pieces together.
-            # Compaction would be wrong here — there is context room to spare; the
-            # answer simply exceeded max_tokens — and it would summarize away the
-            # exact partial text we need to continue from.
-            if (_finish_reason == "length"
-                    and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
+            # tool call) that stopped before the answer was finished.  Resume
+            # generation from the partial text so the user gets the complete
+            # response, stitching the pieces together.  Compaction would be wrong
+            # here — there is context room to spare; the answer simply ran out of
+            # output budget — and it would summarize away the exact partial text
+            # we need to continue from.
+            #
+            # Two ways to arrive: the honest one, finish_reason=length, and the
+            # one no field reports.  A host whose reasoning parser swallows the
+            # tail of an answer closes the stream with "stop" and a token count
+            # that does not match the text, and the only trace left is a sentence
+            # that ends mid-word — see _looks_incomplete.
+            _partial = _extract_final_response(_content, _full_reasoning, _full_content)
+            # Judged on the whole answer so far, not on this piece: a resumed
+            # turn opens mid-sentence by design, and a continuation that closes
+            # a bold marker opened before the cut would otherwise read as one
+            # more unclosed pair and resume forever.
+            _cut_short = (_finish_reason == "length"
+                          or _looks_incomplete(state.final_answer_prefix + _partial))
+            if _cut_short and state.final_continuation_count < MAX_FINAL_CONTINUATIONS:
                 state.final_continuation_count += 1
                 state.force_compact = False  # don't discard the partial answer
-                _partial = _extract_final_response(_content, _full_reasoning, _full_content)
                 state.final_answer_prefix += _partial
                 messages.append({"role": "assistant", "content": _partial})
                 messages.append({"role": "user", "content": _FINAL_CONTINUATION_PROMPT})
+                _why = ("finish_reason=length" if _finish_reason == "length"
+                        else f"finish_reason={_finish_reason}, text ends mid-sentence")
                 _log_to_ui_or_verbose(
-                    f"Final response truncated (finish_reason=length); resuming "
+                    f"Final response truncated ({_why}); resuming "
                     f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
                     chat_ui, verbose, level="info",
                 )

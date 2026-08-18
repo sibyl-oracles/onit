@@ -44,8 +44,11 @@ serving:
   # max_planning_continuations: 2
   # Times to push past a content-free acknowledgment before accepting it.
   # max_ack_continuations: 2
-  # Times to resume a final answer cut off by the output token budget. Each
-  # resume grants another max_tokens, bounding a long answer at ~(N+1)*max_tokens.
+  # Times to resume a final answer that stopped before it was finished — the
+  # output token budget ran out, or the host dropped the tail of the answer and
+  # still reported a clean stop (vLLM does this when the model opens a <think>
+  # block mid-answer). Each resume grants another max_tokens, bounding a long
+  # answer at ~(N+1)*max_tokens.
   # max_final_continuations: 3
   #
   # ── Harness tools ─────────────────────────────────────────────────────────

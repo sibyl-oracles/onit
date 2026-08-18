@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +20,8 @@ from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _is_noop_tool_call, _is_content_free_response,
                                 _content_residue, _is_answering_a_nudge,
                                 _ACK_CONTINUATION_PROMPT,
+                                _extract_final_response, _looks_incomplete,
+                                _reasoning_text,
                                 _execute_tool, _compact_context, chat)
 
 
@@ -2272,3 +2275,143 @@ class TestTrimHistory:
         history = self._history(6)
         _trim_history(history, keep_full=3, head_chars=100)
         assert all(len(e["response"]) == 5000 for e in history)
+
+
+# ── an answer that stops mid-sentence ───────────────────────────────────────
+
+class TestLooksIncomplete:
+    """The signal that a "stop" finish hides a swallowed tail.
+
+    Both truncated cases below are verbatim tails from real sessions against a
+    vLLM host whose reasoning parser ate the rest of the answer.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "Three takeaways:\n\n- **The naturalness floor at",
+        "6. **Add the missing test layer:** (a) parity test per graph (max abs diff",
+        "Run it with `onit --host",
+        "Here is the script:\n\n```python\nx = 1",
+        "See the table in [the appendix",
+    ])
+    def test_unclosed_pairs_are_incomplete(self, text):
+        assert _looks_incomplete(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "All done.",
+        "Live here: https://github.com/roatienza/onit",
+        "| **Kokoro** | 82M | 4.302 |",
+        "Install it with `pip install onit`.",
+        "Here is the script:\n\n```python\nx = 1\n```",
+        "- **Bold** and (parens) and [a link](https://example.com)",
+        "",
+    ])
+    def test_finished_answers_are_left_alone(self, text):
+        assert _looks_incomplete(text) is False
+
+
+class TestResumeIncompleteAnswer:
+    @pytest.mark.asyncio
+    async def test_stop_with_a_cut_off_answer_is_resumed_and_stitched(self):
+        """finish_reason="stop" is not proof the answer finished: a host whose
+        reasoning parser swallows the tail reports exactly that."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content="Takeaways:\n\n- **The naturalness floor at",
+                finish_reason="stop"),
+            _mock_completion_with_finish(
+                content=" 4.4 UTMOS** is the new baseline.", finish_reason="stop"),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="What is the SOTA in TTS?",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 2
+        assert result == ("Takeaways:\n\n- **The naturalness floor at"
+                          " 4.4 UTMOS** is the new baseline.")
+
+    @pytest.mark.asyncio
+    async def test_a_finished_answer_is_not_resumed(self):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(
+                content="Kokoro 82M is still the reference.", finish_reason="stop"))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="What is the SOTA in TTS?",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 1
+        assert result == "Kokoro 82M is still the reference."
+
+    @pytest.mark.asyncio
+    async def test_resumes_are_bounded(self):
+        """A model that never finishes the sentence still ends the run."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(_mock_completion_with_finish(
+                content="and then (", finish_reason="stop")))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Explain forever.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_final_continuations=2,
+                max_ack_continuations=0,
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 3  # 1 + 2
+
+
+# ── thinking, whatever the host calls it ────────────────────────────────────
+
+class TestReasoningText:
+    def test_reads_every_field_a_host_may_use(self):
+        for field in ("reasoning_content", "reasoning", "thinking"):
+            message = SimpleNamespace(**{field: "weighing the options"})
+            assert _reasoning_text(message) == "weighing the options"
+
+    def test_reasoning_content_wins_when_a_host_sends_both(self):
+        message = SimpleNamespace(reasoning_content="canonical", reasoning="alias")
+        assert _reasoning_text(message) == "canonical"
+
+    def test_no_thinking_is_the_empty_string(self):
+        assert _reasoning_text(SimpleNamespace(content="hello")) == ""
+        assert _reasoning_text(SimpleNamespace(reasoning=None)) == ""
+
+    def test_vllm_reasoning_alias_reaches_the_final_answer(self):
+        """vLLM 0.27 streams thinking as ``reasoning``.  When it puts the whole
+        reply there and leaves content empty, that is still the answer."""
+        assert _extract_final_response(
+            "", _reasoning_text(SimpleNamespace(reasoning="42 is the answer.")), ""
+        ) == "42 is the answer."
+
+
+class TestStripThinkBlocks:
+    def test_a_mid_answer_think_block_does_not_eat_the_tail(self):
+        content = ("The floor is <think>which number?</think> 4.4 UTMOS, "
+                   "<think>and the second one?</think> up from 4.1.")
+        assert _extract_final_response(content, "", "") == (
+            "The floor is  4.4 UTMOS,  up from 4.1.")
+
+    def test_an_orphan_closing_tag_still_splits_reasoning_from_answer(self):
+        assert _extract_final_response(
+            "thinking out loud</think>The answer is 4.4.", "", ""
+        ) == "The answer is 4.4."
