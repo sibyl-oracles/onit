@@ -36,6 +36,9 @@ from .verify import (DEFAULT_TRUSTED_DOMAINS, THINKING_VERDICT_MAX_TOKENS,
                      VERDICT_MAX_TOKENS, needs_verification, verify_answer)
 
 from .harness import COMPACTION_NOTICE, HarnessTools
+from .state import (RunState, STOP_ANSWERED, STOP_PLANNING_EXHAUSTED,
+                    STOP_REPEATED_TOOL_CALL, STOP_SAFETY_ABORT,
+                    STOP_TURN_LIMIT)
 
 try:
     from ...lib.text import split_instruction
@@ -2722,17 +2725,22 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         CONTEXT_COMPACT_THRESHOLD = min(0.90, max(0.50, 1.0 - _reserved / max_context_tokens))
     else:
         CONTEXT_COMPACT_THRESHOLD = 0.90
-    iteration_count = 0
-    planning_continuation_count = 0
-    ack_continuation_count = 0
-    tool_call_history: list = []  # list of (name, args_json) tuples
-    _last_prompt_tokens: int = 0  # prompt token count from the last API response
-    _force_tool_call: bool = False  # set after a planning-only response to require tool use
-    _active_max_tokens: int = max_tokens  # may be reduced for continuation calls
-    _force_compact: bool = False  # set when finish_reason=length to compact on next iteration
-    _final_continuation_count = 0  # times the final answer was resumed after truncation
-    _final_answer_prefix = ""      # accumulated text from prior truncated final-answer turns
-    _prose_before_tools = ""       # answer text written just before the last tool call
+    # Everything about this run that changes while it runs — turn number, what
+    # has been called, how much of each budget is spent, the answer text carried
+    # between turns.  See state.py.
+    #
+    # Caller-owned and mutated in place, exactly like the metrics sink above and
+    # for the same reason: this loop returns from a dozen places, so a summary
+    # built on the way out would be missing from most of them.  A caller that
+    # passes one reads what the run did after it returns, including after the
+    # returns that report a failure — and a test can construct "twenty turns in,
+    # planning budget spent" and assert on the next decision without driving the
+    # twenty turns.  Absent, the loop makes its own and behaves as it always did.
+    state: RunState = kwargs.get('run_state') or RunState()
+    # The one field whose opening value the state object cannot know.  A caller
+    # that set it deliberately keeps it.
+    if state.active_max_tokens is None:
+        state.active_max_tokens = max_tokens
 
     async def _compact(msgs: list) -> list:
         """Compact the conversation, timing it.  Compaction is itself an LLM
@@ -2996,8 +3004,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             logger.warning("Could not schedule the background fact-check: %s", e)
 
     while True:
-        iteration_count += 1
-        if MAX_CHAT_ITERATIONS > 0 and iteration_count > MAX_CHAT_ITERATIONS:
+        state.iteration_count += 1
+        if MAX_CHAT_ITERATIONS > 0 and state.iteration_count > MAX_CHAT_ITERATIONS:
             # Distinct from the repeated-tool-call bail-out below, which used
             # to return this same sentence.  The two are different failures —
             # one is a model stuck on one call, the other a model making
@@ -3012,11 +3020,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # well, so a stop the user is watching for is one they are told about.
             if chat_ui and hasattr(chat_ui, "show_turn_limit"):
                 chat_ui.show_turn_limit(MAX_CHAT_ITERATIONS)
-            _partial = _final_answer_prefix or _prose_before_tools
+            state.stop_reason = STOP_TURN_LIMIT
+            _partial = state.final_answer_prefix or state.prose_before_tools
             if _partial.strip():
                 # Work was done and some of it was written down; handing back
                 # nothing would throw away an answer the user already watched
-                # stream past.  But _prose_before_tools is, by definition, a
+                # stream past.  But state.prose_before_tools is, by definition, a
                 # sentence announcing a tool call that never ran ("Now let me
                 # update X:") — returned bare it reads as a finished answer and
                 # silently drops the task.  The note travels with the text so
@@ -3030,27 +3039,27 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         # Forced compaction: previous response was truncated (finish_reason=length).
         # Compact unconditionally so the next call fits within the context window.
-        if _force_compact:
-            _force_compact = False
+        if state.force_compact:
+            state.force_compact = False
             _log_to_ui_or_verbose(
                 "Compacting context after truncated response (finish_reason=length)...",
                 chat_ui, verbose, level="warning",
             )
             messages = await _compact(messages)
-            _last_prompt_tokens = 0
+            state.last_prompt_tokens = 0
 
         # Context compaction: check if the previous call used ≥90% of the context window.
-        if _last_prompt_tokens > 0 and max_context_tokens:
-            usage_pct = _last_prompt_tokens / max_context_tokens
+        if state.last_prompt_tokens > 0 and max_context_tokens:
+            usage_pct = state.last_prompt_tokens / max_context_tokens
             if chat_ui and hasattr(chat_ui, "set_context_usage"):
                 chat_ui.set_context_usage(usage_pct * 100, max_context_tokens)
             if usage_pct >= CONTEXT_COMPACT_THRESHOLD:
                 _log_to_ui_or_verbose(
-                    f"Context at {usage_pct:.0%} ({_last_prompt_tokens:,}/{max_context_tokens:,} tokens). Compacting...",
+                    f"Context at {usage_pct:.0%} ({state.last_prompt_tokens:,}/{max_context_tokens:,} tokens). Compacting...",
                     chat_ui, verbose, level="warning",
                 )
                 messages = await _compact(messages)
-                _last_prompt_tokens = 0
+                state.last_prompt_tokens = 0
 
         _strip_old_images(messages)
         _decay_old_tool_results(messages)
@@ -3058,15 +3067,15 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # decisions above: a turn that just compacted has no token count until
         # the next response, and reporting the pre-compaction number would tell
         # the model its context is full moments after it was emptied.
-        harness.observe(prompt_tokens=_last_prompt_tokens,
+        harness.observe(prompt_tokens=state.last_prompt_tokens,
                         max_context_tokens=max_context_tokens,
-                        turns=iteration_count,
-                        tools_called=len(tool_call_history))
+                        turns=state.iteration_count,
+                        tools_called=len(state.tool_call_history))
         if chat_ui and hasattr(chat_ui, "set_turn_context"):
             # Prose written on a turn that follows tool calls is the answer
             # being written; the UI shows it as such rather than as one more
             # indistinguishable phase.
-            chat_ui.set_turn_context(tools_run=len(tool_call_history))
+            chat_ui.set_turn_context(tools_run=len(state.tool_call_history))
 
         # Track streaming state across the try block for the final-response path
         _full_content = ""
@@ -3075,15 +3084,15 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _completion_tokens = 0  # set from usage where the provider reports it
         # Reasoning on the opening turn is the plan; on later turns it is spent
         # deciding which tool to call next.  See think_tool_turns.
-        _turn_think = think and (think_tool_turns or iteration_count == 1)
+        _turn_think = think and (think_tool_turns or state.iteration_count == 1)
 
-        # Pre-call compaction: _last_prompt_tokens is from the previous API call and may
+        # Pre-call compaction: state.last_prompt_tokens is from the previous API call and may
         # underestimate the true prompt size after large tool results were appended.
         # If the estimated output budget is critically small, compact now rather than
         # letting the model hit finish_reason=length with an empty/tag-only response.
-        if max_context_tokens and _last_prompt_tokens > 0:
+        if max_context_tokens and state.last_prompt_tokens > 0:
             _growth_buffer_pre = max(MAX_TOOL_RESPONSE // 2, 1024)
-            _available_est = max_context_tokens - _last_prompt_tokens - _growth_buffer_pre
+            _available_est = max_context_tokens - state.last_prompt_tokens - _growth_buffer_pre
             _min_useful_output = max(256, min(max_tokens // 4, 1024))
             if _available_est < _min_useful_output:
                 _log_to_ui_or_verbose(
@@ -3092,7 +3101,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     chat_ui, verbose, level="warning",
                 )
                 messages = await _compact(messages)
-                _last_prompt_tokens = 0
+                state.last_prompt_tokens = 0
 
         # Retry loop for transient API errors — preserves accumulated messages/tool history
         api_error = None
@@ -3108,9 +3117,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 # Cap output tokens so that prompt + output never approaches the context limit.
                 # Never expand beyond the configured max_tokens — only shrink when the
                 # remaining context window is tighter than max_tokens.
-                _api_max_tokens = _active_max_tokens
+                _api_max_tokens = state.active_max_tokens
                 if max_context_tokens:
-                    _prompt_est = _last_prompt_tokens if _last_prompt_tokens > 0 else 0
+                    _prompt_est = state.last_prompt_tokens if state.last_prompt_tokens > 0 else 0
                     # Use MAX_TOOL_RESPONSE // 2 because code/JSON can be ~1.5 chars/token,
                     # so the same char limit costs more tokens than a /3 estimate implies.
                     _growth_buffer = max(MAX_TOOL_RESPONSE // 2, 1024)
@@ -3140,7 +3149,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     # instead of tool calls.  Ollama's format="json" ensures the response
                     # is parseable by _parse_tool_call_from_content even though Ollama has
                     # no tool_choice="required" equivalent.
-                    if _force_tool_call and tools:
+                    if state.force_tool_call and tools:
                         ollama_kwargs["format"] = "json"
                     chat_completion = await _await_with_safety(
                         ollama_client.chat(**ollama_kwargs), safety_queue)
@@ -3180,7 +3189,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         completion_kwargs["tools"] = tools
                         # vLLM rejects tool_choice when tools is unset, so only
                         # send it alongside tools.
-                        completion_kwargs["tool_choice"] = "required" if _force_tool_call else "auto"
+                        completion_kwargs["tool_choice"] = "required" if state.force_tool_call else "auto"
                     if stream:
                         completion_kwargs["stream_options"] = {"include_usage": True}
                     chat_completion = await _await_with_safety(
@@ -3203,9 +3212,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                          _ollama_eval_count) = stream_result
                         _completion_tokens = _ollama_eval_count
                         if _ollama_prompt_tokens:
-                            _last_prompt_tokens = _ollama_prompt_tokens
+                            state.last_prompt_tokens = _ollama_prompt_tokens
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
-                                chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
                         if _finish_reason == "length":
@@ -3214,7 +3223,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                 "Consider increasing num_ctx/max_tokens.",
                                 chat_ui, verbose, level="warning",
                             )
-                            _force_compact = True
+                            state.force_compact = True
                         if _ollama_tcs:
                             _tool_calls = _adapt_ollama_tool_calls(_ollama_tcs)
                             # arguments must be dict in the history message (Ollama validates this)
@@ -3242,10 +3251,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             return None
                         _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
                         if _stream_usage is not None:
-                            _last_prompt_tokens = _stream_usage.prompt_tokens
+                            state.last_prompt_tokens = _stream_usage.prompt_tokens
                             _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
-                                chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
                         if _finish_reason == "length":
@@ -3254,7 +3263,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                 "Consider increasing max_tokens.",
                                 chat_ui, verbose, level="warning",
                             )
-                            _force_compact = True
+                            state.force_compact = True
                         elif _finish_reason == "tool_calls" and not _full_tool_calls:
                             _log_to_ui_or_verbose(
                                 f"Model signaled finish_reason=tool_calls but no tool calls received "
@@ -3277,9 +3286,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 # tool_choice="required" engages guided decoding on vLLM, which
                 # can stall on large tool schemas.  If that's what we asked for,
                 # retry without it rather than wedging the server again.
-                if _force_tool_call:
-                    _force_tool_call = False
-                    _active_max_tokens = max_tokens
+                if state.force_tool_call:
+                    state.force_tool_call = False
+                    state.active_max_tokens = max_tokens
                     _log_to_ui_or_verbose(
                         "Dropping tool_choice=required for retry (possible guided-decoding stall).",
                         chat_ui, verbose, level="warning",
@@ -3343,9 +3352,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _completion_tokens = getattr(chat_completion, "eval_count", 0)
                 _pec = getattr(chat_completion, "prompt_eval_count", None)
                 if _pec is not None:
-                    _last_prompt_tokens = _pec
+                    state.last_prompt_tokens = _pec
                     if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
-                        chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
             else:
                 _choice = chat_completion.choices[0]
                 _msg = _choice.message
@@ -3360,7 +3369,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         "Consider increasing max_tokens.",
                         chat_ui, verbose, level="warning",
                     )
-                    _force_compact = True
+                    state.force_compact = True
                 elif _finish_reason == "tool_calls" and not _tool_calls:
                     _log_to_ui_or_verbose(
                         f"Model signaled finish_reason=tool_calls but no tool calls received "
@@ -3369,13 +3378,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     )
                 # Capture token usage for context tracking
                 if chat_completion.usage is not None:
-                    _last_prompt_tokens = chat_completion.usage.prompt_tokens
+                    state.last_prompt_tokens = chat_completion.usage.prompt_tokens
                     _completion_tokens = getattr(chat_completion.usage, "completion_tokens", 0)
                     if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
-                        chat_ui.set_context_usage(_last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
 
         # Both paths have converged: the model call for this turn is done.
-        _m.end_api(_last_prompt_tokens, _completion_tokens, _finish_reason)
+        _m.end_api(state.last_prompt_tokens, _completion_tokens, _finish_reason)
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:
@@ -3384,7 +3393,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             _tool_log: list = []
             should_continue, bail = await _handle_raw_tool_call(
                 _content, tool_registry, timeout, data_path,
-                chat_ui, verbose, messages, tool_call_history,
+                chat_ui, verbose, messages, state.tool_call_history,
                 MAX_REPEATED_TOOL_CALLS, session_id=session_id,
                 tool_log=_tool_log, harness=harness,
             )
@@ -3394,6 +3403,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools,
                              runs=_tool_log)
             if bail:
+                state.stop_reason = STOP_REPEATED_TOOL_CALL
                 return bail
             if should_continue:
                 continue
@@ -3406,16 +3416,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # answer simply exceeded max_tokens — and it would summarize away the
             # exact partial text we need to continue from.
             if (_finish_reason == "length"
-                    and _final_continuation_count < MAX_FINAL_CONTINUATIONS):
-                _final_continuation_count += 1
-                _force_compact = False  # don't discard the partial answer
+                    and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
+                state.final_continuation_count += 1
+                state.force_compact = False  # don't discard the partial answer
                 _partial = _extract_final_response(_content, _full_reasoning, _full_content)
-                _final_answer_prefix += _partial
+                state.final_answer_prefix += _partial
                 messages.append({"role": "assistant", "content": _partial})
                 messages.append({"role": "user", "content": _FINAL_CONTINUATION_PROMPT})
                 _log_to_ui_or_verbose(
                     f"Final response truncated (finish_reason=length); resuming "
-                    f"({_final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
+                    f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
                     chat_ui, verbose, level="info",
                 )
                 continue
@@ -3428,18 +3438,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             if (tools and tool_registry
                     and _finish_reason != "length"
                     and _is_planning_response(_content)
-                    and planning_continuation_count < MAX_PLANNING_CONTINUATIONS):
-                planning_continuation_count += 1
-                _force_tool_call = True
-                _active_max_tokens = CONTINUATION_MAX_TOKENS
+                    and state.planning_continuation_count < MAX_PLANNING_CONTINUATIONS):
+                state.planning_continuation_count += 1
+                state.force_tool_call = True
+                state.active_max_tokens = CONTINUATION_MAX_TOKENS
                 _log_to_ui_or_verbose(
                     f"Model announced a plan without calling tools (continuation "
-                    f"{planning_continuation_count}/{MAX_PLANNING_CONTINUATIONS}, "
+                    f"{state.planning_continuation_count}/{MAX_PLANNING_CONTINUATIONS}, "
                     f"capping tokens={CONTINUATION_MAX_TOKENS}).",
                     chat_ui, verbose, level="info",
                 )
                 continuation_prompt = _build_planning_continuation_prompt(
-                    tool_registry, planning_continuation_count, task_instruction
+                    tool_registry, state.planning_continuation_count, task_instruction
                 )
                 messages.append({"role": "assistant", "content": _content})
                 messages.append({"role": "user", "content": continuation_prompt})
@@ -3449,13 +3459,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             if (tools and tool_registry
                     and _finish_reason != "length"
                     and _is_planning_response(_content)
-                    and planning_continuation_count >= MAX_PLANNING_CONTINUATIONS):
+                    and state.planning_continuation_count >= MAX_PLANNING_CONTINUATIONS):
                 _log_to_ui_or_verbose(
                     f"Model ({model}) failed to call tools after "
                     f"{MAX_PLANNING_CONTINUATIONS} continuation attempts. "
                     "It may not support agentic tool use.",
                     chat_ui, verbose, level="warning",
                 )
+                state.stop_reason = STOP_PLANNING_EXHAUSTED
                 return (
                     f"This model ({model}) was unable to complete the task — it repeatedly "
                     f"described a plan but did not call any tools after "
@@ -3480,39 +3491,40 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                          and _is_content_free_response(_content, data_path))
             if (_finish_reason != "length"
                     and (_is_ack or _is_meta or _is_empty)
-                    and ack_continuation_count < MAX_ACK_CONTINUATIONS):
-                ack_continuation_count += 1
+                    and state.ack_continuation_count < MAX_ACK_CONTINUATIONS):
+                state.ack_continuation_count += 1
                 _what = ("acknowledged" if _is_ack
                          else "commented on the prompt" if _is_meta
                          else "replied with nothing the prompt did not supply")
                 _log_to_ui_or_verbose(
                     f"Model {_what} instead of resuming the task (continuation "
-                    f"{ack_continuation_count}/{MAX_ACK_CONTINUATIONS}).",
+                    f"{state.ack_continuation_count}/{MAX_ACK_CONTINUATIONS}).",
                     chat_ui, verbose, level="info",
                 )
                 messages.append({"role": "assistant", "content": _content})
                 messages.append({"role": "user", "content": _ACK_CONTINUATION_PROMPT})
                 continue
 
-            _force_tool_call = False
-            _active_max_tokens = max_tokens
+            state.force_tool_call = False
+            state.active_max_tokens = max_tokens
             _final = _extract_final_response(_content, _full_reasoning, _full_content)
             # Stitch on any text from earlier turns that were truncated and resumed.
-            if _final_answer_prefix:
-                _final = _final_answer_prefix + _final
+            if state.final_answer_prefix:
+                _final = state.final_answer_prefix + _final
             # The one exit that hands back an answer about the world.  Every
             # other return above is the loop reporting on itself — a limit hit,
             # a model that cannot call tools — and there is nothing in those to
             # check against evidence.
+            state.stop_reason = STOP_ANSWERED
             return await _fact_check(
-                _recover_dropped_answer(_final, _prose_before_tools), messages)
+                _recover_dropped_answer(_final, state.prose_before_tools), messages)
 
         # Keep the answer text written ahead of this tool call.  A model that
         # answers and then calls one last tool often signs off with "Done." —
         # the user already saw the real answer stream by, so don't lose it.
         _prose = _prose_alongside_tool_calls(_message_content(_message_for_history))
         if _prose and not _is_planning_response(_prose):
-            _prose_before_tools = _prose
+            state.prose_before_tools = _prose
 
         # Structured tool calls: execute them and loop back.
         # Reset force/token/planning flags — the model successfully called a tool.
@@ -3520,8 +3532,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # how a stuck model launders "echo ok" into another two continuations and
         # loops indefinitely.  The call still runs — it may be the model's own way
         # of orienting — it just doesn't count as progress.
-        _force_tool_call = False
-        _active_max_tokens = max_tokens
+        state.force_tool_call = False
+        state.active_max_tokens = max_tokens
         _all_noop = all(
             _is_noop_tool_call(tc.function.name, _parse_tool_arguments(tc, verbose))
             for tc in tool_calls
@@ -3529,7 +3541,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         if _all_noop:
             _log_to_ui_or_verbose(
                 "Tool call does nothing (no-op shell command); keeping the "
-                f"planning budget at {planning_continuation_count}/"
+                f"planning budget at {state.planning_continuation_count}/"
                 f"{MAX_PLANNING_CONTINUATIONS}.",
                 chat_ui, verbose, level="info",
             )
@@ -3538,20 +3550,22 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # is reset on the same condition and for the same reason: a model
             # that acknowledges, runs "echo ok", then acknowledges again has not
             # advanced, and refreshing its budget here lets it do that forever.
-            planning_continuation_count = 0
-            ack_continuation_count = 0
+            state.planning_continuation_count = 0
+            state.ack_continuation_count = 0
         _t_tools = time.monotonic()
         _tool_log = []
         bail = await _handle_structured_tool_calls(
             tool_calls, _message_for_history, tool_registry,
             timeout, data_path, chat_ui, verbose,
-            messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
+            messages, state.tool_call_history, MAX_REPEATED_TOOL_CALLS,
             safety_queue, session_id=session_id, tool_log=_tool_log,
             harness=harness,
         )
         _m.add_tools([tc.function.name for tc in tool_calls],
                      time.monotonic() - _t_tools, runs=_tool_log)
         if bail is _SAFETY_ABORT:
+            state.stop_reason = STOP_SAFETY_ABORT
             return None
         if bail:
+            state.stop_reason = STOP_REPEATED_TOOL_CALL
             return bail

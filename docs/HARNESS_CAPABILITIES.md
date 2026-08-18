@@ -1,7 +1,7 @@
 # Agent Harness Capabilities — Gap Analysis and Build Plan
 
-**Status**: **Phases 1, 2 and 3 implemented** (see §3.5, §4.4 and §5.4). Phases 4, 5, 6 are proposal / RFC.
-**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4).*
+**Status**: **Phases 1, 2, 3 and 6 implemented** (see §3.5, §4.4, §5.4 and §8.4). Phases 4 and 5 are proposal / RFC.
+**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4), then Phase 6 shipped (§8.4).*
 **Source**: [Six Agent Harness Capabilities for Higher Model Performance](https://developer.nvidia.com/blog/six-agent-harness-capabilities-for-higher-model-performance/) (NVIDIA, NOOA framework)
 **Companion**: [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) — Phases 1–4 and 6 here are
 that plan's **Phase 0.5**. Its §1.1 explains why they must land before its baseline is
@@ -32,7 +32,7 @@ code-as-action with a **sandboxed interpreter** instead of a shared heap.
 | 3 | Programmable loop engineering | Plain Python loop ✅, but policy constants hardcoded | Small | 3 |
 | 4 | Pass by reference | Everything serializes into context; truncation is lossy | **Large** | 4 |
 | 5 | Code as action | `bash` only; one model round trip per step | **Large** | 5 |
-| 6 | Explicit object state | Run state is locals inside `chat()`, dies on return | Medium | 6 |
+| 6 | Explicit object state | ~~Run state is locals inside `chat()`, dies on return~~ **Shipped**: `RunState`, caller-owned, persisted per session and read back on resume | ~~Medium~~ | 6 ✅ |
 
 ### Build order
 
@@ -44,15 +44,15 @@ before that plan pins its baseline, because each one changes a metric it records
 Phase 1  Typed I/O            ~1 day     fixes a live bug          ┐ ✅ shipped
 Phase 3  Loop policy config   ~half day  fixes an unbounded loop   │ ✅ shipped
 Phase 2  Harness APIs         ~1 day     small, high leverage      │ ✅ shipped
-Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │ Phase 0.5
-Phase 4  Result store         ~3 days    largest token win         ┘
+Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │ ✅ shipped
+Phase 4  Result store         ~3 days    largest token win         ┘ Phase 0.5
 
 Phase 5  Code as action       ~1-2 weeks largest latency win       ← after SELF_IMPROVEMENT Phase 2
 ```
 
-Phases 1, 2 and 3 were independent of each other and of everything else.
-Phase 6 before Phase 4, so the result store's bookkeeping has a typed home rather than
-three more locals in `chat()`. Phase 5 depends on Phase 4 (handles are what keep
+Phases 1, 2, 3 and 6 were independent of each other and of everything else.
+Phase 6 landed before Phase 4, so the result store's bookkeeping has a typed home rather
+than three more locals in `chat()`. Phase 5 depends on Phase 4 (handles are what keep
 interpreter output out of the context).
 
 **Phase 5 is deliberately outside Phase 0.5.** It changes what a "tool call" *is*, so
@@ -727,6 +727,7 @@ machinery covers the case where a `print` is itself huge.
 ## 8. Phase 6 — Explicit run state
 
 **Effort**: ~3 days · **Depends on**: nothing · **Priority**: schedule with Phase 4
+**Status**: ✅ **Shipped** — see §8.4 for what changed during implementation.
 
 ### 8.1 The gap
 
@@ -781,6 +782,58 @@ Every piece of that state lives in local variables inside `chat()` —
   next decision, without running the preceding turns.
 - Extend `src/test/test_onit.py`: resume restores `tool_call_history`.
 - `src/test/test_learn.py` still passes — trajectory recording must not regress.
+
+### 8.4 As shipped
+
+| What | Where |
+|---|---|
+| `RunState` dataclass | [`src/model/serving/state.py`](../src/model/serving/state.py) |
+| The loop reads and writes it | [`chat()`](../src/model/serving/chat.py) — `run_state` kwarg |
+| Persisted per session | `<session_id>.state.json`, beside the `.jsonl` |
+| Loaded on resume | [`_setup_session`](../src/onit.py) → `OnIt.run_state` |
+| Fed back into the instruction | `prior_attempts` → [`build_assistant_instruction`](../src/mcp/prompts/prompts.py) |
+| Tests | `test_run_state.py` (30), plus `TestRunState` in `test_chat.py` (7) and `test_onit.py` (10) |
+
+**Four decisions changed during implementation.**
+
+*Four more fields than the plan named.* §8.2 listed seven locals; the block they live in
+holds eleven. `_last_prompt_tokens`, `_active_max_tokens`, `_force_compact` and
+`_final_continuation_count` are the same category — mutable, run-scoped, dead on return —
+and leaving them behind would have meant a state object that could not answer "what will
+the next API call look like". `active_max_tokens` is the one that needed care: its opening
+value is `max_tokens`, which the state object cannot know, so it defaults to `None` and the
+loop fills it in only when nobody else has. A caller constructing a mid-run state keeps
+whatever it set.
+
+*Helper signatures were left alone.* `_execute_tool` and the two handlers still take
+`tool_call_history: list` rather than the state object. The list is passed by reference, so
+`state.tool_call_history` is mutated in place exactly as before — and a signature change
+there would have rippled into six test call sites to buy nothing. The cost is that
+`RunState` has no `record_tool_call`; the append-and-count lives where it always did.
+
+*A resumed session does not inherit the repeated-call budget.* The obvious reading of step
+5 — reload `tool_call_history` into the run — is wrong. `MAX_REPEATED_TOOL_CALLS` counts
+against that list, so a session with a long history would spend the budget before the new
+task made its first call. Each task gets a fresh `RunState`; the accumulated history is
+folded into the session's file afterwards (`merge`) and reaches the model only as prose, in
+the instruction. Answer text (`final_answer_prefix`, `prose_before_tools`) is neither merged
+nor persisted: a half-written answer belongs to the task that was writing it.
+
+*`stop_reason` was added, and it is what step 6 turned out to mean.* Whether the loop
+finished or gave up is invisible in both the session file and the metrics sink — a turn-limit
+stop and a completed answer both leave text behind. It is set at the five exits that know
+which happened, persisted, reported in the resume note, and passed to `derive_signals` so
+the trajectory record and the state file cannot disagree about how a run ended. That is the
+"rather than a parallel structure that drifts from it" clause, discharged at the one field
+where drift was actually possible.
+
+**Cost.** Nothing on the common path: a new session's `prior_attempts` is `""`, and the
+state file is one small write per task. A resumed session pays ~40–80 tokens for the note.
+
+**Not done.** Context editing (§4.4 deferred `drop_context_block` to "Phase 6, where the
+run state has a typed home to be edited through"). The home now exists — `messages` is
+still a local, and handing the model edit rights over it is a risk profile this phase did
+not take on.
 
 ---
 

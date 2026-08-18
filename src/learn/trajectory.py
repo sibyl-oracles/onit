@@ -131,12 +131,17 @@ def _turn_view(turn: dict) -> dict:
     }
 
 
-def derive_signals(metrics: dict | None) -> dict:
+def derive_signals(metrics: dict | None, stop_reason: str | None = None) -> dict:
     """Outcome signals that cost nothing, read off a finished run.
 
     None of these is a verdict on whether the answer was right.  They are the
     cheap half of the reward: a run that hit three tool errors, retried the API
     twice and truncated its answer went badly whatever the answer said.
+
+    ``stop_reason`` comes from the run's ``RunState`` (model/serving/state.py)
+    and is the one signal the metrics cannot supply: whether the loop finished
+    or gave up.  It is read from that object rather than re-derived here, so
+    the two records of how a run ended cannot drift apart.
     """
     metrics = metrics or {}
     turns = metrics.get("turns") or []
@@ -147,6 +152,7 @@ def derive_signals(metrics: dict | None) -> dict:
                 tool_errors += 1
     return {
         "tool_errors": tool_errors,
+        "stop_reason": stop_reason or "",
         "retries": int(metrics.get("api_retries", 0) or 0),
         "truncations": sum(1 for t in turns if t.get("finish_reason") == "length"),
         "compactions": int(metrics.get("compactions", 0) or 0),
@@ -162,6 +168,7 @@ def build_record(*, session_id: str, turn: int, task: str, response: str,
                  owner: str | None = None,
                  topic_hint: str | None = None,
                  model: str | None = None,
+                 stop_reason: str | None = None,
                  playbook_version=None,
                  episodes_used: list | None = None) -> dict:
     """Assemble one task record.  Pure: writes nothing, raises nothing."""
@@ -180,7 +187,7 @@ def build_record(*, session_id: str, turn: int, task: str, response: str,
         "tools_available": sorted(tools_available or []),
         "trajectory": [_turn_view(t) for t in (metrics.get("turns") or [])],
         "metrics": {k: v for k, v in metrics.items() if k != "turns"},
-        "signals": derive_signals(metrics),
+        "signals": derive_signals(metrics, stop_reason=stop_reason),
         # What the agent was told beyond the task itself.  Empty until the
         # loops that fill it exist; present from the start because a run
         # recorded without it cannot be compared against one recorded with it,

@@ -107,3 +107,46 @@ class TestSessionNaming:
         (meta,) = list_sessions(sessions_dir=d)
         assert meta["tag"] == "fix-login-bug"
         assert meta["turns"] == 2
+
+
+class TestRunStateSidecar:
+    """The run state file is part of a session and goes when it does.
+
+    Session ids are recycled by nothing today, but a state file that outlives
+    its history would tell a future session it had already run tools it never
+    ran.
+    """
+
+    def _session(self, tmp_path, sid="sid-1"):
+        from model.serving.state import RunState, state_path_for
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir(exist_ok=True)
+        jsonl = sessions_dir / f"{sid}.jsonl"
+        jsonl.write_text('{"task": "t", "response": "r"}\n')
+        state = RunState()
+        state.tool_call_history = [("bash", "{}")]
+        state.save(state_path_for(str(jsonl)))
+        return str(sessions_dir), str(jsonl)
+
+    def test_delete_session_takes_the_state_with_it(self, tmp_path):
+        from model.serving.state import state_path_for
+        from sessions import delete_session
+
+        sessions_dir, jsonl = self._session(tmp_path)
+        assert os.path.exists(state_path_for(jsonl))
+
+        delete_session("sid-1", sessions_dir=sessions_dir)
+
+        assert not os.path.exists(jsonl)
+        assert not os.path.exists(state_path_for(jsonl))
+
+    def test_clear_sessions_takes_them_all(self, tmp_path):
+        from model.serving.state import state_path_for
+        from sessions import clear_sessions
+
+        sessions_dir, jsonl = self._session(tmp_path)
+        _, jsonl2 = self._session(tmp_path, "sid-2")
+
+        assert clear_sessions(sessions_dir=sessions_dir) == 2
+        assert not os.path.exists(state_path_for(jsonl))
+        assert not os.path.exists(state_path_for(jsonl2))

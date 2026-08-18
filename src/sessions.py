@@ -290,7 +290,7 @@ def delete_session(session_id: str,
     # Sidecars written alongside the history (e.g. <sid>.emails.json, the web
     # UI's grounded-address list) go with it — otherwise they outlive the
     # session and a recycled id would inherit them.
-    for sidecar in ("emails.json",):
+    for sidecar in ("emails.json", "state.json"):
         path = os.path.join(sessions_dir, f"{session_id}.{sidecar}")
         if os.path.isfile(path):
             try:
@@ -446,6 +446,15 @@ def clear_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> int:
     for jsonl_file in sessions_path.glob("*.jsonl"):
         jsonl_file.unlink()
         count += 1
+    # The sidecars go with the histories they belong to, or a recycled session
+    # id inherits another session's run state.  Not counted: the count is of
+    # conversations cleared, and a session with a state file is still one.
+    for sidecar in list(sessions_path.glob("*.state.json")) + \
+            list(sessions_path.glob("*.emails.json")):
+        try:
+            sidecar.unlink()
+        except OSError:
+            pass
     # Remove the index file
     idx = _index_path(sessions_dir)
     if os.path.isfile(idx):

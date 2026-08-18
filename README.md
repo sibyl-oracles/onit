@@ -394,6 +394,13 @@ To start from scratch instead, use `onit --restart-session`. Server modes
 (`serve web`, `serve a2a`, `serve gateway`, `serve loop`) manage their own
 sessions and never auto-resume.
 
+A resumed session carries more than the conversation. Alongside each
+`<session_id>.jsonl` is a `<session_id>.state.json` recording what the session
+*did* — which tools it ran and how many times, how many turns it spent, and
+whether the last attempt finished or stopped early at a limit. Resuming reads
+it back and tells the agent, so a continued session builds on work that already
+succeeded instead of starting it again. It is deleted with the session.
+
 ### `onit ask`
 
 Send a single task to a running OnIt A2A server and print the response. Useful for scripting, pipelines, or one-shot queries without starting a local agent.

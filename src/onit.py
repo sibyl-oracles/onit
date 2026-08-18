@@ -48,6 +48,7 @@ from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruct
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
 from .model.serving.chat import chat, summarize_metrics
+from .model.serving.state import RunState, state_path_for
 from .model.serving.balancer import (DEFAULT_PRIORITY, LoadBalancer,
                                      ServerEndpoint)
 
@@ -863,6 +864,16 @@ class OnIt(BaseModel):
     # method and persists in another, so the sink chat() fills has to be
     # reachable from both; process_task keeps its own and never touches this.
     last_metrics: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # What this session has already done — tools run, turns spent, how the last
+    # attempt ended.  The session file keeps what was *said*; a resumed session
+    # replaying only that has no idea which tools ran or what was tried and
+    # failed.  Loaded in _setup_session, folded into after every task, and
+    # written beside the session file (see model/serving/state.py).
+    run_state: Any = Field(default=None, exclude=True)
+    # The interactive path answers in one method and persists in another, so
+    # the state chat() fills has to be reachable from both — the same reason
+    # last_metrics above is a field.
+    last_run_state: Any = Field(default=None, exclude=True)
     # Fact-checks still running behind answers that have already been handed
     # over, one per session.  Held here because this is the only object that
     # sees the next task arrive, and the next task is what ends them.
@@ -1185,6 +1196,11 @@ class OnIt(BaseModel):
                     f.write("")
             register_session(self.session_id, sessions_base)
 
+        # The other half of the session: what was done, not what was said.  A
+        # new session gets an empty one rather than None, so every path below
+        # can fold into it without a null check.
+        self.run_state = RunState.load(state_path_for(self.session_path))
+
         configured_data_path = self.config_data.get('data_path')
         if configured_data_path:
             self.data_path = str(Path(configured_data_path).expanduser().resolve())
@@ -1382,7 +1398,8 @@ class OnIt(BaseModel):
         # Still timed: it sits in front of the first token of every task, and
         # nothing else measures it.
         _instruction_start = time.monotonic()
-        instruction = await self._assistant_instruction(task, effective_data_path)
+        instruction = await self._assistant_instruction(
+            task, effective_data_path, session_path=effective_session_path)
         _instruction_s = time.monotonic() - _instruction_start
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
@@ -1404,8 +1421,14 @@ class OnIt(BaseModel):
         # answering a question nobody asked any more.
         self._cancel_background_check(effective_session_id)
         _metrics: dict = {}
+        # This task's run state, read back below to persist what it did.  Fresh
+        # per task on purpose: the repeated-call ceiling counts against it, and
+        # a session's accumulated history would spend that budget before the
+        # task made its first call.
+        _run_state = RunState()
         kwargs = {
             'metrics': _metrics,
+            'run_state': _run_state,
             'console': None,
             'chat_ui': _adapter,
             'cursor': AGENT_CURSOR, 'memories': None,
@@ -1491,6 +1514,9 @@ class OnIt(BaseModel):
                          MAX_PROCESS_RETRIES, ", ".join(self.load_balancer.hosts))
             for _stale in _deep_checks:
                 _stale.close()
+            # A run that spent thirty turns and came back with nothing is
+            # exactly the run the next task should know about.
+            self._persist_run_state(_run_state, effective_session_path)
             return "I am sorry \U0001f614. Could you please rephrase your question?"
 
         response = remove_tags(last_response)
@@ -1512,9 +1538,11 @@ class OnIt(BaseModel):
             update_session(effective_sid, task=task, sessions_dir=sessions_dir)
         except Exception:
             pass
+        self._persist_run_state(_run_state, effective_session_path)
         self._record_trajectory(task, response, _metrics,
                                 effective_session_path,
-                                session_id or self.session_id, _adapter)
+                                session_id or self.session_id, _adapter,
+                                run_state=_run_state)
         # The answer is saved, so the check behind it now has something to
         # correct.  Anything the run collected earlier belonged to an attempt
         # that was retried over, and is closed rather than run.
@@ -1604,8 +1632,57 @@ class OnIt(BaseModel):
         except Exception as e:
             logger.warning("Could not amend the saved answer: %s", e)
 
+    # ── run state: what the session has already done ───────────────────────
+    #
+    # The session file records the conversation and ``_record_trajectory``
+    # records the run for offline learning.  Neither is readable by the agent
+    # itself on the next task, which is what this closes: a resumed session
+    # that knows it already ran ``local_search`` eleven times and stopped at
+    # the turn limit does not start over from the same place.
+
+    def _persist_run_state(self, state: Any, session_path: str) -> None:
+        """Fold a finished run into its session's state file.
+
+        Best-effort throughout, like the trajectory writer above: a task that
+        answered must not be reported as failed because a bookkeeping file
+        could not be written.
+        """
+        path = state_path_for(session_path)
+        if state is None or not path:
+            return
+        try:
+            # One OnIt serves many sessions in web mode, so the file — not the
+            # in-memory copy — is the source of truth for any session but the
+            # one this process was started on.
+            own = bool(self.session_path
+                       and os.path.abspath(session_path)
+                       == os.path.abspath(self.session_path))
+            session_state = (self.run_state if own and self.run_state is not None
+                             else RunState.load(path))
+            session_state.merge(state)
+            session_state.save(path)
+            if own:
+                self.run_state = session_state
+        except Exception as e:
+            logger.debug("run state not persisted: %s", e)
+
+    def _prior_run_note(self, session_path: str | None = None) -> str:
+        """What to tell the next task about the ones before it, or ""."""
+        try:
+            effective = session_path or self.session_path
+            own = bool(self.session_path and effective
+                       and os.path.abspath(effective)
+                       == os.path.abspath(self.session_path))
+            state = (self.run_state if own and self.run_state is not None
+                     else RunState.load(state_path_for(effective)))
+            return state.resume_note()
+        except Exception as e:
+            logger.debug("prior run note unavailable: %s", e)
+            return ""
+
     def _record_trajectory(self, task: str, response: str, metrics: dict,
-                           session_path: str, session_id: str, adapter) -> None:
+                           session_path: str, session_id: str, adapter,
+                           run_state: Any = None) -> None:
         """Write what this task actually did to the trajectory store.
 
         The session file above keeps the conversation; this keeps the run — the
@@ -1639,6 +1716,11 @@ class OnIt(BaseModel):
                 # The configured model may be unset and resolved from the
                 # endpoint; the adapter carries whatever actually answered.
                 model=getattr(adapter, "model_name", None) or self.model_serving.get("model"),
+                # Whether the loop finished or gave up — the one signal the
+                # metrics cannot supply.  Taken from the run's own state rather
+                # than re-derived, so the two records of how a run ended cannot
+                # drift apart (docs/HARNESS_CAPABILITIES.md §8.2, step 6).
+                stop_reason=getattr(run_state, "stop_reason", None),
             )
         except Exception as e:
             logger.debug("trajectory not recorded: %s", e)
@@ -1665,7 +1747,9 @@ class OnIt(BaseModel):
 
                 # call chat directly (no queues needed)
                 _metrics: dict = {}
+                _run_state = RunState()
                 kwargs = {'console': None,
+                          'run_state': _run_state,
                           'chat_ui': None,
                           'cursor': AGENT_CURSOR,
                           'memories': None,
@@ -1713,8 +1797,10 @@ class OnIt(BaseModel):
                         pass
                     # Loop mode runs one task over and over, which is the
                     # workload where comparing run to run says the most.
+                    self._persist_run_state(_run_state, self.session_path)
                     self._record_trajectory(self.task, response, _metrics,
-                                            self.session_path, self.session_id, None)
+                                            self.session_path, self.session_id, None,
+                                            run_state=_run_state)
 
                 # countdown timer before next iteration
                 remaining = int(self.period)
@@ -1881,7 +1967,8 @@ class OnIt(BaseModel):
         return await loop.run_in_executor(None, self.chat_ui.get_user_input)
 
     async def _assistant_instruction(self, task: str,
-                                     data_path: str | None = None) -> str:
+                                     data_path: str | None = None,
+                                     session_path: str | None = None) -> str:
         """The agent instruction for ``task``.
 
         PromptsMCPServer hosts a single prompt, and that prompt is a pure
@@ -1913,6 +2000,10 @@ class OnIt(BaseModel):
             "agent_name": self.agent_name,
             "developer": self.developer,
             "max_documents": self.max_documents,
+            # What this session already did, from the run state beside its
+            # session file.  Empty on the first task of a new session, which
+            # is the common case and costs nothing.
+            "prior_attempts": self._prior_run_note(session_path),
         }
         if self.prompt_in_process:
             return await build_assistant_instruction(**args)
@@ -2034,8 +2125,10 @@ class OnIt(BaseModel):
                            sessions_dir=os.path.dirname(self.session_path))
         except Exception:
             pass
+        self._persist_run_state(self.last_run_state, self.session_path)
         self._record_trajectory(task, response, self.last_metrics,
-                                self.session_path, self.session_id, self.chat_ui)
+                                self.session_path, self.session_id, self.chat_ui,
+                                run_state=self.last_run_state)
         if self.pending_deep_checks:
             self._schedule_background_check(
                 self.session_id, self.pending_deep_checks.pop(),
@@ -2197,7 +2290,9 @@ class OnIt(BaseModel):
                     await self.output_queue.put(STOP_TAG)
                     break
                 self.last_metrics.clear()
+                self.last_run_state = RunState()
                 kwargs = {'console': self.chat_ui.console,
+                          'run_state': self.last_run_state,
                           'chat_ui': self.chat_ui,
                           'cursor': AGENT_CURSOR,
                           'memories': None,

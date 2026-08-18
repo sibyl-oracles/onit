@@ -1066,8 +1066,25 @@ class TestRecordTrajectory:
         assert records[0]["tools_available"] == ["bash", "search"]
         assert records[0]["signals"] == {
             "tool_errors": 1, "retries": 1, "truncations": 0, "compactions": 0,
+            # No run state was supplied, so how the loop ended is unknown
+            # rather than assumed to have been fine.
+            "stop_reason": "",
             "user_rating": None, "verifier": None,
         }
+
+    def test_how_the_run_ended_is_taken_from_its_state(self, tmp_path):
+        """The metrics cannot say whether the loop finished or gave up; the
+        run state can, and it is the same object either record reads."""
+        from learn import read_session
+        from src.model.serving.state import RunState, STOP_TURN_LIMIT
+
+        onit = self._onit(tmp_path)
+        onit._record_trajectory(
+            "an impossible task", "partial", {"turns": [], "turn_count": 9},
+            self._session_with_one_turn(tmp_path), "sess-1", None,
+            run_state=RunState(iteration_count=9, stop_reason=STOP_TURN_LIMIT))
+        records = read_session("sess-1", onit.config_data)
+        assert records[0]["signals"]["stop_reason"] == STOP_TURN_LIMIT
 
     def test_turn_number_follows_the_session_file(self, tmp_path):
         from learn import read_session
@@ -1139,3 +1156,252 @@ class TestHarnessToolsFlag:
             onit = OnIt(config=cfg)
         assert "harness_tools" not in onit.model_serving
 
+
+
+# ── run state across the tasks of a session ─────────────────────────────────
+
+class TestRunState:
+    """The other half of a session: what was done, not what was said.
+
+    A resumed session used to replay only the conversation, with no record of
+    which tools ran or what was tried and failed.
+    """
+
+    @staticmethod
+    def _config(tmp_path):
+        return _make_config(tmp_path, {"data_path": str(tmp_path / "data")})
+
+    @staticmethod
+    def _prompt_client():
+        msg = MagicMock()
+        msg.content.text = "Instruction text"
+        result = MagicMock()
+        result.messages = [msg]
+        client = AsyncMock()
+        client.get_prompt = AsyncMock(return_value=result)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        return client
+
+    # ── a fresh session ─────────────────────────────────────────────────────
+
+    def test_a_new_session_starts_with_an_empty_state(self, tmp_path):
+        with _mock_discover():
+            onit = OnIt(config=self._config(tmp_path))
+        assert onit.run_state is not None
+        assert onit.run_state.tool_call_history == []
+        assert onit.run_state.task_count == 0
+
+    # ── persistence ─────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_a_finished_task_is_written_beside_the_session_file(self, tmp_path):
+        from src.model.serving.state import STOP_ANSWERED, state_path_for
+
+        onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
+        onit.safety_queue = asyncio.Queue()
+
+        async def _fake_chat(**kwargs):
+            # Stand in for the loop: fill the caller's state the way chat does.
+            state = kwargs["run_state"]
+            state.iteration_count = 2
+            state.tool_call_history.append(("bash", '{"command": "ls"}'))
+            state.stop_reason = STOP_ANSWERED
+            return "The answer"
+
+        with patch("src.onit.Client", return_value=self._prompt_client()), \
+             patch("src.onit.chat", new=_fake_chat):
+            await onit.process_task("List the files.")
+
+        path = state_path_for(onit.session_path)
+        assert os.path.exists(path)
+        saved = json.loads(Path(path).read_text())
+        assert saved["tool_call_history"] == [["bash", '{"command": "ls"}']]
+        assert saved["stop_reason"] == STOP_ANSWERED
+        assert saved["total_turns"] == 2
+        assert saved["task_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_answered_nothing_is_still_recorded(self, tmp_path):
+        """A run that spent its turns and came back empty is exactly the one
+        the next task should know about."""
+        from src.model.serving.state import STOP_TURN_LIMIT, state_path_for
+
+        onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
+        onit.safety_queue = asyncio.Queue()
+
+        async def _fake_chat(**kwargs):
+            state = kwargs["run_state"]
+            state.iteration_count = 5
+            state.tool_call_history.append(("bash", "{}"))
+            state.stop_reason = STOP_TURN_LIMIT
+            return None
+
+        with patch("src.onit.Client", return_value=self._prompt_client()), \
+             patch("src.onit.chat", new=_fake_chat):
+            result = await onit.process_task("Impossible task.")
+
+        assert "rephrase" in result
+        saved = json.loads(Path(state_path_for(onit.session_path)).read_text())
+        assert saved["stop_reason"] == STOP_TURN_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_history_accumulates_across_tasks(self, tmp_path):
+        onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
+        onit.safety_queue = asyncio.Queue()
+
+        async def _fake_chat(**kwargs):
+            kwargs["run_state"].tool_call_history.append(("bash", "{}"))
+            kwargs["run_state"].iteration_count = 1
+            return "ok"
+
+        with patch("src.onit.Client", return_value=self._prompt_client()), \
+             patch("src.onit.chat", new=_fake_chat):
+            await onit.process_task("one")
+            await onit.process_task("two")
+
+        assert len(onit.run_state.tool_call_history) == 2
+        assert onit.run_state.task_count == 2
+        assert onit.run_state.total_turns == 2
+
+    @pytest.mark.asyncio
+    async def test_each_task_gets_a_fresh_budget(self, tmp_path):
+        """The repeated-call ceiling counts against the run's own history: a
+        session's accumulated calls would spend that budget before the task
+        made its first one."""
+        seen = []
+
+        onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
+        onit.safety_queue = asyncio.Queue()
+
+        async def _fake_chat(**kwargs):
+            seen.append(list(kwargs["run_state"].tool_call_history))
+            kwargs["run_state"].tool_call_history.append(("bash", "{}"))
+            return "ok"
+
+        with patch("src.onit.Client", return_value=self._prompt_client()), \
+             patch("src.onit.chat", new=_fake_chat):
+            await onit.process_task("one")
+            await onit.process_task("two")
+
+        assert seen == [[], []]
+
+    # ── resume ──────────────────────────────────────────────────────────────
+
+    def test_resume_restores_the_tool_call_history(self, tmp_path):
+        from src.model.serving.state import (RunState, STOP_TURN_LIMIT,
+                                             state_path_for)
+
+        cfg = self._config(tmp_path)
+        with _mock_discover():
+            first = OnIt(config=cfg)
+
+        state = RunState(iteration_count=4, stop_reason=STOP_TURN_LIMIT,
+                         task_count=1, total_turns=4)
+        state.tool_call_history = [("local_search", '{"query": "x"}'),
+                                   ("bash", "{}")]
+        state.save(state_path_for(first.session_path))
+
+        resumed_cfg = dict(cfg)
+        resumed_cfg["resume_session_id"] = first.session_id
+        with _mock_discover():
+            second = OnIt(config=resumed_cfg)
+
+        assert second.session_id == first.session_id
+        assert second.run_state.tool_call_history == [
+            ("local_search", '{"query": "x"}'), ("bash", "{}")]
+        assert second.run_state.stop_reason == STOP_TURN_LIMIT
+        assert second.run_state.total_turns == 4
+
+    def test_a_resumed_session_tells_the_model_what_it_tried(self, tmp_path):
+        """Step 5 of the phase: the history is fed into the instruction, so a
+        continued session knows what has already been attempted."""
+        from src.model.serving.state import (RunState, STOP_TURN_LIMIT,
+                                             state_path_for)
+
+        cfg = self._config(tmp_path)
+        with _mock_discover():
+            first = OnIt(config=cfg)
+
+        state = RunState(stop_reason=STOP_TURN_LIMIT, total_turns=9)
+        state.tool_call_history = [("local_search", "{}"), ("local_search", '{"q":1}'),
+                                   ("bash", "{}")]
+        state.save(state_path_for(first.session_path))
+
+        resumed_cfg = dict(cfg)
+        resumed_cfg["resume_session_id"] = first.session_id
+        with _mock_discover():
+            second = OnIt(config=resumed_cfg)
+
+        captured = {}
+
+        async def _fake(**args):
+            captured.update(args)
+            return "instruction"
+
+        with patch("src.onit.build_assistant_instruction", new=_fake):
+            asyncio.run(second._assistant_instruction("carry on",
+                                                      str(tmp_path / "data")))
+
+        note = captured["prior_attempts"]
+        assert "local_search×2" in note
+        assert "bash" in note
+        assert "turn limit" in note
+
+    def test_a_new_session_adds_nothing_to_the_instruction(self, tmp_path):
+        """The common case, and it must cost nothing."""
+        with _mock_discover():
+            onit = OnIt(config=self._config(tmp_path))
+
+        captured = {}
+
+        async def _fake(**args):
+            captured.update(args)
+            return "instruction"
+
+        with patch("src.onit.build_assistant_instruction", new=_fake):
+            asyncio.run(onit._assistant_instruction("hello", str(tmp_path / "data")))
+
+        assert captured["prior_attempts"] == ""
+
+    # ── one OnIt, many sessions ─────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_another_session_writes_its_own_file(self, tmp_path):
+        """The web UI runs several sessions through one OnIt; a task run under
+        an overridden session path must not fold into this process's own."""
+        from src.model.serving.state import state_path_for
+
+        onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
+        onit.safety_queue = asyncio.Queue()
+
+        other = tmp_path / "sessions" / "other.jsonl"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text("")
+
+        async def _fake_chat(**kwargs):
+            kwargs["run_state"].tool_call_history.append(("bash", "{}"))
+            return "ok"
+
+        with patch("src.onit.Client", return_value=self._prompt_client()), \
+             patch("src.onit.chat", new=_fake_chat):
+            await onit.process_task("hi", session_path=str(other),
+                                    session_id="other")
+
+        assert os.path.exists(state_path_for(str(other)))
+        assert not os.path.exists(state_path_for(onit.session_path))
+        assert onit.run_state.tool_call_history == []
+
+    @pytest.mark.asyncio
+    async def test_a_state_file_that_cannot_be_written_does_not_fail_the_task(
+            self, tmp_path):
+        onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
+        onit.safety_queue = asyncio.Queue()
+
+        with patch("src.onit.Client", return_value=self._prompt_client()), \
+             patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"), \
+             patch("src.model.serving.state.RunState.save",
+                   side_effect=OSError("read-only")):
+            result = await onit.process_task("hi")
+
+        assert result == "The answer"

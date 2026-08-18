@@ -1982,6 +1982,220 @@ class TestProseAlongsideToolCalls:
         assert answer.strip() in result
 
 
+# ── explicit run state ──────────────────────────────────────────────────────
+
+def _bash_registry():
+    """A registry with one tool that always succeeds."""
+    handler = AsyncMock(return_value="ok")
+    registry = MagicMock()
+    registry.get_tool_items.return_value = [
+        {"type": "function", "function": {"name": "bash"}}]
+    registry.tools = {"bash"}
+    registry.__getitem__ = MagicMock(return_value=handler)
+    return registry
+
+
+class TestRunState:
+    """What the run did, readable by whoever asked for it.
+
+    Everything here used to live in locals inside chat() and die on return: a
+    stalled run could not be asked what it had tried, and a decision twenty
+    turns in could not be tested without driving the preceding twenty.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_caller_reads_the_run_after_it_returns(self):
+        from model.serving.state import RunState, STOP_ANSWERED
+
+        state = RunState()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("bash", '{"command": "ls"}')]),
+            _mock_completion_with_finish(content="Done."),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="List the files.",
+                tool_registry=_bash_registry(),
+                safety_queue=asyncio.Queue(),
+                run_state=state,
+                verify_answers=False,
+            )
+
+        assert result == "Done."
+        assert state.iteration_count == 2
+        assert state.tool_call_history == [("bash", '{"command": "ls"}')]
+        assert state.stop_reason == STOP_ANSWERED
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_stopped_short_says_so(self):
+        """The returns that report a failure are the ones worth reading, so
+        they record why before they return."""
+        from model.serving.state import RunState, STOP_TURN_LIMIT
+
+        state = RunState()
+        calls = itertools.chain.from_iterable(itertools.repeat([
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("bash", '{"command": "ls %d"}' % n)])
+            for n in range(2)]))
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=calls)
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Page through everything.",
+                tool_registry=_bash_registry(),
+                safety_queue=asyncio.Queue(),
+                max_chat_iterations=3,
+                run_state=state,
+            ), timeout=30)
+
+        assert state.stop_reason == STOP_TURN_LIMIT
+        assert len(state.tool_call_history) == 3
+
+    @pytest.mark.asyncio
+    async def test_no_state_supplied_behaves_exactly_as_before(self):
+        """The kwarg is optional: absent, the loop makes its own."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(content="Hello!"))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Hi.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result == "Hello!"
+
+    # ── a state constructed mid-run, without running the preceding turns ────
+
+    @pytest.mark.asyncio
+    async def test_a_spent_planning_budget_ends_the_run_on_turn_one(self):
+        """Twenty turns in, budget exhausted — asserted in one API call.
+
+        Reaching this state by driving the loop takes MAX_PLANNING_CONTINUATIONS
+        planning responses first.  Handed the state directly, the very next
+        planning response is the one that gives up.
+        """
+        from model.serving.state import RunState, STOP_PLANNING_EXHAUSTED
+
+        state = RunState(planning_continuation_count=2)
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(
+                content="Let me create the files and push them."))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Create a README.",
+                tool_registry=_bash_registry(),
+                safety_queue=asyncio.Queue(),
+                max_planning_continuations=2,
+                run_state=state,
+            )
+
+        assert "unable to complete the task" in result
+        assert mock_client.chat.completions.create.call_count == 1
+        assert state.stop_reason == STOP_PLANNING_EXHAUSTED
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_budget_continues_where_the_spent_one_gave_up(self):
+        """The control for the test above: same response, unspent budget."""
+        from model.serving.state import RunState
+
+        state = RunState(planning_continuation_count=0)
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(content="Let me create the files."),
+            _mock_completion_with_finish(content="All done!"),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="Create a README.",
+                tool_registry=_bash_registry(),
+                safety_queue=asyncio.Queue(),
+                max_planning_continuations=2,
+                run_state=state,
+                verify_answers=False,
+            )
+
+        assert result == "All done!"
+        assert mock_client.chat.completions.create.call_count == 2
+        assert state.planning_continuation_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_force_tool_call_shapes_the_first_request(self):
+        """State is what the next API call is built from, not just a record of
+        the last one."""
+        from model.serving.state import RunState
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(content="All done!"))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="Create a README.",
+                tool_registry=_bash_registry(),
+                safety_queue=asyncio.Queue(),
+                run_state=RunState(force_tool_call=True),
+                verify_answers=False,
+            )
+
+        first = mock_client.chat.completions.create.call_args_list[0].kwargs
+        assert first.get("tool_choice") == "required"
+
+    @pytest.mark.asyncio
+    async def test_a_supplied_token_budget_is_not_overwritten(self):
+        """active_max_tokens opens at max_tokens only when nobody set it."""
+        from model.serving.state import RunState
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_finish(content="Hi."))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="Hi.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_tokens=4096,
+                run_state=RunState(active_max_tokens=256),
+                verify_answers=False,
+            )
+
+        first = mock_client.chat.completions.create.call_args_list[0].kwargs
+        assert first.get("max_tokens") == 256
+
+
 # ── prompt assembly ─────────────────────────────────────────────────────────
 
 class TestBuildMessages:

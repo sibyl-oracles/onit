@@ -59,6 +59,7 @@ async def build_assistant_instruction(task: str,
                                 document_search_available: str | bool = False,
                                 web_search_available: str | bool = False,
                                 harness_tools_available: str | bool = False,
+                                prior_attempts: str = None,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
                                 max_documents: str | int = DEFAULT_MAX_DOCUMENTS) -> str:
@@ -88,6 +89,8 @@ async def build_assistant_instruction(task: str,
       web_search_available = False
    if isinstance(harness_tools_available, str) and harness_tools_available.lower() in ("false", "null", "none", "0", ""):
       harness_tools_available = False
+   if not prior_attempts or prior_attempts == "null":
+      prior_attempts = None
    if not agent_name or agent_name == "null":
       agent_name = "OnIt"
    if not developer or developer == "null":
@@ -371,6 +374,15 @@ output, and they last for this session only.
 {task}
 """
 
+   # What earlier tasks in this session already did — the tools they ran and
+   # how the last one ended (see model/serving/state.py).  Assembled by the
+   # caller so this stays pure string assembly, and marked reference-only for
+   # the same reason ``context_block`` is: a section describing past work is
+   # otherwise exactly the kind of thing a weak model summarizes back instead
+   # of acting on.  It sits immediately ahead of the task, where "what has
+   # already been tried" is the question being answered.
+   prior_block = prior_attempts if prior_attempts else ""
+
    # Standing rules: the same bytes on every request whichever template is in
    # use, so they belong in the static half in both branches below.
    rules = (topic_block + sandbox_block + no_install_block
@@ -378,7 +390,7 @@ output, and they last for this session only.
    # The file server URL carries the session's upload id, and the task is the
    # task, so both are volatile.  A template that interpolates the task has
    # already placed it and does not get a second copy.
-   tail = file_block + ("" if task_in_template else task_block)
+   tail = file_block + prior_block + ("" if task_in_template else task_block)
 
    if custom_template:
       # A custom template owns its preamble but no longer forfeits the split

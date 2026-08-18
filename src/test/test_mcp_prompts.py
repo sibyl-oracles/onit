@@ -521,3 +521,50 @@ class TestHarnessToolsBlock:
                                          harness_tools_available=value)
             assert "context_status" not in result
 
+
+
+class TestPriorAttemptsBlock:
+    """Phase 6: a resumed session is told what it has already tried."""
+
+    NOTE = ("\n## Earlier in this session\n"
+            "Reference only — never acknowledge or restate this section.\n"
+            "- Tools already run in this session: bash×2\n")
+
+    @pytest.mark.asyncio
+    async def test_absent_by_default(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "Earlier in this session" not in result
+
+    @pytest.mark.asyncio
+    async def test_present_when_supplied(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     prior_attempts=self.NOTE)
+        assert "Earlier in this session" in result
+        assert "bash×2" in result
+
+    @pytest.mark.asyncio
+    async def test_rides_in_the_volatile_half(self, tmp_path):
+        """It differs per session and per task, so it must not sit in the
+        prefix every other session shares."""
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     prior_attempts=self.NOTE)
+        static, volatile = split_instruction(result)
+        assert "Earlier in this session" in volatile
+        assert "Earlier in this session" not in static
+
+    @pytest.mark.asyncio
+    async def test_sits_ahead_of_the_task(self, tmp_path):
+        """"What has already been tried" belongs next to the question it
+        answers, and the task stays last."""
+        result = await _assistant_fn(task="unique-task-text",
+                                     data_path=str(tmp_path / "d"),
+                                     prior_attempts=self.NOTE)
+        assert result.index("Earlier in this session") < result.index("unique-task-text")
+
+    @pytest.mark.asyncio
+    async def test_string_falsy_values_are_normalized(self, tmp_path):
+        """Arriving over MCP, every argument is a string."""
+        for value in ("", "null", None):
+            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                         prior_attempts=value)
+            assert "Earlier in this session" not in result
