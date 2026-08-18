@@ -1099,3 +1099,43 @@ class TestRecordTrajectory:
                                 self._session_with_one_turn(tmp_path), "sess-1", None)
         from learn import read_session
         assert read_session("sess-1", onit.config_data)[0]["tools_available"] == []
+
+
+class TestHarnessToolsFlag:
+    """The prompt may only claim tools chat() will actually offer."""
+
+    @staticmethod
+    def _flag(cfg, tmp_path):
+        """The value ``_assistant_instruction`` passes to the prompt builder.
+
+        OnIt is constructed outside the loop on purpose: ``initialize()`` calls
+        ``asyncio.run`` for tool discovery, which cannot run inside one.
+        """
+        captured = {}
+
+        async def _fake(**args):
+            captured.update(args)
+            return "instruction"
+
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        with patch("src.onit.build_assistant_instruction", new=_fake):
+            asyncio.run(onit._assistant_instruction("task", str(tmp_path / "data")))
+        return captured["harness_tools_available"]
+
+    def test_claimed_by_default(self, tmp_path):
+        assert self._flag(_make_config(tmp_path), tmp_path) is True
+
+    def test_withdrawn_when_the_config_turns_them_off(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["harness_tools"] = False
+        assert self._flag(cfg, tmp_path) is False
+
+    def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
+        from src.onit import SERVING_PASSTHROUGH
+        assert "harness_tools" in SERVING_PASSTHROUGH
+        cfg = _make_config(tmp_path)
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert "harness_tools" not in onit.model_serving
+

@@ -76,7 +76,11 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        # answer once it has been handed over.
                        'verify_answers', 'verify_max_tool_turns',
                        'verify_timeout_s', 'verify_background',
-                       'verify_trusted_domains')
+                       'verify_trusted_domains',
+                       # The harness's own tools — context_status and the note
+                       # scratchpad.  Off turns them off everywhere: the prompt
+                       # block below is gated on the same key.
+                       'harness_tools')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
@@ -1901,6 +1905,11 @@ class OnIt(BaseModel):
             "local_search_available": self.local_search_available,
             "document_search_available": self.document_search_available,
             "web_search_available": self.web_search_available,
+            # Only claimed when chat() will actually offer them: the note tools
+            # need a data_path to write under, and the toolset as a whole is
+            # switched off by `serving.harness_tools: false`.
+            "harness_tools_available": (bool(data_path or self.data_path)
+                                        and self.model_serving.get('harness_tools', True)),
             "agent_name": self.agent_name,
             "developer": self.developer,
             "max_documents": self.max_documents,

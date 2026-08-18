@@ -1,7 +1,7 @@
 # Agent Harness Capabilities — Gap Analysis and Build Plan
 
-**Status**: **Phases 1 and 3 implemented** (see §3.5 and §5.4). Phases 2, 4, 5, 6 are proposal / RFC.
-**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped.*
+**Status**: **Phases 1, 2 and 3 implemented** (see §3.5, §4.4 and §5.4). Phases 4, 5, 6 are proposal / RFC.
+**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4).*
 **Source**: [Six Agent Harness Capabilities for Higher Model Performance](https://developer.nvidia.com/blog/six-agent-harness-capabilities-for-higher-model-performance/) (NVIDIA, NOOA framework)
 **Companion**: [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) — Phases 1–4 and 6 here are
 that plan's **Phase 0.5**. Its §1.1 explains why they must land before its baseline is
@@ -28,7 +28,7 @@ code-as-action with a **sandboxed interpreter** instead of a shared heap.
 | # | Capability | OnIt today | Gap | Phase |
 |---|---|---|---|---|
 | 1 | Typed input/output | Schemas discovered, then partly unused; arg validation is regex repair | **Large** | 1 |
-| 2 | Model-callable harness APIs | None — context management is invisible to the model | **Large** | 2 |
+| 2 | Model-callable harness APIs | ~~None — context management is invisible to the model~~ **Shipped**: `context_status`, `note_write`/`note_read`, and a compaction the model is told about | ~~**Large**~~ | 2 ✅ |
 | 3 | Programmable loop engineering | Plain Python loop ✅, but policy constants hardcoded | Small | 3 |
 | 4 | Pass by reference | Everything serializes into context; truncation is lossy | **Large** | 4 |
 | 5 | Code as action | `bash` only; one model round trip per step | **Large** | 5 |
@@ -43,14 +43,14 @@ before that plan pins its baseline, because each one changes a metric it records
 ```
 Phase 1  Typed I/O            ~1 day     fixes a live bug          ┐ ✅ shipped
 Phase 3  Loop policy config   ~half day  fixes an unbounded loop   │ ✅ shipped
-Phase 2  Harness APIs         ~1 day     small, high leverage      │ Phase 0.5
-Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │
+Phase 2  Harness APIs         ~1 day     small, high leverage      │ ✅ shipped
+Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │ Phase 0.5
 Phase 4  Result store         ~3 days    largest token win         ┘
 
 Phase 5  Code as action       ~1-2 weeks largest latency win       ← after SELF_IMPROVEMENT Phase 2
 ```
 
-Phases 1, 2 and 3 are independent of each other and of everything else — start anywhere.
+Phases 1, 2 and 3 were independent of each other and of everything else.
 Phase 6 before Phase 4, so the result store's bookkeeping has a typed home rather than
 three more locals in `chat()`. Phase 5 depends on Phase 4 (handles are what keep
 interpreter output out of the context).
@@ -425,6 +425,68 @@ same way `sandbox_download_file` is already intercepted at
 - Per the `mock-config-data-leaks-dirs` memory: mock `config_data` as a real dict with a
   `tmp_path` `data_path`, or the tests will create orphan `~/sandbox/<uuid>` directories.
 - Extend `src/test/test_chat.py`: a compaction appends exactly one model-visible notice.
+
+### 4.4 As shipped
+
+Implemented August 18, 2026. 58 new tests; suite 1275 → 1333, all green.
+
+| Piece | Where |
+|---|---|
+| The three tools, their schemas, and the run state they report | [`src/model/serving/harness.py`](../src/model/serving/harness.py) |
+| Dispatched ahead of the registry lookup | [`_execute_tool`](../src/model/serving/chat.py) |
+| Offered in the same payload as the MCP tools | [`chat()`](../src/model/serving/chat.py) |
+| Compaction notice, model-facing | [`_compact_context(harness_note=…)`](../src/model/serving/chat.py) |
+| Prompt block, gated and cacheable | [`build_assistant_instruction`](../src/mcp/prompts/prompts.py) |
+| `serving.harness_tools` | [`SERVING_PASSTHROUGH`](../src/onit.py#L65) → `chat()` |
+
+**Four decisions changed during implementation.**
+
+*The notice goes inside the compacted message, not after it.* The plan said append a
+`user`-role notice to the compacted list. But `_compact_context` ends deliberately on a
+`[Resume the task now…]` line, and the comment above it explains what happens when
+anything else occupies that position — the model answers the trailing message instead of
+resuming. The notice is placed immediately before that line, in the same message, so the
+resume instruction stays last.
+
+*A fourth tool was folded into `context_status` rather than added.* The model needs to
+know which note keys exist, especially straight after a compaction. That could have been
+`note_list`; it is a `notes_saved` field on `context_status` instead. One fewer tool in
+every request, and the compaction notice can point at a single tool that answers both
+"how bad is it" and "what did I keep".
+
+*The raw-JSON tool-call path had to learn these names.* All three parsers
+(`_parse_tool_call_from_content`, `_parse_truncated_tool_call`, `_parse_commands_format`)
+gate on `name in tool_registry.tools`, and harness tools are by construction not in the
+registry. A weak model that writes `{"name": "note_write", …}` as content — the exact
+population this phase is aimed at — would have had it read as prose and handed to the
+user as an answer. They now ask `_known_tool_name`, which checks both.
+
+*They are withheld from a run with no tools of its own.* A plain question with no
+registry behind it runs one turn and never compacts, so the schemas would be paid for on
+every request to buy nothing — and a model told to keep notes in a conversation that
+cannot outlive them will keep them. `enabled = bool(tools) and serving.harness_tools`.
+The note tools additionally need a `data_path`; without one only `context_status` is
+offered, rather than offering a tool that could only fail.
+
+**Two things deliberately not done.**
+
+*No cross-session memory.* Notes live under `data_path` and die with it. The path from
+here to durable memory is `SELF_IMPROVEMENT.md`'s Loop B Reflector — offline and gated —
+not a shared directory, and this phase does not shorten it.
+
+*No context editing.* The plan's §4.1 named `drop_context_block` and
+`summarize_context_block` as the kind of thing the article asks for; neither was built.
+Reading the context and writing beside it is what a model can act on today. Letting it
+delete from its own message list is a different risk profile, and it should wait for
+Phase 6, where the run state has a typed home to be edited through.
+
+**Cost, measured.** The three schemas are 1,150 characters of tool payload (~290 tokens)
+and the prompt block is 632 more (~160), so a run that has them pays ~450 tokens on every
+request. Both numbers came down once the descriptions stopped restating the prompt block:
+a description ships whether or not the block is gated on, so what the tool *is* lives in
+the description and when to reach for it lives in the block — the split §3.6 arrived at
+for `local_search`, for the same reason. Against that: one compaction is a whole extra
+LLM call plus everything the summary drops.
 
 ---
 

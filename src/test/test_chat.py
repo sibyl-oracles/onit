@@ -874,6 +874,135 @@ class TestApiToolPayload:
         assert "returns" not in sent[0]["function"]
 
 
+# ── the harness's own tools ────────────────────────────────────────────────
+
+class TestHarnessToolsInChat:
+    """Phase 2: context_status and the note tools, offered by chat() itself."""
+
+    @staticmethod
+    def _registry(names=("search",)):
+        registry = MagicMock()
+        registry.tools = set(names)
+        registry.get_tool_items.return_value = [
+            {"type": "function",
+             "function": {"name": n, "description": "d",
+                          "parameters": {"type": "object", "properties": {}}}}
+            for n in names]
+        registry.tool_accepts_param.return_value = False
+        registry.blank_required_args.return_value = []
+        registry.parameters_schema.return_value = {}
+        return registry
+
+    async def _run(self, tmp_path, registry, **kwargs):
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content="Hi"))
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=registry, safety_queue=asyncio.Queue(),
+                       data_path=str(tmp_path), **kwargs)
+        return [t["function"]["name"]
+                for t in client.chat.completions.create.call_args.kwargs.get("tools", [])]
+
+    @pytest.mark.asyncio
+    async def test_offered_alongside_the_mcp_tools(self, tmp_path):
+        sent = await self._run(tmp_path, self._registry())
+        assert set(sent) == {"search", "context_status", "note_write", "note_read"}
+
+    @pytest.mark.asyncio
+    async def test_withheld_from_a_run_with_no_tools_of_its_own(self, tmp_path):
+        """One turn, no compaction: the schemas would buy nothing."""
+        assert await self._run(tmp_path, None) == []
+
+    @pytest.mark.asyncio
+    async def test_note_tools_need_a_data_path(self):
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content="Hi"))
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=self._registry(), safety_queue=asyncio.Queue())
+        sent = [t["function"]["name"]
+                for t in client.chat.completions.create.call_args.kwargs["tools"]]
+        assert "context_status" in sent
+        assert "note_write" not in sent and "note_read" not in sent
+
+    @pytest.mark.asyncio
+    async def test_config_can_withdraw_them(self, tmp_path):
+        sent = await self._run(tmp_path, self._registry(), harness_tools=False)
+        assert sent == ["search"]
+
+    @pytest.mark.asyncio
+    async def test_a_call_is_answered_in_process(self, tmp_path):
+        """The model asks; the loop's own numbers come back, no server involved."""
+        registry = self._registry()
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion(content=None,
+                             tool_calls=[_mock_tool_call("context_status", "{}", "c1")]),
+            _mock_completion(content="Plenty of room left."),
+        ])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry, safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path))
+        assert result == "Plenty of room left."
+        registry.__getitem__.assert_not_called()
+        sent = client.chat.completions.create.call_args.kwargs["messages"]
+        status = json.loads(next(m["content"] for m in sent if m.get("role") == "tool"))
+        assert status["turns_taken"] == 1 and status["tool_calls_made"] == 0
+
+    @pytest.mark.asyncio
+    async def test_compaction_tells_the_model_it_happened(self, tmp_path):
+        """The UI already got show_context_compaction; this is the model's copy."""
+        from model.serving.harness import COMPACTION_NOTICE
+        filled = _mock_completion(content=None,
+                                  tool_calls=[_mock_tool_call("search", "{}", "c1")])
+        filled.usage.prompt_tokens = 9_500  # 95% of the window below
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            filled,                                   # turn 1: calls a tool
+            _mock_completion("Summary of prior work"),  # the compaction call
+            _mock_completion("Done."),                # turn 2: answers
+        ])
+        registry = self._registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="result")
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry, safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path), max_context_tokens=10_000,
+                                max_tokens=1024)
+        assert result == "Done."
+        sent = client.chat.completions.create.call_args.kwargs["messages"]
+        notices = sum(str(m.get("content", "")).count(COMPACTION_NOTICE) for m in sent)
+        assert notices == 1
+
+    @pytest.mark.asyncio
+    async def test_a_note_written_by_the_model_is_on_disk(self, tmp_path):
+        args = json.dumps({"key": "findings", "text": "the port is 8001"})
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion(content=None,
+                             tool_calls=[_mock_tool_call("note_write", args, "c1")]),
+            _mock_completion(content="Saved."),
+        ])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       tool_registry=self._registry(), safety_queue=asyncio.Queue(),
+                       data_path=str(tmp_path))
+        assert (tmp_path / ".onit" / "notes" / "findings.md").read_text() == "the port is 8001"
+
+
 # ── continuation prompt for stuck models ───────────────────────────────────
 
 class TestPlanningContinuationPrompt:
@@ -1008,6 +1137,39 @@ class TestCompactContext:
             instruction="Fix the failing tests.",
         )
         assert "Fix the failing tests." in out[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_harness_notice_is_shown_to_the_model_exactly_once(self):
+        """Compaction was an event only the UI heard about."""
+        from model.serving.harness import COMPACTION_NOTICE
+        out = await _compact_context(
+            self._messages(), self._client(), "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+            harness_note=COMPACTION_NOTICE,
+        )
+        joined = "\n".join(m["content"] for m in out)
+        assert joined.count(COMPACTION_NOTICE) == 1
+        assert out[-1]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_the_resume_line_stays_last(self):
+        """The notice must not land where "get back to work" belongs."""
+        from model.serving.harness import COMPACTION_NOTICE
+        out = await _compact_context(
+            self._messages(), self._client(), "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+            harness_note=COMPACTION_NOTICE,
+        )
+        assert out[-1]["content"].rstrip().endswith("already done.]")
+
+    @pytest.mark.asyncio
+    async def test_no_notice_when_the_harness_tools_are_off(self):
+        from model.serving.harness import COMPACTION_NOTICE
+        out = await _compact_context(
+            self._messages(), self._client(), "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+        )
+        assert COMPACTION_NOTICE not in "\n".join(m["content"] for m in out)
 
     @pytest.mark.asyncio
     async def test_failed_summarization_returns_original_messages(self):

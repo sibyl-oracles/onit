@@ -48,6 +48,14 @@ serving:
   # resume grants another max_tokens, bounding a long answer at ~(N+1)*max_tokens.
   # max_final_continuations: 3
   #
+  # ── Harness tools ─────────────────────────────────────────────────────────
+  # The tools the model can call to inspect and manage its own context:
+  # context_status (how full the window is, what the run has done, which notes
+  # exist) and note_write/note_read (a scratchpad under the session's
+  # data_path that survives context summarization). Offered only to a run that
+  # has tools of its own. Set false to withdraw them and their prompt block.
+  # harness_tools: true
+  #
   # ── Fact-checking the answer ──────────────────────────────────────────────
   # The answer streams to the user as it is written, then is checked against
   # the evidence the run gathered. The check runs in two stages so that being

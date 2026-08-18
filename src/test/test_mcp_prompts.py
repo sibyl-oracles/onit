@@ -487,3 +487,37 @@ class TestSealedNoInstallBlock:
         result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
         static, _ = split_instruction(result)
         assert "Package Installation Is Disabled" in static
+
+
+class TestHarnessToolsBlock:
+    """Phase 2: the model is told its context is finite and what to do about it."""
+
+    @pytest.mark.asyncio
+    async def test_absent_by_default(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "context_status" not in result
+
+    @pytest.mark.asyncio
+    async def test_present_when_available(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     harness_tools_available=True)
+        assert "context_status" in result
+        assert "note_write" in result and "note_read" in result
+
+    @pytest.mark.asyncio
+    async def test_rides_in_the_cacheable_half(self, tmp_path):
+        """Same bytes every request, so it must not shift the prefix."""
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     harness_tools_available=True)
+        static, volatile = split_instruction(result)
+        assert "context_status" in static
+        assert "context_status" not in volatile
+
+    @pytest.mark.asyncio
+    async def test_string_falsy_values_are_normalized(self, tmp_path):
+        """Arriving over MCP, every argument is a string."""
+        for value in ("false", "null", "none", "0", ""):
+            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                         harness_tools_available=value)
+            assert "context_status" not in result
+

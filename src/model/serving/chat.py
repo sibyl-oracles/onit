@@ -35,6 +35,8 @@ from typing import List, Optional, Any
 from .verify import (DEFAULT_TRUSTED_DOMAINS, THINKING_VERDICT_MAX_TOKENS,
                      VERDICT_MAX_TOKENS, needs_verification, verify_answer)
 
+from .harness import COMPACTION_NOTICE, HarnessTools
+
 try:
     from ...lib.text import split_instruction
     from ...lib.schema import coerce_arguments, validate_arguments
@@ -572,7 +574,21 @@ async def _get_ollama_max_context(client, model: str) -> Optional[int]:
     return _cache_put(_OLLAMA_CONTEXT_CACHE, model, None)
 
 
-def _parse_commands_format(obj: dict, tool_registry) -> Optional[list[dict]]:
+def _known_tool_name(name: str, tool_registry, harness=None) -> bool:
+    """Whether a name in raw model output is a tool this run can actually call.
+
+    The harness tools are not in the registry — they are dispatched in process,
+    ahead of it — so a model that writes ``{"name": "note_write", ...}`` as
+    content rather than as a structured call would have it read as prose and
+    handed back to the user as an answer.  Every parser below asks this instead
+    of asking the registry directly.
+    """
+    if harness is not None and harness.handles(name):
+        return True
+    return bool(tool_registry) and name in tool_registry.tools
+
+
+def _parse_commands_format(obj: dict, tool_registry, harness=None) -> Optional[list[dict]]:
     """Parse the commands-style response format used by some models.
 
     Expects a dict like:
@@ -596,7 +612,7 @@ def _parse_commands_format(obj: dict, tool_registry) -> Optional[list[dict]]:
         # keystrokes is "tool_name [args...]\n" — split into name and the rest
         parts = keystrokes.split(None, 1)
         tool_name = parts[0]
-        if tool_name not in tool_registry.tools:
+        if not _known_tool_name(tool_name, tool_registry, harness):
             continue
         # If there's text after the tool name, treat it as a single positional
         # argument (the tool schema decides how to interpret it).
@@ -612,7 +628,8 @@ def _parse_commands_format(obj: dict, tool_registry) -> Optional[list[dict]]:
     return results if results else None
 
 
-def _parse_tool_call_from_content(content: str, tool_registry) -> Optional[dict | list[dict]]:
+def _parse_tool_call_from_content(content: str, tool_registry,
+                                  harness=None) -> Optional[dict | list[dict]]:
     """Detect a raw JSON tool call in message content.
 
     Some models return tool calls as plain JSON in the response body instead of
@@ -621,7 +638,7 @@ def _parse_tool_call_from_content(content: str, tool_registry) -> Optional[dict 
     a dict with 'name' and 'arguments' (or a list of such dicts for the
     commands format).
     """
-    if not content or not tool_registry:
+    if not content or (not tool_registry and harness is None):
         return None
     # Strip thinking tags if present
     text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
@@ -658,23 +675,23 @@ def _parse_tool_call_from_content(content: str, tool_registry) -> Optional[dict 
     if end == -1:
         # JSON may be truncated (e.g. max_tokens cut it off).
         # Try regex fallback to extract tool name and arguments.
-        return _parse_truncated_tool_call(text[start:], tool_registry)
+        return _parse_truncated_tool_call(text[start:], tool_registry, harness)
     try:
         obj = json.loads(text[start:end])
     except json.JSONDecodeError:
-        return _parse_truncated_tool_call(text[start:end], tool_registry)
+        return _parse_truncated_tool_call(text[start:end], tool_registry, harness)
     if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
-        if obj["name"] not in tool_registry.tools:
+        if not _known_tool_name(obj["name"], tool_registry, harness):
             return None
         return obj
     # Try commands-style format: {"commands": [{"keystrokes": "tool\n", ...}]}
-    commands_result = _parse_commands_format(obj, tool_registry)
+    commands_result = _parse_commands_format(obj, tool_registry, harness)
     if commands_result:
         return commands_result
     return None
 
 
-def _parse_truncated_tool_call(text: str, tool_registry) -> Optional[dict]:
+def _parse_truncated_tool_call(text: str, tool_registry, harness=None) -> Optional[dict]:
     """Attempt to extract a tool call from truncated/malformed JSON.
 
     When the model's response is cut off (e.g. by max_tokens), the JSON may be
@@ -686,7 +703,7 @@ def _parse_truncated_tool_call(text: str, tool_registry) -> Optional[dict]:
     if not name_match:
         return None
     tool_name = name_match.group(1)
-    if tool_name not in tool_registry.tools:
+    if not _known_tool_name(tool_name, tool_registry, harness):
         return None
     # Try to extract arguments object - find where "arguments" value starts
     args_match = re.search(r'"arguments"\s*:\s*\{', text)
@@ -925,7 +942,8 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                         max_repeated: int,
                         is_structured: bool = False,
                         session_id: str = "",
-                        tool_log: list | None = None) -> Optional[str]:
+                        tool_log: list | None = None,
+                        harness=None) -> Optional[str]:
     """Execute a single tool call and append the result to messages.
 
     Returns a bail-out message string if repeated-call limit is hit,
@@ -952,9 +970,14 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     # automatically without hardcoding tool names. These are trust boundaries:
     # servers scope filesystem access to the session's data_path, so the
     # harness value must always win over anything the model put in the call.
-    if session_id and tool_registry.tool_accepts_param(function_name, "session_id"):
+    # Not for the harness tools: the injection exists so an MCP server can be
+    # told which session it is serving, and these run in the session already.
+    # Injected anyway, the values arrive as parameters their schemas do not
+    # declare, and their own validation refuses the call.
+    _is_harness_call = harness is not None and harness.handles(function_name)
+    if session_id and not _is_harness_call and tool_registry and tool_registry.tool_accepts_param(function_name, "session_id"):
         function_arguments["session_id"] = session_id
-    if data_path and tool_registry.tool_accepts_param(function_name, "data_path"):
+    if data_path and not _is_harness_call and tool_registry and tool_registry.tool_accepts_param(function_name, "data_path"):
         function_arguments["data_path"] = data_path
     # Intercept sandbox_download_file for /workspace/ paths.  The container
     # volume-mounts data_path as /workspace, so those files already exist on
@@ -992,7 +1015,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     # getattr, not a direct call: the registry is duck-typed at this boundary
     # and test doubles implement only what they exercise.
     _blank_args = []
-    if function_name in tool_registry.tools:
+    if tool_registry and function_name in tool_registry.tools:
         _blank = getattr(tool_registry, "blank_required_args", None)
         if callable(_blank):
             try:
@@ -1012,7 +1035,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     # and same rule: anything unexpected means dispatch, never refuse.
     _schema_problems: list[str] = []
     _coercions: list[str] = []
-    if not _blank_args and function_name in tool_registry.tools:
+    if not _blank_args and tool_registry and function_name in tool_registry.tools:
         _schema_of = getattr(tool_registry, "parameters_schema", None)
         if callable(_schema_of):
             try:
@@ -1033,7 +1056,27 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     if _coercions:
         logger.debug("%s: coerced %s", function_name, "; ".join(_coercions))
 
-    if function_name not in tool_registry.tools:
+    # The harness's own tools, answered in this process: their subject is the
+    # running loop, so there is no server to ask.  First in the chain rather
+    # than an early return like the sandbox_download_file intercept above, so a
+    # model looping on context_status still trips the repeated-call guard at
+    # the bottom of this function.  The checks it skips over are the registry's
+    # — HarnessTools.dispatch runs the same validator on its own schemas.
+    if _is_harness_call:
+        harness_result = harness.dispatch(function_name, function_arguments)
+        _ok = not harness_result.startswith("Error:")
+        tool_message = {'role': 'tool', 'content': harness_result, 'name': function_name,
+                        'parameters': function_arguments, "tool_call_id": tool_call_id}
+        messages.append(tool_message)
+        if chat_ui:
+            chat_ui.add_tool_result(function_name, harness_result)
+            if is_structured:
+                chat_ui.stop_tool_spinner()
+                chat_ui.show_tool_done(function_name, harness_result, success=_ok)
+        elif verbose:
+            print(f"{function_name}({function_arguments}) returned: {harness_result[:500]}")
+        _log(_ok, len(harness_result))
+    elif not tool_registry or function_name not in tool_registry.tools:
         tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found',
                         'name': function_name, 'parameters': function_arguments,
                         "tool_call_id": tool_call_id}
@@ -2089,6 +2132,7 @@ async def _handle_raw_tool_call(
     chat_ui, verbose: bool, messages: list,
     tool_call_history: list, max_repeated: int,
     session_id: str = "", tool_log: list | None = None,
+    harness=None,
 ) -> tuple[bool, str | None]:
     """Handle a raw JSON tool call embedded in model content.
 
@@ -2096,7 +2140,7 @@ async def _handle_raw_tool_call(
     If should_continue is True, the caller should loop back for another iteration.
     If bail_message is not None, the caller should return it immediately.
     """
-    raw_tool = _parse_tool_call_from_content(last_response, tool_registry)
+    raw_tool = _parse_tool_call_from_content(last_response, tool_registry, harness)
     if raw_tool:
         # Normalize to a list (commands format returns a list, legacy returns a dict)
         tool_calls = raw_tool if isinstance(raw_tool, list) else [raw_tool]
@@ -2110,7 +2154,7 @@ async def _handle_raw_tool_call(
                 tool_registry, timeout, data_path, chat_ui, verbose,
                 messages, tool_call_history, max_repeated,
                 is_structured=False, session_id=session_id,
-                tool_log=tool_log,
+                tool_log=tool_log, harness=harness,
             )
             if bail:
                 return False, bail
@@ -2235,6 +2279,7 @@ async def _execute_tools_in_parallel(
     calls: list, tool_registry, timeout, data_path, chat_ui, verbose: bool,
     messages: list, tool_call_history: list, max_repeated: int,
     safety_queue: asyncio.Queue, session_id: str, tool_log: list | None = None,
+    harness=None,
 ) -> str | object | None:
     """Run a batch of read-only tool calls concurrently.
 
@@ -2259,7 +2304,7 @@ async def _execute_tools_in_parallel(
             name, args, call_id, tool_registry, timeout, data_path,
             chat_ui, verbose, buffers[index], tool_call_history,
             max_repeated, is_structured=True, session_id=session_id,
-            tool_log=tool_log,
+            tool_log=tool_log, harness=harness,
         )
 
     gathered = _await_with_safety(
@@ -2299,6 +2344,7 @@ async def _handle_structured_tool_calls(
     messages: list, tool_call_history: list,
     max_repeated: int, safety_queue: asyncio.Queue,
     session_id: str = "", tool_log: list | None = None,
+    harness=None,
 ) -> str | object | None:
     """Execute structured tool calls and append results to messages.
 
@@ -2318,7 +2364,7 @@ async def _handle_structured_tool_calls(
         return await _execute_tools_in_parallel(
             calls, tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated, safety_queue, session_id,
-            tool_log=tool_log,
+            tool_log=tool_log, harness=harness,
         )
 
     for function_name, function_arguments, call_id in calls:
@@ -2332,7 +2378,7 @@ async def _handle_structured_tool_calls(
             tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated,
             is_structured=True, session_id=session_id,
-            tool_log=tool_log,
+            tool_log=tool_log, harness=harness,
         )
         if bail:
             return bail
@@ -2344,6 +2390,7 @@ async def _compact_context(
     max_tokens: int, chat_ui, verbose: bool,
     is_ollama: bool = False,
     instruction: str = "",
+    harness_note: str = "",
 ) -> list:
     """Summarize the conversation and return a compacted messages list.
 
@@ -2351,7 +2398,10 @@ async def _compact_context(
     messages, and returns [system_msg, compacted_user_msg] — ending on the user
     turn so the model resumes the task rather than acknowledging the summary.
     When ``instruction`` is given it is restated verbatim in the compacted
-    user message, so it survives the lossy summary.
+    user message, so it survives the lossy summary.  ``harness_note`` is the
+    model-facing announcement that this happened at all (see
+    ``harness.COMPACTION_NOTICE``): it goes inside the compacted message rather
+    than after it, because the resume line has to stay last — see below.
 
     Callers pass only the volatile half of the instruction — the session
     context and the task.  The standing rules (tool routing, citations,
@@ -2439,6 +2489,13 @@ async def _compact_context(
     _resume = ("[Resume the task now. Do not acknowledge this message, do not "
                "restate the context or the summary — either call the next tool "
                "you need, or give the final answer if the task is already done.]")
+    # Compaction is an event the model can now do something about, so it is
+    # told.  Placed before _resume and not as a message of its own: the resume
+    # line is deliberately the last thing in the last message, and a notice
+    # appended after it is a second thing to react to in the position reserved
+    # for "get back to work".
+    if harness_note:
+        _resume = harness_note + "\n" + _resume
     if instruction:
         compacted_content = (
             "[CONTEXT COMPACTED]\n"
@@ -2496,6 +2553,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
     max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
     num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
+    # The harness's own tools (see harness.py).  They ride in the same tool
+    # payload as the MCP ones because from the model's side there is no
+    # difference — only the dispatch is local.  ``max_context_tokens`` is not
+    # resolved yet on some providers; the loop keeps this object current below.
+    # Offered only to a run that has tools of its own.  A plain question with
+    # no registry behind it runs one turn and never compacts, so the schemas
+    # would be paid for on every request to buy nothing — and a model told to
+    # keep notes in a conversation that cannot outlive them will keep them.
+    harness = HarnessTools(data_path=data_path,
+                           max_context_tokens=max_context_tokens,
+                           enabled=bool(tools) and kwargs.get('harness_tools', True))
+    tools = tools + _api_tool_payload(harness.tool_items())
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so
     # every recording site is unconditional rather than each one remembering a
@@ -2674,8 +2743,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             msgs, ollama_client if is_ollama else client,
             model, max_tokens, chat_ui, verbose,
             is_ollama=is_ollama, instruction=task_instruction,
+            harness_note=COMPACTION_NOTICE if harness.enabled else "",
         )
         _m.add_compaction(time.monotonic() - _t0)
+        harness.observe(compactions=harness.compactions + 1)
         return out
 
     # ── fact-checking the answer ────────────────────────────────────────────
@@ -2983,6 +3054,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         _strip_old_images(messages)
         _decay_old_tool_results(messages)
+        # What context_status answers with.  Read here, after the compaction
+        # decisions above: a turn that just compacted has no token count until
+        # the next response, and reporting the pre-compaction number would tell
+        # the model its context is full moments after it was emptied.
+        harness.observe(prompt_tokens=_last_prompt_tokens,
+                        max_context_tokens=max_context_tokens,
+                        turns=iteration_count,
+                        tools_called=len(tool_call_history))
         if chat_ui and hasattr(chat_ui, "set_turn_context"):
             # Prose written on a turn that follows tool calls is the answer
             # being written; the UI shows it as such rather than as one more
@@ -3307,7 +3386,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _content, tool_registry, timeout, data_path,
                 chat_ui, verbose, messages, tool_call_history,
                 MAX_REPEATED_TOOL_CALLS, session_id=session_id,
-                tool_log=_tool_log,
+                tool_log=_tool_log, harness=harness,
             )
             if should_continue or bail:
                 # A tool ran; its name was parsed out of the content inside the
@@ -3468,6 +3547,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, MAX_REPEATED_TOOL_CALLS,
             safety_queue, session_id=session_id, tool_log=_tool_log,
+            harness=harness,
         )
         _m.add_tools([tc.function.name for tc in tool_calls],
                      time.monotonic() - _t_tools, runs=_tool_log)

@@ -791,6 +791,28 @@ onit --mcp-sse http://localhost:8080/sse
 onit --mcp-server http://localhost:8080/mcp
 ```
 
+### Harness tools
+
+Three more tools reach the model without an MCP server behind them: their
+subject is the run itself, so they are answered in process.
+
+| Tool | Parameters | Purpose |
+|------|------------|---------|
+| `context_status` | — | How full the context window is, how many turns and tool calls the run has taken, how many times it has been summarized, and which notes are saved. |
+| `note_write` | **`key`**, **`text`** | Save a short note under `<data_path>/.onit/notes/`. It survives context summarization; writing the same key again replaces it. |
+| `note_read` | **`key`** | Read a saved note back. |
+
+The reason they exist: when the context fills, the conversation is summarized
+and the detail in it is lost — and until now only the terminal was told. The
+model could not see it coming and had nowhere to put a finding it wanted to
+keep. Now it can check, write things down first, and is told when a
+summarization has happened.
+
+Notes are session state. They live under the session's `data_path` and go when
+it does; nothing crosses between sessions. They are offered only to a run that
+has tools of its own, and `serving.harness_tools: false` withdraws them along
+with the prompt block that describes them.
+
 ## Local Search over In-House Data
 
 OnIt includes a local search toolkit modeled on the [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/): a composable pipeline that unifies **ingestion** (parse → chunk → embed/index) and **retrieval** (BM25 sparse, dense embeddings, hybrid fusion) behind a single interface. Everything runs on your own infrastructure — documents, index, and embeddings never leave your machine, so the agent can answer questions from private company data that web search cannot see.

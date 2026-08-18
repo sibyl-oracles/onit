@@ -58,6 +58,7 @@ async def build_assistant_instruction(task: str,
                                 local_search_available: str | bool = False,
                                 document_search_available: str | bool = False,
                                 web_search_available: str | bool = False,
+                                harness_tools_available: str | bool = False,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
                                 max_documents: str | int = DEFAULT_MAX_DOCUMENTS) -> str:
@@ -85,6 +86,8 @@ async def build_assistant_instruction(task: str,
       document_search_available = False
    if isinstance(web_search_available, str) and web_search_available.lower() in ("false", "null", "none", "0", ""):
       web_search_available = False
+   if isinstance(harness_tools_available, str) and harness_tools_available.lower() in ("false", "null", "none", "0", ""):
+      harness_tools_available = False
    if not agent_name or agent_name == "null":
       agent_name = "OnIt"
    if not developer or developer == "null":
@@ -333,6 +336,23 @@ End the answer with a **References** section listing only the sources used — {
 Never state an email address or phone number that did not appear verbatim in a tool result.
 """
 
+   # Same bytes on every request of every session, so it belongs in the static
+   # half with the other standing rules.  Gated because the tools it describes
+   # are only offered to a run that has tools at all (see chat()).
+   harness_block = """
+## Your context window
+It is finite. When it fills, the conversation is summarized and the detail in it
+is lost — including tool results you have not acted on yet.
+- `context_status` — how full it is, what this run has done, and which notes you hold.
+  Check it before a long stretch of work.
+- `note_write(key, text)` / `note_read(key)` — a scratchpad that survives the summary.
+  Writing a key again replaces it.
+
+Write a finding down as soon as it is worth keeping: a number, a path that worked, a
+decision, what is left to do. Notes are for your own conclusions, not copies of tool
+output, and they last for this session only.
+""" if harness_tools_available else ""
+
    instructions_block = f"""
 ## Instructions
 1. If the answer is straightforward — a greeting, a follow-up, anything the
@@ -354,7 +374,7 @@ Never state an email address or phone number that did not appear verbatim in a t
    # Standing rules: the same bytes on every request whichever template is in
    # use, so they belong in the static half in both branches below.
    rules = (topic_block + sandbox_block + no_install_block
-            + research_block + instructions_block)
+            + research_block + harness_block + instructions_block)
    # The file server URL carries the session's upload id, and the task is the
    # task, so both are volatile.  A template that interpolates the task has
    # already placed it and does not get a second copy.
