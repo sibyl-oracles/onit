@@ -242,6 +242,7 @@ class TestTurnTiming:
     def test_streamed_block_footer_carries_elapsed_and_rate(self, chat_ui):
         buf = io.StringIO()
         chat_ui.console = Console(file=buf, width=120)
+        chat_ui.set_metrics({"completion_tokens": 300, "decode_s": 10.0})
         chat_ui.turn_start()
         chat_ui.stream_start()
         chat_ui.stream_token("hello")
@@ -249,7 +250,24 @@ class TestTurnTiming:
         chat_ui._stream_start_time -= 3.0
         chat_ui.stream_end()
         footer = buf.getvalue().splitlines()[-1]
-        assert re.search(r"\d+\.\d\ds · \d+\.\d tok/s", footer), footer
+        assert re.search(r"\d+\.\d\ds · 30\.0 tok/s", footer), footer
+
+    def test_footer_rate_counts_the_thinking_the_model_streamed(self, chat_ui):
+        """Reasoning tokens never reach stream_token(), but the clock has been
+        running since the first one — counting only the answer reports a
+        thinking model at a fraction of the speed it actually generated."""
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        # 900 thinking + 100 answer tokens in 10s.
+        chat_ui.set_metrics({"completion_tokens": 1000, "decode_s": 10.0})
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        for _ in range(100):
+            chat_ui.stream_think_token("x")
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end()
+        footer = buf.getvalue().splitlines()[-1]
+        assert "100.0 tok/s" in footer, footer
 
     def test_explicit_elapsed_wins_over_the_measured_one(self, chat_ui):
         buf = io.StringIO()

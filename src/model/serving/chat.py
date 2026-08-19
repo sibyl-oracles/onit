@@ -168,6 +168,7 @@ class TurnMetrics:
     stream — blind to how many turns ran, to a prompt that grows with every
     tool result, and to the tools themselves.  A run can double in length with
     that number unchanged, which is exactly the case this exists to diagnose.
+    It is also what the UIs now show as tok/s: see ``decode_rate``.
 
     The caller owns the dict; it is filled in as the loop runs rather than at
     the end, because the loop returns from a dozen places and a summary built
@@ -199,7 +200,13 @@ class TurnMetrics:
 
     def end_api(self, prompt_tokens=0, completion_tokens=0,
                 finish_reason=None) -> None:
-        elapsed = time.monotonic() - self._api_start if self._api_start else 0.0
+        # The streaming paths close the turn early, so the UI's footer can read
+        # a sink that already includes the stream it is reporting on.  The
+        # shared call further down then arrives second, and recording the turn
+        # twice would halve the rate it just printed.
+        if not self._api_start:
+            return
+        elapsed = time.monotonic() - self._api_start
         prompt_tokens = _as_int(prompt_tokens)
         completion_tokens = _as_int(completion_tokens)
         self.turns.append({
@@ -266,6 +273,29 @@ class TurnMetrics:
         s["verify_s"] = round(s.get("verify_s", 0.0) + seconds, 3)
         s["verify_issues"] = s.get("verify_issues", 0) + issues
         s["verify_revisions"] = s.get("verify_revisions", 0) + (1 if revised else 0)
+
+
+def decode_rate(m: dict) -> float:
+    """Generation rate in tokens/sec across every turn of a run.
+
+    Counts what the model actually produced -- reasoning, answer, and the
+    tool-call arguments no UI ever displays -- as the provider's own usage
+    reports it, over the time spent decoding it.  The alternative the UIs used
+    to compute, answer tokens streamed to the screen divided by a clock that
+    started at the first *thinking* token, understates a reasoning model by
+    however much of its output it spent thinking.
+
+    Zero when the run was not streamed: ``decode_s`` can only be separated from
+    prefill on a stream, and a rate that silently included the prefill wait
+    would be a different measurement wearing the same label.
+    """
+    if not m:
+        return 0.0
+    tokens = m.get("completion_tokens") or 0
+    seconds = m.get("decode_s") or 0.0
+    if tokens <= 0 or seconds <= 0:
+        return 0.0
+    return tokens / seconds
 
 
 def summarize_metrics(m: dict) -> str:
@@ -2716,6 +2746,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # null guard.  The timers it wraps run either way.
     _metrics_sink = kwargs.get('metrics', None)
     _m = TurnMetrics(_metrics_sink if _metrics_sink is not None else {})
+    # The terminal prints its per-answer footer while the run is still going,
+    # so it needs the live sink rather than the summary the caller reads once
+    # chat() has returned.
+    if chat_ui is not None and hasattr(chat_ui, "set_metrics"):
+        chat_ui.set_metrics(_m.sink)
     # Whether thinking, when enabled, is also spent on the turns that only
     # pick a tool.  A thinking model emits its full reasoning before every
     # tool-call JSON, so in a loop of N tool calls the reasoning is paid for N
@@ -3357,6 +3392,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             state.last_prompt_tokens = _ollama_prompt_tokens
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        # Before stream_end: the footer it prints reports this
+                        # turn, and reads it from the metrics sink.
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
+                                   _finish_reason)
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
                         if _finish_reason == "length":
@@ -3397,6 +3436,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        # Before stream_end: the footer it prints reports this
+                        # turn, and reads it from the metrics sink.
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
+                                   _finish_reason)
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
                         if _finish_reason == "length":

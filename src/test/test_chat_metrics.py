@@ -22,6 +22,7 @@ from model.serving.chat import (
     _handle_structured_tool_calls,
     _resolve_model_id,
     chat,
+    decode_rate,
     reset_endpoint_caches,
     summarize_metrics,
 )
@@ -80,6 +81,21 @@ class TestTurnMetrics:
         assert sink["completion_tokens"] == 50
         assert sink["turns"][0]["finish_reason"] == "stop"
         assert sink["turns"][0]["ttft_s"] is not None
+
+    def test_a_turn_is_recorded_once_however_often_it_is_ended(self):
+        """The streaming paths end the turn early so the UI footer can read a
+        complete sink; the shared call downstream then arrives second, and a
+        turn counted twice would halve the rate that was just printed."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.first_token()
+        m.end_api(prompt_tokens=1000, completion_tokens=50, finish_reason="stop")
+        m.end_api(prompt_tokens=1000, completion_tokens=50, finish_reason="stop")
+
+        assert sink["turn_count"] == 1
+        assert sink["completion_tokens"] == 50
+        assert len(sink["turns"]) == 1
 
     def test_prompt_tokens_max_tracks_the_peak(self):
         sink = {}
@@ -181,6 +197,35 @@ class TestTurnMetrics:
         m.end_api(prompt_tokens=None, completion_tokens=MagicMock())
         assert sink["prompt_tokens_max"] == 0
         assert sink["completion_tokens"] == 0
+
+    def test_decode_rate_divides_generated_tokens_by_decode_time(self):
+        assert decode_rate({"completion_tokens": 900, "decode_s": 30.0}) == 30.0
+
+    def test_decode_rate_counts_every_turn_not_just_the_last(self):
+        """completion_tokens is the provider's own count, so it covers the
+        reasoning and the tool-call arguments no UI ever streams."""
+        sink = {}
+        m = TurnMetrics(sink)
+        for _ in range(3):
+            m.start_api()
+            m.first_token()
+            m.end_api(prompt_tokens=100, completion_tokens=40)
+        assert sink["completion_tokens"] == 120
+        sink["decode_s"] = 4.0  # too fast to measure; the sum is the point
+        assert decode_rate(sink) == 30.0
+
+    def test_decode_rate_is_zero_without_a_stream(self):
+        """decode_s can only be split from prefill on a stream; folding the
+        prefill wait in would be a different measurement, same label."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=100, completion_tokens=40)
+        assert decode_rate(sink) == 0.0
+
+    def test_decode_rate_of_nothing(self):
+        assert decode_rate({}) == 0.0
+        assert decode_rate({"completion_tokens": 0, "decode_s": 5.0}) == 0.0
 
     def test_summarize_empty(self):
         assert summarize_metrics({}) == "no turns recorded"

@@ -1077,9 +1077,9 @@ class WebApiUI:
             elapsed = time.monotonic() - start
             tok_s = stats.get("tokens_per_second", 0)
             metrics = stats.get("metrics") or {}
-            # tok_s covers the final answer stream only, so it stays flat while
-            # a run grows extra turns.  Report the breakdown that does move —
-            # to the server log, and to the drawer where anyone watching a slow
+            # tok_s is the decode rate over the whole run, so extra turns move
+            # it.  What it cannot show is where the turns went — reported to
+            # the server log, and to the drawer where anyone watching a slow
             # answer is already looking.
             _summary = summarize_metrics(metrics)
             logger.info("session %s answered in %.1fs — %s",

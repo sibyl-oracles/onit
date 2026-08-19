@@ -47,7 +47,7 @@ from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
-from .model.serving.chat import chat, summarize_metrics
+from .model.serving.chat import chat, decode_rate, summarize_metrics
 from .model.serving.state import RunState, state_path_for
 from .model.serving.balancer import (DEFAULT_PRIORITY, LoadBalancer,
                                      ServerEndpoint)
@@ -327,6 +327,7 @@ class StreamingAdapter:
         self._on_tool_result = on_tool_result
         self._on_answer_start = on_answer_start
         self._on_correction = on_correction
+        self._metrics: dict = {}  # live TurnMetrics sink; the source of tok/s
         # Set by the chat loop before each turn; the answer is the prose that
         # starts once tools have run, and the client wants to know which of
         # several streamed phases that is.
@@ -343,19 +344,19 @@ class StreamingAdapter:
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
-        self._total_tokens = 0
-        self._start_time = 0.0
         self._pending: list[asyncio.Task] = []
         self.messages = []
 
     # ── streaming ────────────────────────────────────────────────
+    def set_metrics(self, sink: dict) -> None:
+        """Adopt the run's live token/timing accounting (see TurnMetrics)."""
+        self._metrics = sink
+
     def stream_start(self):
         self._content = ""
         self._tag_buf = ""
         self._token_count = 0
-        self._total_tokens = 0
         self._answer_announced = False
-        self._start_time = time.monotonic()
 
     def set_turn_context(self, tools_run: int = 0) -> None:
         """Told by the chat loop, before each turn, how much work preceded it."""
@@ -372,7 +373,6 @@ class StreamingAdapter:
             self._tag_buf = ""
             token = buf
         self._content += token
-        self._total_tokens += 1
         if not (self.on_token and token):
             return
         if not self._answer_announced and self._tools_run:
@@ -400,11 +400,12 @@ class StreamingAdapter:
 
     @property
     def tokens_per_second(self) -> float:
-        """Return average tokens/sec for the current or last stream."""
-        elapsed = time.monotonic() - self._start_time if self._start_time else 0
-        if elapsed > 0 and self._total_tokens > 0:
-            return self._total_tokens / elapsed
-        return 0.0
+        """Generation rate for the run so far, from the provider's own counts.
+
+        Reasoning tokens included: the client is told how fast the model
+        generated, not how fast the subset of it worth displaying arrived.
+        """
+        return decode_rate(self._metrics)
 
     def stream_end(self, elapsed=""):
         if self.on_complete:
@@ -1523,14 +1524,13 @@ class OnIt(BaseModel):
         # final completed message.
         if _adapter:
             await _adapter.flush()
-            if stats is not None:
-                stats["tokens_per_second"] = _adapter.tokens_per_second
 
         # Telemetry is reported whether or not the task succeeded — a run that
         # ended in a retry loop is exactly the one worth looking at.
         _metrics["instruction_s"] = round(_instruction_s, 3)
         if stats is not None:
             stats["metrics"] = _metrics
+            stats["tokens_per_second"] = decode_rate(_metrics)
         logger.info("task timing: instruction %.2fs | %s",
                     _instruction_s, summarize_metrics(_metrics))
 
@@ -2174,12 +2174,9 @@ class OnIt(BaseModel):
 
     def _format_elapsed_time(self, elapsed_secs: float) -> str:
         """Format elapsed time string, including tokens/sec if available."""
-        _tok_s = 0.0
-        if hasattr(self.chat_ui, '_stream_token_count') and hasattr(self.chat_ui, '_stream_start_time'):
-            _st = self.chat_ui._stream_start_time
-            _tc = self.chat_ui._stream_token_count
-            if _st > 0 and _tc > 0:
-                _tok_s = _tc / (time.monotonic() - _st)
+        # Same accounting the streamed footer used, so re-rendering a message
+        # from history does not quote a different rate than the run did.
+        _tok_s = decode_rate(self.last_metrics)
         # Same shape as the web UI's per-answer meta line.
         if hasattr(self.chat_ui, 'format_meta'):
             return self.chat_ui.format_meta(elapsed_secs, _tok_s)

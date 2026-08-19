@@ -152,7 +152,7 @@ class ChatUI:
         self._stream_cursor_shown = False  # blinking block cursor during streaming
         self._link_buf = ""  # buffer for detecting markdown links during streaming
         self._link_state = 0  # 0=normal, 1=in label [..., 2=after ](, eating URL
-        self._stream_token_count = 0  # token counter for tok/s calculation
+        self._metrics: dict = {}  # live TurnMetrics sink; the source of tok/s
         self._stream_start_time = 0.0  # monotonic time when streaming started
         # Monotonic time the current turn was submitted.  The web UI times a
         # turn from the request, not from the first token, so tool calls and
@@ -817,6 +817,14 @@ class ChatUI:
         start = self._turn_start_time or self._stream_start_time
         return time.monotonic() - start if start else 0.0
 
+    def set_metrics(self, sink: dict) -> None:
+        """Adopt the run's live token/timing accounting (see TurnMetrics).
+
+        Held by reference, not copied: the footer is printed from inside the
+        run, so it has to see what the turn just recorded.
+        """
+        self._metrics = sink
+
     @staticmethod
     def format_meta(elapsed_secs: float, tok_s: float = 0.0) -> str:
         """Format the per-answer meta line the way the web UI does.
@@ -844,7 +852,6 @@ class ChatUI:
         self._tag_buf = ""
         self._link_buf = ""
         self._link_state = 0
-        self._stream_token_count = 0
         self._stream_start_time = time.monotonic()
 
     def stream_think_token(self, token: str) -> None:
@@ -867,7 +874,6 @@ class ChatUI:
     def stream_token(self, token: str) -> None:
         """Stream an answer token. Auto-closes any open think block on first call."""
         self._streaming_content += token
-        self._stream_token_count += 1
         if self._stream_think_started:
             self.stream_think_end()  # reasoning just finished, close think block
         display = self._filter_display_token(token)
@@ -979,11 +985,13 @@ class ChatUI:
         self._trail_buf = ""
         print()  # final newline after the last token
         footer = "└" + "─" * 40
-        # tok/s is a property of this stream, so it is measured from the first
-        # token; elapsed is the whole turn, matching what the web UI reports.
-        stream_elapsed = time.monotonic() - self._stream_start_time if self._stream_start_time else 0
-        tok_s = (self._stream_token_count / stream_elapsed
-                 if stream_elapsed > 0 and self._stream_token_count > 0 else 0.0)
+        # tok/s comes from the provider's own token accounting, so it counts
+        # the reasoning printed in the think block above and the tool-call
+        # arguments never printed at all -- neither of which reaches
+        # stream_token(), and both of which the clock was already charging for.
+        # elapsed is the whole turn, matching what the web UI reports.
+        from src.model.serving.chat import decode_rate
+        tok_s = decode_rate(self._metrics)
         meta = elapsed or self.format_meta(self._turn_elapsed(), tok_s)
         if meta:
             footer += f"  {meta}"
