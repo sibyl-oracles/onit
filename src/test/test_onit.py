@@ -1447,3 +1447,60 @@ class TestResultStoreFlag:
         with _mock_discover():
             onit = OnIt(config=_make_config(tmp_path))
         assert "result_store" not in onit.model_serving
+
+
+class TestCodeExecutionFlag:
+    """Off unless a deployment asked for it, everywhere at once."""
+
+    @staticmethod
+    def _args(cfg, tmp_path):
+        captured = {}
+
+        async def _fake(**args):
+            captured.update(args)
+            return "instruction"
+
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        with patch("src.onit.build_assistant_instruction", new=_fake):
+            asyncio.run(onit._assistant_instruction("task", str(tmp_path / "data")))
+        return captured
+
+    def test_off_by_default(self, tmp_path):
+        assert self._args(_make_config(tmp_path), tmp_path)["code_execution_available"] is False
+
+    def test_claimed_when_switched_on(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["code_execution"] = True
+        assert self._args(cfg, tmp_path)["code_execution_available"] is True
+
+    def test_the_harness_switch_withdraws_it(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"]["code_execution"] = True
+        cfg["serving"]["harness_tools"] = False
+        assert self._args(cfg, tmp_path)["code_execution_available"] is False
+
+    def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
+        from src.onit import SERVING_PASSTHROUGH
+        assert "code_execution" in SERVING_PASSTHROUGH
+        assert "code_timeout" in SERVING_PASSTHROUGH
+        with _mock_discover():
+            onit = OnIt(config=_make_config(tmp_path))
+        assert "code_execution" not in onit.model_serving
+
+    @pytest.mark.asyncio
+    async def test_stopping_a_session_stops_its_interpreter(self, tmp_path):
+        """A child process left behind by a stopped session is one nobody will
+        ever stop."""
+        from src.onit import _call_sandbox_stop
+        from src.model.serving.interpreter import get_interpreter, shutdown_all
+
+        try:
+            interp = get_interpreter("doomed", tool_items=[], dispatch=None)
+            await interp.run("x = 1")
+            assert interp.alive
+            # Not sandbox mode, no registry: the interpreter goes anyway.
+            await _call_sandbox_stop(None, "doomed", sandbox=False)
+            assert not interp.alive
+        finally:
+            await shutdown_all()

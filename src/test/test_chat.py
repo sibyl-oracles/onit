@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from model.serving.interpreter import shutdown_session
 from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _is_planning_response, _build_messages,
                                 _trim_history, _is_acknowledgment_response,
@@ -2225,6 +2226,115 @@ class TestResultStoreInChat:
         # And none of it was lost — all six are on disk in full.
         from model.serving.results import ResultStore
         assert len(ResultStore(str(tmp_path)).stored()) == 6
+
+
+# ── code as action, from inside the loop ────────────────────────────────────
+
+class TestRunCodeInChat:
+    """Phase 5: run_code sits alongside bash and direct tool calling."""
+
+    @staticmethod
+    def _registry():
+        handler = AsyncMock(return_value='[{"title": "Q3", "n": 2}]')
+        registry = MagicMock()
+        registry.tools = {"local_search"}
+        registry.get_tool_items.return_value = [
+            {"type": "function",
+             "function": {"name": "local_search", "description": "d",
+                          "parameters": {"type": "object",
+                                         "properties": {"query": {"type": "string"}},
+                                         "required": ["query"]}}}]
+        registry.tool_accepts_param.return_value = False
+        registry.blank_required_args.return_value = []
+        registry.parameters_schema.return_value = {}
+        registry.__getitem__ = MagicMock(return_value=handler)
+        return registry
+
+    async def _run(self, tmp_path, completions, **kwargs):
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=completions)
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="glm-5.1"):
+            answer = await chat(host="http://localhost:8000/v1", instruction="do it",
+                                tool_registry=self._registry(),
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path), verify_answers=False,
+                                **kwargs)
+        return answer, client
+
+    @pytest.mark.asyncio
+    async def test_off_by_default(self, tmp_path):
+        _, client = await self._run(
+            tmp_path, [_mock_completion_with_finish(content="Hi")])
+        names = [t["function"]["name"]
+                 for t in client.chat.completions.create.call_args.kwargs["tools"]]
+        assert "run_code" not in names
+
+    @pytest.mark.asyncio
+    async def test_offered_alongside_the_other_tools_when_enabled(self, tmp_path):
+        _, client = await self._run(
+            tmp_path, [_mock_completion_with_finish(content="Hi")],
+            code_execution=True, session_id="chat-1")
+        names = [t["function"]["name"]
+                 for t in client.chat.completions.create.call_args.kwargs["tools"]]
+        # An additional tool, not a replacement: everything else is still there.
+        assert "run_code" in names
+        assert {"local_search", "context_status", "note_write"} <= set(names)
+        await shutdown_session("chat-1")
+
+    @pytest.mark.asyncio
+    async def test_the_model_can_run_a_block_and_answer_from_it(self, tmp_path):
+        """Four dependent steps in one turn instead of four."""
+        code = ('hits = local_search("Q3")\n'
+                'total = sum(h["n"] for h in hits)\n'
+                'print("total:", total)')
+        answer, client = await self._run(tmp_path, [
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("run_code", json.dumps({"code": code}))]),
+            _mock_completion_with_finish(content="The total is 2."),
+        ], code_execution=True, session_id="chat-2")
+
+        assert answer == "The total is 2."
+        sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        body = [m for m in sent if isinstance(m, dict)
+                and m.get("name") == "run_code"][0]["content"]
+        assert "total: 2" in body
+        await shutdown_session("chat-2")
+
+    @pytest.mark.asyncio
+    async def test_the_namespace_survives_between_two_calls_in_one_run(self, tmp_path):
+        answer, client = await self._run(tmp_path, [
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("run_code", '{"code": "carried = 41"}')]),
+            _mock_completion_with_finish(
+                content=None,
+                tool_calls=[_mock_tool_call("run_code",
+                                            '{"code": "print(carried + 1)"}')]),
+            _mock_completion_with_finish(content="42."),
+        ], code_execution=True, session_id="chat-3")
+
+        assert answer == "42."
+        sent = client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        bodies = [m["content"] for m in sent if isinstance(m, dict)
+                  and m.get("name") == "run_code"]
+        assert "42" in bodies[-1]
+        await shutdown_session("chat-3")
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_run_code_still_trips_the_loop_guard(self, tmp_path):
+        """It is dispatched ahead of the registry, not ahead of the loop's own
+        protections."""
+        calls = [_mock_completion_with_finish(
+            content=None,
+            tool_calls=[_mock_tool_call("run_code", '{"code": "1"}')])] * 4
+        answer, client = await self._run(
+            tmp_path, calls, code_execution=True, session_id="chat-4",
+            max_repeated_tool_calls=2)
+        assert "rephrase" in answer
+        await shutdown_session("chat-4")
 
 
 # ── explicit run state ──────────────────────────────────────────────────────

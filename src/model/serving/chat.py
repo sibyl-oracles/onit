@@ -37,6 +37,7 @@ from .verify import (DEFAULT_TRUSTED_DOMAINS, THINKING_VERDICT_MAX_TOKENS,
 
 from .harness import COMPACTION_NOTICE, HarnessTools
 from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
+from .interpreter import DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT
 from .state import (RunState, STOP_ANSWERED, STOP_PLANNING_EXHAUSTED,
                     STOP_REPEATED_TOOL_CALL, STOP_SAFETY_ABORT,
                     STOP_TURN_LIMIT)
@@ -1105,7 +1106,10 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     # the bottom of this function.  The checks it skips over are the registry's
     # — HarnessTools.dispatch runs the same validator on its own schemas.
     if _is_harness_call:
-        harness_result = harness.dispatch(function_name, function_arguments)
+        # await, because one of them drives a child process (interpreter.py)
+        # and answers tool calls coming back from it.  The rest are synchronous
+        # and adispatch hands them straight to dispatch.
+        harness_result = await harness.adispatch(function_name, function_arguments)
         _ok = not harness_result.startswith("Error:")
         tool_message = {'role': 'tool', 'content': harness_result, 'name': function_name,
                         'parameters': function_arguments, "tool_call_id": tool_call_id}
@@ -2692,7 +2696,19 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     harness = HarnessTools(data_path=data_path,
                            max_context_tokens=max_context_tokens,
                            enabled=bool(tools) and kwargs.get('harness_tools', True),
-                           result_store=kwargs.get('result_store', True))
+                           result_store=kwargs.get('result_store', True),
+                           # Code as action: off unless a deployment asked for
+                           # it.  The registry rides along because every tool
+                           # in it becomes a Python function inside the
+                           # interpreter, dispatched back out through here.
+                           code_execution=kwargs.get('code_execution', False),
+                           session_id=session_id,
+                           tool_registry=tool_registry,
+                           tool_timeout=timeout if timeout and timeout > 0
+                           else DEFAULT_TOOL_TIMEOUT,
+                           code_timeout=_as_float(
+                               kwargs.get('code_timeout', DEFAULT_CODE_TIMEOUT),
+                               DEFAULT_CODE_TIMEOUT))
     tools = tools + _api_tool_payload(harness.tool_items())
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so

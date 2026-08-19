@@ -40,9 +40,12 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from .results import DEFAULT_READ_CHARS, MAX_READ_CHARS, ResultStore
+from .interpreter import (DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT,
+                          INJECTED_PARAMS, evict_stale, get_interpreter)
 
 try:
     from ...lib.schema import coerce_arguments, validate_arguments
@@ -189,6 +192,31 @@ HARNESS_TOOL_ITEMS += [
     },
 ]
 
+HARNESS_TOOL_ITEMS += [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_code",
+            "description": (
+                "Run Python in a session that keeps its variables between calls. "
+                "Every tool you have is available as a function with the same name. "
+                "Use it when a task is several dependent steps — search, filter, read "
+                "each, combine — so they run as one block instead of one turn each. "
+                "Only what you print comes back."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string",
+                             "description": "Python source. print() what you need to see."},
+                },
+                "required": ["code"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
 _SPEC_BY_NAME = {item["function"]["name"]: item for item in HARNESS_TOOL_ITEMS}
 
 # context_status needs nothing but the loop's own counters; the note tools need
@@ -196,6 +224,8 @@ _SPEC_BY_NAME = {item["function"]["name"]: item for item in HARNESS_TOOL_ITEMS}
 # the other two — offering a tool that can only fail is worse than not offering it.
 ALWAYS_AVAILABLE = ("context_status",)
 NEEDS_DATA_PATH = ("note_write", "note_read", "result_read", "result_grep")
+# Off unless a deployment asks for it: this one runs model-written Python.
+NEEDS_CODE_EXECUTION = ("run_code",)
 
 # Appended to the compacted conversation so the model learns what just happened
 # to its context.  The UI already gets ``show_context_compaction``; this is the
@@ -230,10 +260,22 @@ class HarnessTools:
     """
 
     def __init__(self, data_path: str = "", max_context_tokens: int | None = None,
-                 enabled: bool = True, result_store: bool = True):
+                 enabled: bool = True, result_store: bool = True,
+                 code_execution: bool = False, session_id: str = "",
+                 tool_registry=None, tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
+                 code_timeout: float = DEFAULT_CODE_TIMEOUT):
         self.enabled = bool(enabled)
         self.data_path = data_path or ""
         self.max_context_tokens = max_context_tokens
+        # Code as action (interpreter.py).  Held here for the same reason the
+        # result store is: ``_execute_tool`` already receives this object, and
+        # threading a third one through four signatures to reach the same
+        # place is churn without a reader.
+        self.session_id = session_id or ""
+        self.tool_registry = tool_registry
+        self.code_execution = bool(enabled) and bool(code_execution)
+        self.tool_timeout = float(tool_timeout)
+        self.code_timeout = float(code_timeout)
         # Large tool results, kept on disk and reached by handle (results.py).
         # Owned here rather than beside here so the loop threads one object:
         # ``_execute_tool`` already receives this one, and it is the function
@@ -260,10 +302,15 @@ class HarnessTools:
         if not self.enabled:
             return ()
         if not self.data_path:
-            return ALWAYS_AVAILABLE
+            # run_code needs somewhere to run, not somewhere to write: a
+            # session with no data_path still benefits from doing five steps
+            # in one turn.
+            return ALWAYS_AVAILABLE + (NEEDS_CODE_EXECUTION if self.code_execution else ())
         offered = ALWAYS_AVAILABLE + NEEDS_DATA_PATH
         if not self.results.enabled:
             offered = tuple(n for n in offered if not n.startswith("result_"))
+        if self.code_execution:
+            offered += NEEDS_CODE_EXECUTION
         return offered
 
     def handles(self, name: str) -> bool:
@@ -423,19 +470,89 @@ class HarnessTools:
             logger.warning("note_read(%s) failed: %s", key, e)
             return _error(f"could not read note '{key}': {e}")
 
+    # ── code as action ──────────────────────────────────────────────────────
+
+    async def _run_tool(self, name: str, kwargs: dict) -> str:
+        """One tool call made from inside the interpreter, run out here.
+
+        This function is the trust boundary.  The child asks for a tool by
+        name; the *parent* decides what that call actually runs with, so
+        ``session_id`` and ``data_path`` are stripped from whatever arrived and
+        re-bound from the harness's own values.  They are absent from the
+        generated signatures too, so there is normally nothing to strip — this
+        is the second check, for the same reason ``_note_path`` resolves a key
+        that the regex has already made safe.
+        """
+        registry = self.tool_registry
+        if not registry or name not in getattr(registry, "tools", ()):
+            raise LookupError(f"no tool named {name!r} — call context_status to see "
+                              "what this run has")
+        kwargs = {k: v for k, v in (kwargs or {}).items() if k not in INJECTED_PARAMS}
+        if self.session_id and registry.tool_accepts_param(name, "session_id"):
+            kwargs["session_id"] = self.session_id
+        if self.data_path and registry.tool_accepts_param(name, "data_path"):
+            kwargs["data_path"] = self.data_path
+        handler = registry[name]
+        if handler is None:
+            raise LookupError(f"no handler registered for {name!r}")
+        result = await handler(**kwargs)
+        return "" if result is None else str(result)
+
+    @property
+    def interpreter(self):
+        """This session's interpreter.  Started on first use, not here."""
+        return get_interpreter(
+            self.session_id,
+            data_path=self.data_path,
+            tool_items=(self.tool_registry.get_tool_items()
+                        if self.tool_registry else []),
+            dispatch=self._run_tool,
+            tool_timeout=self.tool_timeout,
+        )
+
+    async def run_code(self, code: str) -> str:
+        """Execute ``code`` and return what it printed.
+
+        The result goes through the store like any other large tool output, so
+        a print that turns out to be a whole file is addressed rather than
+        pasted — which is why Phase 4 came first.
+        """
+        if not isinstance(code, str) or not code.strip():
+            return _error("run_code needs Python source in `code`.")
+        interpreter = self.interpreter
+        await evict_stale()
+        started = time.monotonic()
+        outcome = await interpreter.run(code, timeout=self.code_timeout)
+        elapsed = time.monotonic() - started
+
+        stdout = outcome.get("stdout") or ""
+        status = "ok" if outcome.get("ok") else (
+            "timed out" if outcome.get("timed_out") else "raised")
+        body = f"[run_code · {status} · {elapsed:.1f}s]"
+        if stdout:
+            body += "\n" + stdout.rstrip()
+        elif outcome.get("ok"):
+            # An empty result reads as a failure, and the model re-runs the
+            # same block to find out what happened.  Say what actually did.
+            body += ("\nThe code ran and printed nothing. Only what you print comes "
+                     "back — add print() for the values you need to see. Variables "
+                     "you set are still there for the next call.")
+        if outcome.get("error"):
+            body += "\n" + str(outcome["error"]).rstrip()
+        stored = self.results.put("run_code", body)
+        return stored if stored is not None else body
+
     # ── dispatch ────────────────────────────────────────────────────────────
 
-    def dispatch(self, name: str, arguments: dict) -> str | None:
-        """Run a harness tool and return its result, or None if ``name`` is not one.
+    def _prepare(self, name: str, arguments: dict):
+        """Coerced arguments for a harness call, or an error string.
 
-        Arguments are coerced and validated here against the same schemas and
-        with the same validator the MCP path uses — these tools bypass
-        ``_execute_tool``'s checks by intercepting ahead of them, and skipping
-        validation along with the dispatch would make them the one place in the
-        harness where a wrong-typed argument reaches the implementation.
+        Split out of ``dispatch`` so the async tool below is checked the same
+        way: these tools bypass ``_execute_tool``'s validation by intercepting
+        ahead of it, and one of them skipping it too would make it the single
+        place in the harness where a wrong-typed argument reaches the
+        implementation.
         """
-        if not self.handles(name):
-            return None
         arguments = dict(arguments or {})
         schema = _SPEC_BY_NAME[name]["function"]["parameters"]
         coerced, _ = coerce_arguments(schema, arguments)
@@ -444,6 +561,37 @@ class HarnessTools:
         if problems:
             return _error(f"{name} was called with arguments that do not match its "
                           f"schema: {'; '.join(problems)}. The call was not run.")
+        return arguments
+
+    async def adispatch(self, name: str, arguments: dict) -> str | None:
+        """Every harness tool, including the one that has to be awaited.
+
+        ``run_code`` drives a child process and answers tool calls from it, so
+        it cannot be synchronous.  Everything else still is, and goes through
+        :meth:`dispatch` unchanged.
+        """
+        if name != "run_code" or not self.handles(name):
+            return self.dispatch(name, arguments)
+        prepared = self._prepare(name, arguments)
+        if isinstance(prepared, str):
+            return prepared
+        try:
+            return await self.run_code(prepared["code"])
+        except Exception as e:  # an interpreter that will not start is a tool error
+            logger.warning("run_code failed: %s", e)
+            return _error(f"the code could not be run: {e}")
+
+    def dispatch(self, name: str, arguments: dict) -> str | None:
+        """Run a harness tool and return its result, or None if ``name`` is not one."""
+        if not self.handles(name):
+            return None
+        if name == "run_code":
+            # Reached only by a caller that has not moved to adispatch.
+            return _error("run_code must be dispatched asynchronously.")
+        prepared = self._prepare(name, arguments)
+        if isinstance(prepared, str):
+            return prepared
+        arguments = prepared
         if name == "context_status":
             return self.context_status()
         if name == "note_write":

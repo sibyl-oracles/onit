@@ -618,3 +618,51 @@ class TestResultStoreBlock:
             result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
                                          result_store_available=value)
             assert "result_read" not in result
+
+
+class TestCodeExecutionBlock:
+    """Phase 5: the model is told when to reach for code, and when not to."""
+
+    @pytest.mark.asyncio
+    async def test_absent_by_default(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
+        assert "run_code" not in result
+
+    @pytest.mark.asyncio
+    async def test_present_when_available(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     code_execution_available=True)
+        assert "run_code" in result
+        assert "ToolError" in result
+
+    @pytest.mark.asyncio
+    async def test_it_says_when_not_to_use_it(self, tmp_path):
+        """A model that wraps every single tool call in run_code has added an
+        interpreter round trip to buy nothing."""
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     code_execution_available=True)
+        assert "Do not" in result and "single tool call" in result
+
+    @pytest.mark.asyncio
+    async def test_rides_in_the_cacheable_half(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     code_execution_available=True)
+        static, volatile = split_instruction(result)
+        assert "run_code" in static
+        assert "run_code" not in volatile
+
+    @pytest.mark.asyncio
+    async def test_gated_separately_from_the_other_harness_blocks(self, tmp_path):
+        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                     harness_tools_available=True,
+                                     result_store_available=True,
+                                     code_execution_available=False)
+        assert "note_write" in result and "result_read" in result
+        assert "run_code" not in result
+
+    @pytest.mark.asyncio
+    async def test_string_falsy_values_are_normalized(self, tmp_path):
+        for value in ("false", "null", "none", "0", ""):
+            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
+                                         code_execution_available=value)
+            assert "run_code" not in result

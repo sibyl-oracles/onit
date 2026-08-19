@@ -60,6 +60,7 @@ async def build_assistant_instruction(task: str,
                                 web_search_available: str | bool = False,
                                 harness_tools_available: str | bool = False,
                                 result_store_available: str | bool = False,
+                                code_execution_available: str | bool = False,
                                 prior_attempts: str = None,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
@@ -92,6 +93,8 @@ async def build_assistant_instruction(task: str,
       harness_tools_available = False
    if isinstance(result_store_available, str) and result_store_available.lower() in ("false", "null", "none", "0", ""):
       result_store_available = False
+   if isinstance(code_execution_available, str) and code_execution_available.lower() in ("false", "null", "none", "0", ""):
+      code_execution_available = False
    if not prior_attempts or prior_attempts == "null":
       prior_attempts = None
    if not agent_name or agent_name == "null":
@@ -374,6 +377,32 @@ Reading one back is a local file read, so it is cheap and it is exact. Never re-
 tool to recover output you already hold a handle for.
 """ if result_store_available else ""
 
+   # Off unless a deployment enabled it. The block is as much about *when* to
+   # reach for code as about how: a model that wraps every single tool call in
+   # run_code has added an interpreter round trip to buy nothing, and one that
+   # never reaches for it pays a turn per step of work that has no branches.
+   code_block = """
+## Running code
+`run_code(code)` runs Python in a session that keeps its variables between calls.
+Every tool listed above is available inside it as a function of the same name, and
+returns parsed JSON where the tool answers with JSON.
+
+```python
+hits = local_search("Q3 revenue")[:3]
+totals = {h["title"]: extract_tables(h["path"]) for h in hits}
+print(totals)
+```
+
+Reach for it when a task is several steps that depend on each other — search, filter,
+read each, combine — because they run as one block instead of one turn each. Do not
+reach for it for a single tool call: calling the tool directly is one step, and
+wrapping it in code is two.
+
+- Only what you `print` comes back. Everything else stays as a live variable.
+- A failing tool raises `ToolError`, which you can catch and carry on.
+- Keep each block short enough to finish, and check its output before the next one.
+""" if code_execution_available else ""
+
    instructions_block = f"""
 ## Instructions
 1. If the answer is straightforward — a greeting, a follow-up, anything the
@@ -404,7 +433,8 @@ tool to recover output you already hold a handle for.
    # Standing rules: the same bytes on every request whichever template is in
    # use, so they belong in the static half in both branches below.
    rules = (topic_block + sandbox_block + no_install_block
-            + research_block + harness_block + result_block + instructions_block)
+            + research_block + harness_block + result_block + code_block
+            + instructions_block)
    # The file server URL carries the session's upload id, and the task is the
    # task, so both are volatile.  A template that interpolates the task has
    # already placed it and does not get a second copy.

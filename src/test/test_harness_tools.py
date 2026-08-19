@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from model.serving.harness import (COMPACTION_NOTICE, MAX_NOTE_CHARS, MAX_NOTES,
                                    NOTES_SUBDIR, HarnessTools)
 from model.serving.chat import _execute_tool, _parse_tool_call_from_content
+from model.serving.interpreter import shutdown_session
 
 
 def _harness(tmp_path, **kwargs):
@@ -372,3 +373,156 @@ class TestResultToolsOnTheHarness:
         them back."""
         assert "result_read" in COMPACTION_NOTICE
         assert "context_status" in COMPACTION_NOTICE
+
+
+# ── code as action ──────────────────────────────────────────────────────────
+
+class TestRunCodeOnTheHarness:
+    """Phase 5's tool. Off unless the deployment asked for it."""
+
+    @staticmethod
+    def _registry(answer='[{"title": "Q3"}]'):
+        from unittest.mock import AsyncMock
+        handler = AsyncMock(return_value=answer)
+        registry = MagicMock()
+        registry.tools = {"local_search"}
+        registry.get_tool_items.return_value = [
+            {"type": "function",
+             "function": {"name": "local_search", "description": "search",
+                          "parameters": {"type": "object",
+                                         "properties": {"query": {"type": "string"},
+                                                        "data_path": {"type": "string"},
+                                                        "session_id": {"type": "string"}},
+                                         "required": ["query"]}}}]
+        registry.tool_accepts_param.side_effect = (
+            lambda tool, param: param in ("data_path", "session_id"))
+        registry.__getitem__ = MagicMock(return_value=handler)
+        registry.handler = handler
+        return registry
+
+    def _harness_with_code(self, tmp_path, session_id="s1", **kwargs):
+        return HarnessTools(data_path=str(tmp_path), code_execution=True,
+                            session_id=session_id,
+                            tool_registry=self._registry(), **kwargs)
+
+    # ── availability ────────────────────────────────────────────────────────
+
+    def test_off_by_default(self, tmp_path):
+        assert "run_code" not in _harness(tmp_path).names
+
+    def test_offered_when_switched_on(self, tmp_path):
+        assert "run_code" in self._harness_with_code(tmp_path).names
+
+    def test_offered_without_a_data_path(self):
+        """An interpreter needs somewhere to run, not somewhere to write."""
+        harness = HarnessTools(code_execution=True, session_id="s")
+        assert "run_code" in harness.names
+        assert "note_write" not in harness.names
+
+    def test_withdrawn_with_the_whole_harness(self, tmp_path):
+        harness = HarnessTools(data_path=str(tmp_path), enabled=False,
+                               code_execution=True)
+        assert harness.names == ()
+
+    # ── running ─────────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_it_returns_what_the_code_printed(self, tmp_path):
+        harness = self._harness_with_code(tmp_path, session_id="run-1")
+        try:
+            out = await harness.adispatch("run_code", {"code": "print(6 * 7)"})
+            assert "42" in out
+            assert out.startswith("[run_code · ok ·")
+        finally:
+            await shutdown_session("run-1")
+
+    @pytest.mark.asyncio
+    async def test_tools_are_callable_from_inside(self, tmp_path):
+        harness = self._harness_with_code(tmp_path, session_id="run-2")
+        try:
+            out = await harness.adispatch(
+                "run_code", {"code": 'print(local_search("Q3")[0]["title"])'})
+            assert "Q3" in out
+        finally:
+            await shutdown_session("run-2")
+
+    @pytest.mark.asyncio
+    async def test_the_harness_values_reach_the_handler(self, tmp_path):
+        """The acceptance criterion: whatever the code passes, the handler is
+        called with the harness's session_id and data_path."""
+        registry = self._registry()
+        harness = HarnessTools(data_path=str(tmp_path), code_execution=True,
+                               session_id="the-real-session", tool_registry=registry)
+        try:
+            await harness.adispatch("run_code", {
+                "code": 'call_tool("local_search", query="Q3", '
+                        'data_path="/etc", session_id="somebody-else")'})
+            kwargs = registry.handler.await_args.kwargs
+            assert kwargs["session_id"] == "the-real-session"
+            assert kwargs["data_path"] == str(tmp_path)
+            assert kwargs["query"] == "Q3"
+        finally:
+            await shutdown_session("the-real-session")
+
+    @pytest.mark.asyncio
+    async def test_an_empty_print_is_explained(self, tmp_path):
+        """An empty result reads as a failure, and the model re-runs the same
+        block to find out what happened."""
+        harness = self._harness_with_code(tmp_path, session_id="run-3")
+        try:
+            out = await harness.adispatch("run_code", {"code": "x = 1"})
+            assert "printed nothing" in out
+            assert "still there for the next call" in out
+        finally:
+            await shutdown_session("run-3")
+
+    @pytest.mark.asyncio
+    async def test_an_exception_comes_back_as_a_result(self, tmp_path):
+        harness = self._harness_with_code(tmp_path, session_id="run-4")
+        try:
+            out = await harness.adispatch("run_code", {"code": "1 / 0"})
+            assert "raised" in out
+            assert "ZeroDivisionError" in out
+        finally:
+            await shutdown_session("run-4")
+
+    @pytest.mark.asyncio
+    async def test_a_huge_print_goes_through_the_result_store(self, tmp_path):
+        """Why Phase 4 came first: a print that turns out to be a whole file is
+        addressed, not pasted."""
+        from model.serving.results import handle_of
+        harness = self._harness_with_code(tmp_path, session_id="run-5")
+        try:
+            out = await harness.adispatch("run_code", {"code": "print('x' * 50000)"})
+            assert handle_of(out) is not None
+            assert len(out) < 7000
+        finally:
+            await shutdown_session("run-5")
+
+    # ── validation and misuse ───────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_a_missing_code_argument_is_refused(self, tmp_path):
+        harness = self._harness_with_code(tmp_path, session_id="run-6")
+        out = await harness.adispatch("run_code", {})
+        assert out.startswith("Error:")
+        assert "code" in out
+
+    @pytest.mark.asyncio
+    async def test_blank_code_is_refused_without_starting_anything(self, tmp_path):
+        harness = self._harness_with_code(tmp_path, session_id="run-7")
+        out = await harness.adispatch("run_code", {"code": "   "})
+        assert out.startswith("Error:")
+
+    def test_the_sync_path_refuses_rather_than_pretending(self, tmp_path):
+        """A caller that has not moved to adispatch gets told, not a
+        half-answer."""
+        harness = self._harness_with_code(tmp_path)
+        assert harness.dispatch("run_code", {"code": "print(1)"}).startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_adispatch_passes_the_sync_tools_straight_through(self, tmp_path):
+        harness = self._harness_with_code(tmp_path)
+        status = json.loads(await harness.adispatch("context_status", {}))
+        assert status["turns_taken"] == 0
+        assert await harness.adispatch("not_a_harness_tool", {}) is None

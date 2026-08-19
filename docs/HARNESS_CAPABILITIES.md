@@ -1,7 +1,7 @@
 # Agent Harness Capabilities — Gap Analysis and Build Plan
 
-**Status**: **Phases 1, 2, 3, 4 and 6 implemented** (see §3.5, §4.4, §5.4, §6.6 and §8.4). Phase 5 is proposal / RFC.
-**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4), then Phase 6 (§8.4), then Phase 4 (§6.6). **Phase 0.5 is complete.***
+**Status**: **All six phases implemented** (see §3.5, §4.4, §5.4, §6.6, §7.5 and §8.4).
+**Date**: August 2026 · *Revised August 09, 2026 — reconciled with a second review (§11); Phases 1 and 3 shipped. Revised August 18, 2026 — Phase 2 shipped (§4.4), then Phase 6 (§8.4), then Phase 4 (§6.6); **Phase 0.5 complete**. Revised August 19, 2026 — Phase 5 shipped behind a default-off flag (§7.5); its benchmark gate is **not** yet passed.*
 **Source**: [Six Agent Harness Capabilities for Higher Model Performance](https://developer.nvidia.com/blog/six-agent-harness-capabilities-for-higher-model-performance/) (NVIDIA, NOOA framework)
 **Companion**: [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) — Phases 1–4 and 6 here are
 that plan's **Phase 0.5**. Its §1.1 explains why they must land before its baseline is
@@ -31,7 +31,7 @@ code-as-action with a **sandboxed interpreter** instead of a shared heap.
 | 2 | Model-callable harness APIs | ~~None — context management is invisible to the model~~ **Shipped**: `context_status`, `note_write`/`note_read`, and a compaction the model is told about | ~~**Large**~~ | 2 ✅ |
 | 3 | Programmable loop engineering | Plain Python loop ✅, but policy constants hardcoded | Small | 3 |
 | 4 | Pass by reference | ~~Everything serializes into context; truncation is lossy~~ **Shipped**: full results on disk, a preview plus handle in context, `result_read`/`result_grep` to reach the rest | ~~**Large**~~ | 4 ✅ |
-| 5 | Code as action | `bash` only; one model round trip per step | **Large** | 5 |
+| 5 | Code as action | ~~`bash` only; one model round trip per step~~ **Shipped, default off**: `run_code` and a per-session Python interpreter with every tool bound as a function | ~~**Large**~~ | 5 ⚠️ |
 | 6 | Explicit object state | ~~Run state is locals inside `chat()`, dies on return~~ **Shipped**: `RunState`, caller-owned, persisted per session and read back on resume | ~~Medium~~ | 6 ✅ |
 
 ### Build order
@@ -47,7 +47,7 @@ Phase 2  Harness APIs         ~1 day     small, high leverage      │ ✅ shipp
 Phase 6  Explicit run state   ~3 days    unlocks resume + testing  │ ✅ shipped
 Phase 4  Result store         ~3 days    largest token win         ┘ ✅ shipped
 
-Phase 5  Code as action       ~1-2 weeks largest latency win       ← after SELF_IMPROVEMENT Phase 2
+Phase 5  Code as action       ~1-2 weeks largest latency win       ⚠️ shipped, default off, unbenchmarked
 ```
 
 Phases 1, 2, 3 and 6 were independent of each other and of everything else.
@@ -740,6 +740,9 @@ learning win.
 ## 7. Phase 5 — Code as action
 
 **Effort**: ~1–2 weeks · **Depends on**: Phase 4 · **Priority**: last — largest latency win
+**Status**: ⚠️ **Shipped behind `serving.code_execution`, default off.** Steps 1–4 are done
+(§7.5). **Step 5 — the benchmark — is not**, and it is the gate for turning this on
+anywhere by default. Nothing about the default configuration changed.
 
 ### 7.1 The gap
 
@@ -801,6 +804,82 @@ machinery covers the case where a `print` is itself huge.
 - A wedged interpreter is killed by timeout and the session recovers.
 - Benchmark comparison at equal task set: turns, wall time, and score, on at least one
   small model and one large one.
+
+### 7.5 As shipped
+
+| What | Where |
+|---|---|
+| The interpreter, its child process, its protocol | [`src/model/serving/interpreter.py`](../src/model/serving/interpreter.py) |
+| Bindings generated from the registry's schemas | `bindings_for` — same file |
+| `run_code`, and the parent-side tool dispatcher | [`HarnessTools`](../src/model/serving/harness.py) — `run_code`, `_run_tool` |
+| Awaited dispatch | `HarnessTools.adispatch`, called from `_execute_tool` |
+| Switches | `serving.code_execution` (**default false**), `serving.code_timeout` |
+| Tests | `test_interpreter.py` (45), plus `TestRunCodeOnTheHarness` (13), `TestRunCodeInChat` (5), `TestCodeExecutionBlock` (6), `TestCodeExecutionFlag` (5) |
+
+**Measured, six dependent steps** (synthetic model at 400 ms/turn, tool at 50 ms):
+
+| | model turns | wall time |
+|---|---|---|
+| one tool call per turn | 7 | 4.58 s |
+| one `run_code` block | **2** | **1.47 s** |
+
+−68% wall time, and the saving scales with model latency: five turns of prefill+decode are
+simply not paid. On a small model where a turn is 1–3 s rather than 400 ms, the absolute
+saving is several times larger. **This is a synthetic measurement of the mechanism, not the
+benchmark step 5 asks for** — see the gate below.
+
+**Five decisions during implementation.**
+
+*The interpreter is a child process of the harness, not a service in the sandbox container.*
+§7.2 named `container_launcher.py` as "the right place", but the `sandbox_*` tools are an
+MCP server that is not in this repository, and the interpreter has to call back into
+`ToolHandler` — which lives in the OnIt process — on every tool call. A child process with
+an RPC pipe back to the parent buys all four properties the design wanted (namespace across
+calls, isolation from harness memory, killable on timeout, harness-owned tool dispatch)
+without inventing a protocol across a container boundary that would still have needed the
+same pipe. Under `onit --container` that child is inside the container, which is the
+isolation the deployment already paid for.
+
+*Tool calls go up the pipe, not out to a server.* A generated binding sends
+`{"t":"call","tool":…}` to the parent, and the *parent* runs the real handler. That is what
+makes step 3 enforceable rather than aspirational: `session_id` and `data_path` are absent
+from every generated signature, stripped in `PythonInterpreter._answer_call`, and re-bound
+from the harness's own values in `HarnessTools._run_tool`. Two checks, because `call_tool`
+takes `**kwargs` and is otherwise exactly the way around the scheme — a test asserted this
+and caught the single-check version.
+
+*JSON answers are parsed on the way back.* §7.2's example does `h.title` on a search hit,
+which cannot work if a tool's answer is the string it actually is. Objects and arrays are
+parsed and wrapped in a dict that also answers to attribute access; scalars are left alone,
+because a tool answering `"42"` means the string and quietly making it an int is the kind of
+helpfulness that surfaces two turns later as a type error.
+
+*A trailing expression is echoed, REPL-style.* A model writing `local_search("x")` as its
+whole block and getting an empty result back has burned a turn discovering that only
+`print` is captured. The empty-output case says so in words for the same reason.
+
+*The prompt block says when **not** to use it.* A model that wraps every single tool call
+in `run_code` has added an interpreter round trip to buy nothing — the failure mode
+symmetric to the one the phase exists to fix, and cheaper to prevent in the prompt than to
+detect in the loop.
+
+**Security posture — read before enabling.** This runs model-written Python in a child
+process with the same privileges as OnIt. There is no AST allowlist and no path jail, both
+of which the `bash` tool has. That is why it is default off and why `default.yaml` says so
+at the switch. Enable it where the deployment is already isolated (`onit --container`), and
+be deliberate on a web deployment other people can reach — the reasoning in the README's
+bash-settings section ("web sessions may be reachable by other users") applies here with
+more force, not less. What *is* enforced: the session's `data_path` is the interpreter's
+working directory, the injected trust parameters cannot be reached from inside, and each
+session gets its own process so nothing crosses between them.
+
+**Step 5 is not done, and it is the gate.** Running `benchmarks/` on Inspect-AI against one
+small and one large model, at equal task set, comparing turns, wall time *and score*, needs
+a live model and hours of eval — it is not something a code change can discharge. Until it
+is run, the honest claim is: the mechanism works, it removes turns, and **nobody has
+measured what it does to accuracy.** §7.3 step 5's warning is the reason the flag defaults
+to false rather than to true with an opt-out — small models write worse Python than they
+write JSON tool calls, and this phase can lose accuracy even while it cuts latency.
 
 ---
 

@@ -69,6 +69,26 @@ serving:
   # discarded permanently. Needs a data_path; rides with harness_tools.
   # result_store: true
   #
+  # ── Code as action ────────────────────────────────────────────────────────
+  # run_code: a Python interpreter, one per session, that keeps its variables
+  # between calls. Every registered tool is a function inside it, so "search,
+  # filter to three, read each, combine" is one block instead of five turns.
+  # Only what the code prints comes back.
+  #
+  # OFF BY DEFAULT, and read this before turning it on. The code runs in a
+  # child process with the same privileges as OnIt — no AST allowlist and no
+  # path jail, unlike the bash tool. Enable it where the deployment is already
+  # isolated (`onit --container`), and be deliberate about enabling it on a web
+  # deployment that other people can reach. Small models also write worse
+  # Python than they write JSON tool calls, so this can cost accuracy on
+  # 8B-class models even as it cuts turns: benchmark your model class first.
+  # code_execution: false
+  #
+  # Seconds one run_code block may take, tool calls made from inside it
+  # included. Past it the interpreter is killed and restarted, which loses the
+  # variables — the model is told so.
+  # code_timeout: 120
+  #
   # ── Fact-checking the answer ──────────────────────────────────────────────
   # The answer streams to the user as it is written, then is checked against
   # the evidence the run gathered. The check runs in two stages so that being

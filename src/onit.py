@@ -85,11 +85,26 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        # Large tool results kept on disk and passed by handle.
                        # Off restores the old behavior: a hard cut at
                        # MAX_TOOL_RESPONSE with the middle gone for good.
-                       'result_store')
+                       'result_store',
+                       # Code as action — run_code and its per-session Python
+                       # interpreter.  Default off: it runs model-written
+                       # Python with this process's privileges, and small
+                       # models write worse Python than they write JSON.
+                       'code_execution', 'code_timeout')
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
-    """Call sandbox_stop via the tool registry if sandbox mode is enabled and the tool is available."""
+    """Stop what this session had running: its interpreter, and the sandbox.
+
+    The interpreter goes first and unconditionally — it belongs to the session
+    rather than to sandbox mode, and a child process left behind by a stopped
+    session is one nobody will ever stop.
+    """
+    try:
+        from .model.serving.interpreter import shutdown_session
+        await shutdown_session(session_id)
+    except Exception as e:  # a stop that fails must not fail the stop
+        logger.debug("interpreter not shut down for %s: %s", session_id, e)
     if not sandbox or not tool_registry or "sandbox_stop" not in tool_registry.tools:
         return
     try:
@@ -2006,6 +2021,10 @@ class OnIt(BaseModel):
             "result_store_available": (bool(data_path or self.data_path)
                                        and self.model_serving.get('harness_tools', True)
                                        and self.model_serving.get('result_store', True)),
+            # Needs no data_path: an interpreter needs somewhere to run, not
+            # somewhere to write.
+            "code_execution_available": (self.model_serving.get('harness_tools', True)
+                                         and self.model_serving.get('code_execution', False)),
             "agent_name": self.agent_name,
             "developer": self.developer,
             "max_documents": self.max_documents,

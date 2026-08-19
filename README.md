@@ -849,6 +849,39 @@ Results are session state on the same terms as notes: under the session's
 `data_path`, gone when it goes, never shared between sessions. The oldest are
 pruned past 200. `serving.result_store: false` restores the old hard cut.
 
+### Running code (`run_code`) — off by default
+
+`serving.code_execution: true` adds one more tool: a Python interpreter, one per
+session, that keeps its variables between calls. Every registered tool is
+available inside it as a function of the same name, so a task that is several
+dependent steps runs as one block instead of one turn each:
+
+```python
+hits = local_search("Q3 revenue")[:3]
+totals = {h["title"]: extract_tables(h["path"]) for h in hits}
+print(totals)
+```
+
+Only what the code `print`s comes back; everything else stays as a live variable
+for the next call. A failing tool raises `ToolError`, which the code can catch.
+Six dependent steps measured at 7 model turns / 4.6 s as individual tool calls
+run as 2 turns / 1.5 s this way — the saving is the prefill and decode of the
+turns that no longer happen, so it grows with how slow the model is.
+
+**Read this before enabling it.** The code runs in a child process with the same
+privileges as OnIt — no AST allowlist and no path jail, unlike the `bash` tool.
+Enable it where the deployment is already isolated (`onit --container`), and be
+deliberate about a web deployment other people can reach. What is enforced: the
+interpreter's working directory is the session's `data_path`, `session_id` and
+`data_path` cannot be set from inside the code (they are not in the generated
+signatures and are re-bound by the harness on every call), and each session gets
+its own process. A block that overruns `serving.code_timeout` (120 s) is killed
+and the interpreter restarts — the model is told its variables are gone.
+
+It is also **unbenchmarked**: small models write worse Python than they write
+JSON tool calls, so this can cost accuracy even as it cuts turns. Measure your
+own model class with `benchmarks/` before relying on it.
+
 ## Local Search over In-House Data
 
 OnIt includes a local search toolkit modeled on the [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/): a composable pipeline that unifies **ingestion** (parse → chunk → embed/index) and **retrieval** (BM25 sparse, dense embeddings, hybrid fusion) behind a single interface. Everything runs on your own infrastructure — documents, index, and embeddings never leave your machine, so the agent can answer questions from private company data that web search cannot see.
