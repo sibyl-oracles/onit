@@ -8,8 +8,8 @@ runner integrates it the way OnIt actually works:
        commit into a per-instance workspace. OnIt's ``data_path`` is set to that
        workspace, so OnIt's ``read_file`` / ``edit_file`` / ``bash`` / ``grep``
        tools operate *inside the repo* (OnIt roots all file ops at ``data_path``).
-       OnIt reads the issue, edits the source, and — when ``--onit-sandbox`` is
-       set — runs code via its MCP sandbox provider instead of the host.
+       OnIt reads the issue, edits the source, and — when an MCP sandbox
+       provider is configured — runs code there instead of on the host.
     2. **Capture.** The model patch is ``git diff`` of the workspace (test files
        excluded; the harness applies the gold test patch itself).
     3. **Grade (official harness).** Patches are written to ``predictions.jsonl``
@@ -24,7 +24,7 @@ target. See ``benchmarks/README.md`` → "SWE-bench" for full instructions.
 Usage:
     python -m benchmarks.swe_bench_runner --dataset lite --tier smoke
     python -m benchmarks.swe_bench_runner --dataset verified --limit 50 \
-        --onit-sandbox --run-id onit-v1 --max-workers 4
+        --run-id onit-v1 --max-workers 4
 """
 
 from __future__ import annotations
@@ -289,8 +289,6 @@ def generate_predictions(args) -> tuple[Path, str]:
     # otherwise every file tool fails with "data_path must be within the server
     # data directory" before the agent can read a single file.
     overrides: dict = {"data_path": str(data_root)}
-    if args.onit_sandbox:
-        overrides["sandbox"] = True
     _warn_if_servers_running(data_root)
     preds_path = data_root / f"predictions_{args.run_id}.jsonl"
 
@@ -392,9 +390,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Convenience: sets --limit from the tier preset.")
     p.add_argument("--limit", type=int, default=None,
                    help="Max instances (overrides --tier limit).")
-    p.add_argument("--onit-sandbox", action="store_true",
-                   help="Run OnIt with sandbox mode (delegates code execution to "
-                        "the MCP sandbox provider; requires one configured).")
     p.add_argument("--run-id", default="onit")
     p.add_argument("--max-workers", type=int, default=4)
     # Under the shared bench data root by default: the agent's data_path is set

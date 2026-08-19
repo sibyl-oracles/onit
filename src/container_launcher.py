@@ -20,7 +20,7 @@ must persist — pip installs via PIP_TARGET, HF caches — lives on the named
 data volume). ``apt``/``sudo`` are unavailable; language package managers are
 gated by the in-container command policy and require pinned versions when
 enabled via ``--container-allow-installs``. For per-tool sandboxing on the
-host, use ``--sandbox`` instead.
+host, configure an MCP sandbox provider instead.
 """
 
 from __future__ import annotations

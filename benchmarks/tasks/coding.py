@@ -18,7 +18,7 @@ the default ``coding``/``all`` categories; invoke it explicitly once the bridge
 lands.
 
 All coding tasks execute model-generated code, so a Docker daemon must be
-available (mirrors OnIt's own ``--container``/``--sandbox`` posture).
+available (mirrors OnIt's own ``--container``/MCP-sandbox posture).
 """
 
 from __future__ import annotations

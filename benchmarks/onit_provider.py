@@ -82,8 +82,8 @@ def _build_agent_blocking(config_overrides: dict[str, Any] | None = None) -> Any
 
     Starts the MCP servers (idempotent — skips ports already bound) then builds
     the agent, which discovers tools against those servers. ``config_overrides``
-    are shallow-merged onto :func:`base_config_data` (e.g. ``{"sandbox": True}``
-    to delegate code execution to OnIt's MCP sandbox provider).
+    are shallow-merged onto :func:`base_config_data` (e.g. ``{"data_path": ...}``
+    to root the agent's file tools at a per-instance workspace).
     """
     # Imported lazily so importing this module never pulls in the whole agent
     # stack (keeps the provider unit-testable with a stub).

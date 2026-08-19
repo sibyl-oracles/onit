@@ -1480,6 +1480,34 @@ class TestCodeExecutionFlag:
         cfg["serving"]["harness_tools"] = False
         assert self._args(cfg, tmp_path)["code_execution_available"] is False
 
+
+class TestSandboxAvailable:
+    """Derived from the registry, so it cannot claim tools nobody registered."""
+
+    @staticmethod
+    def _onit(tmp_path, tools=None):
+        with _mock_discover():
+            onit = OnIt(config=_make_config(tmp_path))
+        onit.tool_registry = MagicMock(tools=tools) if tools is not None else None
+        return onit
+
+    def test_no_registry_means_no_sandbox(self, tmp_path):
+        assert self._onit(tmp_path).sandbox_available is False
+
+    def test_absent_without_a_provider(self, tmp_path):
+        assert self._onit(tmp_path, {"bash", "read_file"}).sandbox_available is False
+
+    def test_present_when_a_provider_registered_it(self, tmp_path):
+        onit = self._onit(tmp_path, {"bash", "sandbox_run_code", "sandbox_stop"})
+        assert onit.sandbox_available is True
+
+    def test_no_config_key_can_assert_it(self, tmp_path):
+        """The old --sandbox/config flag is gone; a stale key must stay inert."""
+        with _mock_discover():
+            onit = OnIt(config=_make_config(tmp_path, {"sandbox": True}))
+        onit.tool_registry = MagicMock(tools={"bash"})
+        assert onit.sandbox_available is False
+
     def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
         from src.onit import SERVING_PASSTHROUGH
         assert "code_execution" in SERVING_PASSTHROUGH
@@ -1499,8 +1527,8 @@ class TestCodeExecutionFlag:
             interp = get_interpreter("doomed", tool_items=[], dispatch=None)
             await interp.run("x = 1")
             assert interp.alive
-            # Not sandbox mode, no registry: the interpreter goes anyway.
-            await _call_sandbox_stop(None, "doomed", sandbox=False)
+            # No registry, so no sandbox to stop: the interpreter goes anyway.
+            await _call_sandbox_stop(None, "doomed")
             assert not interp.alive
         finally:
             await shutdown_all()

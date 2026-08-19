@@ -129,11 +129,11 @@ OnIt roots all of its file tools (`read_file`, `edit_file`, `write_file`,
 
 1. **Edit — OnIt.** For each instance the repo is cloned at its `base_commit`
    into a per-instance workspace, and OnIt's `data_path` is pointed at it. OnIt
-   then reads the issue and edits the source *inside that repo*. With
-   `--onit-sandbox`, OnIt executes code through its **MCP sandbox provider**
-   (`sandbox_run_code`, etc.) instead of the host — so it can compile/run the
-   project safely while iterating. (You can additionally run the whole runner
-   inside `onit --container` for process-level isolation.)
+   then reads the issue and edits the source *inside that repo*. If an **MCP
+   sandbox provider** is configured (`sandbox_run_code`, etc.), OnIt executes
+   code there instead of on the host — so it can compile/run the project safely
+   while iterating. (You can additionally run the whole runner inside
+   `onit --container` for process-level isolation.)
 2. **Capture.** The model patch is the workspace `git diff`, with test-file
    edits stripped out (the grader supplies the gold test patch).
 3. **Grade — official harness.** Patches are written to `predictions.jsonl` and
@@ -153,10 +153,11 @@ export ONIT_BENCH_MODEL=glm-5.1:cloud
 export OLLAMA_API_KEY=...
 ```
 
-If you use `--onit-sandbox`, also configure an MCP sandbox provider (a server
-exposing `sandbox_run_code` / `sandbox_install_packages` / `sandbox_stop`) and
-set `sandbox: true` works automatically via the flag. Without it, OnIt edits and
-runs on the host — fine inside a container or VM, riskier on a workstation.
+To keep execution off the host, configure an MCP sandbox provider (a server
+exposing `sandbox_run_code` / `sandbox_install_packages` / `sandbox_stop`) under
+`mcp.servers`; OnIt routes code execution there automatically. Without one, OnIt
+edits and runs on the host — fine inside a container or VM, riskier on a
+workstation.
 
 ### Run it
 
@@ -164,9 +165,9 @@ runs on the host — fine inside a container or VM, riskier on a workstation.
 # Smoke: 5 instances of SWE-bench Lite, host execution, then grade.
 python -m benchmarks.swe_bench_runner --dataset lite --tier smoke
 
-# Sampled: 100 Lite instances, OnIt sandboxed, 4 parallel graders.
+# Sampled: 100 Lite instances, 4 parallel graders.
 python -m benchmarks.swe_bench_runner --dataset lite --tier sampled \
-    --onit-sandbox --run-id onit-lite --max-workers 4
+    --run-id onit-lite --max-workers 4
 
 # Full SWE-bench Verified (500), leaderboard-comparable.
 python -m benchmarks.swe_bench_runner --dataset verified --run-id onit-verified \
@@ -195,7 +196,6 @@ python -m benchmarks.swe_bench_runner --dataset lite --tier sampled --run-id oni
 | `--dataset` | `lite` (300) / `verified` (500) / `full` (2294) | `lite` |
 | `--tier` | sets `--limit` from the tier preset (smoke=5, sampled=100, full=all) | — |
 | `--limit` | explicit instance cap (overrides `--tier`) | — |
-| `--onit-sandbox` | OnIt executes code via its MCP sandbox provider | off |
 | `--run-id` | label for predictions + harness report | `onit` |
 | `--max-workers` | parallel grading containers | 4 |
 | `--instance-timeout` | wall-clock cap per instance, seconds (`0` disables) | 1800 |
@@ -256,7 +256,7 @@ Per-instance pass/fail and logs are in the harness's `logs/run_evaluation/<run_i
 ## Notes
 
 - **Code execution** (HumanEval and other coding tasks) runs inside an Inspect
-  Docker sandbox (`sandbox="docker"`), mirroring OnIt's `--container`/`--sandbox`
+  Docker sandbox (`sandbox="docker"`), mirroring OnIt's `--container`/MCP-sandbox
   posture. A Docker daemon must be available for coding tasks.
 - **Gated datasets** (GPQA, GAIA) need `HF_TOKEN`.
 - **Judge bias:** `onit_judge` defaults to the model under test; pass a stronger

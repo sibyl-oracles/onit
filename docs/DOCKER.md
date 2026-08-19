@@ -222,16 +222,19 @@ are present for code that compiles kernels.
 > ([why](#no-package-installs-in-web-ui-mode)). Bake torch into a derivative
 > image instead.
 
-## Combining with `--sandbox`
+## Combining with an MCP sandbox provider
 
-`--container` and `--sandbox` are complementary. `--container` isolates the
-whole OnIt process from the host; `--sandbox` delegates individual code-
-execution tool calls to an external MCP sandbox provider. They can be used
-together for defense in depth:
+`--container` and sandbox delegation are complementary. `--container` isolates
+the whole OnIt process from the host; an MCP sandbox provider takes individual
+code-execution tool calls off the host entirely. They can be used together for
+defense in depth — configure the provider under `mcp.servers` and run:
 
 ```bash
-onit --container --sandbox serve web
+onit --container serve web
 ```
+
+OnIt routes code execution to the provider whenever one registers
+`sandbox_run_code`; there is no separate flag to set.
 
 ## Manual `docker run`
 

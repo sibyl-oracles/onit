@@ -93,19 +93,22 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        'code_execution', 'code_timeout')
 
 
-async def _call_sandbox_stop(tool_registry, session_id: str = "", sandbox: bool = False) -> None:
+async def _call_sandbox_stop(tool_registry, session_id: str = "") -> None:
     """Stop what this session had running: its interpreter, and the sandbox.
 
     The interpreter goes first and unconditionally — it belongs to the session
     rather than to sandbox mode, and a child process left behind by a stopped
     session is one nobody will ever stop.
+
+    A provider that registered ``sandbox_stop`` is the whole signal that there
+    is a sandbox to stop; there is no separate flag to disagree with it.
     """
     try:
         from .model.serving.interpreter import shutdown_session
         await shutdown_session(session_id)
     except Exception as e:  # a stop that fails must not fail the stop
         logger.debug("interpreter not shut down for %s: %s", session_id, e)
-    if not sandbox or not tool_registry or "sandbox_stop" not in tool_registry.tools:
+    if not tool_registry or "sandbox_stop" not in tool_registry.tools:
         return
     try:
         handler = tool_registry["sandbox_stop"]
@@ -749,7 +752,7 @@ class OnItA2AExecutor(AgentExecutor):
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         session = self._get_session(context)
         session["safety_queue"].put_nowait(STOP_TAG)
-        await _call_sandbox_stop(self.onit.tool_registry, session["session_id"], sandbox=self.onit.sandbox)
+        await _call_sandbox_stop(self.onit.tool_registry, session["session_id"])
 
 
 class ClientDisconnectMiddleware:
@@ -874,7 +877,6 @@ class OnIt(BaseModel):
     gateway_token: str | None = Field(default=None, exclude=True)
     viber_webhook_url: str | None = Field(default=None)
     viber_port: int = Field(default=8443)
-    sandbox: bool = Field(default=False)
     prompt_url: str | None = Field(default=None, exclude=True)
     file_server_url: str | None = Field(default=None, exclude=True)
     chat_ui: Any | None = Field(default=None, exclude=True)
@@ -904,8 +906,13 @@ class OnIt(BaseModel):
 
     @property
     def sandbox_available(self) -> bool:
-        """Check if sandbox mode is enabled."""
-        return self.sandbox
+        """Check if an MCP provider registered the sandbox execution tools.
+
+        Derived, never configured: the routing block this gates tells the model
+        to run *all* code in the sandbox, so asserting it without a provider
+        would point the model at tools that do not exist.
+        """
+        return self.tool_registry is not None and "sandbox_run_code" in self.tool_registry.tools
 
     @property
     def local_search_available(self) -> bool:
@@ -1302,7 +1309,7 @@ class OnIt(BaseModel):
         self.gateway_token = self.config_data.get('gateway_token', None)
         self.viber_webhook_url = self.config_data.get('viber_webhook_url', None)
         self.viber_port = self.config_data.get('viber_port', 8443)
-        self.sandbox = self.config_data.get('sandbox', False)
+
     def load_session_history(self, max_turns: int | None = None, session_path: str | None = None) -> list[dict]:
         """Load recent session history from the JSONL session file.
 
@@ -1509,7 +1516,7 @@ class OnIt(BaseModel):
 
         # If the safety queue fired, stop the sandbox container.
         if not effective_safety_queue.empty():
-            await _call_sandbox_stop(self.tool_registry, effective_session_id, sandbox=self.sandbox)
+            await _call_sandbox_stop(self.tool_registry, effective_session_id)
 
         # Flush any pending async streaming events (e.g. A2A) before
         # returning, so the client sees all partial updates before the
@@ -2245,7 +2252,7 @@ class OnIt(BaseModel):
 
                 # User-initiated stop
                 if response == STOP_TAG:
-                    await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
+                    await _call_sandbox_stop(self.tool_registry, self.session_id)
                     self.chat_ui.add_message("system", "Task stopped by user.")
                     break
 
@@ -2282,7 +2289,7 @@ class OnIt(BaseModel):
                                 retry_succeeded = True
                                 break
                             if response == STOP_TAG:
-                                await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
+                                await _call_sandbox_stop(self.tool_registry, self.session_id)
                                 self.chat_ui.add_message("system", "Task stopped by user.")
                                 break
 
@@ -2314,7 +2321,7 @@ class OnIt(BaseModel):
             try:
                 instruction = await self.input_queue.get()
                 if not self.safety_queue.empty():
-                    await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
+                    await _call_sandbox_stop(self.tool_registry, self.session_id)
                     await self.output_queue.put(STOP_TAG)
                     break
                 self.last_metrics.clear()
@@ -2387,14 +2394,14 @@ class OnIt(BaseModel):
                     await self.output_queue.put(None)
                     return
                 if not self.safety_queue.empty():
-                    await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
+                    await _call_sandbox_stop(self.tool_registry, self.session_id)
                     await self.output_queue.put(STOP_TAG)
                     break
                 await self.output_queue.put(f"<answer>{last_response}</answer>")
                 return
             except asyncio.CancelledError:
                 logger.warning("Agent session cancelled.")
-                await _call_sandbox_stop(self.tool_registry, self.session_id, sandbox=self.sandbox)
+                await _call_sandbox_stop(self.tool_registry, self.session_id)
                 await self.output_queue.put(None)
                 return
             except Exception as e:

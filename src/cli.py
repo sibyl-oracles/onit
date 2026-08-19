@@ -687,8 +687,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Show tool execution logs.")
 
     # ── Isolation ────────────────────────────────────────────────────────────
-    parser.add_argument("--sandbox", action="store_true", default=None,
-                        help="Delegate code execution to an external MCP sandbox provider.")
     parser.add_argument("--target-env", type=str, default=None, dest="target_env",
                         help="Conda environment name or path for code execution "
                              "(e.g. env_B or ~/miniconda3/envs/env_B). "
@@ -770,7 +768,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     for arg_name, config_key in [
         ('verbose', 'verbose'),
         ('show_logs', 'show_logs'),
-        ('sandbox', 'sandbox'),
     ]:
         value = getattr(args, arg_name, None)
         if value is not None:

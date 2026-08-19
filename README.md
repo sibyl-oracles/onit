@@ -93,7 +93,6 @@ onit serve loop "task" --period 60            # repeat a task on a timer
 onit ask "what is the weather in Manila"      # send a task to a running A2A server
 
 onit --container                              # run in a hardened Docker container
-onit --sandbox                                # delegate code execution to a sandbox
 onit --unrestricted                           # unrestricted host filesystem access
 ```
 
@@ -152,7 +151,6 @@ serving:
 
 verbose: false
 timeout: 600
-sandbox: false
 
 web_port: 9000
 a2a_port: 9001
@@ -340,7 +338,6 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
 | `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
-| `--sandbox` | Delegate code execution to an external MCP sandbox provider | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
 | `--container` | Run the entire OnIt process inside a hardened Docker container | `false` |
 | `--mcp-sse URL` | Add an external MCP server (SSE transport, repeatable) | — |
@@ -594,18 +591,18 @@ onit serve loop "summarize today's news" --period 3600
 
 ## Isolation Modes
 
-OnIt offers three isolation levels. They can be combined (e.g. `--container --sandbox`).
+OnIt offers three isolation levels, plus optional sandbox delegation. They can be combined.
 
-### `--sandbox`
+### MCP sandbox delegation
 
-Delegates individual code-execution tool calls to an external MCP sandbox provider. Complementary to `--container`.
+Delegates individual code-execution tool calls to an external MCP sandbox
+provider. Complementary to `--container`, and useful when code should run on a
+different machine than the agent.
 
-```bash
-onit --sandbox
-onit --container --sandbox   # defense in depth
-```
-
-Requires an MCP server that provides sandbox tools (`sandbox_run_code`, `sandbox_install_packages`, `sandbox_stop`). Set `sandbox: true` in `config.yaml` to enable by default.
+There is no flag: configure an MCP server that provides the sandbox tools
+(`sandbox_run_code`, `sandbox_install_packages`, `sandbox_stop`) under `mcp.servers`,
+and OnIt routes code execution there automatically. Registering the provider *is*
+the opt-in — a separate switch could only ever disagree with it.
 
 ### `--container`
 
@@ -618,7 +615,6 @@ onit --container serve a2a --port 9100                    # A2A server on custom
 onit --container --container-gpus all                     # NVIDIA GPU pass-through
 onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
   serve web                                               # expose host path read-only
-onit --container --sandbox                                # combine with per-tool sandboxing
 ```
 
 The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Subsequent runs reuse the image.
