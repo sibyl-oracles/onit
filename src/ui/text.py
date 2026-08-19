@@ -635,6 +635,20 @@ class ChatUI:
             style="bold yellow",
         )
 
+    def notice(self, message: str,
+               level: Literal["info", "warning", "error", "debug"] = "info") -> None:
+        """Print a run event the user has to see to read the answer correctly.
+
+        The log panel these events also go to is off by default, so a reply cut
+        off mid-sentence, or one stitched together from two generations, would
+        otherwise arrive on screen with nothing to explain it.
+        """
+        mark, style = {
+            "warning": ("⚠", "bold yellow"),
+            "error": ("✖", "bold red"),
+        }.get(level, ("ℹ", "dim"))
+        self.console.print(f"  {mark}  {message}", style=style)
+
     def show_turn_limit(self, limit: int) -> None:
         """Print an inline warning when the chat loop stops at its turn ceiling.
 

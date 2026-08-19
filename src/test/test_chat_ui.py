@@ -328,3 +328,17 @@ class TestStreamedAnswerIsComplete:
     def test_reference_link_brackets_are_preserved(self, chat_ui, capsys):
         out = _stream(chat_ui, ["Cited ", "[label][ref]", " here.\n"], capsys)
         assert "Cited [label][ref] here." in out
+
+
+class TestNotice:
+    def test_a_warning_is_printed_not_just_logged(self, chat_ui):
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        chat_ui.notice("Answer is still incomplete", level="warning")
+        assert "Answer is still incomplete" in buf.getvalue()
+
+    def test_info_notices_print_too(self, chat_ui):
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        chat_ui.notice("resuming (1/3)")
+        assert "resuming (1/3)" in buf.getvalue()

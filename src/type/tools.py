@@ -146,6 +146,43 @@ _KEEPALIVE_EXPIRY = 2.0
 # a server working on a long tool is not a broken one.
 _HEALTH_INTERVAL = 15.0
 
+# How long an event stream may go quiet before the client gives up on it.
+#
+# The SDK reads the SSE stream with httpx's read timeout set to
+# sse_read_timeout, 300s by default, and that clock measures silence on the
+# stream — not on the session.  A pooled client outlives many turns, so the gap
+# between two tool calls is however long the user takes to type the next
+# message; on a server that sends no keepalives, five quiet minutes ends the
+# stream.  The SDK's reader then logs its whole stack at ERROR and pushes the
+# exception into the read stream, which kills a session that was working.
+#
+# Long enough here that only a genuinely abandoned connection reaches it.  The
+# liveness this timeout was standing in for is already covered better: a call
+# in flight is bounded by _REQUEST_TIMEOUT and watched by the ping above, and a
+# connection that died while idle surfaces as a write error on the next call,
+# which the retry handles.  POSTs keep the shorter timeout the SDK asked for —
+# only the stream gets this one.
+_STREAM_READ_TIMEOUT = 86400.0
+
+
+class _StreamingReadTimeoutClient(httpx.AsyncClient):
+    """An httpx client that lets streamed responses stay quiet far longer.
+
+    One client serves both halves of an MCP HTTP transport: short POSTs that
+    must fail fast when a server stops answering, and a long-lived event stream
+    whose whole job is to sit idle between messages.  They need different read
+    timeouts, and httpx only has one per client — so the streaming request gets
+    its own via the per-request extension.
+    """
+
+    async def send(self, request: httpx.Request, *, stream: bool = False,
+                   **kwargs: object) -> httpx.Response:
+        if stream:
+            timeout = dict(request.extensions.get("timeout") or {})
+            timeout["read"] = _STREAM_READ_TIMEOUT
+            request.extensions = {**request.extensions, "timeout": timeout}
+        return await super().send(request, stream=stream, **kwargs)
+
 
 def _http_client_factory(
     headers: dict[str, str] | None = None,
@@ -155,10 +192,12 @@ def _http_client_factory(
     """The httpx client MCP transports use, with connection reuse bounded.
 
     Mirrors the SDK's own defaults (redirects followed, 30s connect / 300s
-    read) and adds the keepalive expiry that keeps a POST off a connection the
-    server is about to close.
+    read) and adds two things the defaults get wrong for a pooled session: the
+    keepalive expiry that keeps a POST off a connection the server is about to
+    close, and a read timeout for streamed responses that outlasts an idle
+    session (see _STREAM_READ_TIMEOUT).
     """
-    return httpx.AsyncClient(
+    return _StreamingReadTimeoutClient(
         follow_redirects=True,
         timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
         headers=headers or {},
@@ -189,27 +228,39 @@ def _transport_for(url: str):
         return url
 
 
-class _PostWriterNoise(logging.Filter):
-    """Replace the SDK's post_writer traceback with one line.
+class _TransportNoise(logging.Filter):
+    """Replace the SDK's transport tracebacks with one line each.
 
-    When a POST fails, mcp.client.sse logs the whole stack at ERROR and carries
-    on.  It lands on the user's terminal looking like a crash, while the actual
-    handling — discard the session, reconnect, retry — happens here and works.
-    Keep the cause, drop the wall of frames; the frames stay available at DEBUG.
+    Both halves of the SSE transport report a broken session by logging the
+    whole stack at ERROR: post_writer when a POST fails, sse_reader when the
+    event stream ends or goes quiet past its read timeout.  Either lands on the
+    user's terminal looking like a crash, while the actual handling — discard
+    the session, reconnect, retry — happens here and works.  Keep the cause,
+    drop the wall of frames; the frames stay available at DEBUG.
     """
 
+    # Prefix of the SDK's log line -> what it means for the session.
+    _CAUSES = {
+        "Error in post_writer": "MCP write channel closed",
+        "Error in sse_reader": "MCP event stream closed",
+    }
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if not record.getMessage().startswith("Error in post_writer"):
+        message = record.getMessage()
+        for prefix, summary in self._CAUSES.items():
+            if message.startswith(prefix):
+                break
+        else:
             return True
         exc = record.exc_info[1] if record.exc_info else None
         logger.warning(
-            "MCP write channel closed (%s); reconnecting on the next call",
+            "%s (%s); reconnecting on the next call", summary,
             type(exc).__name__ if exc is not None else "unknown cause")
-        logger.debug("post_writer failure", exc_info=record.exc_info)
+        logger.debug("%s failure", prefix, exc_info=record.exc_info)
         return False
 
 
-logging.getLogger("mcp.client.sse").addFilter(_PostWriterNoise())
+logging.getLogger("mcp.client.sse").addFilter(_TransportNoise())
 
 
 class _PooledClient:

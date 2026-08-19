@@ -320,9 +320,21 @@ def summarize_metrics(m: dict) -> str:
     return " | ".join(parts)
 
 
-def _log_to_ui_or_verbose(message: str, chat_ui, verbose: bool, level: str = "info") -> None:
+def _log_to_ui_or_verbose(message: str, chat_ui, verbose: bool, level: str = "info",
+                          notify: bool = False) -> None:
+    """Record a run event.
+
+    The UI's log panel is off by default, so anything logged there is, for most
+    users, not written down at all.  ``notify`` marks the events that change
+    how the answer on screen should be read — a truncated reply, a resume —
+    and puts them in front of the user as well as in the log.
+    """
     if chat_ui:
         chat_ui.add_log(message, level=level)
+        if notify:
+            notice = getattr(chat_ui, "notice", None)
+            if callable(notice):
+                notice(message, level=level)
     elif verbose:
         print(message)
 
@@ -2207,6 +2219,39 @@ _UNCLOSED_PAIRS = (("(", ")"), ("[", "]"))
 _FENCE_RE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.MULTILINE)
 
 
+# Chars per token when turning delivered text back into a token count.  Low on
+# purpose: it overestimates what arrived, so _output_unaccounted() only fires
+# when the shortfall is far too large to be an estimation error.
+_CHARS_PER_TOKEN = 3
+# A shortfall below this is noise — special tokens, a template suffix, a few
+# multi-byte glyphs.
+_MIN_UNACCOUNTED_TOKENS = 512
+
+
+def _output_unaccounted(completion_tokens: int, *delivered: str) -> bool:
+    """True when usage reports far more output than actually arrived.
+
+    A host whose reasoning parser loses track mid-answer closes the stream with
+    ``finish_reason="stop"`` and a token count the text cannot explain: the
+    tail was generated and billed, then dropped on the way out.  Nothing in the
+    response says so — the arithmetic is the only evidence there is.
+
+    Reasoning counts as delivered.  A thinking model legitimately spends most
+    of a turn on text that never reaches the answer, and charging it as missing
+    would call every such turn truncated.  What this catches is the turn where
+    neither the answer nor the thinking accounts for the tokens billed.
+    """
+    try:
+        billed = int(completion_tokens)
+    except (TypeError, ValueError):
+        return False  # a host that reports no usage reports no evidence
+    if billed <= 0:
+        return False
+    arrived = sum(len(t or "") for t in delivered) // _CHARS_PER_TOKEN
+    return (billed - arrived >= _MIN_UNACCOUNTED_TOKENS
+            and billed > arrived * 2)
+
+
 def _looks_incomplete(text: str) -> bool:
     """True when a finished-looking response actually stops mid-thought.
 
@@ -3616,22 +3661,50 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # turn opens mid-sentence by design, and a continuation that closes
             # a bold marker opened before the cut would otherwise read as one
             # more unclosed pair and resume forever.
+            # The third way in, and the one the text above cannot show: usage
+            # reports thousands of tokens that neither the answer nor the
+            # thinking contains.  A sentence can end mid-word and still close
+            # every bracket it opened, so the arithmetic catches cuts that
+            # _looks_incomplete has no evidence for.
+            _swallowed = _output_unaccounted(
+                _completion_tokens, _full_content or _content or "", _full_reasoning)
             _cut_short = (_finish_reason == "length"
-                          or _looks_incomplete(state.final_answer_prefix + _partial))
+                          or _looks_incomplete(state.final_answer_prefix + _partial)
+                          or _swallowed)
             if _cut_short and state.final_continuation_count < MAX_FINAL_CONTINUATIONS:
                 state.final_continuation_count += 1
                 state.force_compact = False  # don't discard the partial answer
+                # A planning continuation earlier in the run may have capped the
+                # budget; resuming an answer under that cap truncates it again.
+                state.active_max_tokens = max_tokens
                 state.final_answer_prefix += _partial
-                messages.append({"role": "assistant", "content": _partial})
+                if _partial.strip():
+                    # An empty partial in the history is a turn that said
+                    # nothing; the continuation prompt reads as the whole ask.
+                    messages.append({"role": "assistant", "content": _partial})
                 messages.append({"role": "user", "content": _FINAL_CONTINUATION_PROMPT})
-                _why = ("finish_reason=length" if _finish_reason == "length"
-                        else f"finish_reason={_finish_reason}, text ends mid-sentence")
+                if _finish_reason == "length":
+                    _why = "finish_reason=length"
+                elif _swallowed:
+                    _why = (f"finish_reason={_finish_reason}, {_completion_tokens:,} "
+                            "tokens generated but never received")
+                else:
+                    _why = f"finish_reason={_finish_reason}, text ends mid-sentence"
                 _log_to_ui_or_verbose(
                     f"Final response truncated ({_why}); resuming "
                     f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
-                    chat_ui, verbose, level="info",
+                    chat_ui, verbose, level="info", notify=True,
                 )
                 continue
+            if _cut_short:
+                # Out of resumes.  The answer that follows stops mid-thought,
+                # and the run has no way to finish it — say so rather than let
+                # it read as a complete reply.
+                _log_to_ui_or_verbose(
+                    f"Answer is still incomplete after {MAX_FINAL_CONTINUATIONS} "
+                    "resume attempts — it may stop mid-sentence.",
+                    chat_ui, verbose, level="warning", notify=True,
+                )
 
             # Detect planning responses: the model announced intent ("Let me create X")
             # but stopped without calling any tools.  Inject a concrete JSON-format

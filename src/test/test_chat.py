@@ -22,6 +22,7 @@ from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _content_residue, _is_answering_a_nudge,
                                 _ACK_CONTINUATION_PROMPT,
                                 _extract_final_response, _looks_incomplete,
+                                _output_unaccounted, _log_to_ui_or_verbose,
                                 _reasoning_text,
                                 _execute_tool, _compact_context, chat)
 
@@ -2767,3 +2768,153 @@ class TestStripThinkBlocks:
         assert _extract_final_response(
             "thinking out loud</think>The answer is 4.4.", "", ""
         ) == "The answer is 4.4."
+
+
+# ── output the host billed but never sent ───────────────────────────────────
+
+def _mock_completion_with_usage(content, completion_tokens, reasoning="",
+                                finish_reason="stop"):
+    """A completion whose usage figures are real numbers, not mocks."""
+    message = MagicMock()
+    message.content = content
+    message.tool_calls = None
+    message.reasoning_content = reasoning
+    message.reasoning = None
+    message.thinking = None
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = finish_reason
+    completion = MagicMock()
+    completion.choices = [choice]
+    completion.usage.prompt_tokens = 100
+    completion.usage.completion_tokens = completion_tokens
+    return completion
+
+
+class TestOutputUnaccounted:
+    def test_text_that_matches_the_token_count_is_accounted_for(self):
+        assert _output_unaccounted(600, "x" * 1800) is False
+
+    def test_tokens_billed_with_nothing_delivered(self):
+        """vLLM burning the whole output budget and streaming nothing back."""
+        assert _output_unaccounted(32768, "") is True
+
+    def test_reasoning_counts_as_delivered(self):
+        """A thinking turn spends most of its tokens on text no answer holds —
+        counting that as missing would call every such turn truncated."""
+        assert _output_unaccounted(2000, "short answer", "x" * 5900) is False
+
+    def test_a_small_shortfall_is_not_evidence(self):
+        assert _output_unaccounted(400, "x" * 300) is False
+
+    def test_no_usage_is_no_evidence(self):
+        assert _output_unaccounted(0, "") is False
+        assert _output_unaccounted(MagicMock(), "") is False
+
+
+class TestResumeWhenOutputWentMissing:
+    @pytest.mark.asyncio
+    async def test_a_swallowed_tail_is_detected_from_the_token_count(self):
+        """The answer closes every bracket it opens and still stops short: only
+        the usage figures show the rest was generated and dropped."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_usage("FP8 halves the weight memory, but those account for",
+                                        completion_tokens=6000),
+            _mock_completion_with_usage(" only part of the cost.", completion_tokens=8),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Does FP8 help throughput?",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 2
+        assert result == ("FP8 halves the weight memory, but those account for"
+                          " only part of the cost.")
+
+    @pytest.mark.asyncio
+    async def test_a_thinking_turn_is_not_mistaken_for_a_swallowed_tail(self):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion_with_usage(
+                "No — FP8 helps memory, not throughput.",
+                completion_tokens=2000, reasoning="x" * 5900))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Does FP8 help throughput?",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 1
+        assert result == "No — FP8 helps memory, not throughput."
+
+    @pytest.mark.asyncio
+    async def test_the_user_is_told_when_the_answer_is_still_cut(self):
+        """Out of resumes, the reply on screen stops mid-thought.  The log panel
+        is off by default, so the run has to say so out loud."""
+        notices = []
+
+        class _UI:
+            def add_log(self, message, level="info"):
+                pass
+
+            def notice(self, message, level="info"):
+                notices.append((level, message))
+
+            def __getattr__(self, name):  # every other UI hook is a no-op
+                return lambda *a, **k: None
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(_mock_completion_with_usage(
+                "and then (", completion_tokens=6000)))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Explain forever.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                chat_ui=_UI(),
+                max_final_continuations=1,
+                max_ack_continuations=0,
+            ), timeout=30)
+
+        assert any("resuming" in m for _, m in notices), notices
+        assert any(lvl == "warning" and "still incomplete" in m
+                   for lvl, m in notices), notices
+
+
+class TestLogToUiOrVerbose:
+    def test_a_plain_log_stays_in_the_log_panel(self):
+        seen = []
+
+        class _UI:
+            def add_log(self, message, level="info"):
+                seen.append(message)
+
+        _log_to_ui_or_verbose("compacting", _UI(), verbose=False)
+        assert seen == ["compacting"]
+
+    def test_a_ui_without_notice_still_logs(self):
+        seen = []
+
+        class _UI:
+            def add_log(self, message, level="info"):
+                seen.append(message)
+
+        _log_to_ui_or_verbose("truncated", _UI(), verbose=False, notify=True)
+        assert seen == ["truncated"]

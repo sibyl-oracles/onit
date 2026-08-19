@@ -1,5 +1,6 @@
 """Tests for src/type/tools.py — ToolRegistry, ToolHandler, RequestHandler."""
 
+import inspect
 import os
 import sys
 import tempfile
@@ -377,7 +378,7 @@ class TestConnectionHygiene:
         import httpx
         from type.tools import _http_client_factory, _KEEPALIVE_EXPIRY
 
-        with patch("type.tools.httpx.AsyncClient") as ctor:
+        with patch("type.tools._StreamingReadTimeoutClient") as ctor:
             _http_client_factory()
 
         limits = ctor.call_args.kwargs["limits"]
@@ -407,18 +408,51 @@ class TestConnectionHygiene:
 
         assert _transport_for("server.py") == "server.py"
 
-    def test_post_writer_traceback_is_collapsed_to_one_line(self):
+    def test_transport_tracebacks_are_collapsed_to_one_line(self):
         """The SDK logs the whole stack at ERROR; recovery happens here."""
         import logging
-        from type.tools import _PostWriterNoise
+        from type.tools import _TransportNoise
 
         def record(msg):
             return logging.LogRecord(
                 "mcp.client.sse", logging.ERROR, __file__, 1, msg, None,
                 (RuntimeError, RuntimeError("read error"), None))
 
-        assert _PostWriterNoise().filter(record("Error in post_writer")) is False
-        assert _PostWriterNoise().filter(record("Error in sse_reader")) is True
+        # Both halves of the transport report a dead session this way.
+        assert _TransportNoise().filter(record("Error in post_writer")) is False
+        assert _TransportNoise().filter(record("Error in sse_reader")) is False
+        # Anything else the SDK has to say still reaches the user.
+        assert _TransportNoise().filter(record("Unknown SSE event: x")) is True
+
+    @pytest.mark.asyncio
+    async def test_idle_event_stream_outlives_the_gap_between_tool_calls(self):
+        """A quiet stream must not expire while the user types the next turn.
+
+        The SDK reads the stream on a 300s timeout, which is shorter than an
+        ordinary pause between two tool calls on a pooled session.  Streamed
+        responses get their own, far longer, read timeout; POSTs keep the short
+        one so a wedged server still fails fast.
+        """
+        import httpx
+        from mcp.client.sse import sse_client  # for its default read timeout
+        from type.tools import _http_client_factory, _STREAM_READ_TIMEOUT
+
+        sdk_default = inspect.signature(sse_client).parameters[
+            "sse_read_timeout"].default
+        assert _STREAM_READ_TIMEOUT > sdk_default
+
+        client = _http_client_factory(timeout=httpx.Timeout(30.0, read=300.0))
+        try:
+            streamed = client.build_request("GET", "http://127.0.0.1/sse")
+            posted = client.build_request("POST", "http://127.0.0.1/messages/")
+            with patch.object(httpx.AsyncClient, "send", new=AsyncMock()):
+                await client.send(streamed, stream=True)
+                await client.send(posted)
+        finally:
+            await client.aclose()
+
+        assert streamed.extensions["timeout"]["read"] == _STREAM_READ_TIMEOUT
+        assert posted.extensions["timeout"]["read"] == 300.0
 
 
 class TestSessionWatchdog:
