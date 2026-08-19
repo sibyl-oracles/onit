@@ -312,6 +312,92 @@
     return { root: msg, content };
   }
 
+  // What the model is working through, while it works through it.  Reasoning
+  // is where a long run actually spends its time, and a spinner over it tells
+  // the user nothing about whether waiting is worth it.  Shown live in its own
+  // panel — quieter than the answer in every dimension so it never reads as
+  // the reply — then folded to its header once the answer lands, still there
+  // to open but out of the way of what was asked for.
+  function addThinkPanel(turn) {
+    const wrap = document.createElement("div");
+    wrap.className = "think is-open";
+
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "think-head";
+    const caret = document.createElement("span");
+    caret.className = "think-caret";
+    const label = document.createElement("span");
+    label.className = "think-label";
+    head.append(caret, label);
+
+    const body = document.createElement("div");
+    body.className = "think-body";
+    // One text node appended to, rather than reassigning textContent: a
+    // reasoning stream is thousands of deltas long, and rebuilding the whole
+    // string on each one is the difference between smooth and janky.
+    const textNode = document.createTextNode("");
+    body.appendChild(textNode);
+
+    wrap.append(head, body);
+    turn.root.insertBefore(wrap, turn.content);
+
+    const started = Date.now();
+    let open = true;
+    let settled = false;
+    let heldSecs = 0;
+    let rafPending = false;
+
+    const since = () => Math.round((Date.now() - started) / 1000);
+    const paint = () => {
+      label.textContent = settled
+        ? `Thought for ${heldSecs}s`
+        : `Thinking… · ${since()}s`;
+    };
+    const setOpen = (v) => {
+      open = v;
+      wrap.classList.toggle("is-open", open);
+      head.setAttribute("aria-expanded", String(open));
+      caret.textContent = open ? "▾" : "▸";
+    };
+
+    setOpen(true);
+    paint();
+    const timer = setInterval(() => {
+      // loadHistory() can rebuild the list out from under a live panel.
+      if (settled || !wrap.isConnected) clearInterval(timer);
+      else paint();
+    }, 1000);
+
+    head.addEventListener("click", () => setOpen(!open));
+
+    return {
+      append(text) {
+        if (!text || settled) return;
+        textNode.appendData(text);
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(() => {
+          rafPending = false;
+          // Only the tail matters while it runs; the rest is there to scroll
+          // back through once it stops.
+          body.scrollTop = body.scrollHeight;
+          scrollToBottom();
+        });
+      },
+      // The answer is on screen: stop the clock and get out of its way.
+      settle() {
+        if (settled) return;
+        settled = true;
+        heldSecs = since();
+        clearInterval(timer);
+        if (!textNode.data.trim()) { wrap.remove(); return; }
+        paint();
+        setOpen(false);
+      },
+    };
+  }
+
   function inlineUrl(url) {
     return url + (url.includes("?") ? "&" : "?") + "inline=1";
   }
@@ -976,6 +1062,9 @@
     let streamText = "";
     let rafPending = false;
     let answerStarted = false;
+    let thinkPanel = null;
+
+    const settleThinking = () => { if (thinkPanel) thinkPanel.settle(); };
 
     const paintStream = () => {
       if (rafPending || !streamBlock) return;
@@ -999,6 +1088,13 @@
     };
 
     const handlers = {
+      think(d) {
+        // The panel is the status now — a chip repeating "Thinking…" over it
+        // says less than the reasoning scrolling underneath.
+        chip.set("");
+        if (!thinkPanel) thinkPanel = addThinkPanel(turn);
+        thinkPanel.append(d.delta || "");
+      },
       token(d) {
         chip.set("");
         ensureStreamBlock();
@@ -1031,10 +1127,12 @@
         streamBlock = null;
         streamText = "";
         answerStarted = true;
+        settleThinking();
         chip.set("Writing the answer…");
       },
       done(d) {
         chip.remove();
+        settleThinking();
         forgetEmailVerdicts();
         // Final response supersedes streamed phases — unless it is empty, in
         // which case wiping would leave the turn blank. Keep what streamed.
@@ -1082,6 +1180,7 @@
       },
       error(d) {
         chip.remove();
+        settleThinking();
         const err = document.createElement("div");
         err.className = "msg-error";
         err.textContent = d.message || "Something went wrong.";
@@ -1106,7 +1205,10 @@
         scrollToBottom();
       });
     } catch (e) {
-      // Connection dropped mid-stream: fall back to history polling
+      // Connection dropped mid-stream: fall back to history polling.  Nothing
+      // more will arrive on this panel, so stop its clock rather than leave it
+      // counting up next to a reconnect.
+      settleThinking();
       chip.set("Reconnecting…");
       pollWhileProcessing(turn, chip);
       return;

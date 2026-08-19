@@ -1026,6 +1026,13 @@ class WebApiUI:
             def _on_phase_end(content, _tok_s):
                 events.put_nowait(("phase_end", {"content": content or ""}))
 
+            def _on_think(token):
+                # Its own event, not a `token`: the browser shows the working
+                # while it happens and folds it away when the answer lands,
+                # which it can only do if the two never share a channel.
+                if token:
+                    events.put_nowait(("think", {"delta": token}))
+
             def _on_tool_status(text):
                 events.put_nowait(("status", {"text": text or ""}))
 
@@ -1067,6 +1074,7 @@ class WebApiUI:
                 safety_queue=session.safety_queue,
                 stream_callback=_on_token,
                 stream_complete_callback=_on_phase_end,
+                think_callback=_on_think,
                 stats=stats,
                 tool_status_callback=_on_tool_status,
                 tool_result_callback=_on_tool_result,

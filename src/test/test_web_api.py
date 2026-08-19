@@ -55,6 +55,10 @@ class FakeOnit:
         if tool_status_callback:
             tool_status_callback("test_tool(query)")
             tool_status_callback("")
+        think_callback = kwargs.get("think_callback")
+        if think_callback:
+            think_callback("Let me ")
+            think_callback("check.")
         if stream_callback:
             stream_callback("Hello ", "Hello ")
             stream_callback("world", "Hello world")
@@ -664,6 +668,25 @@ class TestChatEndpoint:
         assert history["processing"] is False
         assert [m["role"] for m in history["messages"]] == ["user", "assistant"]
         assert ui._onit.calls == ["hi"]
+
+    def test_reasoning_streams_on_its_own_channel(self, client, ui):
+        """The gap the user waits through is the model thinking, so it is sent
+        as it happens — and kept off the `token` channel, which is the answer
+        the browser renders and copies."""
+        sid = client.get("/api/history").json()["session_id"]
+        res = client.post("/api/chat", json={"message": "hi"},
+                          headers={"X-Session-Id": sid})
+        events = parse_sse(res.text)
+        names = [e for e, _ in events]
+        assert "think" in names
+        assert "".join(d["delta"] for e, d in events if e == "think") \
+            == "Let me check."
+        # The answer is untouched by it.
+        assert "".join(d["delta"] for e, d in events if e == "token") \
+            == "Hello world"
+        assert dict(events)["done"]["content"] == "Hello world"
+        # And it arrives before the answer it produced, not after.
+        assert names.index("think") < names.index("token")
 
     def test_a_late_correction_reaches_the_browser(self, client, ui):
         """The check that keeps running behind the answer has nowhere else to

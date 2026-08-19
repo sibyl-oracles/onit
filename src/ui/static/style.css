@@ -387,6 +387,45 @@ textarea { font-family: var(--font); }
   50% { opacity: 0.35; transform: scale(0.75); }
 }
 
+/* Reasoning, shown while it happens.  Quieter than the answer in every
+   dimension — smaller, dimmer, boxed, monospaced — so a long think never
+   competes with the reply it produced.  Collapsed to its header once that
+   reply is on screen; the header stays clickable. */
+.think { margin: 10px 0; }
+.think-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.think-head:hover { background: var(--bg-hover); }
+.think-caret { font-size: 10px; opacity: 0.85; width: 8px; text-align: center; }
+.think-body {
+  display: none;
+  margin-top: 8px;
+  padding: 10px 14px;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-code);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.think.is-open .think-body { display: block; }
+
 /* file chips */
 .file-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .file-chip {

@@ -214,6 +214,39 @@ class TestFriendlyToolStatus:
         adapter.stream_token("covers tuition.")
         assert starts == [1]
 
+    def test_reasoning_is_forwarded_apart_from_the_answer(self):
+        """The client shows the working while it happens and folds it away
+        when the answer lands — which it can only do if the two never arrive
+        on the same channel."""
+        thoughts, tokens = [], []
+        adapter = StreamingAdapter(
+            on_token=lambda tok, full: tokens.append(tok),
+            on_think=thoughts.append,
+        )
+        adapter.stream_start()
+        adapter.stream_think_token("Weighing ")
+        adapter.stream_think_token("the options.")
+        adapter.stream_token("The answer.")
+        assert "".join(thoughts) == "Weighing the options."
+        assert "".join(tokens) == "The answer."
+
+    def test_inline_think_tags_are_stripped_from_the_reasoning(self):
+        """A model that keeps its reasoning in `content` brings the delimiters
+        with it; the panel shows reasoning, not markup."""
+        thoughts = []
+        adapter = StreamingAdapter(on_think=thoughts.append)
+        adapter.stream_start()
+        adapter.stream_think_token("<think>planning")
+        adapter.stream_think_token("</think>")
+        assert "".join(thoughts) == "planning"
+
+    def test_reasoning_is_dropped_when_no_one_asked_for_it(self):
+        """A caller with nowhere to show the working pays nothing for it."""
+        adapter = StreamingAdapter(on_token=lambda tok, full: None)
+        adapter.stream_start()
+        adapter.stream_think_token("thinking hard")  # must not raise
+        assert adapter._pending == []
+
     def test_fact_check_reports_as_status_not_as_answer_text(self):
         """The draft is already on the client's screen; the check is work
         happening behind it, so it must not append to the message."""

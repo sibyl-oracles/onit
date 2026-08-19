@@ -318,9 +318,10 @@ class StreamingAdapter:
 
     def __init__(self, on_token=None, on_complete=None, show_logs=False,
                  throttle_tokens=0, on_tool_status=None, on_tool_result=None,
-                 on_answer_start=None, on_correction=None):
+                 on_answer_start=None, on_correction=None, on_think=None):
         self.on_token = on_token
         self.on_complete = on_complete
+        self.on_think = on_think
         self.show_logs = show_logs
         self._throttle_tokens = throttle_tokens
         self._on_tool_status = on_tool_status
@@ -396,7 +397,25 @@ class StreamingAdapter:
             self._pending.append(task)
 
     def stream_think_token(self, token):
-        pass  # skip think tokens for external clients
+        """Forward a reasoning token to the client.
+
+        Reasoning is the longest silence in a run, and a client told only
+        "thinking…" through it cannot tell a model working from one that has
+        hung.  Sent on its own channel rather than mixed into the answer, so
+        the client can show it while it happens and fold it away once the
+        answer it produced arrives.
+        """
+        if not (self.on_think and token):
+            return
+        # A model that keeps its reasoning inline in content brings the tags
+        # along with it; what the client is shown is the reasoning, never the
+        # markup that delimited it.
+        token = token.replace("<think>", "").replace("</think>", "")
+        if not token:
+            return
+        result = self.on_think(token)
+        if asyncio.iscoroutine(result):
+            self._pending.append(asyncio.ensure_future(result))
 
     @property
     def tokens_per_second(self) -> float:
@@ -1383,6 +1402,7 @@ class OnIt(BaseModel):
                            tool_result_callback=None,
                            answer_start_callback=None,
                            correction_callback=None,
+                           think_callback=None,
                            session_id: str | None = None) -> str:
         """Process a single task and return the response string.
 
@@ -1413,6 +1433,10 @@ class OnIt(BaseModel):
                 caller with no way to show a late correction should not be
                 paying for one. It is called at most once, and never after the
                 same session starts another task.
+            think_callback: Optional callback ``(token) -> None`` called for
+                each reasoning token, kept apart from ``stream_callback`` so
+                the caller can show the model's working without it landing in
+                the answer.
         """
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
         effective_session_path = session_path or self.session_path
@@ -1431,10 +1455,11 @@ class OnIt(BaseModel):
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
         _adapter = None
-        if (stream_callback and self.stream) or tool_result_callback:
+        if ((stream_callback or think_callback) and self.stream) or tool_result_callback:
             _adapter = StreamingAdapter(
                 on_token=stream_callback,
                 on_complete=stream_complete_callback,
+                on_think=think_callback,
                 show_logs=self.show_logs,
                 throttle_tokens=stream_throttle,
                 on_tool_status=tool_status_callback,
