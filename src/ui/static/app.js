@@ -318,6 +318,19 @@
   // panel — quieter than the answer in every dimension so it never reads as
   // the reply — then folded to its header once the answer lands, still there
   // to open but out of the way of what was asked for.
+  //
+  // A run thinks more than once: the model reasons, calls a tool, reasons
+  // again.  "The answer has started" is a guess that the next tool call
+  // retracts, so settling is never final — reasoning that arrives afterwards
+  // reopens the panel, starts a new section and restarts the clock.  A header
+  // frozen at "Thought for 13s" while the run is still working is the one
+  // thing this panel exists to prevent.
+  //
+  // The panel is scaffolding, not a record.  It lasts exactly as long as the
+  // run: once the final answer is on screen it is discarded, leaving the reply
+  // and nothing else — the same deal the terminal makes, where reasoning is
+  // printed as it happens and never enters the message list the next prompt
+  // redraws from (text.py get_user_input).
   function addThinkPanel(turn) {
     const wrap = document.createElement("div");
     wrap.className = "think is-open";
@@ -333,26 +346,25 @@
 
     const body = document.createElement("div");
     body.className = "think-body";
-    // One text node appended to, rather than reassigning textContent: a
-    // reasoning stream is thousands of deltas long, and rebuilding the whole
-    // string on each one is the difference between smooth and janky.
-    const textNode = document.createTextNode("");
-    body.appendChild(textNode);
-
     wrap.append(head, body);
     turn.root.insertBefore(wrap, turn.content);
 
-    const started = Date.now();
     let open = true;
     let settled = false;
-    let heldSecs = 0;
+    let userToggled = false;   // a hand-collapsed panel stays collapsed
+    let banked = 0;            // seconds of thinking from earlier stretches
+    let runStart = Date.now();
     let rafPending = false;
+    let timer = null;
+    let phaseNode = null;      // text node of the stretch being written now
 
-    const since = () => Math.round((Date.now() - started) / 1000);
+    // Wall time would count the tool calls in between as thinking; only the
+    // stretches actually spent reasoning are added up.
+    const secs = () => banked + Math.round((Date.now() - runStart) / 1000);
     const paint = () => {
       label.textContent = settled
-        ? `Thought for ${heldSecs}s`
-        : `Thinking… · ${since()}s`;
+        ? `Thought for ${banked}s`
+        : `Thinking… · ${secs()}s`;
     };
     const setOpen = (v) => {
       open = v;
@@ -360,21 +372,47 @@
       head.setAttribute("aria-expanded", String(open));
       caret.textContent = open ? "▾" : "▸";
     };
+    const startClock = () => {
+      clearInterval(timer);
+      timer = setInterval(() => {
+        // loadHistory() can rebuild the list out from under a live panel.
+        if (settled || !wrap.isConnected) clearInterval(timer);
+        else paint();
+      }, 1000);
+    };
+    // One text node per stretch, appended to rather than reassigned: a
+    // reasoning stream is thousands of deltas long, and rebuilding the whole
+    // string on each one is the difference between smooth and janky.
+    const newPhase = () => {
+      const phase = document.createElement("div");
+      phase.className = "think-phase";
+      phaseNode = document.createTextNode("");
+      phase.appendChild(phaseNode);
+      body.appendChild(phase);
+    };
+
+    head.addEventListener("click", () => { userToggled = true; setOpen(!open); });
 
     setOpen(true);
+    newPhase();
     paint();
-    const timer = setInterval(() => {
-      // loadHistory() can rebuild the list out from under a live panel.
-      if (settled || !wrap.isConnected) clearInterval(timer);
-      else paint();
-    }, 1000);
-
-    head.addEventListener("click", () => setOpen(!open));
+    startClock();
 
     return {
       append(text) {
-        if (!text || settled) return;
-        textNode.appendData(text);
+        if (!text) return;
+        if (settled) {
+          // Thinking again: the earlier settle was the run guessing it had
+          // finished, and it was wrong.  Say so.
+          settled = false;
+          runStart = Date.now();
+          if (!wrap.isConnected) turn.root.insertBefore(wrap, turn.content);
+          newPhase();
+          if (!userToggled) setOpen(true);
+          paint();
+          startClock();
+        }
+        phaseNode.appendData(text);
         if (rafPending) return;
         rafPending = true;
         requestAnimationFrame(() => {
@@ -385,15 +423,25 @@
           scrollToBottom();
         });
       },
-      // The answer is on screen: stop the clock and get out of its way.
+      // A stretch of thinking is over — an answer token, a tool starting.
+      // Bank the time and fold the panel away, but keep it: the run may well
+      // think again, and then it reopens.
       settle() {
         if (settled) return;
         settled = true;
-        heldSecs = since();
+        banked = secs();
         clearInterval(timer);
-        if (!textNode.data.trim()) { wrap.remove(); return; }
+        if (!body.textContent.trim()) { wrap.remove(); return; }
         paint();
-        setOpen(false);
+        if (!userToggled) setOpen(false);
+      },
+      // The run is over and its answer is on screen.  Nothing more will
+      // arrive, so the working goes the way it goes in the terminal: away,
+      // leaving the reply by itself.
+      discard() {
+        settled = true;
+        clearInterval(timer);
+        wrap.remove();
       },
     };
   }
@@ -1065,6 +1113,7 @@
     let thinkPanel = null;
 
     const settleThinking = () => { if (thinkPanel) thinkPanel.settle(); };
+    const dropThinking = () => { if (thinkPanel) { thinkPanel.discard(); thinkPanel = null; } };
 
     const paintStream = () => {
       if (rafPending || !streamBlock) return;
@@ -1097,6 +1146,9 @@
       },
       token(d) {
         chip.set("");
+        // Answer prose means this stretch of thinking is done — the same cue
+        // the terminal uses to close its think block.
+        settleThinking();
         ensureStreamBlock();
         streamText += d.delta || "";
         paintStream();
@@ -1114,6 +1166,11 @@
         chip.set("Thinking…");
       },
       status(d) {
+        // A tool is running, so the model is not thinking: bank the time and
+        // fold the panel away rather than let its clock keep counting over
+        // work it is not doing.  The chip is what moves now, and reasoning
+        // that comes back afterwards reopens the panel.
+        if (d.text) settleThinking();
         // A blank status means "nothing specific to report", not "idle" —
         // until the answer is on screen, in which case there is genuinely
         // nothing left to wait for.
@@ -1132,7 +1189,7 @@
       },
       done(d) {
         chip.remove();
-        settleThinking();
+        dropThinking();
         forgetEmailVerdicts();
         // Final response supersedes streamed phases — unless it is empty, in
         // which case wiping would leave the turn blank. Keep what streamed.

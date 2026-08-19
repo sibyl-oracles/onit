@@ -277,3 +277,54 @@ class TestTurnTiming:
         chat_ui.stream_token("hello")
         chat_ui.stream_end(elapsed="9.99s")
         assert "9.99s" in buf.getvalue()
+
+
+# ── streamed answer text ────────────────────────────────────────────────────
+
+def _stream(chat_ui, tokens, capsys):
+    """Feed tokens through a full stream and return everything printed."""
+    chat_ui.console = Console(file=sys.stdout, width=120)
+    chat_ui.stream_start()
+    for t in tokens:
+        chat_ui.stream_token(t)
+    chat_ui.stream_end()
+    out = capsys.readouterr().out
+    # Drop ANSI escapes and the blinking block cursor so text is comparable.
+    out = re.sub(r"\x1b\[[0-9;? ]*[a-zA-Z]|[\r\x08]", "", out)
+    return out.replace("\u2588 ", "").replace("\u2588", "")
+
+
+class TestStreamedAnswerIsComplete:
+    """The link/tag filters buffer across tokens; nothing they hold may be lost."""
+
+    def test_unclosed_link_paren_does_not_eat_the_rest(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["The plot ", "f[i](t ", "keeps rising. ",
+                                "Final answer: 42.\n"], capsys)
+        assert "Final answer: 42." in out
+        assert "f[i](t keeps rising." in out
+
+    def test_trailing_bracket_survives_the_end_of_stream(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["Answer: see note ", "[1]"], capsys)
+        assert "see note [1]" in out
+
+    def test_unterminated_label_survives_the_end_of_stream(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["Done. ", "[TODO"], capsys)
+        assert "Done. [TODO" in out
+
+    def test_lone_angle_bracket_survives_the_end_of_stream(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["Result is a ", "<"], capsys)
+        assert "Result is a <" in out
+
+    def test_real_link_still_prints_label_only(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["See ", "[docs](http://x)", " for more.\n"], capsys)
+        assert "See docs for more." in out
+        assert "http://x" not in out
+
+    def test_answer_tags_still_stripped(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["<answer>", "hi there", "</answer>"], capsys)
+        assert "hi there" in out
+        assert "<answer>" not in out
+
+    def test_reference_link_brackets_are_preserved(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["Cited ", "[label][ref]", " here.\n"], capsys)
+        assert "Cited [label][ref] here." in out

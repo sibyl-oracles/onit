@@ -151,6 +151,7 @@ class ChatUI:
         self._trail_buf = ""  # buffer whitespace-only tokens to suppress trailing blank lines
         self._stream_cursor_shown = False  # blinking block cursor during streaming
         self._link_buf = ""  # buffer for detecting markdown links during streaming
+        self._url_buf = ""  # URL chars swallowed in state 3, kept to restore a non-link
         self._link_state = 0  # 0=normal, 1=in label [..., 2=after ](, eating URL
         self._metrics: dict = {}  # live TurnMetrics sink; the source of tok/s
         self._stream_start_time = 0.0  # monotonic time when streaming started
@@ -850,7 +851,9 @@ class ChatUI:
         self._stream_pending = ""
         self._stream_think_started = False
         self._tag_buf = ""
+        self._trail_buf = ""
         self._link_buf = ""
+        self._url_buf = ""
         self._link_state = 0
         self._stream_start_time = time.monotonic()
 
@@ -878,6 +881,10 @@ class ChatUI:
             self.stream_think_end()  # reasoning just finished, close think block
         display = self._filter_display_token(token)
         display = self._filter_markdown_links(display)
+        self._emit(display)
+
+    def _emit(self, display: str) -> None:
+        """Print already-filtered text, printing the block header if needed."""
         if not display:
             return
         self._erase_stream_cursor()
@@ -951,27 +958,72 @@ class ChatUI:
                 if ch == '(':
                     # Confirmed markdown link — consume URL until ')'
                     self._link_state = 3
+                    self._url_buf = ""
                 else:
                     # Not a markdown link — flush buffered label as literal
                     out.append('[')
                     out.append(self._link_buf)
                     out.append(']')
-                    out.append(ch)
                     self._link_buf = ""
-                    self._link_state = 0
+                    if ch == '[':
+                        # Reference-style "[a][b]" — this bracket opens a label
+                        self._link_state = 1
+                    else:
+                        out.append(ch)
+                        self._link_state = 0
             elif self._link_state == 3:
                 if ch == ')':
                     # End of URL — emit only the label
                     out.append(self._link_buf)
                     self._link_buf = ""
+                    self._url_buf = ""
                     self._link_state = 0
-                # else: swallow URL characters
+                elif ch == '\n':
+                    # A link destination never spans a line, so this was never
+                    # a link: give back every character it swallowed.  Without
+                    # this an unmatched "](" eats the rest of the answer.
+                    out.append('[')
+                    out.append(self._link_buf)
+                    out.append('](')
+                    out.append(self._url_buf)
+                    out.append(ch)
+                    self._link_buf = ""
+                    self._url_buf = ""
+                    self._link_state = 0
+                else:
+                    self._url_buf += ch
         return "".join(out)
+
+    def _flush_filters(self) -> str:
+        """Return the text the incremental filters are still holding back.
+
+        Both filters buffer across token boundaries on the chance the next
+        token completes a wrapper tag or a markdown link.  When the stream
+        ends mid-pattern that bet lost: what they hold is ordinary text and
+        still has to be shown, or the answer prints short.
+        """
+        out = ""
+        if self._link_state == 1:
+            out = '[' + self._link_buf
+        elif self._link_state == 2:
+            out = '[' + self._link_buf + ']'
+        elif self._link_state == 3:
+            out = '[' + self._link_buf + '](' + self._url_buf
+        self._link_buf = ""
+        self._url_buf = ""
+        self._link_state = 0
+        out += self._tag_buf  # a lone '<' that never became a tag
+        self._tag_buf = ""
+        return out
 
     def stream_end(self, elapsed: str = "") -> None:
         """Close the streamed block. Message saving is handled by onit.py (has correct elapsed)."""
         self._erase_stream_cursor()
         self.stream_think_end()  # close think block if still open
+        # Whatever the tag/link filters are still holding is plain text now
+        # that no further token can complete the pattern — print it.
+        self._emit(self._flush_filters())
+        self._erase_stream_cursor()  # _emit re-shows it; the block is closing
         if not self._stream_header_printed:
             # Only whitespace or tool-call-only response — skip the empty block
             self._streaming_content = ""
@@ -979,6 +1031,7 @@ class ChatUI:
             self._trail_buf = ""
             self._tag_buf = ""
             self._link_buf = ""
+            self._url_buf = ""
             self._link_state = 0
             return
         # Discard trailing whitespace — just emit a single newline before the footer
@@ -1023,6 +1076,7 @@ class ChatUI:
         self._stream_pending = ""
         self._tag_buf = ""
         self._link_buf = ""
+        self._url_buf = ""
         self._link_state = 0
         self._stream_header_printed = False
 

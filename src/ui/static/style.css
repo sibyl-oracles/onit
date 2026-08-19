@@ -425,6 +425,14 @@ textarea { font-family: var(--font); }
   word-break: break-word;
 }
 .think.is-open .think-body { display: block; }
+/* One section per stretch of reasoning.  A run thinks, calls a tool, thinks
+   again — running the stretches together would read as one train of thought
+   that happens to contradict itself. */
+.think-phase + .think-phase {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-strong);
+}
 
 /* file chips */
 .file-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
