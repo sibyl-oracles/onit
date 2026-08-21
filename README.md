@@ -2,7 +2,7 @@
 
 *OnIt* — the AI is working on the given task and will deliver the results shortly.
 
-OnIt is an intelligent agent for task automation and assistance. It connects to private [vLLM](https://github.com/vllm-project/vllm) servers, [OpenRouter.ai](https://openrouter.ai/), and [Ollama cloud](https://ollama.com) for hosted models — and uses [MCP](https://modelcontextprotocol.io/) tools for web search, file operations, and more. It also supports the [A2A](https://a2a-protocol.org/) protocol for multi-agent communication.
+OnIt is an intelligent agent for task automation and assistance. It connects to private [vLLM](https://github.com/vllm-project/vllm) servers, local [Ollama](https://ollama.com) and [MLX](https://github.com/ml-explore/mlx-lm) endpoints on your own machine, and [OpenRouter.ai](https://openrouter.ai/) or [Ollama cloud](https://ollama.com) for hosted models — and uses [MCP](https://modelcontextprotocol.io/) tools for web search, file operations, and more. It also supports the [A2A](https://a2a-protocol.org/) protocol for multi-agent communication.
 
 ## Getting Started
 
@@ -134,7 +134,8 @@ serving:
   # top_k: 20
   # presence_penalty: 1.5
   # repetition_penalty: 1.0
-  # Optional second model server (any mix of vLLM / OpenRouter / Ollama cloud).
+  # Optional second model server (any mix of vLLM / local Ollama or MLX /
+  # OpenRouter / Ollama cloud).
   # By default new sessions are spread across hosts round-robin, then each
   # session's inference sticks to its host and fails over to the other
   # only on timeout/error (the failed host cools down for 60s):
@@ -353,7 +354,7 @@ Interactive setup wizard, in three sections:
 
 Settings go to `~/.onit/config.yaml`, secrets to the OS keychain.
 
-Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.1:cloud`) or OpenRouter (e.g. `google/gemini-2.5-pro`), where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
+Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.1:cloud`), OpenRouter (e.g. `google/gemini-2.5-pro`), or a local Ollama/MLX server hosting several models, where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
 
 See [Multiple model endpoints](#multiple-model-endpoints) for the endpoint editor and how priority routing works.
 
@@ -997,6 +998,94 @@ export VLLM_API_KEY=key1
 
 Resolution order: `serving.host_key` in the config YAML > `VLLM_API_KEY` env var > keychain. Without `--api-key` on the vLLM side, no key is needed and OnIt connects as before.
 
+### Local Ollama
+
+[Ollama](https://ollama.com) runs models on your own machine and exposes an
+OpenAI-compatible API on port 11434. Start the server and pull a model that
+supports tool calling — OnIt drives every task through MCP tools, so a model
+without tool support will talk but not act:
+
+```bash
+ollama serve                       # or the menu-bar app
+ollama pull qwen3:30b              # any tool-capable model
+```
+
+Point OnIt at it. The **`/v1` suffix is required** — that is the
+OpenAI-compatible path; the bare `http://localhost:11434` root serves Ollama's
+native API and every request 404s:
+
+```bash
+onit --host http://localhost:11434/v1 --model qwen3:30b
+```
+
+No API key is needed. Pass `--model` explicitly: auto-detection takes the first
+entry from `/v1/models`, which for a local Ollama is whichever model you pulled
+most recently, not the one you meant.
+
+**Size the context window on the server.** Local Ollama is reached over the
+OpenAI path, so the automatic `num_ctx` sizing OnIt does for Ollama *cloud*
+doesn't apply — Ollama falls back to its own default (4096 tokens in current
+releases, 2048 in older ones), which truncates long agent turns mid-stream. Raise it when starting the server, and tell OnIt the
+same number so context compaction accounts for it:
+
+```bash
+OLLAMA_CONTEXT_LENGTH=131072 ollama serve
+```
+
+```yaml
+serving:
+  host: http://localhost:11434/v1
+  model: qwen3:30b
+  max_context_tokens: 131072
+```
+
+> **Mixing local Ollama with other endpoints:** any host on port 11434 counts as
+> an Ollama endpoint, so it stays out of rotation while a vLLM or OpenRouter
+> endpoint is healthy (see `ollama_fallback_only` above). That is usually what
+> you want — the local box is the backstop. To load-balance across it equally,
+> pass `--no-ollama-fallback-only`, or give it an explicit `priority` in an
+> `endpoints` list.
+
+### Local MLX (Apple silicon)
+
+[MLX LM](https://github.com/ml-explore/mlx-lm) runs quantized models on the
+Apple silicon GPU and ships an OpenAI-compatible server:
+
+```bash
+pip install mlx-lm
+mlx_lm.server --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --port 8080
+```
+
+```bash
+onit --host http://localhost:8080/v1 --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
+```
+
+No API key is needed. `--model` on the server side is the model loaded at
+startup; `/v1/models` also lists every MLX model in your Hugging Face cache, and
+naming one of those in a request loads it on demand. Name the model on the OnIt
+side too — auto-detection would pick the first cache entry.
+
+The MLX server does not report `max_model_len`, so OnIt cannot discover the
+context window. Set it yourself, or long sessions compact against the wrong
+budget:
+
+```yaml
+serving:
+  host: http://localhost:8080/v1
+  model: mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
+  max_context_tokens: 262144
+```
+
+Pick an instruct model whose chat template implements tool calling — the 4-bit
+`mlx-community` builds of Qwen3, Llama 3.x, and Mistral do. `mlx_lm.server`
+loads a model on first request, so the first task after startup waits on weights
+being read from disk.
+
+Any other OpenAI-compatible local server (LM Studio, llama.cpp's
+`llama-server`, mlx-omni-server) works the same way: give OnIt the `/v1` base
+URL, name the model, and set `max_context_tokens` if the server doesn't publish
+`max_model_len`.
+
 ### OpenRouter.ai
 
 [OpenRouter](https://openrouter.ai/) gives access to models from OpenAI, Google, Meta, Anthropic, and others through a single API.
@@ -1070,7 +1159,7 @@ serving:
 │                 │                                   │
 │                 ▼                                   │
 │         chat() ◄──── Tool Registry                  │
-│  (vLLM / OpenRouter / Ollama cloud) (auto-discovered) │
+│ (vLLM/Ollama/MLX/OpenRouter) (auto-discovered)      │
 └─────────────────────────────────────────────────────┘
                          │
             ┌────────────┼────────────┐
@@ -1102,7 +1191,7 @@ onit/
 │   │   └── tools.py            # Tool registry and schema utilities
 │   ├── model/
 │   │   └── serving/
-│   │       └── chat.py         # LLM interface (vLLM, OpenRouter, Ollama cloud)
+│   │       └── chat.py         # LLM interface (vLLM, Ollama, MLX, OpenRouter)
 │   ├── ui/
 │   │   ├── text.py             # Rich terminal UI
 │   │   ├── api.py              # FastAPI + SSE web UI
