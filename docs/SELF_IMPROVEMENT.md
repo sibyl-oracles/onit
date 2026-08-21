@@ -1,9 +1,13 @@
 # Self-Improving OnIt — Literature Review and Scaffold Proposal
 
-**Status**: Phase 0 implemented (see §5). Phase 0.5 and Phases 1–4 are proposal / RFC.
-**Date**: August 2026 · *Revised August 09, 2026 — added §1.1 and Phase 0.5 (harness track).*
-**Companion**: [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md) — the harness track this
-plan now depends on. Read §1.1 before scheduling anything.
+**Status**: Phase 0 and Phase 0.5 implemented (see §5). Phases 1–4 are proposal / RFC.
+**Date**: August 2026 · *Revised August 20, 2026 — Phase 0.5 closed out; §1, §3, §5 and §8
+re-verified line by line against `main` and against the 209 recorded trajectories. Previous
+revision August 09, 2026.*
+**Companions**: [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md) — the harness track,
+now complete. [`SELF_IMPROVEMENT_GAPS.md`](SELF_IMPROVEMENT_GAPS.md) — the standing gap
+assessment against `main`; §3 and §8 here are kept consistent with it, and where the two
+differ this document carries the reason why.
 
 ---
 
@@ -36,13 +40,31 @@ The central thesis: **OnIt cannot improve what it does not record.** Layer 0 is 
 optional and not glamorous; it is the whole basis of everything else. Ship it first.
 
 The second thesis: **every promotion must pass a frozen, held-out benchmark before it
-goes live.** OnIt already has the fitness function — `benchmarks/` on Inspect-AI. That
-harness is the difference between self-improvement and self-delusion.
+goes live.** OnIt has most of that fitness function already — `benchmarks/` on Inspect-AI —
+and a held-out suite is the difference between self-improvement and self-delusion.
+*Amended August 20: what it has is aimed at the model, not the scaffold. Every registered
+task is single-turn and near-saturated, and the two agentic tasks that would actually move
+under these loops are written but unregistered. See §3, gap 5.*
 
 The third thesis, added in the August 09 revision: **the harness must stop moving before
-the baseline is frozen.** See §1.1 — this reorders the plan.
+the baseline is frozen.** See §1.1 — this reordered the plan, and the harness has now
+stopped moving.
+
+The fourth thesis, added August 20: **the cheapest outcome signal in the system is one
+already being computed and thrown away.** [`verify.py`](../src/model/serving/verify.py)
+fact-checks every finished answer by default, and its verdict is already sitting in each
+trajectory's `metrics` blob — 151 of 209 records carry it. `derive_signals()` writes
+`"verifier": None` beside it. Meanwhile the human rating path has been wired for weeks and
+used **zero** times. Unlabeled experience is what blocks Loops A and B; the label is
+already on disk. See §3, gap 3.
 
 ### 1.1 Relationship to the harness track
+
+> **Resolved, August 20, 2026.** Phase 0.5 is complete (§5), so this section's scheduling
+> argument has expired. It is kept because its *second* point — that harness changes
+> redefine the very signals Layer 0 records — proved to be the important one, and to have
+> been understated: the drift it predicted has already landed inside the recorded corpus
+> (§3, gap 6). The rule outlives the schedule that motivated it.
 
 A separate analysis ([`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md)) scored OnIt
 against NVIDIA's NOOA capability list and proposed six harness changes: typed I/O,
@@ -55,7 +77,8 @@ the next slot?*
 
 **1. This track is currently blocked; that one is not.** §8 says do Phase 2 next, *"but not
 until there are enough trajectories to freeze a holdout from."* The holdout wants ≈100
-tasks drawn from real sessions. `onit learn` currently reports 10 across 1 session. Phase 1
+tasks drawn from real sessions. `onit learn` reported 10 across 1 session *at the time of
+writing; it reports 209 across 23 as of August 20, of which ~29 are usable — see §3 gap 6*. Phase 1
 and Phase 2 cannot honestly start for weeks of accrual. The harness work needs no data at
 all. **The harness track is what happens while trajectories accumulate** — it is not a
 competitor for the slot, it is the thing that fills the slot that is empty anyway.
@@ -241,7 +264,9 @@ An honest audit. Findings are file-referenced so they can be verified.
 | Asset | Location | Why it matters |
 |---|---|---|
 | Rich per-run telemetry | [`TurnMetrics`](../src/model/serving/chat.py#L95) — turns, tool calls, prefill/decode split, compactions, peak prompt tokens | Free efficiency features for the reward model — already computed |
-| Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L29) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench, livecodebench, SWE-bench runner | **The fitness function.** This is the single biggest head start |
+| Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L29) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench, livecodebench, SWE-bench runner | **The fitness function** — the single biggest head start, but aimed at the model rather than the scaffold. See gap 5 |
+| Answer verifier | [`verify.py`](../src/model/serving/verify.py) — fact-checks the finished answer against the evidence that produced it; on by default | **An outcome signal that already runs**, already recorded per task and not yet read. See gap 3 |
+| Explicit run state | [`RunState`](../src/model/serving/state.py#L86), [`ResultStore`](../src/model/serving/results.py), [harness tools](../src/model/serving/harness.py) | Phase 0.5 (H2/H4/H6). `stop_reason` is the signal metrics cannot supply |
 | LLM-as-judge | [`benchmarks/scorers/onit_judge.py`](../benchmarks/scorers/onit_judge.py) | Quality gate for open-ended tasks |
 | Results ledger | [`benchmarks/RESULTS.md`](../benchmarks/RESULTS.md) | Where promotion evidence gets written |
 | MCP tool discovery | [`discover_tools()`](../src/lib/tools.py#L213), [`ToolRegistry`](../src/type/tools.py#L347) | Skills can ship as an MCP server — no new plumbing concept |
@@ -249,25 +274,76 @@ An honest audit. Findings are file-referenced so they can be verified.
 | Prompt templating | [`build_assistant_instruction()`](../src/mcp/prompts/prompts.py#L43) with YAML `template_path` override | Evolved prompts have a place to land |
 | Session index / ownership | [`sessions.py`](../src/sessions.py), `get_session_owner()` | Per-user memory scoping is already possible |
 
-**The gaps** (1–3 closed by Phase 0; see §5):
+**The gaps**, re-verified against `main` on August 20, 2026. Gap 1 is closed; 2 and 3 moved;
+5 grew; 6 and 7 are new and were not visible until there was a corpus to look at:
 
 1. ~~**No trajectory persistence.**~~ *Closed.* The session file still holds
    `{task, response, timestamp}`; [`src/learn/`](../src/learn/) now writes the run
    alongside it.
-2. ~~**`memories` is a dead parameter.**~~ *Still dead, deliberately.* It is threaded from
-   `onit.py` (`'memories': None`) through
-   [`chat.py`](../src/model/serving/chat.py#L1806) into
-   [`_build_messages()`](../src/model/serving/chat.py#L959), whose body never references
-   it. Phase 0 records but injects nothing, so the hook stays unwired until Phase 1 —
-   which is what makes level `observe` byte-for-byte identical to learning off.
-3. ~~**No outcome signal.**~~ *Partly closed.* Tool errors, retries, truncations and
-   compactions are derived per run; `POST /api/rating` records the human verdict. No
-   verifier and no implicit signal yet.
-4. **Tool set is frozen at startup.** `ToolRegistry.register()` exists but is only called
-   during startup discovery; there is no runtime path to add a tool.
-5. **No holdout discipline.** `benchmarks/RESULTS.md` mixes hosts and models with no
-   pinned baseline for A/B comparison. Benchmark runs now stamp the autonomy level they
-   ran at, which is the precondition for one.
+2. **`memories` is a dead parameter.** *Still dead, deliberately — and now the one thing
+   standing between a recording agent and a learning one.* It is threaded from `onit.py`
+   (`'memories': None`, at [three](../src/onit.py#L1486) [call](../src/onit.py#L1806)
+   [sites](../src/onit.py#L2355)) through [`chat.py`](../src/model/serving/chat.py#L2759)
+   into [`_build_messages()`](../src/model/serving/chat.py#L1360), whose body never
+   references it. Phase 0 records but injects nothing, so the hook stays unwired until
+   Phase 1 — which is what makes level `observe` byte-for-byte identical to learning off.
+   Every other gap below is a question of *what* to inject. This one is the aperture, and
+   nothing is a learning loop until it opens.
+3. **No outcome signal.** *Closer to closed than this document has been claiming.* Three
+   sources exist and the plan had counted one and a half:
+   - **Free process signals** — tool errors, retries, truncations, compactions — derived
+     per run by `derive_signals()`. Present on all 209 records. These say a run went
+     *badly*, never that an answer was *wrong*.
+   - **Human verdict** — `POST /api/rating` (👍/👎) appends a `rating` line, wired end to
+     end through the web UI. **Used zero times across 209 tasks.** A signal conditional on
+     someone bothering to click is not a signal, and no amount of further UI work changes
+     that. Implicit signals are the replacement, and are now a Phase 1 deliverable.
+   - **A verifier that already runs.** [`verify.py`](../src/model/serving/verify.py)
+     fact-checks each finished answer against the evidence that produced it, on by
+     default, and `TurnMetrics` already records `verify_s`, `verify_issues` and
+     `verify_revisions` ([`chat.py`](../src/model/serving/chat.py#L273-L275)). Those flow
+     straight into each record's `metrics` blob today: **151 of 209 records carry them —
+     the check ran on 144 and revised 11.** `derive_signals()` nonetheless hardcodes
+     `"verifier": None` ([`trajectory.py`](../src/learn/trajectory.py#L159)). Promoting a
+     field that is already on disk is roughly ten lines, and is the cheapest outcome
+     signal anywhere in this plan.
+4. **Tool set is frozen at startup.** `ToolRegistry.register()`
+   ([`type/tools.py`](../src/type/tools.py#L595)) is called from exactly one site —
+   [`lib/tools.py`](../src/lib/tools.py#L266), during discovery. No runtime registration,
+   no unregistration, no reload. Loop C has no insertion point to build against.
+5. **No holdout discipline — and the fitness function measures the wrong thing.** This gap
+   grew since August 09, because settling the harness fixed the ruler's *stability* and
+   not what it is a ruler *of*:
+   - `benchmarks/baselines/` holds a README and nothing else. No `holdout.jsonl`, no
+     `baseline.json`, no `pinned.yaml`. Invariants I1 and I3 are prose, not code.
+   - The tasks registered in [`run.py`](../benchmarks/run.py#L30-L41) are gsm8k, humaneval,
+     mbpp, bigcodebench and livecodebench — **single-turn, and near-saturated** at 0.978 /
+     0.915 / 0.957 in `RESULTS.md`. A playbook cannot move humaneval: there is no
+     multi-step tool use in it for a learned workflow to improve, and almost no headroom
+     left if there were. Freezing a holdout from these would formalize the error rather
+     than fix it — a ruler that cannot detect what Loops A–D change.
+   - The two benchmarks that *would* be sensitive are **written and unregistered**: GAIA
+     ([`tasks/agentic.py`](../benchmarks/tasks/agentic.py#L32)) and SimpleQA
+     ([`tasks/factuality.py`](../benchmarks/tasks/factuality.py#L24)) define `@task`
+     functions that appear in no `TASKS` entry and are unreachable from the runner.
+     Registering them is a two-line change and a precondition for §6 meaning anything.
+   - `RESULTS.md` still mixes five models across three hosts with no pinned row.
+6. **The recorded corpus is not comparable to itself.** `onit learn` reports 209 tasks
+   across 23 sessions, which reads as Gate 1 met. It is not. `stop_reason` is empty on
+   **179 of them**, because `RunState` only began recording it on August 18. H1 and H3
+   (August 09) redefined what `tool_errors` counts — and `_build_parameters` had been
+   dropping `required`, so `blank_required_args` never fired before then. H4's result store
+   collapses `truncations` and `compactions`. Roughly **29 records** were produced under
+   the settled harness. §7's "baseline drift" risk is not hypothetical: it has already
+   happened, inside the store, before anything was pinned. The store needs an era or
+   harness-version stamp per record so this is legible later instead of inferred from
+   timestamps, as it had to be here.
+7. **The corpus mixes six models with no stratification.** deepseek-v4-pro (142),
+   Qwen3.8-27B (51), Qwen3.6-27B (6), plus three others. A lesson distilled from a frontier
+   cloud model's trajectories may be actively wrong for an 8B local model — which is the
+   deployment this plan exists to serve, and the case where the literature's gains are
+   largest. §4.3's scope rules cover *owner* isolation and say nothing about model
+   isolation. They need to, and baselines must be pinned per model rather than globally.
 
 **The one constraint that shapes everything:** the instruction is deliberately split into
 a **static, prefix-cacheable half** and a **volatile half**
@@ -382,14 +458,21 @@ Implementation notes:
 
 **Also in Layer 0 — outcome signals**, cheapest first:
 
-| Signal | Source | Cost |
-|---|---|---|
-| Tool error / retry / truncation counts | already in the loop | free |
-| Efficiency (turns, tool calls, compactions, peak tokens) | `TurnMetrics` | free |
-| Execution feedback (exit codes, test pass/fail) | sandbox `bash` results | free, strongest where available |
-| Implicit user signal | next-turn rephrase ≈ failure; acceptance/thanks ≈ success | small heuristic |
-| Explicit rating | 👍/👎 endpoint in [`src/ui/api.py`](../src/ui/api.py) | ~half a day, highest value per bit |
-| LLM judge | `onit_judge` on a sample | tokens |
+| Signal | Source | Cost | Status (Aug 20) |
+|---|---|---|---|
+| Tool error / retry / truncation counts | already in the loop | free | ✅ recorded, all 209 |
+| Efficiency (turns, tool calls, compactions, peak tokens) | `TurnMetrics` | free | ✅ recorded, all 209 |
+| **Verifier verdict** | [`verify.py`](../src/model/serving/verify.py) — on by default; `verify_issues`, `verify_revisions` | **free, already computed** | ⚠️ **in `metrics` on 151 records; `signals.verifier` still `None`** |
+| Execution feedback (exit codes, test pass/fail) | sandbox `bash` results | free, strongest where available | not extracted |
+| Implicit user signal | next-turn rephrase ≈ failure; acceptance/thanks ≈ success | small heuristic | not built — now Phase 1 (§8, item 3) |
+| Explicit rating | 👍/👎 endpoint in [`src/ui/api.py`](../src/ui/api.py) | ~half a day, highest value per bit | ✅ shipped · **used 0 times in 209 tasks** |
+| LLM judge | `onit_judge` on a sample | tokens | not wired to trajectories |
+
+The August 20 re-verification reordered this table. "Highest value per bit" was true of the
+explicit rating and irrelevant, because the bits never arrive: a signal gated on a human
+choosing to click produced nothing across 209 tasks. The verifier row is the correction —
+it is free, it is *already running*, and its verdict is already in the store. Reading it is
+item 1 of §8.
 
 ### 4.2 Loop A — episodic recall *(low risk, ~3 days)*
 
@@ -577,17 +660,26 @@ Shipped:
   `test_chat_metrics.py`, the rating endpoint in `test_web_api.py`, and the `onit.py`
   wiring in `test_onit.py`.
 
-Deferred, now on **two** gates rather than one:
+Deferred, on **two** gates. As of August 20 the second is met and the first is not,
+*despite appearing to be* — which is the more useful of the two findings:
 
-- **Freeze `eval/holdout.jsonl` and pin `eval/baseline.json`.** The holdout is supposed to
-  be ≈100 tasks drawn from real sessions; there are no recorded sessions to draw from
-  until this has been running for a while. Do it after a few weeks of trajectories, and
-  before Phase 1 ships anything that could be tuned against it.
-  - **Gate 1 — data.** ≈100 tasks recorded. Currently 10.
-  - **Gate 2 — a settled harness.** Phase 0.5 complete. A baseline pinned while the
-    harness is still changing measures the harness, not the learning (§1.1). Of the two
-    gates this is the one that is easy to forget, because the data gate is visible in
-    `onit learn` and this one is not.
+- **Freeze `eval/holdout.jsonl` and pin `eval/baseline.json`.** Still not done, and now
+  squarely on the critical path (§8).
+  - **Gate 1 — data. Not met.** `onit learn` reports 209 tasks across 23 sessions, which
+    looks like twice the ≈100 the holdout wants. But only ~29 were recorded under the
+    settled harness, and the pre-August-18 majority carries no `stop_reason` at all (§3,
+    gap 6). Drawing a holdout from the full corpus would pin a baseline across three
+    different harnesses. Two ways out: wait for ~100 post-Phase-0.5 tasks, or draw the
+    holdout from the *tasks* in the existing corpus and re-run them under the current
+    harness to score them. The second is faster, uses the data already collected, and is
+    what §8 recommends.
+  - **Gate 2 — a settled harness. Met.** Phase 0.5 is complete. What it leaves behind is
+    an obligation rather than more work: the `code_execution` stamping rule in §5, and the
+    era stamp in gap 6.
+  - **Gate 3 — a benchmark that can move. New, and not met.** Added August 20. A holdout
+    is only a gate if a scaffold change can register on it; every registered task today is
+    single-turn and near-saturated (§3, gap 5). This gate is cheap — GAIA and SimpleQA are
+    already written — but it was invisible until the other two were nearly closed.
 
 **Exit criterion**: a week of normal use yields trajectories rich enough to answer *"which
 tool fails most, and on what?"* — a useful result even if every later phase is cancelled.
@@ -609,19 +701,22 @@ Ollama run accounted for zero generated tokens. Fixed in
 [`_ollama_process_streaming_response`](../src/model/serving/chat.py#L1198); the
 non-streaming path had always read it.
 
-### Phase 0.5 — Settle the harness *(~1 week)* · autonomy 1 — **in progress**
+### Phase 0.5 — Settle the harness · autonomy 1 — **complete**
 
-Runs *during* trajectory accrual, so it costs no calendar time against Phase 1. Full
-detail in [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md); this is the subset that
-must land before the baseline is pinned, and why.
+Ran *during* trajectory accrual, so it cost no calendar time against Phase 1. Full detail
+in [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md); this was the subset that had to
+land before the baseline could be pinned, and why.
 
-| # | Change | Why it gates the baseline | Effort | Status |
-|---|---|---|---|---|
-| **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moves `tool_errors` from server stack traces to harness refusals | ~1 day | ✅ **done** |
-| **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` is unbounded today, so its distribution is not a baseline | ~½ day | ✅ **done** |
-| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ~1 day | pending |
-| **H6** | `RunState` object | Becomes what `_record_trajectory` serializes; closes gap 2 | ~3 days | pending |
-| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ~3 days | pending |
+**All five shipped — and a sixth that this section had explicitly excluded shipped too.**
+
+| # | Change | Why it gated the baseline | Status |
+|---|---|---|---|
+| **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moved `tool_errors` from server stack traces to harness refusals | ✅ done (Aug 09) |
+| **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` was unbounded, so its distribution was not a baseline | ✅ done (Aug 09) |
+| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ✅ done — [`harness.py`](../src/model/serving/harness.py#L95-L128) |
+| **H6** | `RunState` object | What `_record_trajectory` now serializes; supplies `stop_reason` | ✅ done — [`state.py`](../src/model/serving/state.py#L86) |
+| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ✅ done — [`results.py`](../src/model/serving/results.py) |
+| **H5** | Code as action — `run_code` + per-session interpreter | **Was excluded from this phase. Shipped anyway.** See below | ⚠️ done, default off — [`interpreter.py`](../src/model/serving/interpreter.py) |
 
 **H1 and H3 shipped August 09, 2026** (suite 966 → 1028, all green). Two findings that
 change this plan's own reading of its data:
@@ -634,23 +729,43 @@ change this plan's own reading of its data:
   was therefore measuring a slightly different harness than the code appeared to describe.
   Trajectories recorded before this date carry that caveat.
 
-**H5 (code as action) is explicitly *not* in Phase 0.5.** It changes what a "tool call"
-means, so `tool_calls` per task stops being comparable across the boundary entirely. It is
-also the largest and riskiest piece, and it can *lose* accuracy on 8B-class models. Land it
-after Phase 2 has an honest reading, or accept that it forces a baseline re-pin — and say
-so out loud when it does.
+**On H5 — the exclusion that did not hold.** The August 09 revision said code as action was
+"explicitly *not* in Phase 0.5," because one `run_code` call replaces N tool calls and
+`tool_calls` per task therefore stops being comparable across the boundary. It shipped
+regardless: [`interpreter.py`](../src/model/serving/interpreter.py), offered as `run_code`
+via [`harness.py`](../src/model/serving/harness.py#L199).
 
-**Exit criterion**: `onit learn` reports the same signal set it does today, but the numbers
-are stable run-to-run on a fixed task. That stability *is* the baseline precondition.
+What saves the baseline is that it is **default off**
+([`onit.py`](../src/onit.py#L89-L93)), for reasons unrelated to this plan — it runs
+model-written Python with the process's privileges, and small models write worse Python
+than they write JSON. So the corpus is uncontaminated *today*, and the constraint converts
+from a schedule into a standing rule:
 
-**Ordering within the phase**: H1 → H3 → H2 → H6 → H4. The first two are bug fixes worth
-shipping on their own merits; H6 before H4 so the result store's bookkeeping has a typed
-home rather than three more locals in `chat()`.
+> **`code_execution` must be stamped into every trajectory record and every benchmark result
+> row, and a baseline pinned with it off is not valid for runs with it on.**
+
+That is stricter than deferring the feature would have been, and it is permanent rather
+than temporary. It is not implemented — `build_record()` records `model` and
+`tools_available` but nothing about the harness configuration that produced the run, which
+is the same omission as gap 6 and should be fixed in the same change.
+
+**Exit criterion — met.** `onit learn` reports a stable signal set, and `stop_reason` now
+arrives on every record rather than none. The cost of getting here is recorded in gap 6:
+the pre-August-18 corpus predates that stability and cannot be pinned against.
+
+**Ordering within the phase** was H1 → H3 → H2 → H6 → H4, and held.
 
 ### Phase 1 — Recall *(~3 days)* · autonomy 2
 
+Prefixed, as of August 20, by the four cheap items in §8 — the verifier promotion, the
+benchmark registration, implicit signals, and the pin. None is more than two days, and
+Phase 1 A/B-ing against an unmovable holdout with unlabeled episodes would be theatre.
+
 - Implement `memories` in `_build_messages()`; populate at the three `'memories': None`
   sites — into the `RunState` from H6, not a fourth ad-hoc parameter.
+- Rank retrieved episodes by the outcome signal from §8 item 1. Recall without a notion of
+  which episode went *well* retrieves the agent's own mistakes as readily as its successes,
+  which is the documented failure mode Reflexion exists to avoid.
 - `src/learn/recall.py` — lexical retrieval over trajectories, token-budgeted.
 - SQLite index over `trajectories/*.jsonl`, derived and rebuildable (§4.0).
 - Reconcile with H2: `note_read` (this session's own notes) and recall (prior sessions'
@@ -721,6 +836,8 @@ fast gets its diff read by a human before it goes anywhere.
 | **Runaway self-modification** | Sandbox (I6); allowlisted files; PR-gated; `pinned.yaml` rollback (I3) |
 | **Forgetting** | Stability axis blocks promotion on prior-generation regressions |
 | **Baseline drift under the harness** — a learning win that is really a harness change, or a harness regression hidden by a learning win | Phase 0.5 gate before the pin (§1.1); every result row stamps the harness phase alongside `ONIT_LEARN`; any post-pin harness change to the loop, the result store or the tool contract forces an explicit re-pin, announced in `RESULTS.md` |
+| **An insensitive benchmark** — the holdout cannot register a scaffold change, so every loop reads as a null result | Gate 3 (§5): at least one agentic, unsaturated task registered before the pin. A loop that cannot lose on the holdout cannot win on it either |
+| **Signal starvation** — loops trained on unlabeled runs learn confident nonsense | Promote the verifier already recorded (§3, gap 3); implicit signals; never rely on a human remembering to click |
 | **Effort sink with no payoff** | Phase gates. Each phase must win on the holdout or the track stops. Phase 0 has standalone value regardless |
 
 **Explicit non-goals for v1**: no weight updates or finetuning; no unattended modification
@@ -731,45 +848,61 @@ network-reachable self-modification surface.
 
 ## 8. Recommendation
 
-*Revised August 09, 2026. The destination is unchanged — Phase 2 is still the main event.
-What changed is what happens in the weeks before it can honestly start.*
+*Revised August 20, 2026. The destination is unchanged — Phase 2 is still the main event.
+What expired is the August 09 scheduling argument: Phase 0.5 is done, so the wait it was
+slotted into is over. What replaces it is a sharper problem. The instrument is now stable,
+and it is pointed at the wrong thing.*
 
-Phase 0 is done. **Do Phase 0.5 next (the harness), then freeze the holdout, then Phase 2
-with Phase 1 as a cheap ride-along.**
+Phase 0 and Phase 0.5 are done. **Do the four items below — none longer than two days —
+then Phase 1, then Phase 2.**
 
-The original recommendation — Phase 2 next — was right about the destination and silent
-about a dependency. Phase 2 cannot start until there are enough trajectories to freeze a
-holdout from, and there are 10. That is a wait of weeks measured in real usage, not in
-engineering days, and nothing in this document was scheduled to fill it. Phase 0.5 fills
-it, needs no data, and removes five sources of baseline drift on the way through (§1.1).
+The August 09 revision assumed the critical path was *data accrual* and filled the wait
+with harness work. That was right, and it worked. But the corpus it produced is thinner
+than it counts (209 records, ~29 usable — §3 gap 6), and the ruler it was going to be
+measured with cannot detect the thing being measured (§3 gap 5). So the blocker is no
+longer data. It is a **signal** and a **ruler**, and both are days away rather than weeks —
+which means Phase 2 can start *sooner* than the last revision projected, not later.
 
-The sequencing is therefore not a compromise between two roadmaps. It is one roadmap whose
-critical path was always *data accrual*, with the harness work slotted into the wait:
+**1. Promote the verifier signal already being recorded** *(~hours)*. `verify.py` runs on
+every answer by default; `verify_issues` and `verify_revisions` are already in the `metrics`
+blob of 151 records. `derive_signals()` writes `"verifier": None` next to them. Read the
+field instead. This is the highest ratio of unlocked capability to lines changed in the
+document: it converts an unlabeled corpus into a weakly-labeled one retroactively, across
+data already on disk. Ratings were never going to do this — 209 tasks produced zero.
 
-```
-  now ──────────────── trajectories accrue (weeks) ─────────────────▶ ≈100 tasks
-        │                                                                  │
-        └── Phase 0.5: H1 → H3 → H2 → H6 → H4 (~1 week of work) ──┐        │
-                                                                  ▼        ▼
-                                                        both gates met → freeze holdout
-                                                                           │
-                                                                           ▼
-                                                              Phase 1 + Phase 2
-```
+**2. Register GAIA and SimpleQA** *(~hours)*. Written, unreachable, two lines (§3, gap 5).
+Until the suite holds one task whose score can *move* when the scaffold changes, §6's
+measurement panel is decorative and freezing a holdout would only formalize the mistake.
 
-Phase 2 still carries low risk and still captures the majority of the literature's
-demonstrated scaffold gains — ACE reports double-digit improvements on exactly this
-mechanism, without labels and without gradients, on small open models. Nothing in the
-harness analysis contradicts that, and the harness track has no comparable evidence behind
-it: NOOA's capability list is a vendor framework post, not a controlled result. Where the
-two conflict on priority, **this document wins on evidence and that one wins on
-availability** — which is precisely why the answer is to run the available work during the
-wait rather than to reorder the destination.
+**3. Add implicit outcome signals** *(~2 days)*. A same-session rephrase of a task ≈
+failure; a session that ends after an answer ≈ acceptance. Both are already latent in the
+corpus and can be mined retroactively, like item 1. Together the two turn ~209 unlabeled
+records into a usable training set for Loop B's Reflector without waiting for new usage.
 
-One thing to hold onto if the schedule slips: if only part of Phase 0.5 lands, **H3 and H1
-are the ones that must** (they are bug fixes, and H3's unbounded `turn_count` corrupts a
-Layer 0 metric today). H4 is the largest baseline shift and the easiest to defer, at the
-cost of a re-pin later.
+**4. Then freeze the holdout and pin the baseline** *(days)*. Per model, not globally (§3,
+gap 7), stamped with `code_execution` and a harness era (§5). Draw the tasks from real
+sessions but **re-run them under the current harness to score them**, which sidesteps Gate
+1's thinness without waiting weeks for it to resolve on its own.
+
+Only then Phase 1, then Phase 2. Phase 2 still carries low risk and still captures the
+majority of the literature's demonstrated scaffold gains — ACE reports double-digit
+improvements on exactly this mechanism, without labels and without gradients, on small open
+models.
+
+**If only one of the four lands, make it (1).** It is also the cheapest, which is a rare
+alignment. Loops A and B both consume outcome-labeled trajectories: without labels, Loop A
+retrieves episodes it cannot rank — surfacing the agent's own failures as readily as its
+successes — and Loop B reflects on runs it cannot tell apart. That is precisely the failure
+mode where a self-improving agent confidently learns the wrong lesson, and where a frozen
+holdout is the only thing standing between that and production.
+
+**A note on this document's own reliability.** Between August 09 and August 20 it claimed
+H2, H4 and H6 were pending when all three had shipped, and claimed H5 was excluded when it
+had shipped too. Three weeks of completed work were invisible to the plan that scheduled
+it. Layer 0 exists because an agent cannot improve on experience it never wrote down; the
+same applies to the roadmap. **Re-verify §3 and §5 against the code at the top of every
+revision**, as this one did — the gap list is the part that rots, and it is also the part
+every scheduling decision is made from.
 
 Phase 3 (skills) is the highest-*ceiling* work and the strongest product story — Alita's
 generated MCPs transfer across agents and lift smaller models, which is directly on
