@@ -134,28 +134,9 @@ onit
 ```
 
 Full flag list, plus juggling several named sessions: [docs/CLI.md](docs/CLI.md).
-Tool-by-tool reference: [docs/TOOLS.md](docs/TOOLS.md).
-
-## Configuration
-
-`onit setup` is enough for most setups. To edit by hand, `~/.onit/config.yaml`:
-
-```yaml
-serving:
-  host: http://localhost:11434/v1
-  model: qwen3:30b
-  max_context_tokens: 131072   # set it when the server doesn't report its own
-  think: true                  # reasoning mode; off by default
-  max_tokens: 32768
-
-theme: white          # or "dark"
-timeout: 600
-data_path: ~          # working directory (default: ~/sandbox)
-```
-
-Priority order: CLI flags > environment variables > `~/.onit/config.yaml` > `--config FILE`.
-Everything configurable — sampling parameters, multiple endpoints, answer fact-checking,
-MCP server ports — is in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+Tool-by-tool reference: [docs/TOOLS.md](docs/TOOLS.md). Hand-editing
+`~/.onit/config.yaml` instead of rerunning `onit setup`:
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Beyond the terminal
 

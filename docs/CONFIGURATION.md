@@ -3,6 +3,26 @@
 `onit setup` covers the common cases; this is the full reference for
 `~/.onit/config.yaml`, environment variables, and project config files.
 
+## A minimal config
+
+Everything a local Ollama setup needs, hand-written into `~/.onit/config.yaml`:
+
+```yaml
+serving:
+  host: http://localhost:11434/v1
+  model: qwen3:30b
+  max_context_tokens: 131072   # set it when the server doesn't report its own
+  think: true                  # reasoning mode; off by default
+  max_tokens: 32768
+
+theme: white          # or "dark"
+timeout: 600
+data_path: ~          # working directory (default: ~/sandbox)
+```
+
+The rest of this page is the full set of keys.
+
+## Where settings come from
 
 `onit setup` is the recommended way to configure OnIt. It stores:
 
