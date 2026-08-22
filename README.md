@@ -92,7 +92,8 @@ keychain. Press Enter to skip anything you don't need — you can rerun it any t
 | **OpenWeatherMap** | The `get_weather` tool (current conditions and 5-day forecast). | Free — [openweathermap.org/api](https://openweathermap.org/api). |
 | **vLLM API key** | Only if you started vLLM with `--api-key`. | Whatever you passed to `vllm serve`. |
 | **OpenRouter** | Hosted models, if that is your endpoint. | [openrouter.ai](https://openrouter.ai/) (paid). |
-| **GitHub token** | The `github_repo` tool (create/list/fork repos). | GitHub → Settings → Developer settings. |
+| **GitHub token** | `git push` from the agent's shell, plus the `github_repo` tool — see [below](#github-and-hugging-face). | GitHub → Settings → Developer settings → Personal access tokens (`repo` scope). |
+| **Hugging Face token** | Model and dataset downloads in `--container` runs — see [below](#github-and-hugging-face). | [huggingface.co](https://huggingface.co) → Settings → Access Tokens. |
 
 Environment variables work too, if you'd rather not use the keychain:
 
@@ -137,6 +138,50 @@ Full flag list, plus juggling several named sessions: [docs/CLI.md](docs/CLI.md)
 Tool-by-tool reference: [docs/TOOLS.md](docs/TOOLS.md). Hand-editing
 `~/.onit/config.yaml` instead of rerunning `onit setup`:
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## GitHub and Hugging Face
+
+Two integrations worth having for ML work: one lets the agent push code, the other lets
+it pull models and datasets.
+
+### GitHub
+
+Store a personal access token with `repo` scope — `onit setup` (*GitHub personal access
+token*), or `export GITHUB_TOKEN=...`. Two things switch on:
+
+- **`git` in the agent's shell.** OnIt writes a `GIT_ASKPASS` helper into the bash tool's
+  environment and mirrors the token to `GH_TOKEN`, so `git clone`, `pull`, and `push`
+  over HTTPS reach private repos without an interactive prompt.
+- **The `github_repo` tool** — create, get, list, fork, and delete repositories through
+  the API, no shelling out.
+
+The shell is jailed to the working directory, so clone inside it — or point OnIt at the
+project you're working on:
+
+```bash
+onit --data-path ~/projects/my-model
+```
+
+### Hugging Face
+
+On the host, log in once with the Hub CLI. The token lands in `~/.cache/huggingface`, and
+the agent's shell runs with your real `HOME`, so `hf download`, `transformers`, and
+`datasets` all find it:
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf auth login          # older huggingface_hub: huggingface-cli login
+```
+
+A `--container` run cannot see your home directory. Store the token with `onit setup`
+(*HuggingFace access token*) instead and the launcher bridges it in as `HF_TOKEN`. The
+image also ships without the heavy ML packages — `onit-install-ml [torch|hf|extras|all]`
+installs CUDA-matched wheels onto the persistent volume
+([docs/DOCKER.md](docs/DOCKER.md)).
+
+One container-only gotcha: the command allowlist is enforced there and carries `git` and
+`git-lfs` but not `gh` or `hf`. Add what you need with
+`ONIT_ALLOWED_COMMANDS=gh,hf,huggingface-cli` ([docs/ISOLATION.md](docs/ISOLATION.md)).
 
 ## Beyond the terminal
 
