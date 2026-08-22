@@ -312,12 +312,25 @@ class TestOnItInit:
 
 class TestOnItInitialize:
     def test_mcp_host_override(self, tmp_path):
+        """mcp_host moves the socket-served servers, and only those.
+
+        A stdio server is a subprocess of this process reached over a pipe, so
+        there is no host to point elsewhere; rewriting its address would leave
+        it unreachable.
+        """
         cfg = _make_config(tmp_path)
         cfg["mcp"]["mcp_host"] = "192.168.1.100"
         with _mock_discover():
             onit = OnIt(config=cfg)
-        for server in onit.mcp_servers:
+
+        moved = [s for s in onit.mcp_servers if not s["url"].startswith("stdio://")]
+        assert moved, "expected at least one socket-served MCP server"
+        for server in moved:
             assert "192.168.1.100" in server["url"]
+
+        for server in onit.mcp_servers:
+            if server["url"].startswith("stdio://"):
+                assert server["url"] == f"stdio://{server['name']}"
 
     def test_env_host_fallback(self, tmp_path, monkeypatch):
         cfg = _make_config(tmp_path)

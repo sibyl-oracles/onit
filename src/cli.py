@@ -34,6 +34,8 @@ import yaml
 from fastmcp import Client
 
 from .onit import OnIt
+from .lib.tools import (is_stdio_server as _is_stdio_server,
+                        register_stdio_servers)
 
 
 def _download_files(text: str, server_url: str) -> str:
@@ -366,16 +368,6 @@ def _find_default_config() -> str:
     return "configs/default.yaml"
 
 
-def _is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
-    """Check if a TCP port is accepting connections."""
-    try:
-        sock = socket.create_connection((host, port), timeout=timeout)
-        sock.close()
-        return True
-    except (ConnectionRefusedError, OSError):
-        return False
-
-
 def _resolve_env_bin(env_name_or_path: str) -> str | None:
     """Resolve a conda env name or path to its bin directory.
 
@@ -447,7 +439,8 @@ def _mcp_servers_ready(config_data: dict, timeout: float = 15.0) -> bool:
     urls = [
         s['url']
         for s in servers
-        if not _is_external_server(s) and s.get('enabled', True) and s.get('url')
+        if not _is_external_server(s) and not _is_stdio_server(s)
+        and s.get('enabled', True) and s.get('url')
     ]
 
     if not urls:
@@ -473,48 +466,74 @@ def _mcp_servers_ready(config_data: dict, timeout: float = 15.0) -> bool:
     return False
 
 
-def _start_mcp_servers_background(log_level='ERROR'):
+def _start_mcp_servers_background(log_level='ERROR', port_overrides=None):
     """Start MCP servers in a daemon thread. Blocks forever (runs in background)."""
     from .mcp.servers.run import run_servers
     try:
-        run_servers(log_level=log_level)
+        run_servers(log_level=log_level, port_overrides=port_overrides)
     except Exception as exc:
         print(f"ERROR: MCP server background thread failed: {exc}", file=sys.stderr)
 
 
-def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
-    """Start MCP servers if they are not already running, then wait for readiness."""
-    from urllib.parse import urlparse
+def _assign_free_ports(servers: list, config_data: dict) -> dict:
+    """Point every socket-served MCP server at a free port, and report the map.
 
+    Ports are searched for at or above 18200 rather than fixed, so that two
+    people running OnIt on one machine each get their own servers instead of
+    the second silently attaching to the first one's — which used to run their
+    tools under the first user's account, inside the first user's sandbox.
+
+    Set ``mcp.fixed_ports: true`` to keep the configured ports as written.
+    """
+    from urllib.parse import urlparse, urlunparse
+    from src.mcp.servers.run import find_free_ports
+
+    targets = [s for s in servers
+               if s.get('enabled', True) and s.get('url')
+               and not _is_stdio_server(s) and not _is_external_server(s)]
+    if not targets:
+        return {}
+
+    if config_data.get('mcp', {}).get('fixed_ports'):
+        return {s['name']: urlparse(s['url']).port for s in targets
+                if s.get('name') and urlparse(s['url']).port}
+
+    ports = find_free_ports(len(targets))
+    assigned: dict = {}
+    for server, port in zip(targets, ports):
+        parsed = urlparse(server['url'])
+        server['url'] = urlunparse(
+            parsed._replace(netloc=f"{parsed.hostname or '127.0.0.1'}:{port}"))
+        if server.get('name'):
+            assigned[server['name']] = port
+    return assigned
+
+
+def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
+    """Start this process's MCP servers and wait for the socket-served ones.
+
+    Every OnIt process gets its own servers. The stdio ones are spawned by the
+    MCP client on first use; the rest are started here on ports found free at
+    startup.
+    """
     # Propagate data_path to MCP servers via an environment variable.
     # Fall back to OnIt's own default (~/sandbox) when unset so the MCP servers write
     # to the same absolute local path the UI displays, instead of their /tmp fallback.
     data_path = config_data.get('data_path') or str(Path.home() / "sandbox")
-    os.environ['ONIT_DATA_PATH'] = str(Path(data_path).expanduser().resolve())
+    data_path = str(Path(data_path).expanduser().resolve())
+    os.environ['ONIT_DATA_PATH'] = data_path
 
-    # Check if locally-managed servers are already running (skip external ones)
     servers = config_data.get('mcp', {}).get('servers', [])
-    local_servers = [s for s in servers if not _is_external_server(s)]
-    all_running = True
-    for s in local_servers:
-        if s.get('enabled', True) and s.get('url'):
-            parsed = urlparse(s['url'])
-            host = parsed.hostname or '127.0.0.1'
-            port = parsed.port or 80
-            if not _is_port_open(host, port, timeout=0.3):
-                all_running = False
-                break
+    register_stdio_servers(servers, data_path, log_level)
+    port_overrides = _assign_free_ports(servers, config_data)
 
-    if all_running and local_servers:
-        return
+    if not port_overrides:
+        return  # stdio-only: the client starts those when it connects
 
-    # Start MCP servers in a daemon thread.
-    # Individual servers will skip starting if their port is already bound
-    # by another onit instance, so this is safe to call even when some
-    # servers are already running.
+    # Start the socket-served MCP servers in a daemon thread.
     mcp_thread = threading.Thread(
         target=_start_mcp_servers_background,
-        args=(log_level,),
+        args=(log_level, port_overrides),
         daemon=True,
     )
     mcp_thread.start()

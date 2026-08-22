@@ -220,6 +220,16 @@ class TestDiscoverServerTools:
 
 # ── discover_tools ──────────────────────────────────────────────────────────
 
+def _target_url(target) -> str:
+    """URL of whatever discover_tools handed to Client.
+
+    Discovery builds a transport rather than passing the URL string, so that
+    stdio servers and HTTP servers go through one code path. Both SSE and
+    streamable-HTTP transports keep the URL on ``.url``.
+    """
+    return target if isinstance(target, str) else str(getattr(target, "url", target))
+
+
 class TestDiscoverTools:
     @pytest.mark.asyncio
     async def test_discovers_from_multiple_servers(self):
@@ -231,8 +241,8 @@ class TestDiscoverTools:
         mock_a = _mock_client(tools=[_fake_tool("search")])
         mock_b = _mock_client(tools=[_fake_tool("bash")])
 
-        def client_factory(url):
-            return mock_a if "18200" in url else mock_b
+        def client_factory(target):
+            return mock_a if "18200" in _target_url(target) else mock_b
 
         with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
              patch("lib.tools.Client", side_effect=client_factory):
@@ -251,8 +261,8 @@ class TestDiscoverTools:
 
         mock_good = _mock_client(tools=[_fake_tool("search")])
 
-        def client_factory(url):
-            if "9999" in url:
+        def client_factory(target):
+            if "9999" in _target_url(target):
                 raise ConnectionError("Cannot connect")
             return mock_good
 

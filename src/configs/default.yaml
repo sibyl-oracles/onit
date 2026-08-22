@@ -253,15 +253,34 @@ web_google_client_secret:
 mcp:
   # Override the host/IP in all MCP server URLs.
   # Set via --mcp-host CLI flag or here. E.g. mcp_host: 192.168.1.100
+  # Applies to socket-served servers only; stdio servers have no host.
   # mcp_host:
+  #
+  # The port in each URL below is a starting point, not a fixed address. On
+  # startup OnIt finds free ports at or above 18200 and rewrites these URLs, so
+  # several users can run OnIt on one machine at the same time without
+  # colliding. Set mcp.fixed_ports: true to use the ports exactly as written
+  # (single-user hosts, or when something outside OnIt must reach the servers).
   servers:
     - name: PromptsMCPServer
       description: Provides prompt templates for instruction generation
       url: http://127.0.0.1:18200/sse
       enabled: true
 
-    - name: ToolsMCPServer
-      description: Web search, bash commands, file operations, and document tools
+    # Everything that touches the session working directory. Served over a
+    # pipe by a subprocess this OnIt owns: it runs as you, it exits with you,
+    # and no other account on the machine can reach it. `module` and `profile`
+    # are the launch spec — there is no URL because there is no socket.
+    - name: ToolsLocalMCPServer
+      description: Bash, file operations, document search, local retrieval
+      transport: stdio
+      module: tasks.tools
+      profile: local
+      enabled: true
+
+    # The stateless remainder: remote API calls holding no per-user state.
+    - name: ToolsNetMCPServer
+      description: Web search, weather, and GitHub repository tools
       url: http://127.0.0.1:18201/sse
       enabled: true
 

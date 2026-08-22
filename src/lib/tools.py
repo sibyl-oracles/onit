@@ -15,7 +15,75 @@ from fastmcp import Client
 from rich.status import Status
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from type.tools import ToolHandler, ToolRegistry
+from type.tools import (ToolHandler, ToolRegistry, _transport_for,
+                        is_stdio_url)
+
+
+def is_stdio_server(server: dict) -> bool:
+    """True when this server is spawned over a pipe rather than reached on a port."""
+    return 'stdio' in str(server.get('transport', ''))
+
+
+def _package_root() -> str:
+    """Directory containing the ``src`` package — the cwd for a spawned server.
+
+    Not the package directory itself: ``src`` contains ``mcp`` and ``type``
+    subpackages that would shadow the installed ``mcp`` distribution and the
+    stdlib ``type`` module if a child process ran with it as its working
+    directory.
+    """
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+
+def register_stdio_servers(servers: list, data_path: str,
+                           log_level: str = 'ERROR') -> None:
+    """Give each stdio server its pseudo-URL and the command that starts it.
+
+    The subprocess inherits this process's environment with ONIT_DATA_PATH
+    pinned to this user's session root, which is what confines its tools to
+    that directory. Nothing is shared with another user's OnIt: no port, no
+    parent process, no file descriptor.
+
+    Safe to call more than once — every entry point that builds an OnIt runs
+    it, because a stdio server that was never registered has no way to start.
+    """
+    from pathlib import Path
+    from type.tools import _STDIO_SPECS, register_stdio_server, stdio_url
+
+    log_dir = Path.home() / '.onit' / 'logs'
+    created_log_dir = False
+
+    for server in servers:
+        if not is_stdio_server(server) or not server.get('enabled', True):
+            continue
+        if server.get('url') in _STDIO_SPECS:
+            continue  # already registered, by the CLI or an earlier call
+        name = server.get('name') or 'StdioMCPServer'
+        module = server.get('module')
+        if not module:
+            logger.error("[register_stdio_servers] %s has no module; disabling", name)
+            server['enabled'] = False
+            continue
+
+        if not created_log_dir:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            created_log_dir = True
+
+        args = ['-m', 'src.mcp.servers.run', '--stdio', '--name', name,
+                '--module', module, '--log-level', log_level]
+        if server.get('profile'):
+            args += ['--profile', str(server['profile'])]
+
+        url = stdio_url(name)
+        server['url'] = url
+        register_stdio_server(
+            url,
+            command=sys.executable,
+            args=args,
+            env={'ONIT_DATA_PATH': data_path},
+            cwd=_package_root(),
+            log_file=str(log_dir / f'mcp_{name}.log'),
+        )
 
 # Configure logging
 logging.basicConfig(
@@ -171,20 +239,22 @@ async def _discover_server_tools(
     # Wait for the server's TCP port to accept connections before attempting
     # MCP protocol discovery.  This eliminates spurious connection-refused
     # warnings that occur when discovery races ahead of server startup.
-    parsed = urlparse(url)
-    host = parsed.hostname or '127.0.0.1'
-    port = parsed.port or 80
-    if not await _wait_for_port(host, port):
-        logger.error(
-            "[discover_tools] %s did not become ready at %s:%d within timeout",
-            name, host, port,
-        )
-        return []
+    # A stdio server has no port to wait on: connecting *is* starting it.
+    if not is_stdio_url(url):
+        parsed = urlparse(url)
+        host = parsed.hostname or '127.0.0.1'
+        port = parsed.port or 80
+        if not await _wait_for_port(host, port):
+            logger.error(
+                "[discover_tools] %s did not become ready at %s:%d within timeout",
+                name, host, port,
+            )
+            return []
 
     last_error: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         try:
-            async with Client(url) as client:
+            async with Client(_transport_for(url)) as client:
                 tools_list = await client.list_tools()
                 resources_list = await client.list_resources()
                 tools_list.extend(resources_list)

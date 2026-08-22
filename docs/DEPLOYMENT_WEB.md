@@ -310,8 +310,10 @@ sudo ufw allow 443/tcp
 # Block direct access to Uvicorn from outside
 sudo ufw deny 9000/tcp
 
-# If running MCP servers, restrict to localhost only (they bind to 0.0.0.0 by default)
-sudo ufw deny 18200:18204/tcp
+# MCP servers bind loopback only and pick free ports from 18200 upward, so
+# they are already unreachable from off the host. Deny the range anyway, in
+# case a config sets mcp_host or an older release is still deployed.
+sudo ufw deny 18200:18600/tcp
 
 sudo ufw enable
 ```

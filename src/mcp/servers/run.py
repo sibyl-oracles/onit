@@ -10,6 +10,7 @@ rowel.atienza@up.edu.ph
 
 import os
 import sys
+import tempfile
 import yaml
 import time
 import multiprocessing
@@ -21,16 +22,150 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 
-#def run_server(name, transport, host, port, path, module, model=None, model_url=None):
-def _is_port_in_use(host: str, port: int, timeout: float = 0.5) -> bool:
-    """Check if a TCP port is already accepting connections."""
-    import socket
+# Where the search for a free port starts. Every OnIt process on a shared
+# machine allocates its own ports from here upward, so two users never contend
+# for a fixed number.
+DEFAULT_PORT_BASE = 18200
+
+# How far above the base to look before giving up.
+PORT_SEARCH_LIMIT = 400
+
+
+def _port_claim_dir() -> str:
+    """Where port claims live: one directory shared by every user on the host.
+
+    Deliberately not ``tempfile.gettempdir()``. That honours $TMPDIR, which is
+    per-user on macOS and can be set per-user anywhere — and OnIt's own bash
+    tool points TMPDIR at the session jail. A per-user claim directory would
+    still appear to work while excluding nobody, which is the worst outcome:
+    the collision it exists to prevent would come back silently.
+    """
+    if os.name != 'nt' and os.path.isdir('/tmp'):
+        return '/tmp/onit-mcp-ports'
+    return os.path.join(tempfile.gettempdir(), 'onit-mcp-ports')
+
+
+# Ports this process has claimed. A claim is an advisory lock on a file named
+# after the port. Holding the descriptor open for the life of the process is
+# what keeps the claim; the kernel drops it when the process ends, however it
+# ends, so a crash leaves nothing to clean up.
+_HELD_CLAIMS: list = []
+
+# Set once the claim directory proves unusable, after which the bind test
+# stands alone rather than every port being refused.
+_CLAIMS_DISABLED = False
+
+
+def _ensure_claim_dir() -> str | None:
+    """The claim directory, created world-writable, or None if unusable."""
+    global _CLAIMS_DISABLED
+    if _CLAIMS_DISABLED:
+        return None
+
+    path = _port_claim_dir()
     try:
-        sock = socket.create_connection((host if host != '0.0.0.0' else '127.0.0.1', port), timeout=timeout)
-        sock.close()
+        if not os.path.isdir(path):
+            # Sticky and world-writable, like /tmp itself: any user may add
+            # their own claim, nobody may remove somebody else's.
+            os.makedirs(path, exist_ok=True)
+            os.chmod(path, 0o1777)
+        return path
+    except OSError as exc:
+        logger.warning("Port claims disabled (%s unusable: %s); relying on the "
+                       "bind test alone", path, exc)
+        _CLAIMS_DISABLED = True
+        return None
+
+
+def _claim_port(port: int) -> bool:
+    """Reserve ``port`` for this process against other OnIt processes.
+
+    Binding a socket to test a port cannot reserve it: the test socket has to
+    be closed before the server can bind, and in that gap another OnIt that
+    tested the same port takes it. The two processes then run one server
+    between them, which is the sharing this whole arrangement exists to stop.
+    A lock held across that gap closes it.
+
+    Returns True when the port is ours. Without ``flock``, or without a usable
+    claim directory, there is no claim to make and the caller falls back to
+    the bind test alone.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return True  # Windows: bind test only
+
+    claim_dir = _ensure_claim_dir()
+    if claim_dir is None:
         return True
-    except (ConnectionRefusedError, OSError):
+
+    path = os.path.join(claim_dir, str(port))
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+        # The mode above is cut by the umask, typically to 0644, which would
+        # leave this file unopenable for writing by anyone else — and since a
+        # released claim leaves the file behind, the first user to touch a
+        # port would own it forever. Widen it back.
+        try:
+            os.chmod(path, 0o666)
+        except OSError:
+            pass  # Not ours to widen; the read-only path below still works.
+    except OSError:
+        try:
+            # flock does not need write access. An older claim file owned by
+            # another user is still lockable, so a port they have finished
+            # with comes back into circulation.
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return False
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
         return False
+
+    _HELD_CLAIMS.append(fd)
+    return True
+
+
+def find_free_ports(count: int, base: int = DEFAULT_PORT_BASE,
+                    host: str = '127.0.0.1',
+                    limit: int = PORT_SEARCH_LIMIT) -> list[int]:
+    """Return ``count`` ports at or above ``base`` for this process to use.
+
+    A candidate has to pass twice: it must be claimable against other OnIt
+    processes, and nothing outside OnIt may already be listening on it. The
+    claim is kept for the life of the process, so two people starting OnIt at
+    the same moment cannot be handed the same port.
+    """
+    import socket
+    held: list[socket.socket] = []
+    ports: list[int] = []
+    try:
+        for candidate in range(base, base + limit):
+            if len(ports) == count:
+                break
+            if not _claim_port(candidate):
+                continue
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind((host, candidate))
+            except OSError:
+                # Claimed but occupied by something that is not an OnIt MCP
+                # server. Keep the claim (harmless) and move on.
+                sock.close()
+                continue
+            held.append(sock)
+            ports.append(candidate)
+        if len(ports) < count:
+            raise RuntimeError(
+                f"No free port found for {count - len(ports)} MCP server(s) in "
+                f"{base}-{base + limit}")
+        return ports
+    finally:
+        for sock in held:
+            sock.close()
 
 
 def run_server(name:str,
@@ -83,11 +218,6 @@ def run_server(name:str,
             pass  # No usable stderr fd; logging still goes to the file
 
     try:
-        # If port is already in use (another onit instance started this server),
-        # skip starting and treat as success.
-        if 'stdio' not in transport and _is_port_in_use(host, port):
-            logger.info(f"Server {name} port {port} already in use, skipping (shared with another instance)")
-            return True
         # Suppress noisy uvicorn logs in child processes unless verbose.
         # Override LOGGING_CONFIG *before* uvicorn is imported so that
         # dictConfig() never resets the access logger back to INFO.
@@ -178,10 +308,22 @@ def load_config(config_path=None):
 
     return config
 
-def prepare_server_args(config):
-    """Extract server arguments from configuration."""
+def prepare_server_args(config, port_overrides: dict | None = None):
+    """Extract server arguments from configuration.
+
+    Args:
+        config: Parsed server configuration.
+        port_overrides: ``{server name: port}`` chosen by the caller. A name
+            present here overrides the port in the config file, which is how
+            each OnIt process gets its own set (see ``find_free_ports``).
+
+    Servers declaring ``transport: stdio`` are left out: their process is
+    spawned by the MCP client that connects to it, not by this pool, so that
+    it runs as the user who started OnIt and dies with them.
+    """
     server_args = []
-    
+    port_overrides = port_overrides or {}
+
     for server in config.get('servers', []):
         name = server.get('name')
         if not name:
@@ -189,8 +331,10 @@ def prepare_server_args(config):
             continue
             
         transport = server.get('transport', 'sse')
-        host = server.get('host', '0.0.0.0')
-        port = server.get('port', 18201)
+        # Loopback, not 0.0.0.0: these servers have no authentication of their
+        # own, so they must not be reachable from off the machine.
+        host = server.get('host', '127.0.0.1')
+        port = port_overrides.get(name, server.get('port', 18201))
         path = server.get('path', f'/{name.lower()}')
         enabled = server.get('enabled', True)
         module = server.get('module')
@@ -198,7 +342,11 @@ def prepare_server_args(config):
         if not module:
             logger.warning(f"Skipping {name} server: No module specified")
             continue
-       
+
+        if 'stdio' in transport:
+            logger.info(f"Skipping {name}: stdio servers are spawned by the client")
+            continue
+
         options = {}
         if 'options' in server:
             options = server.get('options', {})
@@ -213,12 +361,14 @@ def prepare_server_args(config):
             
     return server_args
 
-def run_servers(config_path=None, log_level='INFO'):
+def run_servers(config_path=None, log_level='INFO', port_overrides: dict | None = None):
     """Run MCP servers based on a configuration file.
 
     Args:
         config_path (str, optional): Path to YAML config. Defaults to built-in default.
         log_level (str): Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        port_overrides (dict, optional): ``{server name: port}`` to start on
+            instead of the configured ports.
     """
     logging.getLogger().setLevel(getattr(logging, log_level))
     # Suppress noisy uvicorn access logs unless in DEBUG mode
@@ -231,7 +381,7 @@ def run_servers(config_path=None, log_level='INFO'):
         if log_level == 'DEBUG':
             for server in config.get('servers', []):
                 server.setdefault('options', {})['verbose'] = True
-        server_args = prepare_server_args(config)
+        server_args = prepare_server_args(config, port_overrides)
 
         if not server_args:
             logger.warning("No enabled servers found in configuration")
@@ -267,6 +417,30 @@ if __name__ == "__main__":
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='Set the logging level')
+    # Serving one server on stdio, in the foreground, is how an MCP client
+    # starts a server it owns: the client spawns this process and speaks the
+    # protocol over its stdin/stdout. Nothing is written to stdout by anything
+    # except the protocol itself.
+    parser.add_argument('--stdio', action='store_true',
+                        help='Serve a single server over stdio instead of '
+                             'starting the configured pool')
+    parser.add_argument('--name', default='StdioMCPServer',
+                        help='Server name, used for log file naming (--stdio)')
+    parser.add_argument('--module', help='Module to serve (--stdio)')
+    parser.add_argument('--profile', help='Tool profile to serve, for servers '
+                                          'that support one (--stdio)')
     args = parser.parse_args()
+
+    if args.stdio:
+        if not args.module:
+            parser.error('--stdio requires --module')
+        stdio_options = {}
+        if args.profile:
+            stdio_options['profile'] = args.profile
+        if args.log_level == 'DEBUG':
+            stdio_options['verbose'] = True
+        ok = run_server(name=args.name, transport='stdio', host='', port=0,
+                        path='', module=args.module, options=stdio_options)
+        sys.exit(0 if ok else 1)
 
     run_servers(config_path=args.config, log_level=args.log_level)

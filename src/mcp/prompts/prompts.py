@@ -487,5 +487,10 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     logger.info(f"Starting Prompts MCP Server at {host}:{port}{path}")
+    if transport == 'stdio':
+        # stdout is the protocol channel on stdio: no socket, no banner.
+        mcp_prompts.run(transport='stdio', show_banner=False)
+        return
+
     mcp_prompts.run(transport=transport, host=host, port=port, path=path,
                     uvicorn_config=uvicorn_config(quiet=quiet))

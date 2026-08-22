@@ -207,6 +207,44 @@ def _http_client_factory(
     )
 
 
+# Launch specs for MCP servers this process runs over stdio, keyed by the
+# ``stdio://<name>`` pseudo-URL that stands in for them everywhere a server is
+# identified by URL — the pooled client, the tool registry's per-tool URL
+# lists, collision reporting. Keeping the identity a string means none of that
+# machinery has to learn what a transport is.
+STDIO_SCHEME = "stdio://"
+_STDIO_SPECS: dict[str, dict] = {}
+
+
+def stdio_url(name: str) -> str:
+    """The pseudo-URL identifying the stdio server called ``name``."""
+    return f"{STDIO_SCHEME}{name}"
+
+
+def register_stdio_server(url: str, command: str, args: list[str],
+                          env: dict[str, str] | None = None,
+                          cwd: str | None = None,
+                          log_file: str | None = None) -> None:
+    """Record how to spawn the stdio server addressed by ``url``.
+
+    ``env`` is merged over the current environment rather than replacing it.
+    The MCP SDK hands a subprocess only HOME, LOGNAME, PATH, SHELL and USER
+    when it is given an explicit environment, which would strip every
+    ONIT_* setting and API key the tools rely on.
+    """
+    _STDIO_SPECS[url] = {
+        "command": command,
+        "args": list(args),
+        "env": {**os.environ, **(env or {})},
+        "cwd": cwd,
+        "log_file": log_file,
+    }
+
+
+def is_stdio_url(url: object) -> bool:
+    return isinstance(url, str) and url.startswith(STDIO_SCHEME)
+
+
 def _transport_for(url: str):
     """The transport to connect to ``url`` with.
 
@@ -214,6 +252,24 @@ def _transport_for(url: str):
     connection defaults — for anything that is not an HTTP MCP server, or if
     this fastmcp cannot be told which httpx client to use.
     """
+    spec = _STDIO_SPECS.get(url) if isinstance(url, str) else None
+    if spec is not None:
+        from pathlib import Path
+        from fastmcp.client.transports import StdioTransport
+        return StdioTransport(
+            command=spec["command"],
+            args=spec["args"],
+            env=spec["env"],
+            cwd=spec["cwd"],
+            # One subprocess per OnIt process, held across the open/close
+            # cycles of the pooled client rather than respawned per call.
+            keep_alive=True,
+            log_file=Path(spec["log_file"]) if spec["log_file"] else None,
+        )
+    if is_stdio_url(url):
+        raise ValueError(
+            f"No launch spec registered for {url}; call register_stdio_server() "
+            f"before connecting.")
     if not isinstance(url, str) or not url.startswith("http"):
         return url
     try:

@@ -281,6 +281,11 @@ def run(
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
+    if transport == 'stdio':
+        # stdout is the protocol channel on stdio: no socket, no banner.
+        mcp.run(transport='stdio', show_banner=False)
+        return
+
     mcp.run(transport=transport, host=host, port=port, path=path,
             uvicorn_config=uvicorn_config(quiet=not verbose))
 

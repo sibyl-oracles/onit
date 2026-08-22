@@ -1,27 +1,48 @@
+# MCP servers started for one OnIt process.
+#
+# Ports here are only a starting point. Every OnIt process allocates its own
+# free ports at or above 18200 (see find_free_ports in ../run.py) and passes
+# them in as overrides, so several users can run OnIt on one machine without
+# contending for a fixed number.
+#
+# Servers marked `transport: stdio` are not started by this pool at all. The
+# MCP client spawns them itself, over a pipe, which keeps them running as the
+# user who started OnIt and unreachable from any other account on the machine.
+# That is where every tool that touches the session's data_path lives.
 servers:
   - name: PromptsMCPServer
     module: src.mcp.prompts.prompts
     description: "MCP server for prompt templates and instruction generation"
     enabled: true
-    host : 0.0.0.0
+    host : 127.0.0.1
     port : 18200
     path : /sse
     transport : 'sse'
 
-  - name: ToolsMCPServer
+  - name: ToolsLocalMCPServer
     module: tasks.tools
-    description: "MCP server for web search, bash commands, file I/O, and document operations"
+    description: "Per-user tools: bash, file I/O, document search, local retrieval"
     enabled: true
-    host : 0.0.0.0
+    transport : 'stdio'
+    options:
+      profile: local
+
+  - name: ToolsNetMCPServer
+    module: tasks.tools
+    description: "Stateless tools: web search, weather, GitHub"
+    enabled: true
+    host : 127.0.0.1
     port : 18201
     path : /sse
     transport : 'sse'
+    options:
+      profile: net
 
   - name: VLMToolsMCPServer
     module: src.mcp.vlm_web.tools
     description: "MCP server for vision-language model tools"
     enabled: true
-    host : 0.0.0.0
+    host : 127.0.0.1
     port : 18222
     path: /sse
     transport : 'sse'

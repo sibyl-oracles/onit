@@ -162,14 +162,32 @@ template_path: ~     # custom prompt template YAML
 data_path: ~         # working directory for file operations (default: ~/sandbox)
 
 mcp:
+  # fixed_ports: false   # true pins the ports below instead of finding free ones
   servers:
     - name: PromptsMCPServer
       url: http://127.0.0.1:18200/sse
       enabled: true
-    - name: ToolsMCPServer
+    - name: ToolsLocalMCPServer   # per-user, over stdio — no port
+      transport: stdio
+      module: tasks.tools
+      profile: local
+      enabled: true
+    - name: ToolsNetMCPServer
       url: http://127.0.0.1:18201/sse
       enabled: true
 ```
+
+The ports above are a starting point, not fixed addresses: each OnIt process
+finds free ports at or above 18200 on startup. That is what lets several people
+run OnIt on one machine at the same time — before, the second to start found
+those ports taken, assumed the servers were already its own, and ran its tools
+in the first user's account and sandbox. Set `mcp.fixed_ports: true` for a
+single-user host, or when something outside OnIt has to reach the servers.
+
+`ToolsLocalMCPServer` has no port at all. Every tool that touches the session
+working directory lives there, and OnIt starts it as a subprocess of its own
+and talks to it over a pipe — so it runs as you, exits with you, and no other
+account on the machine can reach it.
 
 ### Multiple model endpoints
 
@@ -740,14 +758,19 @@ The marker lives at the **data-directory root, not the session jail**, so contai
 
 MCP servers start automatically. Tools are auto-discovered and available to the agent.
 
-| Server | Description |
-|--------|-------------|
-| PromptsMCPServer | Prompt templates for instruction generation |
-| ToolsMCPServer | Web search, local search, bash commands, file operations, and document tools |
+| Server | Transport | Description |
+|--------|-----------|-------------|
+| PromptsMCPServer | loopback socket | Prompt templates for instruction generation |
+| ToolsLocalMCPServer | stdio (per user) | Bash, file operations, document and local search, GitHub |
+| ToolsNetMCPServer | loopback socket | Web search and weather |
+
+The split follows one rule: a tool that touches this session's files — or acts
+under this user's credentials, as `github_repo` does — is served over a pipe
+that belongs to one OnIt process. What is left is stateless lookups.
 
 ### Default tools
 
-The ToolsMCPServer registers these tools by default (required parameters in **bold**; defaults in parentheses):
+The tools servers register these by default (required parameters in **bold**; defaults in parentheses):
 
 | Tool | Parameters | Purpose |
 |------|------------|---------|
@@ -905,7 +928,7 @@ onit
 > what is our vacation policy?
 ```
 
-The agent uses two MCP tools, registered automatically in the ToolsMCPServer:
+The agent uses two MCP tools, registered automatically in the tools servers:
 
 | Tool | Description |
 |------|-------------|

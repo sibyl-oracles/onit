@@ -77,5 +77,10 @@ def run(
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     logger.info(f"Starting VLM Tools MCP server on {host}:{port}{path} with transport {transport}")
+    if transport == 'stdio':
+        # stdout is the protocol channel on stdio: no socket, no banner.
+        vlm_tools_mcp.run(transport='stdio', show_banner=False)
+        return
+
     vlm_tools_mcp.run(transport=transport, host=host, port=port, path=path,
                       uvicorn_config=uvicorn_config(quiet=quiet))

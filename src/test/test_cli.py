@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.cli import (
     _find_default_config, _send_task, _download_files, _upload_file,
-    _is_port_open, _mcp_servers_ready, _ensure_mcp_servers,
+    _mcp_servers_ready, _ensure_mcp_servers,
 )
 
 
@@ -180,21 +180,6 @@ class TestSendTask:
         assert "unexpected" in result
 
 
-# ── _is_port_open ──────────────────────────────────────────────────────────
-
-class TestIsPortOpen:
-    def test_returns_true_for_open_port(self):
-        with patch("src.cli.socket.create_connection") as mock_conn:
-            mock_sock = MagicMock()
-            mock_conn.return_value = mock_sock
-            assert _is_port_open("127.0.0.1", 8080) is True
-            mock_sock.close.assert_called_once()
-
-    def test_returns_false_for_closed_port(self):
-        with patch("src.cli.socket.create_connection", side_effect=ConnectionRefusedError):
-            assert _is_port_open("127.0.0.1", 9999) is False
-
-
 # ── _mcp_servers_ready ─────────────────────────────────────────────────────
 
 def _mock_mcp_client(raises=None):
@@ -242,33 +227,73 @@ class TestMcpServersReady:
 # ── _ensure_mcp_servers ────────────────────────────────────────────────────
 
 class TestEnsureMcpServers:
-    def test_skips_start_when_already_running(self):
-        config = {
-            "mcp": {
-                "servers": [
-                    {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
-                ]
-            }
-        }
-        with patch("src.cli._is_port_open", return_value=True), \
-             patch("src.cli.threading.Thread") as mock_thread:
-            _ensure_mcp_servers(config)
-            mock_thread.assert_not_called()
+    @staticmethod
+    def _http_config():
+        return {"mcp": {"servers": [
+            {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
+        ]}}
 
-    def test_starts_servers_when_not_running(self):
-        config = {
-            "mcp": {
-                "servers": [
-                    {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
-                ]
-            }
-        }
+    def test_always_starts_its_own_servers(self):
+        """A port answering on 18200 belongs to somebody else's OnIt.
+
+        This used to be read as "my servers are already up" and startup was
+        skipped, which pointed this user's tools at another user's server
+        process — running as them, jailed to their sandbox. Now every OnIt
+        starts its own.
+        """
+        config = self._http_config()
         mock_thread_instance = MagicMock()
-        with patch("src.cli._is_port_open", return_value=False), \
-             patch("src.cli.threading.Thread", return_value=mock_thread_instance), \
+        with patch("src.cli.threading.Thread", return_value=mock_thread_instance), \
              patch("src.cli._mcp_servers_ready", return_value=True):
             _ensure_mcp_servers(config)
             mock_thread_instance.start.assert_called_once()
+
+    def test_rewrites_urls_to_the_allocated_ports(self):
+        config = self._http_config()
+        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
+             patch("src.cli._mcp_servers_ready", return_value=True), \
+             patch("src.mcp.servers.run.find_free_ports", return_value=[18999]):
+            _ensure_mcp_servers(config)
+        assert config["mcp"]["servers"][0]["url"] == "http://127.0.0.1:18999/sse"
+
+    def test_fixed_ports_opt_out_keeps_the_configured_url(self):
+        config = self._http_config()
+        config["mcp"]["fixed_ports"] = True
+        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
+             patch("src.cli._mcp_servers_ready", return_value=True):
+            _ensure_mcp_servers(config)
+        assert config["mcp"]["servers"][0]["url"] == "http://127.0.0.1:18200/sse"
+
+    def test_stdio_server_gets_a_spec_and_no_pool(self):
+        """A stdio-only config starts no pool: the client spawns the server."""
+        from type.tools import _STDIO_SPECS
+        config = {"mcp": {"servers": [
+            {"name": "ToolsLocalMCPServer", "transport": "stdio",
+             "module": "tasks.tools", "profile": "local", "enabled": True},
+        ]}}
+        with patch("src.cli.threading.Thread") as mock_thread:
+            _ensure_mcp_servers(config)
+            mock_thread.assert_not_called()
+
+        server = config["mcp"]["servers"][0]
+        assert server["url"] == "stdio://ToolsLocalMCPServer"
+        spec = _STDIO_SPECS[server["url"]]
+        assert "--profile" in spec["args"] and "local" in spec["args"]
+        assert "tasks.tools" in spec["args"]
+        # The session directory is pinned in the child's environment; that is
+        # what confines its tools to this user's sandbox.
+        assert spec["env"]["ONIT_DATA_PATH"] == os.environ["ONIT_DATA_PATH"]
+        # An explicit env must not strip the rest: the MCP SDK hands a
+        # subprocess only five variables unless given a full environment.
+        assert "PATH" in spec["env"]
+
+    def test_stdio_server_without_a_module_is_disabled(self):
+        config = {"mcp": {"servers": [
+            {"name": "Broken", "transport": "stdio", "enabled": True},
+        ]}}
+        with patch("src.cli.threading.Thread"):
+            _ensure_mcp_servers(config)
+        assert config["mcp"]["servers"][0]["enabled"] is False
 
 
 # ── Web UI OAuth credential resolution ──────────────────────────────────────

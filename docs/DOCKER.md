@@ -360,7 +360,7 @@ stack, all services sharing the same hardening profile (read-only rootfs,
 | Service | Description | Port |
 |---------|-------------|------|
 | `caddy` | TLS termination, automatic Let's Encrypt certificates | 80, 443 |
-| `onit-mcp` | Shared MCP servers | 18200–18204 |
+| `onit-mcp` | MCP servers, one set per container | 18200+ (loopback; found free at startup) |
 | `onit-web` | Web UI (loopback-only; public traffic goes through Caddy) | 127.0.0.1:9000 |
 | `onit-a2a` | A2A server | 9001 |
 | `onit-gateway` | Telegram bot gateway | — |

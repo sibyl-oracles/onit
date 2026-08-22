@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-from .lib.tools import discover_tools
+from .lib.tools import discover_tools, register_stdio_servers
 from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
@@ -1019,30 +1019,54 @@ class OnIt(BaseModel):
             'enabled': True,
         },
         {
-            'name': 'ToolsMCPServer',
-            'description': 'Web search, bash commands, file operations, and document tools',
+            'name': 'ToolsLocalMCPServer',
+            'description': 'Bash, file operations, document search, local retrieval',
+            'transport': 'stdio',
+            'module': 'tasks.tools',
+            'profile': 'local',
+            'enabled': True,
+        },
+        {
+            'name': 'ToolsNetMCPServer',
+            'description': 'Web search, weather, and GitHub repository tools',
             'url': 'http://127.0.0.1:18201/sse',
             'enabled': True,
         },
     ]
+
+    # A config predating the local/net split names one combined server. Leave
+    # such a config alone rather than adding the two halves beside it, which
+    # would offer every tool twice.
+    _LEGACY_COMBINED_SERVER = 'ToolsMCPServer'
+    _SPLIT_SERVERS = frozenset({'ToolsLocalMCPServer', 'ToolsNetMCPServer'})
 
     def _setup_mcp_servers(self) -> None:
         """Parse MCP server list from config and resolve the prompts server URL."""
         self.mcp_servers = self.config_data['mcp']['servers'] if 'mcp' in self.config_data and 'servers' in self.config_data['mcp'] else []
         # Ensure default servers are present if missing from config
         existing_names = {s.get('name') for s in self.mcp_servers}
+        legacy = self._LEGACY_COMBINED_SERVER in existing_names
         for default_server in self._DEFAULT_MCP_SERVERS:
+            if legacy and default_server['name'] in self._SPLIT_SERVERS:
+                continue
             if default_server['name'] not in existing_names:
                 self.mcp_servers.insert(0, dict(default_server))
-        # Override MCP server URL hosts if mcp_host is configured
+        # Override MCP server URL hosts if mcp_host is configured. A stdio
+        # server is a subprocess of this process, so there is no host to move.
         mcp_host = self.config_data.get('mcp', {}).get('mcp_host')
         if mcp_host:
             from urllib.parse import urlparse, urlunparse
             for server in self.mcp_servers:
                 url = server.get('url')
-                if url:
+                if url and not str(url).startswith('stdio://'):
                     parsed = urlparse(url)
                     server['url'] = urlunparse(parsed._replace(netloc=f"{mcp_host}:{parsed.port}" if parsed.port else mcp_host))
+        # Give every stdio server its launch spec. The CLI does this too, but
+        # OnIt is also built directly — by the web, A2A and gateway servers and
+        # by anything embedding it — and a stdio server that was never
+        # registered has no address and no way to start.
+        register_stdio_servers(self.mcp_servers, self._mcp_data_path())
+
         # Find the prompts server URL from the MCP servers list
         for server in self.mcp_servers:
             if server.get('name') == 'PromptsMCPServer' and server.get('enabled', True):
@@ -1053,6 +1077,16 @@ class OnIt(BaseModel):
                 "PromptsMCPServer not found or disabled in MCP server config. "
                 "Ensure it is listed under mcp.servers with a valid URL."
             )
+
+    def _mcp_data_path(self) -> str:
+        """Session root handed to MCP servers, resolved the way the CLI does.
+
+        Read straight from the config rather than from ``self.data_path``,
+        which is not set until later in initialize().
+        """
+        configured = self.config_data.get('data_path')
+        base = Path(configured) if configured else Path.home() / "sandbox"
+        return str(base.expanduser().resolve())
 
     def _setup_tool_registry(self) -> None:
         """Discover tools from MCP servers (excluding the prompts server)."""

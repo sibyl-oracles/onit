@@ -539,6 +539,53 @@ if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
 # SERVER ENTRY POINT
 # =============================================================================
 
+# Tools that reach the network, hold no per-session state, and carry no
+# per-user credential. Everything else registered on this server belongs to
+# one user and must not be reachable by any other account on the machine (see
+# PROFILE_LOCAL below).
+#
+# github_repo is deliberately *not* here despite being a plain API call: it
+# acts under whichever GitHub token its process was started with, and it can
+# delete repositories. A tool holding one user's credential is as much theirs
+# as a tool holding their files.
+NET_TOOLS = frozenset({"search", "get_weather"})
+
+# Which half of the toolset a given process serves.
+#   local  per-user, spawned over stdio by the client that owns it. Holds every
+#          tool that touches the session's data_path.
+#   net    the stateless remainder, served over a socket.
+#   all    both, the single-process arrangement OnIt shipped with.
+PROFILE_LOCAL, PROFILE_NET, PROFILE_ALL = "local", "net", "all"
+
+
+def _apply_profile(profile: str) -> list[str]:
+    """Drop the tools that belong to the other profile. Returns what is left.
+
+    Subsetting the assembled server beats maintaining two registration lists:
+    a tool added above lands in the right process by virtue of its name being
+    in NET_TOOLS or not, and there is no second copy of the wiring to drift.
+    """
+    if profile == PROFILE_ALL:
+        return []
+
+    import asyncio
+    registered = [t.name for t in asyncio.run(mcp.list_tools())]
+    if profile == PROFILE_LOCAL:
+        drop = [n for n in registered if n in NET_TOOLS]
+    elif profile == PROFILE_NET:
+        drop = [n for n in registered if n not in NET_TOOLS]
+    else:
+        raise ValueError(f"Unknown tool profile {profile!r}; "
+                         f"expected {PROFILE_LOCAL}, {PROFILE_NET} or {PROFILE_ALL}")
+
+    for name in drop:
+        # remove_tool() moved onto the provider in fastmcp 3.x; the shim keeps
+        # this working on the older top-level method.
+        remover = getattr(getattr(mcp, "local_provider", None), "remove_tool", None)
+        (remover or mcp.remove_tool)(name)
+    return drop
+
+
 def run(
     transport: str = "sse",
     host: str = "0.0.0.0",
@@ -570,12 +617,21 @@ def run(
     # Propagate DATA_PATH, DOCUMENTS_PATH, and log level to sub-modules
     _init_submodules(DATA_PATH, documents_path=DOCUMENTS_PATH, verbose=verbose)
 
-    logger.info(f"Starting Tools MCP Server at {host}:{port}{path}")
+    profile = options.get('profile', PROFILE_ALL)
+    dropped = _apply_profile(profile)
+    if dropped:
+        logger.info(f"Tool profile {profile!r}: dropped {', '.join(sorted(dropped))}")
+
+    if transport == 'stdio':
+        logger.info(f"Starting Tools MCP Server ({profile}) on stdio")
+    else:
+        logger.info(f"Starting Tools MCP Server ({profile}) at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
-    logger.info("14 Core Tools: search, fetch_content, get_weather, extract_pdf_images, "
-                 "bash, read_file, send_file, search_document, "
-                 "extract_tables, get_document_context, github_repo, "
-                 "index_documents, local_search")
+
+    if transport == 'stdio':
+        # stdout carries the protocol here, so no uvicorn and no banner.
+        mcp.run(transport='stdio', show_banner=False)
+        return
 
     if not verbose:
         import uvicorn.config
