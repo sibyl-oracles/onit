@@ -1,6 +1,6 @@
 # Release Notes
 
-## v0.1.4b
+## v0.1.4
 
 ### New Features
 
