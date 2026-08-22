@@ -229,6 +229,7 @@ class TestMcpServersReady:
 class TestEnsureMcpServers:
     @staticmethod
     def _http_config():
+        """One named server. _ensure_mcp_servers adds the defaults alongside."""
         return {"mcp": {"servers": [
             {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
         ]}}
@@ -256,26 +257,29 @@ class TestEnsureMcpServers:
             _ensure_mcp_servers(config)
         assert config["mcp"]["servers"][0]["url"] == "http://127.0.0.1:18999/sse"
 
+    @staticmethod
+    def _by_name(config, name):
+        return next(s for s in config["mcp"]["servers"] if s["name"] == name)
+
     def test_fixed_ports_opt_out_keeps_the_configured_url(self):
         config = self._http_config()
         config["mcp"]["fixed_ports"] = True
         with patch("src.cli.threading.Thread", return_value=MagicMock()), \
              patch("src.cli._mcp_servers_ready", return_value=True):
             _ensure_mcp_servers(config)
-        assert config["mcp"]["servers"][0]["url"] == "http://127.0.0.1:18200/sse"
+        assert self._by_name(config, "A")["url"] == "http://127.0.0.1:18200/sse"
 
-    def test_stdio_server_gets_a_spec_and_no_pool(self):
-        """A stdio-only config starts no pool: the client spawns the server."""
+    def test_stdio_server_gets_a_spec(self):
         from type.tools import _STDIO_SPECS
         config = {"mcp": {"servers": [
             {"name": "ToolsLocalMCPServer", "transport": "stdio",
              "module": "tasks.tools", "profile": "local", "enabled": True},
         ]}}
-        with patch("src.cli.threading.Thread") as mock_thread:
+        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
+             patch("src.cli._mcp_servers_ready", return_value=True):
             _ensure_mcp_servers(config)
-            mock_thread.assert_not_called()
 
-        server = config["mcp"]["servers"][0]
+        server = self._by_name(config, "ToolsLocalMCPServer")
         assert server["url"] == "stdio://ToolsLocalMCPServer"
         spec = _STDIO_SPECS[server["url"]]
         assert "--profile" in spec["args"] and "local" in spec["args"]
@@ -291,9 +295,10 @@ class TestEnsureMcpServers:
         config = {"mcp": {"servers": [
             {"name": "Broken", "transport": "stdio", "enabled": True},
         ]}}
-        with patch("src.cli.threading.Thread"):
+        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
+             patch("src.cli._mcp_servers_ready", return_value=True):
             _ensure_mcp_servers(config)
-        assert config["mcp"]["servers"][0]["enabled"] is False
+        assert self._by_name(config, "Broken")["enabled"] is False
 
 
 # ── Web UI OAuth credential resolution ──────────────────────────────────────

@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-from .lib.tools import discover_tools, register_stdio_servers
+from .lib.tools import (discover_tools, register_stdio_servers,
+                        apply_default_mcp_servers)
 from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
@@ -1011,46 +1012,12 @@ class OnIt(BaseModel):
         self._setup_file_server_url()
         self._setup_config_fields()
 
-    _DEFAULT_MCP_SERVERS = [
-        {
-            'name': 'PromptsMCPServer',
-            'description': 'Provides prompt templates for instruction generation',
-            'url': 'http://127.0.0.1:18200/sse',
-            'enabled': True,
-        },
-        {
-            'name': 'ToolsLocalMCPServer',
-            'description': 'Bash, file operations, document search, local retrieval',
-            'transport': 'stdio',
-            'module': 'tasks.tools',
-            'profile': 'local',
-            'enabled': True,
-        },
-        {
-            'name': 'ToolsNetMCPServer',
-            'description': 'Web search, weather, and GitHub repository tools',
-            'url': 'http://127.0.0.1:18201/sse',
-            'enabled': True,
-        },
-    ]
-
-    # A config predating the local/net split names one combined server. Leave
-    # such a config alone rather than adding the two halves beside it, which
-    # would offer every tool twice.
-    _LEGACY_COMBINED_SERVER = 'ToolsMCPServer'
-    _SPLIT_SERVERS = frozenset({'ToolsLocalMCPServer', 'ToolsNetMCPServer'})
-
     def _setup_mcp_servers(self) -> None:
         """Parse MCP server list from config and resolve the prompts server URL."""
         self.mcp_servers = self.config_data['mcp']['servers'] if 'mcp' in self.config_data and 'servers' in self.config_data['mcp'] else []
-        # Ensure default servers are present if missing from config
-        existing_names = {s.get('name') for s in self.mcp_servers}
-        legacy = self._LEGACY_COMBINED_SERVER in existing_names
-        for default_server in self._DEFAULT_MCP_SERVERS:
-            if legacy and default_server['name'] in self._SPLIT_SERVERS:
-                continue
-            if default_server['name'] not in existing_names:
-                self.mcp_servers.insert(0, dict(default_server))
+        # Ensure default servers are present if missing from config. Normally
+        # the CLI has already done this, before it allocated ports for them.
+        apply_default_mcp_servers(self.mcp_servers)
         # Override MCP server URL hosts if mcp_host is configured. A stdio
         # server is a subprocess of this process, so there is no host to move.
         mcp_host = self.config_data.get('mcp', {}).get('mcp_host')

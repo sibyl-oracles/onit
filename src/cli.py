@@ -35,7 +35,7 @@ from fastmcp import Client
 
 from .onit import OnIt
 from .lib.tools import (is_stdio_server as _is_stdio_server,
-                        register_stdio_servers)
+                        register_stdio_servers, apply_default_mcp_servers)
 
 
 def _download_files(text: str, server_url: str) -> str:
@@ -523,14 +523,21 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     data_path = str(Path(data_path).expanduser().resolve())
     os.environ['ONIT_DATA_PATH'] = data_path
 
-    servers = config_data.get('mcp', {}).get('servers', [])
+    # Fill in the default servers first. A config that names none still gets
+    # them — from OnIt, further down startup — and allocating ports before
+    # they exist would leave those servers pointing at ports nothing listens
+    # on. The list must be complete here, where the ports are chosen.
+    config_data.setdefault('mcp', {}).setdefault('servers', [])
+    servers = config_data['mcp']['servers']
+    apply_default_mcp_servers(servers)
+
     register_stdio_servers(servers, data_path, log_level)
     port_overrides = _assign_free_ports(servers, config_data)
 
-    if not port_overrides:
-        return  # stdio-only: the client starts those when it connects
-
-    # Start the socket-served MCP servers in a daemon thread.
+    # Start the socket-served MCP servers in a daemon thread. Always: the
+    # runner has its own config and may serve more than the client lists (the
+    # VLM tools server, for one). It allocates ports for anything not named in
+    # the overrides, and returns immediately if there is nothing to start.
     mcp_thread = threading.Thread(
         target=_start_mcp_servers_background,
         args=(log_level, port_overrides),

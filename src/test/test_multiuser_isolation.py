@@ -108,11 +108,21 @@ class TestPortClaimsSurviveTheBindGap:
     then serves both users. The claim is what holds across the gap.
     """
 
+    @staticmethod
+    def _scratch_port(offset):
+        """A port number unlikely to be claimed by a concurrent test run.
+
+        Claims are held for the life of the claiming process, so two pytest
+        processes sharing a fixed number would refuse each other.
+        """
+        from src.mcp.servers.run import DEFAULT_PORT_BASE
+        return DEFAULT_PORT_BASE + 300 + (os.getpid() % 20) * 5 + offset
+
     def test_a_claimed_port_is_refused_to_a_second_caller(self):
-        from src.mcp.servers.run import _claim_port, DEFAULT_PORT_BASE
+        from src.mcp.servers.run import _claim_port
         pytest.importorskip("fcntl")
 
-        port = DEFAULT_PORT_BASE + 300
+        port = self._scratch_port(0)
         assert _claim_port(port) is True
         # Same process, same lock: a re-entrant flock succeeds, so prove the
         # exclusion where it matters — from a separate process.
@@ -137,21 +147,21 @@ class TestPortClaimsSurviveTheBindGap:
     def test_claim_files_stay_world_writable(self):
         """A released claim leaves the file behind. If the umask narrowed it,
         the first user to touch a port would own it for good."""
-        from src.mcp.servers.run import _claim_port, _port_claim_dir, DEFAULT_PORT_BASE
+        from src.mcp.servers.run import _claim_port, _port_claim_dir
         pytest.importorskip("fcntl")
         import stat
 
-        port = DEFAULT_PORT_BASE + 302
+        port = self._scratch_port(2)
         assert _claim_port(port) is True
         mode = os.stat(os.path.join(_port_claim_dir(), str(port))).st_mode
         assert mode & stat.S_IWGRP and mode & stat.S_IWOTH
 
     def test_a_read_only_claim_file_can_still_be_claimed(self):
         """Simulates another user's leftover file: flock needs no write access."""
-        from src.mcp.servers.run import _claim_port, _port_claim_dir, DEFAULT_PORT_BASE
+        from src.mcp.servers.run import _claim_port, _port_claim_dir
         pytest.importorskip("fcntl")
 
-        port = DEFAULT_PORT_BASE + 303
+        port = self._scratch_port(3)
         path = os.path.join(_port_claim_dir(), str(port))
         open(path, "a").close()
         os.chmod(path, 0o444)
@@ -162,12 +172,12 @@ class TestPortClaimsSurviveTheBindGap:
 
     def test_the_claim_is_released_when_the_process_ends(self):
         """No stale reservations after a crash: the kernel drops the lock."""
-        from src.mcp.servers.run import _claim_port, DEFAULT_PORT_BASE
+        from src.mcp.servers.run import _claim_port
         pytest.importorskip("fcntl")
 
         import subprocess
         import textwrap
-        port = DEFAULT_PORT_BASE + 301
+        port = self._scratch_port(1)
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         code = textwrap.dedent(f"""
             import sys
@@ -178,6 +188,39 @@ class TestPortClaimsSurviveTheBindGap:
         assert subprocess.run([sys.executable, "-c", code]).returncode == 0
         # That process is gone, so the port is claimable again.
         assert _claim_port(port) is True
+
+
+class TestDefaultsExistBeforePortsAreChosen:
+    """A config naming no MCP servers still gets the default ones.
+
+    They used to be added downstream, by OnIt, after the CLI had already
+    decided which ports to allocate. The CLI saw an empty list, allocated
+    nothing and started no pool; OnIt then added servers addressed to ports
+    where nothing was listening, and half the toolset silently went missing.
+    """
+
+    def test_an_empty_config_still_gets_servers_and_ports(self):
+        config = {}
+        with patch("src.cli.threading.Thread") as thread_cls, \
+             patch("src.cli._mcp_servers_ready", return_value=True):
+            _ensure_mcp_servers(config)
+
+        names = {s["name"] for s in config["mcp"]["servers"]}
+        assert names == {"PromptsMCPServer", "ToolsLocalMCPServer",
+                         "ToolsNetMCPServer"}
+
+        # Socket servers were given ports, and the pool was told to start them.
+        thread_cls.return_value.start.assert_called_once()
+        port_overrides = thread_cls.call_args.kwargs["args"][1]
+        assert set(port_overrides) == {"PromptsMCPServer", "ToolsNetMCPServer"}
+
+    def test_the_stdio_default_is_registered_from_an_empty_config(self):
+        from type.tools import _STDIO_SPECS
+        config = {}
+        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
+             patch("src.cli._mcp_servers_ready", return_value=True):
+            _ensure_mcp_servers(config)
+        assert "stdio://ToolsLocalMCPServer" in _STDIO_SPECS
 
 
 # ── stdio ───────────────────────────────────────────────────────────────────

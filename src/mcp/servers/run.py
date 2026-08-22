@@ -354,12 +354,21 @@ def prepare_server_args(config, port_overrides: dict | None = None):
             #model_url = kwargs.get('model_url')
             
         if enabled:
-            server_args.append((name, transport, host, port, path, module, options))
+            server_args.append([name, transport, host, port, path, module, options])
             logger.info(f"Preparing to start {name} server at {host}:{port} with path {path}")
         else:
             logger.info(f"Skipping {name} server as it is disabled in the configuration.")
-            
-    return server_args
+
+    # A server the caller did not name still needs a port of its own — the VLM
+    # tools server is in this config but not in the client's list, and on a
+    # shared machine its fixed port collides just as readily as the rest.
+    unassigned = [args for args in server_args if args[0] not in port_overrides]
+    if unassigned:
+        for args, port in zip(unassigned, find_free_ports(len(unassigned))):
+            args[3] = port
+            logger.info(f"Assigned free port {port} to {args[0]}")
+
+    return [tuple(args) for args in server_args]
 
 def run_servers(config_path=None, log_level='INFO', port_overrides: dict | None = None):
     """Run MCP servers based on a configuration file.

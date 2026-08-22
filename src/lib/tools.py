@@ -19,6 +19,57 @@ from type.tools import (ToolHandler, ToolRegistry, _transport_for,
                         is_stdio_url)
 
 
+# The MCP servers OnIt runs when a config names none. Defined here rather than
+# on OnIt because the CLI has to see the same list *before* it allocates ports
+# and spawns anything — when this lived downstream on OnIt, startup allocated
+# nothing, started no pool, and OnIt then added servers pointing at ports where
+# nobody was listening.
+DEFAULT_MCP_SERVERS = [
+    {
+        'name': 'PromptsMCPServer',
+        'description': 'Provides prompt templates for instruction generation',
+        'url': 'http://127.0.0.1:18200/sse',
+        'enabled': True,
+    },
+    {
+        'name': 'ToolsLocalMCPServer',
+        'description': 'Bash, file operations, document search, local retrieval',
+        'transport': 'stdio',
+        'module': 'tasks.tools',
+        'profile': 'local',
+        'enabled': True,
+    },
+    {
+        'name': 'ToolsNetMCPServer',
+        'description': 'Web search and weather',
+        'url': 'http://127.0.0.1:18201/sse',
+        'enabled': True,
+    },
+]
+
+# A config predating the local/net split names one combined server. Leave such
+# a config alone rather than adding the two halves beside it, which would offer
+# every tool twice.
+LEGACY_COMBINED_SERVER = 'ToolsMCPServer'
+_SPLIT_SERVERS = frozenset({'ToolsLocalMCPServer', 'ToolsNetMCPServer'})
+
+
+def apply_default_mcp_servers(servers: list) -> list:
+    """Add any missing default server to ``servers``, in place.
+
+    Idempotent: both the CLI (before allocating ports) and OnIt (which may be
+    built without the CLI) call it, and the second call finds nothing to add.
+    """
+    existing = {s.get('name') for s in servers}
+    legacy = LEGACY_COMBINED_SERVER in existing
+    for default in DEFAULT_MCP_SERVERS:
+        if legacy and default['name'] in _SPLIT_SERVERS:
+            continue
+        if default['name'] not in existing:
+            servers.insert(0, dict(default))
+    return servers
+
+
 def is_stdio_server(server: dict) -> bool:
     """True when this server is spawned over a pipe rather than reached on a port."""
     return 'stdio' in str(server.get('transport', ''))
