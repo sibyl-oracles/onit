@@ -25,20 +25,16 @@ conda create -n onit python=3.12 -y && conda activate onit
 # or: uv venv ~/.venvs/onit --python 3.12 && source ~/.venvs/onit/bin/activate
 ```
 
-```bash
-pip install onit
-```
-
-From source instead:
+Install from the latest source — not the PyPI wheel, which lags behind:
 
 ```bash
 git clone https://github.com/sibyl-oracles/onit.git
 cd onit && pip install -e ".[all]"
 ```
 
-Activate the environment again in every new shell before running `onit`. To upgrade a
-source install later: `pip install -e '.[all]' -U --upgrade-strategy eager` — and if
-dependencies ever end up conflicting, recreate the environment from scratch.
+Activate the environment again in every new shell before running `onit`. To pick up
+newer commits later: `git pull && pip install -e '.[all]' -U --upgrade-strategy eager` —
+and if dependencies ever end up conflicting, recreate the environment from scratch.
 
 ### 2. Start a model server
 
