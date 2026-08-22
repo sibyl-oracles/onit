@@ -2,66 +2,109 @@
 
 *OnIt* — the AI is working on the given task and will deliver the results shortly.
 
-OnIt is an intelligent agent for task automation and assistance. It connects to private [vLLM](https://github.com/vllm-project/vllm) servers, local [Ollama](https://ollama.com) and [MLX](https://github.com/ml-explore/mlx-lm) endpoints on your own machine, and [OpenRouter.ai](https://openrouter.ai/) or [Ollama cloud](https://ollama.com) for hosted models — and uses [MCP](https://modelcontextprotocol.io/) tools for web search, file operations, and more. It also supports the [A2A](https://a2a-protocol.org/) protocol for multi-agent communication.
+OnIt is a terminal AI agent. It runs on a model server you control — [vLLM](https://github.com/vllm-project/vllm),
+[Ollama](https://ollama.com), or [MLX](https://github.com/ml-explore/mlx-lm) on Apple silicon —
+or on a hosted endpoint ([OpenRouter](https://openrouter.ai/), [Ollama cloud](https://ollama.com)),
+and drives its work through [MCP](https://modelcontextprotocol.io/) tools: web search, weather,
+shell, file editing, and search over your own documents.
 
-## Getting Started
+This README gets the **text UI** running. Everything else — web UI, containers, bot
+gateways, the full CLI and configuration reference — is in [docs/](docs/).
 
-### 1. Create an environment
+## Quick Start
 
-OnIt requires **Python 3.10–3.12** (3.12 recommended — it is what the Docker image uses). Install into a dedicated virtual environment so all dependencies resolve to mutually compatible versions, isolated from your system Python and other projects.
+Four steps: environment → model server → keys → run.
 
-**With conda:**
+### 1. Install
+
+OnIt needs **Python 3.10–3.12** (3.12 recommended). Install it into its own virtual
+environment so dependencies stay isolated:
 
 ```bash
-conda create -n onit python=3.12 -y
-conda activate onit
+conda create -n onit python=3.12 -y && conda activate onit
+# or: uv venv ~/.venvs/onit --python 3.12 && source ~/.venvs/onit/bin/activate
 ```
-
-**With uv:**
-
-```bash
-uv venv ~/.venvs/onit --python 3.12
-source ~/.venvs/onit/bin/activate
-```
-
-(uv downloads the requested Python automatically if it is not installed. With uv, you can also prefix the pip commands below as `uv pip install ...` for much faster resolution.)
-
-Activate the environment before every `pip install` and `onit` command below, and whenever you return to OnIt in a new shell.
-
-### 2. Install
 
 ```bash
 pip install onit
 ```
 
-Or from source:
+From source instead:
 
 ```bash
 git clone https://github.com/sibyl-oracles/onit.git
-cd onit
-pip install -e ".[all]"
+cd onit && pip install -e ".[all]"
 ```
 
-To update an existing source install and upgrade all dependencies to their latest compatible versions:
+Activate the environment again in every new shell before running `onit`. To upgrade a
+source install later: `pip install -e '.[all]' -U --upgrade-strategy eager` — and if
+dependencies ever end up conflicting, recreate the environment from scratch.
+
+### 2. Start a model server
+
+Pick whichever matches your hardware. The model must support **tool calling** — OnIt
+does its work through tools, so a model without it will talk but not act.
+
+**Ollama** — simplest, runs anywhere:
 
 ```bash
-pip install -e '.[all]' -U --upgrade-strategy eager
+OLLAMA_CONTEXT_LENGTH=131072 ollama serve   # raise the context; the 4096 default truncates agent turns
+ollama pull qwen3:30b
 ```
+→ host `http://localhost:11434/v1` (the `/v1` suffix is required)
 
-If dependencies ever end up in a conflicting state (e.g. after many upgrades), the clean fix is to recreate the environment: `conda remove -n onit --all` (or delete the uv venv directory), then repeat steps 1–2.
+**MLX** — Apple silicon:
 
-### 3. Setup
+```bash
+pip install mlx-lm
+mlx_lm.server --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --port 8080
+```
+→ host `http://localhost:8080/v1`
+
+**vLLM** — NVIDIA GPUs:
+
+```bash
+vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 --port 8000 \
+  --max-model-len 262144 --enable-auto-tool-choice --tool-call-parser hermes \
+  --reasoning-parser qwen3 --chat-template-content-format string
+```
+→ host `http://localhost:8000/v1`
+
+No GPU at hand? Skip this step and use a hosted endpoint in step 3:
+`https://openrouter.ai/api/v1` (OpenRouter) or `https://api.ollama.com` (Ollama cloud).
+
+With local Ollama and MLX, **name the model explicitly** — auto-detection picks the
+first entry the server lists, which is rarely the one you meant.
+
+See [docs/MODEL_SERVING.md](docs/MODEL_SERVING.md) for API keys on vLLM, context-window
+sizing, and running several servers with failover.
+
+### 3. Keys
 
 ```bash
 onit setup
 ```
 
-The setup wizard walks you through configuring your LLM endpoint, API keys, and preferences. Secrets are stored securely in your OS keychain. Settings are saved to `~/.onit/config.yaml`.
+The wizard asks for your model endpoint (host URL from step 2, plus the model name) and
+the API keys below. Settings land in `~/.onit/config.yaml`; secrets go into your OS
+keychain. Press Enter to skip anything you don't need — you can rerun it any time, and
+`onit setup --show` prints what is currently set.
 
-To review your configuration at any time:
+| Key | What it enables | Getting one |
+|-----|-----------------|-------------|
+| **Ollama API key** | **Web search.** The `search` tool uses the [Ollama web search API](https://ollama.com/blog/web-search); without a key it falls back to DuckDuckGo. The same key unlocks Ollama cloud models. | Free tier — sign in at [ollama.com](https://ollama.com) and create a key. Nothing needs to run locally: the key alone is enough for search. |
+| **OpenWeatherMap** | The `get_weather` tool (current conditions and 5-day forecast). | Free — [openweathermap.org/api](https://openweathermap.org/api). |
+| **vLLM API key** | Only if you started vLLM with `--api-key`. | Whatever you passed to `vllm serve`. |
+| **OpenRouter** | Hosted models, if that is your endpoint. | [openrouter.ai](https://openrouter.ai/) (paid). |
+| **GitHub token** | The `github_repo` tool (create/list/fork repos). | GitHub → Settings → Developer settings. |
+
+Environment variables work too, if you'd rather not use the keychain:
 
 ```bash
-onit setup --show
+export OLLAMA_API_KEY=...            # web search + Ollama cloud
+export OPENWEATHERMAP_API_KEY=...    # weather
+export VLLM_API_KEY=...              # vLLM with --api-key
+export OPENROUTER_API_KEY=...        # OpenRouter
 ```
 
 ### 4. Run
@@ -70,1173 +113,81 @@ onit setup --show
 onit
 ```
 
-That's it. MCP tools start automatically, and you get an interactive chat with tool access.
-
-### Prefer Docker?
-
-Add `--container` to any command to run OnIt inside a hardened Docker container (`onit --container`, `onit --container serve web`, …) — the image is built automatically on first use. To skip the host install entirely, build and run the image directly, or bring up the full HTTPS-terminated stack with `docker compose up -d --build`. See [docs/DOCKER.md](docs/DOCKER.md) for prerequisites, `docker run` examples, GPU pass-through, and persistence.
-
-## CLI at a Glance
-
-```
-onit                                          # interactive terminal chat (resumes last session)
-onit --restart-session                        # terminal chat, starting a new session
-onit setup                                    # configure LLM endpoint, API keys
-onit resume [TAG_OR_ID]                       # continue a specific previous session
-onit sessions                                 # list saved sessions
-
-onit serve a2a                                # A2A protocol server (port 9001)
-onit serve web                                # web UI (port 9000)
-onit serve gateway [telegram|viber|auto]      # Telegram or Viber bot
-onit serve loop "task" --period 60            # repeat a task on a timer
-
-onit ask "what is the weather in Manila"      # send a task to a running A2A server
-
-onit --container                              # run in a hardened Docker container
-onit --unrestricted                           # unrestricted host filesystem access
-```
-
-## Configuration
-
-`onit setup` is the recommended way to configure OnIt. It stores:
-
-- **Settings** in `~/.onit/config.yaml` (LLM endpoint, theme, ports, timeout)
-- **Secrets** in your OS keychain (API keys, bot tokens)
-
-You can also use environment variables or a project-level YAML config:
+That's the text UI. MCP tools start automatically, the last session resumes, and the
+agent works out of `~/sandbox` by default. Type `\bye` (or Ctrl+D) to leave.
 
 ```bash
-# Environment variables
-export ONIT_HOST=https://openrouter.ai/api/v1
-export OPENROUTER_API_KEY=sk-or-v1-...
-
-# Or a custom config file
-onit --config configs/default.yaml
+onit --restart-session               # start fresh instead of resuming
+onit --host http://localhost:11434/v1 --model qwen3:30b   # override the configured endpoint
+onit --data-path ~/work              # work in a different directory
+onit --think                         # reasoning mode, if the model supports it
+onit --show-logs                     # show what the tools are doing
 ```
 
-Priority order: CLI flags > environment variables > `~/.onit/config.yaml` > project config file.
-
-### Example config (`configs/default.yaml`)
-
-```yaml
-serving:
-  host: https://openrouter.ai/api/v1
-  host_key: sk-or-v1-your-key-here   # or set OPENROUTER_API_KEY env var
-  # For a vLLM host started with --api-key, put the key here or set the
-  # VLLM_API_KEY env var / keychain entry (via onit setup) instead:
-  # model: auto-detected from endpoint. Set explicitly for OpenRouter:
-  # model: google/gemini-2.5-pro
-  think: true
-  max_tokens: 32768   # max output tokens per response (fits any single answer)
-  # Sampling parameters (all optional — sensible defaults apply):
-  # temperature: 1.0
-  # top_p: 0.95
-  # top_k: 20
-  # presence_penalty: 1.5
-  # repetition_penalty: 1.0
-  # Optional second model server (any mix of vLLM / local Ollama or MLX /
-  # OpenRouter / Ollama cloud).
-  # By default new sessions are spread across hosts round-robin, then each
-  # session's inference sticks to its host and fails over to the other
-  # only on timeout/error (the failed host cools down for 60s):
-  # host2: http://localhost:8001/v1
-  # host2_key: sk-...              # or ONIT_HOST2_KEY env var / keychain
-  # model2: auto-detected from host2 unless set
-  # load_balancer: sticky          # or: round_robin, random, least_busy
-  # Ollama endpoints (cloud or local) are fallback-only: while any
-  # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
-  # (or pass --no-ollama-fallback-only) to load-balance across them equally:
-  # ollama_fallback_only: true
-  # For more than two servers, or to rank them explicitly, use an endpoints
-  # list instead of host/host2 — see "Multiple model endpoints" below.
-
-verbose: false
-timeout: 600
-
-web_port: 9000
-a2a_port: 9001
-
-theme: white         # or "dark"
-topic: ~             # default topic context, e.g. "machine learning"
-template_path: ~     # custom prompt template YAML
-data_path: ~         # working directory for file operations (default: ~/sandbox)
-
-mcp:
-  # fixed_ports: false   # true pins the ports below instead of finding free ones
-  servers:
-    - name: PromptsMCPServer
-      url: http://127.0.0.1:18200/sse
-      enabled: true
-    - name: ToolsLocalMCPServer   # per-user, over stdio — no port
-      transport: stdio
-      module: tasks.tools
-      profile: local
-      enabled: true
-    - name: ToolsNetMCPServer
-      url: http://127.0.0.1:18201/sse
-      enabled: true
-```
-
-The ports above are a starting point, not fixed addresses: each OnIt process
-finds free ports at or above 18200 on startup. That is what lets several people
-run OnIt on one machine at the same time — before, the second to start found
-those ports taken, assumed the servers were already its own, and ran its tools
-in the first user's account and sandbox. Set `mcp.fixed_ports: true` for a
-single-user host, or when something outside OnIt has to reach the servers.
-
-`ToolsLocalMCPServer` has no port at all. Every tool that touches the session
-working directory lives there, and OnIt starts it as a subprocess of its own
-and talks to it over a pipe — so it runs as you, exits with you, and no other
-account on the machine can reach it.
-
-### Multiple model endpoints
-
-`serving.host` / `serving.host2` cover one or two servers. For any number of
-them — or to say explicitly which should be tried first — use a
-`serving.endpoints` list instead. It replaces `host`/`host2` entirely when
-present:
-
-```yaml
-serving:
-  endpoints:
-    - name: gpu-a                        # optional label for logs
-      host: http://10.0.0.1:8000/v1
-      priority: 1
-    - name: gpu-b
-      host: http://10.0.0.2:8000/v1
-      priority: 1                        # same tier as gpu-a → load balanced
-    - name: ollama
-      host: https://ollama.com
-      model: glm-5.1:cloud               # blank = auto-detect from endpoint
-      host_key: sk-...                   # optional; provider key used if omitted
-      priority: 2                        # only while every tier-1 host is down
-  load_balancer: least_busy              # sticky, round_robin, random, least_busy
-```
-
-**How priority works.** Lower is preferred. Requests go to the lowest-numbered
-tier that still has a healthy endpoint, and `load_balancer` distributes *within*
-that tier — so equal numbers share traffic, and a higher number is held in
-reserve. A failing endpoint cools down for 60s; when that empties a tier, the
-next one takes over, and traffic returns as soon as the preferred tier recovers.
-Omit `priority` on every entry and all endpoints share a single tier.
-
-Explicit priorities override `ollama_fallback_only`, so ranking an Ollama
-endpoint first is honored rather than silently demoted.
-
-Entries may be bare URL strings (`- http://10.0.0.1:8000/v1`) when you need
-nothing but the host. Entries without a `host`, and duplicates of a host already
-listed, are skipped with a warning.
-
-**Editing endpoints.** `onit setup` opens a small editor for this list — you
-don't have to write the YAML by hand:
-
-```
-   #  PRIO  HOST                     MODEL          NAME
-   1  1     http://10.0.0.1:8000/v1  auto-detect    gpu-a
-   2  1     http://10.0.0.2:8000/v1  auto-detect    gpu-b
-   3  2     https://ollama.com       glm-5.1:cloud  ollama
-  Commands: [a]dd  [e]dit N  [d]elete N  [p]riority N  [Enter] done
-  endpoints>
-```
-
-Rows are listed best-first, but the number identifies the endpoint and doesn't
-move when you re-rank. The wizard writes back whichever shape fits: a plain one-
-or two-server config with no priorities stays as `serving.host` / `serving.host2`,
-and it promotes to an `endpoints` list as soon as you add a third server, set a
-priority, or name an endpoint.
-
-### Sampling parameters
-
-Sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`) are set in `configs/default.yaml` under `serving:`. They are not exposed as CLI flags to keep the command line clean.
-
-**Recommended parameters for Qwen3.5:**
-
-| Mode | Use case | `temperature` | `top_p` | `top_k` | `presence_penalty` |
-|------|----------|:---:|:---:|:---:|:---:|
-| Thinking (`think: true`) | General | `1.0` | `0.95` | `20` | `1.5` |
-| Thinking (`think: true`) | Precise coding | `0.6` | `0.95` | `20` | `0.0` |
-| Instruct (no think) | General | `0.7` | `0.8` | `20` | `1.5` |
-| Instruct (no think) | Reasoning | `1.0` | `1.0` | `40` | `2.0` |
-
-Set `repetition_penalty: 1.0` in all cases.
-
-### Fact-checking the answer
-
-An answer is written from whatever is left in the model's context by the time it
-writes — tool results from ten turns ago, already decayed to a summary, next to
-whatever the weights remember. That is where a figure drifts by a digit: the
-search result was right and the sentence quoting it is not.
-
-So OnIt checks the answer after it is written — in two stages, because being
-careful and being quick want opposite things.
-
-**The stage you wait for** is bounded at two seconds and usually costs nothing
-at all. Every figure in the answer that appears verbatim in a document the run
-read, or on a source trusted about that subject, is cleared by string
-comparison before any model is involved — that is where a drifting digit shows
-up, and it does not need an LLM to see. Whatever is left gets one small check
-against the gathered evidence, with no lookups behind it. Where the evidence
-contradicts the answer, the finding is flagged in a line underneath:
-
-```
-The 2019 filing puts revenue at 4.2M …
-
-Correction after fact-check: revenue was 3.1M
-```
-
-Flagged rather than rewritten, because rewriting means generating the whole
-answer a second time, at the same speed it was written the first time. That is
-what used to double a turn.
-
-**The stage that runs behind you** starts once the answer is yours and has no
-clock on it. It can make read-only lookups for claims the run gathered no
-evidence about (search, file reads — never a write or a shell command), and it
-does rewrite the answer when something is wrong. If it finds something, the
-answer is corrected where it stands and a line says what changed — in the
-browser, in place; in the terminal, at the top of your next turn, since a
-terminal that writes under a half-typed line is worse than one that waits. Ask
-anything else and the check is cancelled outright: a correction to an answer
-you have moved past is not worth the interruption. It only runs where there is
-somewhere to show it, so one-shot callers (A2A) never start one.
-
-Measured on Qwen3.6-27B, against 5–15s to write the answer itself:
-
-| | you wait |
-|---|---:|
-| every figure came from a document you gave it | **0.00s** — no call at all |
-| clean check against gathered evidence | **0.2–1.5s** |
-| two wrong figures found and flagged | **0.8–1.6s** |
-| endpoint slow or busy | **2.0s** ceiling, then the draft stands |
-
-The check runs with the model's chain of thought switched off: comparing a
-sentence against a source is recognition, not deliberation. The same verdicts
-that take 0.19s that way take **15–21s** with a hybrid model left to reason its
-way through them, so a server whose chat template has no such switch is detected
-— by a genuine refusal of the parameter, never by a timeout or a bad gateway —
-and given room to think instead.
-
-Answers with nothing checkable in them ("I've saved the file, let me know if
-you'd like it formatted differently") skip the check, and so do runs that
-gathered no evidence to check against. A check that fails, times out, or comes
-back unreadable leaves the answer exactly as written — it can correct an
-answer, never lose one. A claim the evidence simply does not cover is left
-alone rather than doubted, unless the background stage can look it up.
-
-```yaml
-serving:
-  verify_answers: true       # false hands back the answer unchecked
-  verify_timeout_s: 2        # the ceiling on what you wait for
-  verify_background: true    # keep checking behind the answer
-  verify_max_tool_turns: 2   # lookups the background stage may make
-  verify_trusted_domains:    # added to the built-in list
-      - "docs.internal.example.com"
-```
-
-The per-run log line reports it alongside the rest of the timing:
-`… | fact-check 2.4s (1 claim(s) corrected)`.
-
-## CLI Reference
-
-### Interactive chat (default)
+## Day to day
 
 ```bash
-onit [OPTIONS]
+onit sessions                        # list saved sessions
+onit sessions --tag abc123 "my-chat" # name one for easy recall
+onit resume my-chat                  # continue a specific session
+onit setup --show                    # review the current configuration
 ```
 
-Starts an interactive terminal chat with tool access. MCP servers start automatically.
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--config FILE` | Path to YAML configuration file | `configs/default.yaml` |
-| `--host URL` | LLM serving host URL. Overrides config and `ONIT_HOST` | — |
-| `--model NAME` | Model name. Skips auto-detection from endpoint | — |
-| `--verbose` | Enable verbose logging | `false` |
-| `--think` | Enable thinking/reasoning mode (CoT) | `false` |
-| `--no-stream` | Disable token streaming | `false` |
-| `--show-logs` | Show tool execution logs | `false` |
-| `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
-| `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
-| `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
-| `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
-| `--container` | Run the entire OnIt process inside a hardened Docker container | `false` |
-| `--mcp-sse URL` | Add an external MCP server (SSE transport, repeatable) | — |
-| `--mcp-server URL` | Add an external MCP server (Streamable HTTP transport, repeatable) | — |
-
-### `onit setup`
-
-Interactive setup wizard, in three sections:
-
-- **Model serving** — the endpoint editor (add/edit/delete servers and rank them by priority), the load balancing algorithm, and the API keys those endpoints use (OpenRouter, Ollama, vLLM)
-- **Preferences** — theme, web UI port, request timeout
-- **Integrations** — OpenWeatherMap, Telegram, Viber, Google OAuth2, GitHub, HuggingFace
-
-Settings go to `~/.onit/config.yaml`, secrets to the OS keychain.
-
-Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.1:cloud`), OpenRouter (e.g. `google/gemini-2.5-pro`), or a local Ollama/MLX server hosting several models, where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
-
-See [Multiple model endpoints](#multiple-model-endpoints) for the endpoint editor and how priority routing works.
+Files the agent reads and writes stay inside its working directory (`data_path`,
+`~/sandbox` by default) — paths outside it are refused. Point it at a read-only folder
+of your own documents to ask questions about them:
 
 ```bash
-onit setup           # run the wizard
-onit setup --show    # print current configuration
-```
-
-### `onit sessions`
-
-List and manage saved sessions.
-
-```bash
-onit sessions                          # list recent sessions (default: 20)
-onit sessions --limit 50               # list up to 50 sessions
-onit sessions --tag abc123 "my-chat"   # tag a session for easy recall
-onit sessions --rebuild                # rebuild session index from JSONL files
-onit sessions --clear                  # delete all session history
-```
-
-### `onit resume`
-
-Resume a previous session by tag or UUID. Terminal chat already resumes the most
-recent session automatically, so this is for picking a *different* one.
-
-```bash
-onit resume my-chat      # resume by tag
-onit resume abc123       # resume by session UUID prefix
-onit resume              # resume the most recent session (same as bare `onit`)
-```
-
-Equivalent to `onit --resume TAG_OR_ID`.
-
-To start from scratch instead, use `onit --restart-session`. Server modes
-(`serve web`, `serve a2a`, `serve gateway`, `serve loop`) manage their own
-sessions and never auto-resume.
-
-A resumed session carries more than the conversation. Alongside each
-`<session_id>.jsonl` is a `<session_id>.state.json` recording what the session
-*did* — which tools it ran and how many times, how many turns it spent, and
-whether the last attempt finished or stopped early at a limit. Resuming reads
-it back and tells the agent, so a continued session builds on work that already
-succeeded instead of starting it again. It is deleted with the session.
-
-### `onit ask`
-
-Send a single task to a running OnIt A2A server and print the response. Useful for scripting, pipelines, or one-shot queries without starting a local agent.
-
-```bash
-onit ask "what is the weather in Manila"
-onit ask "summarize this document" --file report.pdf
-onit ask "describe this image" --image photo.jpg
-onit ask "write a script" --server http://192.168.1.10:9001
-```
-
-| Argument / Flag | Description | Default |
-|-----------------|-------------|---------|
-| `task` (positional) | Task to send to the server | required |
-| `--file PATH` | File to upload along with the task | — |
-| `--image PATH` | Image file for vision processing (model must be a VLM) | — |
-| `--server URL` | A2A server URL | `http://localhost:9001` |
-
-### `onit serve`
-
-Run OnIt in a persistent server or daemon mode. All serve modes run indefinitely until interrupted (Ctrl+C).
-
-#### `onit serve a2a`
-
-Run OnIt as an [A2A protocol](https://a2a-protocol.org/) server so other agents or clients can send tasks.
-
-```bash
-onit serve a2a                 # listen on port 9001 (default)
-onit serve a2a --port 9100     # custom port
-```
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--port PORT` | A2A server port | `9001` (or `a2a_port` in config) |
-
-The agent card is available at `http://localhost:9001/.well-known/agent.json`.
-
-**Send a task from another agent (Python A2A SDK):**
-
-```python
-from a2a.client import ClientFactory, create_text_message_object
-from a2a.types import Role
-import asyncio
-
-async def main():
-    client = await ClientFactory.connect("http://localhost:9001")
-    message = create_text_message_object(role=Role.user, content="What is the weather?")
-    async for event in client.send_message(message):
-        print(event)
-
-asyncio.run(main())
-```
-
-#### `onit serve web`
-
-Launch the web chat UI — a FastAPI server that streams agent output over
-Server-Sent Events into a modern chat interface (streaming markdown, tool
-status, session sidebar, file attachments, light/dark theme).
-
-```bash
-onit serve web                 # open on port 9000 (default)
-onit serve web --port 9500     # custom port
-onit serve web --no-login      # skip Google login (open access — see below)
-```
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--port PORT` | Web UI port | `9000` (or `web_port` in config) |
-| `--no-login` | Run without requiring Google login | login required |
-
-By default the web UI **requires Google login**: every session starts with a
-Google OAuth2 sign-in, and only Google-hosted mail accounts are accepted —
-Gmail (`@gmail.com` / `@googlemail.com`) or any Google Workspace domain
-(i.e. any domain whose mail is hosted by Google). Each chat session is
-private to the account that created it.
-
-Without configured OAuth credentials, `onit serve web` refuses to start.
-To run an open UI without login (e.g. local development on a trusted
-network), pass `--no-login` or set `web_require_auth: false` in the config.
-Anyone who can reach the port can then use the agent.
-
-**Google Analytics (optional).** Set `web_ga_measurement_id: G-XXXXXXXXXX`
-in the config (or the `ONIT_GA_MEASUREMENT_ID` env var — handy in the
-docker-compose `.env`) and the web UI loads the GA4 gtag snippet for
-authenticated users. The measurement ID is withheld from the public,
-pre-login `/api/config` so it isn't exposed to anonymous visitors.
-Analytics is off when unset.
-
-##### Setting up Google OAuth2 (step by step)
-
-1. **Create a Google Cloud project.** Go to
-   [console.cloud.google.com](https://console.cloud.google.com/), open the
-   project selector (top-left) → **New Project**, give it a name (e.g.
-   "OnIt Web"), and create it. Any Google account works; no billing needed.
-
-2. **Configure the OAuth consent screen.** Navigate to **APIs & Services →
-   OAuth consent screen** (newer consoles call this **Google Auth Platform →
-   Branding**). Set the app name and support email, then choose the audience:
-   - **External** — any Google account may attempt login (OnIt still rejects
-     accounts that are not Gmail/Workspace-hosted). While the app's status is
-     *Testing*, only accounts you add under **Audience → Test users** can log
-     in; click **Publish app** to lift that limit.
-   - **Internal** — available only on Google Workspace accounts; Google
-     itself restricts login to your Workspace domain.
-
-   No scope configuration is needed — OnIt only uses the basic
-   `openid email profile` identity scopes.
-
-3. **Create the OAuth client.** Navigate to **APIs & Services → Credentials →
-   + Create credentials → OAuth client ID**. Choose application type
-   **Web application** and name it (e.g. "OnIt Web UI").
-
-4. **Add the authorized redirect URI.** Under **Authorized redirect URIs**,
-   add one entry per host you will open the UI from, exactly matching:
-
-   ```
-   http://localhost:9000/auth/callback
-   http://YOUR_SERVER_IP:9000/auth/callback
-   ```
-
-   Adjust the port if you use `--port`. Google rejects any callback not on
-   this list, character for character. Non-localhost hosts require `https`
-   URIs — put OnIt behind a TLS reverse proxy for public deployments.
-
-5. **Copy the credentials.** After clicking **Create**, Google shows the
-   **Client ID** (ends in `.apps.googleusercontent.com`) and the
-   **Client secret** (starts with `GOCSPX-`). Copy both.
-
-6. **Store them in OnIt.** Run `onit setup` and paste the values at the
-   *Google OAuth2 client ID* and *client secret* prompts — they are stored
-   in the OS keychain, not in a file. Alternatively set the
-   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` environment variables, or put
-   `web_google_client_id` / `web_google_client_secret` in the config YAML.
-   Verify with `onit setup --show`.
-
-7. **(Optional) Restrict who may log in.** Beyond the built-in
-   Gmail/Workspace gate, list exact addresses or whole domains in the config:
-
-   ```yaml
-   web_allowed_emails:
-     - alice@gmail.com
-     - "*@sibyl.ai"
-   ```
-
-8. **Launch and test.** Run `onit serve web` — the startup banner shows
-   `OAuth2 authentication enabled`. Open `http://localhost:9000`, click
-   **Sign in with Google**, and pick an account. You should land back in the
-   chat, with your email and a Logout link shown in the UI.
-
-More detail (session lifetime, troubleshooting): [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
-
-#### `onit serve gateway`
-
-Run OnIt as a Telegram or Viber bot. Configure bot tokens via `onit setup` or environment variables.
-
-```bash
-onit serve gateway                                      # auto-detect from env vars
-onit serve gateway telegram                             # Telegram bot
-onit serve gateway viber --webhook-url https://...      # Viber bot
-```
-
-| Argument / Flag | Description | Default |
-|-----------------|-------------|---------|
-| `gateway_type` (positional) | `telegram`, `viber`, or `auto` | `auto` |
-| `--webhook-url URL` | Public HTTPS URL for Viber webhook (or set `VIBER_WEBHOOK_URL`) | — |
-| `--port PORT` | Local port for Viber webhook server | `8443` (or `viber_port` in config) |
-
-Required environment variables (set via `onit setup` or export):
-- Telegram: `TELEGRAM_BOT_TOKEN`
-- Viber: `VIBER_BOT_TOKEN`, `VIBER_WEBHOOK_URL`
-
-Install gateway dependencies if not using `[all]`:
-
-```bash
-pip install "onit[gateway]"
-```
-
-#### `onit serve loop`
-
-Repeat a task on a configurable timer. Useful for monitoring, polling, or autonomous scheduled work.
-
-```bash
-onit serve loop "check the weather in Manila" --period 60
-onit serve loop "summarize today's news" --period 3600
-```
-
-| Argument / Flag | Description | Default |
-|-----------------|-------------|---------|
-| `task` (positional) | Task to execute repeatedly | required |
-| `--period SECONDS` | Seconds between iterations | `10` (or `period` in config) |
-
-## Isolation Modes
-
-OnIt offers three isolation levels, plus optional sandbox delegation. They can be combined.
-
-### MCP sandbox delegation
-
-Delegates individual code-execution tool calls to an external MCP sandbox
-provider. Complementary to `--container`, and useful when code should run on a
-different machine than the agent.
-
-There is no flag: configure an MCP server that provides the sandbox tools
-(`sandbox_run_code`, `sandbox_install_packages`, `sandbox_stop`) under `mcp.servers`,
-and OnIt routes code execution there automatically. Registering the provider *is*
-the opt-in — a separate switch could only ever disagree with it.
-
-### `--container`
-
-Runs the entire OnIt process inside a hardened Docker container so a breach cannot reach the host OS.
-
-```bash
-onit --container                                          # interactive terminal in container
-onit --container serve web                                # web UI, port 9000 published
-onit --container serve a2a --port 9100                    # A2A server on custom port
-onit --container --container-gpus all                     # NVIDIA GPU pass-through
-onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
-  serve web                                               # expose host path read-only
-```
-
-The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Subsequent runs reuse the image.
-
-**Container sub-flags:**
-
-| Flag | Description |
-|------|-------------|
-| `--container-gpus SPEC` | NVIDIA GPU pass-through (e.g. `all`, `"device=0,1"`). Requires NVIDIA Container Toolkit. |
-| `--container-mount HOST:CONTAINER[:ro]` | Extra bind mount. Repeatable. Prefer `:ro`. |
-| `--container-memory SIZE` | Hard memory cap (e.g. `16g`). Default: unlimited. |
-| `--container-shm-size SIZE` | `/dev/shm` size (default: `4g`). Raise for PyTorch DataLoader. |
-| `--container-tmp-size SIZE` | `/tmp` tmpfs size (default: `16g`). Backed by host RAM. |
-| `--container-allow-installs` | Permit package installs in-container. Installs must still be version-pinned (`pip install name==1.2.3`). |
-
-**Isolation posture:** non-root user, read-only rootfs (`--read-only`), `--cap-drop=ALL`, `no-new-privileges` (no sudo/setuid escalation), RAM-backed tmpfs for all ephemeral writes (`/tmp`, `~/.cache`, `~/.onit`), no host mounts by default, outbound network allowed. Persistent state (pip installs via `PIP_TARGET`, Hugging Face caches, session artifacts) lives on the named `onit-data` volume — never the rootfs. The AST command allowlist (below) is enforced by default inside the container.
-
-**What crosses the boundary:**
-
-| Resource | Default behavior |
-|---|---|
-| `~/.onit/config.yaml` | Bind-mounted read-only |
-| Host keychain secrets | Passed as ephemeral env vars |
-| Session data | Named volume `onit-data` (writable, persistent) |
-| Ports | Published only for the active mode |
-| Host filesystem | Nothing beyond config/secrets unless `--container-mount` is set |
-
-**Published ports by mode:**
-
-| Mode | Default port | Override |
-|---|---|---|
-| (terminal) | — (no ports) | — |
-| `serve web` | `9000:9000` | `--port` |
-| `serve a2a` | `9001:9001` | `--port` |
-| `serve gateway viber` | `8443:8443` | `--port` |
-
-See [docs/DOCKER.md](docs/DOCKER.md) for full details.
-
-### `--unrestricted`
-
-Runs OnIt with lifted filesystem restrictions on the host — the agent can read/write any path, use any working directory, and install packages freely (pip, apt, brew, etc.). Use only in trusted, isolated environments.
-
-```bash
-onit --unrestricted
-```
-
-Catastrophic commands (disk wipe, reboot, kernel module loading) are always blocked regardless of this flag, and an explicit `ONIT_COMMAND_ALLOWLIST=1` still enforces the AST command allowlist.
-
-### Command Permission Rules
-
-The bash tool honors optional allow/deny rules from `~/.onit/settings.json` (override the path with the `ONIT_SETTINGS` env var). **These rules apply to the web UI only** (`onit serve web`) — web sessions may be reachable by other users, so the configured restrictions must hold there. The local text UI is a trusted terminal session and ignores the default settings file, running with full privileges under the built-in policy. To enforce the rules in the text UI too, point `ONIT_SETTINGS` at the file explicitly. Rules use glob patterns matched against the command; deny always wins, and compound commands (`&&`, `;`, `|`) are checked segment by segment:
-
-```json
-{
-  "permissions": {
-    "allow": ["Bash(*)"],
-    "deny": [
-      "Bash(sudo *)",
-      "Bash(npm install*)",
-      "Bash(pip install*)",
-      "Bash(brew install*)"
-    ]
-  }
-}
-```
-
-- **deny** — commands matching any rule are refused.
-- **allow** — when non-empty, every command (and each segment of a compound command) must match an allow rule. Leave it as `["Bash(*)"]` (or omit it) to only use the deny list.
-
-When active (web UI, or explicit `ONIT_SETTINGS`), rules apply in **all** modes, including `--container` and `--unrestricted`, and file edits take effect without a restart. Non-`Bash(...)` rules are ignored.
-
-### Command Allowlisting (AST-based)
-
-On top of the glob rules, the bash tool can enforce a **command allowlist backed by real shell parsing**: every command string is parsed into an AST (pipelines, `&&`/`||`/`;` lists, loops, subshells, `$(...)`/backtick substitutions, `bash -c` payloads, `find -exec` targets), and **every executable found anywhere in the tree** must be on the allowlist. Wrapper commands (`env`, `nohup`, `timeout`, `nice`, `stdbuf`, `xargs`) are peeled off so they can't hide a payload, and dynamic command names (`$CMD`, `$(which x)`) are rejected outright. The parser **fails closed**: anything it cannot statically analyze (`case` statements, function definitions, arithmetic commands) is blocked.
-
-| Env var | Effect |
-|---|---|
-| `ONIT_COMMAND_ALLOWLIST` | `1` = enforce everywhere, `0` = disable. Unset: enforced inside `--container`, off on the host. |
-| `ONIT_ALLOWED_COMMANDS` | Comma-separated extra executables to allow (e.g. `mytool,deno`). |
-| `ONIT_ALLOW_PACKAGE_INSTALL` | `1` = permit package-manager installs (pinned versions only). Set by `--container-allow-installs`. |
-| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment. Default `0` (disabled); set a positive number to enable. |
-
-The allowlist can also be extended in `settings.json` (read in the web UI, or when `ONIT_SETTINGS` is set explicitly):
-
-```json
-{
-  "permissions": {
-    "allowedCommands": ["mytool", "deno"]
-  }
-}
-```
-
-**Package managers are blocked by default** under allowlist enforcement. System package managers (`apt`, `yum`, `dnf`, `pacman`, `brew`, `apk`, `snap`) are never allowlisted — in-container the rootfs is read-only anyway. Language package managers (`pip`, `npm`, `gem`, `cargo`, `go`, `uv`, `pipx`) may run non-mutating subcommands (`pip list`, `npm ls`), but `install` requires `ONIT_ALLOW_PACKAGE_INSTALL=1` **and pinned versions**:
-
-```bash
-pip install requests==2.31.0     # OK (with installs enabled)
-pip install requests             # blocked: not pinned
-pip install -r requirements.txt  # blocked: cannot pin-verify
-npm install left-pad@1.3.0       # OK
-npx cowsay@1.5.0                 # OK (pinned one-off execution)
-```
-
-Lockfile-driven installs (`npm ci`, bare `npm install`) are allowed since versions come from the lockfile. `onit-install-ml` (the curated CUDA-matched ML installer) is allowlisted only when installs are enabled.
-
-### Auto-Containment
-
-**Auto-containment is off by default** (`ONIT_CONTAIN_THRESHOLD=0`) and must be opted into. Blocked commands are always blocked and logged regardless; the threshold only controls whether repeated violations escalate to a persistent server-wide lockdown.
-
-When `ONIT_CONTAIN_THRESHOLD` is set to a positive number, policy violations (blocked commands) are counted per server process, and on reaching the threshold the bash MCP server **auto-contains**:
-
-- `bash`, `serve start`, `write_file`, `edit_file`, `transform_text`, and `send_file` refuse all further calls;
-- `serve`-managed background processes registered at the data-directory root are stopped;
-- a marker file (`.onit-containment.json`, containing the violation log) is written to the data directory so containment **survives restarts**.
-
-Read-only tools (`read_file`, `search_*`) keep working so the session can be diagnosed. To lift containment, unset `ONIT_CONTAIN_THRESHOLD` (the check short-circuits on `0`, so a stale marker is ignored without a restart), or delete the marker file and restart the MCP server.
-
-Two properties to weigh before enabling it. The counter is a **process-lifetime total with no decay**, so violations accumulate across an entire session rather than measuring a rate. And on the host the most common violation is a benign path slip — an absolute path outside the session jail, e.g. `/etc/`, `/opt/homebrew/bin/`, or another session's data directory — not an adversarial command. A low threshold therefore tends to strand long-lived sessions over accumulated typos. Inside `--container` the container itself is already the filesystem boundary, and the path allowlist is skipped there.
-
-The marker lives at the **data-directory root, not the session jail**, so containment is deliberately server-wide: one session's violations contain every later session on that host until the marker is removed.
-
-## MCP Tool Integration
-
-MCP servers start automatically. Tools are auto-discovered and available to the agent.
-
-| Server | Transport | Description |
-|--------|-----------|-------------|
-| PromptsMCPServer | loopback socket | Prompt templates for instruction generation |
-| ToolsLocalMCPServer | stdio (per user) | Bash, file operations, document and local search, GitHub |
-| ToolsNetMCPServer | loopback socket | Web search and weather |
-
-The split follows one rule: a tool that touches this session's files — or acts
-under this user's credentials, as `github_repo` does — is served over a pipe
-that belongs to one OnIt process. What is left is stateless lookups.
-
-### Default tools
-
-The tools servers register these by default (required parameters in **bold**; defaults in parentheses):
-
-| Tool | Parameters | Purpose |
-|------|------------|---------|
-| `search` | **`query`**, `type` (`web`\|`news`, `web`), `max_results` (5) | Search the web or recent news. Web search uses the [Ollama web search API](https://ollama.com/blog/web-search) (`OLLAMA_API_KEY`) with automatic DuckDuckGo fallback; news search uses DuckDuckGo. |
-| `fetch_content` | **`url`**, `extract_media` (true), `download_media` (false), `output_dir` (`data_path/media`), `media_limit` (10) | Fetch a URL and extract text, image, and video links. Handles PDFs. Optionally downloads media locally. |
-| `get_weather` | `place` (auto-detect from IP), `forecast` (false) | Current weather and optional 5-day forecast. Requires `OPENWEATHER_API_KEY`. |
-| `bash` | **`command`**, `cwd` (`data_path`), `timeout` (300) | Execute a shell command and capture stdout, stderr, and return code. |
-| `read_file` | **`path`**, `mode` (`text`\|`tables`\|`images`, `text`), `encoding` (utf-8), `max_chars` (100000), `table_index`, `output_format` (`json`), `output_dir`, `min_size` (100) | Read a file, or extract structured tables (PDF/markdown) or embedded images (PDF). |
-| `write_file` | **`path`**, **`content`**, `mode` (`write`\|`append`, `write`), `encoding` (utf-8) | Write content to a file, creating directories as needed. Files get owner-only access. |
-| `edit_file` | **`path`**, **`old_string`**, **`new_string`**, `replace_all` (false), `encoding` (utf-8) | Edit a file by replacing an exact string with new content. |
-| `serve` | **`action`** (`start`\|`stop`\|`status`\|`logs`\|`list`\|`restart`), `command`, `name`, `pid`, `cwd`, `lines` (50) | Run anything slower than `bash`'s 300s cap in the background — builds, installs, test suites, training runs — plus web servers and daemons. No time limit; poll with `status` and `logs`. |
-| `grep` | **`path`**, **`pattern`**, `file_pattern` (`*`), `case_sensitive` (false), `include_hidden` (false), `max_results` (100) | Recursive regex search across files in a directory. Returns file, line number, and matching content. |
-| `send_file` | **`path`**, `callback_url` | Send a file to a remote client — via HTTP POST when `callback_url` is given, otherwise as base64 (max 10MB). |
-| `github_repo` | **`action`** (`create`\|`get`\|`list`\|`fork`\|`delete`), `name`, `description`, `private` (false), `auto_init` (true), `gitignore_template`, `license_template`, `org`, `per_page` (30) | Create, inspect, list, fork, or delete GitHub repositories. Requires `GITHUB_TOKEN`. |
-| `search_document` | **`path`**, `mode` (`pattern`\|`context`, `pattern`), `pattern`, `query`, `keywords`, `case_sensitive` (false), `context_lines` (3), `max_matches` (50), `context_chars` (500), `max_sections` (5) | Search within a single document (text, PDF, markdown) by regex or by keyword/query relevance. |
-| `index_documents` | `path` (`documents_path`, else `data_path`), `recursive` (true), `rebuild` (false), `chunk_size` (1600), `chunk_overlap` (200), `status_only` (false) | Ingest in-house documents (pdf, md, txt, csv, docx, xlsx) into the local search index. Incremental. |
-| `local_search` | **`query`**, `top_k` (5), `method` (`hybrid`\|`bm25`\|`dense`, `hybrid`), `path` | Search indexed in-house documents. Auto-ingests the default corpus on first use. |
-
-#### Which paths can the tools touch?
-
-All `path`, `directory`, and `cwd` parameters are validated against two sandbox roots:
-
-- **`data_path`** — the read/write working directory. Defaults to `~/sandbox`. Precedence: `--data-path` CLI flag > `data_path` in the config YAML > `~/sandbox`. The CLI exports the resolved value as `ONIT_DATA_PATH` before starting the MCP servers, so agent and tools always agree on the same directory. Relative paths always resolve against `data_path`, never the process working directory.
-- **`ONIT_DOCUMENTS_PATH`** — an optional read-only documents root for in-house data (also settable as `documents_path`).
-
-A2A server sessions each work in their own subdirectory `<data_path>/<session_id>`, created automatically per session.
-
-| Tools | Allowed roots |
-|-------|---------------|
-| `write_file`, `edit_file` | `data_path` only |
-| `read_file`, `send_file`, `search_document` | `data_path` or `ONIT_DOCUMENTS_PATH` |
-| `grep` (`path`), `bash` (`cwd`) | `data_path` or `ONIT_DOCUMENTS_PATH` |
-| `index_documents`, `local_search` (`path`) | `data_path` or `ONIT_DOCUMENTS_PATH`; when `path` is omitted the corpus defaults to `ONIT_DOCUMENTS_PATH` if set, else `data_path` |
-
-Paths outside the allowed roots are rejected. The checks are relaxed in `--container` mode (the container is the isolation boundary) and in `--unrestricted` mode.
-
-#### Disabling tools
-
-Some tools can be switched off via environment variables: `ONIT_DISABLE_WEB_SEARCH` (removes `search`), `ONIT_DISABLE_WEATHER` (removes `get_weather`), and `ONIT_DISABLE_LOCAL_SEARCH` (removes `index_documents` and `local_search`).
-
-Connect to additional external MCP servers:
-
-```bash
-onit --mcp-sse http://localhost:8080/sse
-onit --mcp-server http://localhost:8080/mcp
-```
-
-### Harness tools
-
-Three more tools reach the model without an MCP server behind them: their
-subject is the run itself, so they are answered in process.
-
-| Tool | Parameters | Purpose |
-|------|------------|---------|
-| `context_status` | — | How full the context window is, how many turns and tool calls the run has taken, how many times it has been summarized, and which notes are saved. |
-| `note_write` | **`key`**, **`text`** | Save a short note under `<data_path>/.onit/notes/`. It survives context summarization; writing the same key again replaces it. |
-| `note_read` | **`key`** | Read a saved note back. |
-
-The reason they exist: when the context fills, the conversation is summarized
-and the detail in it is lost — and until now only the terminal was told. The
-model could not see it coming and had nowhere to put a finding it wanted to
-keep. Now it can check, write things down first, and is told when a
-summarization has happened.
-
-Notes are session state. They live under the session's `data_path` and go when
-it does; nothing crosses between sessions. They are offered only to a run that
-has tools of its own, and `serving.harness_tools: false` withdraws them along
-with the prompt block that describes them.
-
-### Large tool results
-
-A tool result over ~8,000 characters is written whole to
-`<data_path>/.onit/results/` and enters the conversation as its first 6,000
-characters under a handle:
-
-```
-[result:0007 · local_search · 48,320 chars · showing the first 6,000]
-<the opening of the result>
-… [rest of this result: result_read("0007", offset=6000) or result_grep("0007", "pattern")]
-```
-
-| Tool | Parameters | Purpose |
-|------|------------|---------|
-| `result_read` | **`handle`**, `offset`, `limit` | A window of a stored result, up to 8,000 characters at a time. |
-| `result_grep` | **`handle`**, **`pattern`**, `context` | Matching lines with surrounding context — faster than paging when you know what you are looking for. |
-
-Before this, a large result was cut to 16,000 characters with the middle
-discarded permanently, and the only way to recover any of it was running the
-tool again — a network round trip for bytes the harness had already been given.
-Now nothing is lost and recovery is a local file read, so a result the
-conversation has moved past can be trimmed to ~1,200 characters instead of
-6,000. On a six-tool research loop that takes peak prompt size down about 65%
-and per-turn growth about 77%.
-
-Results are session state on the same terms as notes: under the session's
-`data_path`, gone when it goes, never shared between sessions. The oldest are
-pruned past 200. `serving.result_store: false` restores the old hard cut.
-
-### Running code (`run_code`) — off by default
-
-`serving.code_execution: true` adds one more tool: a Python interpreter, one per
-session, that keeps its variables between calls. Every registered tool is
-available inside it as a function of the same name, so a task that is several
-dependent steps runs as one block instead of one turn each:
-
-```python
-hits = local_search("Q3 revenue")[:3]
-totals = {h["title"]: extract_tables(h["path"]) for h in hits}
-print(totals)
-```
-
-Only what the code `print`s comes back; everything else stays as a live variable
-for the next call. A failing tool raises `ToolError`, which the code can catch.
-Six dependent steps measured at 7 model turns / 4.6 s as individual tool calls
-run as 2 turns / 1.5 s this way — the saving is the prefill and decode of the
-turns that no longer happen, so it grows with how slow the model is.
-
-**Read this before enabling it.** The code runs in a child process with the same
-privileges as OnIt — no AST allowlist and no path jail, unlike the `bash` tool.
-Enable it where the deployment is already isolated (`onit --container`), and be
-deliberate about a web deployment other people can reach. What is enforced: the
-interpreter's working directory is the session's `data_path`, `session_id` and
-`data_path` cannot be set from inside the code (they are not in the generated
-signatures and are re-bound by the harness on every call), and each session gets
-its own process. A block that overruns `serving.code_timeout` (120 s) is killed
-and the interpreter restarts — the model is told its variables are gone.
-
-It is also **unbenchmarked**: small models write worse Python than they write
-JSON tool calls, so this can cost accuracy even as it cuts turns. Measure your
-own model class with `benchmarks/` before relying on it.
-
-## Local Search over In-House Data
-
-OnIt includes a local search toolkit modeled on the [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/): a composable pipeline that unifies **ingestion** (parse → chunk → embed/index) and **retrieval** (BM25 sparse, dense embeddings, hybrid fusion) behind a single interface. Everything runs on your own infrastructure — documents, index, and embeddings never leave your machine, so the agent can answer questions from private company data that web search cannot see.
-
-| Format | Extension | Parser |
-|--------|-----------|--------|
-| PDF | `.pdf` | pypdf (per page) |
-| Markdown | `.md`, `.markdown` | built-in |
-| Text / CSV | `.txt`, `.text`, `.csv` | built-in |
-| Word | `.docx` | python-docx (paragraphs and tables) |
-| Excel | `.xlsx`, `.xlsm` | openpyxl (per sheet) |
-
-### Quick start
-
-```bash
-# 1. Install the optional parsers for Word and Excel (PDF/md/txt work out of the box)
-pip install "onit[search]"
-
-# 2. Point OnIt at your document folder
 export ONIT_DOCUMENTS_PATH=~/company-docs
-
-# 3. Run and ask questions about your data
 onit
 > what is our vacation policy?
 ```
 
-The agent uses two MCP tools, registered automatically in the tools servers:
+Full flag list: [docs/CLI.md](docs/CLI.md). Tool-by-tool reference: [docs/TOOLS.md](docs/TOOLS.md).
 
-| Tool | Description |
-|------|-------------|
-| `index_documents` | Ingest a directory: parse, chunk (default 1600 chars, 200 overlap), and index. Incremental — unchanged files are skipped, deleted files are dropped. Use `rebuild: true` to start fresh or `status_only: true` for index statistics. |
-| `local_search` | Query the index and return ranked chunks with source file and location (page, sheet, table). Auto-ingests the default corpus on first use. |
+## Configuration
 
-### Retrieval methods
-
-`local_search` supports three methods, selected with the `method` argument:
-
-| Method | How it works | Requires |
-|--------|--------------|----------|
-| `bm25` | Okapi BM25 sparse lexical ranking (pure Python) | nothing |
-| `dense` | Cosine similarity over chunk embeddings | an embedding endpoint |
-| `hybrid` *(default)* | Reciprocal rank fusion of BM25 + dense rankings | falls back to `bm25` when no embedding endpoint is configured |
-
-Dense and hybrid retrieval use any **OpenAI-compatible** `/embeddings` endpoint — a private vLLM or Ollama server keeps everything on-premises:
-
-```bash
-export ONIT_EMBEDDING_HOST=http://localhost:8000/v1   # vLLM, Ollama, etc.
-export ONIT_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
-export ONIT_EMBEDDING_API_KEY=...                     # only if the endpoint needs one
-                                                      # (falls back to VLLM_API_KEY)
-```
-
-When these are set, `index_documents` embeds chunks during ingestion and `local_search` embeds the query at search time. Without them, everything still works with BM25 — no network calls are made.
-
-### How it works
-
-```
-Ingestion:  documents → parse (pdf/md/txt/csv/docx/xlsx) → chunk → [embed] → index
-Retrieval:  query → BM25 ranking ─┐
-            query → [dense ranking] ─┴→ reciprocal rank fusion → top-k chunks + sources
-```
-
-- The index is a single JSON file at `data_path/local_search/index.json` (owner-only permissions). Delete it or pass `rebuild: true` to re-ingest from scratch.
-- Corpus directories must be inside `ONIT_DOCUMENTS_PATH` or `data_path` — the same filesystem sandbox that governs all OnIt file tools (relaxed inside `--container`).
-- Set `ONIT_DISABLE_LOCAL_SEARCH=1` to unregister both tools.
-
-### Adding a new document format
-
-Parsers follow a small adapter interface: each returns a list of `(location, text)` blocks (e.g. `("page 3", ...)`, `("sheet Sales", ...)`). To support a new format, add a parser to `src/mcp/servers/tasks/local/search/toolkit.py`, register its extension in `SUPPORTED_EXTENSIONS`, and dispatch it from `parse_document()` — chunking, indexing, and retrieval pick it up automatically.
-
-## Model Serving
-
-### Private vLLM
-
-Serve models locally with [vLLM](https://github.com/vllm-project/vllm):
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
-  --max-model-len 262144 --port 8000 \
-  --enable-auto-tool-choice --tool-call-parser hermes \
-  --reasoning-parser qwen3 --tensor-parallel-size 4 \
-  --chat-template-content-format string \
-  --enable-prefix-caching
-```
-
-`--enable-prefix-caching` is on by default in current vLLM and is pinned here
-because OnIt is built around it. Every request opens with the same bytes — the
-tool schemas, then the agent's standing rules — roughly 4k tokens that a warm
-prefix cache skips prefilling entirely. An agent turn re-sends the whole
-conversation to add one tool result, so that saving is paid back on every turn
-of every task, not once per session. Serving without it makes prefill, not
-decode, the thing you wait on.
-
-```bash
-onit --host http://localhost:8000/v1
-```
-
-To restrict the vLLM server to authorized clients, start it with one or more
-API keys — **space-separated, not comma-separated** (`--api-key` is parsed
-with `nargs="+"`; a comma-joined string becomes one literal key):
-
-```bash
-vllm serve ... --api-key key1 key2 key3
-```
-
-Then give OnIt one of those keys (the others are for your other clients):
-
-```bash
-onit setup   # enter it at the "vLLM API key" prompt (stored in the OS keychain)
-```
-
-Or set the environment variable:
-
-```bash
-export VLLM_API_KEY=key1
-```
-
-Resolution order: `serving.host_key` in the config YAML > `VLLM_API_KEY` env var > keychain. Without `--api-key` on the vLLM side, no key is needed and OnIt connects as before.
-
-### Local Ollama
-
-[Ollama](https://ollama.com) runs models on your own machine and exposes an
-OpenAI-compatible API on port 11434. Start the server and pull a model that
-supports tool calling — OnIt drives every task through MCP tools, so a model
-without tool support will talk but not act:
-
-```bash
-ollama serve                       # or the menu-bar app
-ollama pull qwen3:30b              # any tool-capable model
-```
-
-Point OnIt at it. The **`/v1` suffix is required** — that is the
-OpenAI-compatible path; the bare `http://localhost:11434` root serves Ollama's
-native API and every request 404s:
-
-```bash
-onit --host http://localhost:11434/v1 --model qwen3:30b
-```
-
-No API key is needed. Pass `--model` explicitly: auto-detection takes the first
-entry from `/v1/models`, which for a local Ollama is whichever model you pulled
-most recently, not the one you meant.
-
-**Size the context window on the server.** Local Ollama is reached over the
-OpenAI path, so the automatic `num_ctx` sizing OnIt does for Ollama *cloud*
-doesn't apply — Ollama falls back to its own default (4096 tokens in current
-releases, 2048 in older ones), which truncates long agent turns mid-stream. Raise it when starting the server, and tell OnIt the
-same number so context compaction accounts for it:
-
-```bash
-OLLAMA_CONTEXT_LENGTH=131072 ollama serve
-```
+`onit setup` is enough for most setups. To edit by hand, `~/.onit/config.yaml`:
 
 ```yaml
 serving:
   host: http://localhost:11434/v1
   model: qwen3:30b
-  max_context_tokens: 131072
+  max_context_tokens: 131072   # set it when the server doesn't report its own
+  think: true
+  max_tokens: 32768
+
+theme: white          # or "dark"
+timeout: 600
+data_path: ~          # working directory (default: ~/sandbox)
 ```
 
-> **Mixing local Ollama with other endpoints:** any host on port 11434 counts as
-> an Ollama endpoint, so it stays out of rotation while a vLLM or OpenRouter
-> endpoint is healthy (see `ollama_fallback_only` above). That is usually what
-> you want — the local box is the backstop. To load-balance across it equally,
-> pass `--no-ollama-fallback-only`, or give it an explicit `priority` in an
-> `endpoints` list.
+Priority order: CLI flags > environment variables > `~/.onit/config.yaml` > `--config FILE`.
+Everything configurable — sampling parameters, multiple endpoints, answer fact-checking,
+MCP server ports — is in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-### Local MLX (Apple silicon)
+## Beyond the terminal
 
-[MLX LM](https://github.com/ml-explore/mlx-lm) runs quantized models on the
-Apple silicon GPU and ships an OpenAI-compatible server:
-
-```bash
-pip install mlx-lm
-mlx_lm.server --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --port 8080
-```
-
-```bash
-onit --host http://localhost:8080/v1 --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
-```
-
-No API key is needed. `--model` on the server side is the model loaded at
-startup; `/v1/models` also lists every MLX model in your Hugging Face cache, and
-naming one of those in a request loads it on demand. Name the model on the OnIt
-side too — auto-detection would pick the first cache entry.
-
-The MLX server does not report `max_model_len`, so OnIt cannot discover the
-context window. Set it yourself, or long sessions compact against the wrong
-budget:
-
-```yaml
-serving:
-  host: http://localhost:8080/v1
-  model: mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
-  max_context_tokens: 262144
-```
-
-Pick an instruct model whose chat template implements tool calling — the 4-bit
-`mlx-community` builds of Qwen3, Llama 3.x, and Mistral do. `mlx_lm.server`
-loads a model on first request, so the first task after startup waits on weights
-being read from disk.
-
-Any other OpenAI-compatible local server (LM Studio, llama.cpp's
-`llama-server`, mlx-omni-server) works the same way: give OnIt the `/v1` base
-URL, name the model, and set `max_context_tokens` if the server doesn't publish
-`max_model_len`.
-
-### OpenRouter.ai
-
-[OpenRouter](https://openrouter.ai/) gives access to models from OpenAI, Google, Meta, Anthropic, and others through a single API.
-
-```bash
-onit --host https://openrouter.ai/api/v1
-```
-
-Browse available models at [openrouter.ai/models](https://openrouter.ai/models).
-
-### Ollama Cloud
-
-[Ollama cloud](https://ollama.com) hosts models accessed via the native [Ollama Python SDK](https://github.com/ollama/ollama-python). Store your API key once:
-
-```bash
-onit setup   # enter your Ollama API key when prompted
-```
-
-Or set the environment variable:
-
-```bash
-export OLLAMA_API_KEY=your-ollama-key
-```
-
-Then point OnIt at the Ollama cloud host and specify a model:
-
-```bash
-onit --host https://api.ollama.com --model glm-5.1:cloud
-onit --host https://api.ollama.com --model gemma4:31b-cloud
-onit --host https://api.ollama.com --model llama4:scout-cloud
-```
-
-Enable thinking mode (if supported by the model):
-
-```bash
-onit --think --host https://api.ollama.com --model glm-5.1:cloud
-```
-
-Model is auto-detected from the endpoint if `--model` is omitted. You can also set the host permanently in your config:
-
-```yaml
-serving:
-  host: https://api.ollama.com
-  model: glm-5.1:cloud
-```
-
-> **Note:** Ollama cloud uses the `ollama_api_key` keyring entry (the same key used for the web search tool).
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│                       onit CLI                      │
-│                  (argparse + YAML config)           │
-└────────────────────────┬────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│                     OnIt (src/onit.py)              │
-│                                                     │
-│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────┐ │
-│  │ ChatUI  │ │ WebApiUI │ │ Telegram │ │ Viber  │ │ A2A  │ │
-│  │(terminal│ │(FastAPI) │ │ Gateway  │ │Gateway │ │Server│ │
-│  └────┬────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └──┬───┘ │
-│       └─────────┬─┘            │             │       │
-│                 ▼                 ▼                 │
-│          client_to_agent()  /  process_task()       │
-│                 │                                   │
-│                 ▼                                   │
-│        MCP Prompt Engineering (FastMCP)             │
-│                 │                                   │
-│                 ▼                                   │
-│         chat() ◄──── Tool Registry                  │
-│ (vLLM/Ollama/MLX/OpenRouter) (auto-discovered)      │
-└─────────────────────────────────────────────────────┘
-                         │
-            ┌────────────┼────────────┐
-            ▼            ▼            ▼
-     ┌───────────┐ ┌──────────┐ ┌──────────┐
-     │  Prompts  │ │  Tools   │ │ External │  ...
-     │ MCP Server│ │MCP Server│ │MCP (SSE) │
-     └───────────┘ └──────────┘ └──────────┘
-```
-
-## Project Structure
-
-```
-onit/
-├── configs/
-│   └── default.yaml            # Agent configuration
-├── pyproject.toml              # Package configuration
-├── src/
-│   ├── cli.py                  # CLI entry point
-│   ├── setup.py                # Setup wizard (onit setup)
-│   ├── onit.py                 # Core agent class
-│   ├── lib/
-│   │   ├── text.py             # Text utilities
-│   │   └── tools.py            # MCP tool discovery
-│   ├── mcp/
-│   │   ├── prompts/            # Prompt engineering (FastMCP)
-│   │   └── servers/            # MCP servers (tools, web, bash, filesystem)
-│   ├── type/
-│   │   └── tools.py            # Tool registry and schema utilities
-│   ├── model/
-│   │   └── serving/
-│   │       └── chat.py         # LLM interface (vLLM, Ollama, MLX, OpenRouter)
-│   ├── ui/
-│   │   ├── text.py             # Rich terminal UI
-│   │   ├── api.py              # FastAPI + SSE web UI
-│   │   ├── static/             # Web UI assets (no build step)
-│   │   ├── telegram.py         # Telegram bot gateway
-│   │   └── viber.py            # Viber bot gateway
-│   └── test/                   # Test suite (pytest)
-```
+| | |
+|---|---|
+| `onit serve web` | Browser chat UI with Google login ([docs/CLI.md](docs/CLI.md#onit-serve-web)) |
+| `onit serve a2a` | [A2A protocol](https://a2a-protocol.org/) server; send tasks with `onit ask "…"` |
+| `onit serve gateway` | Telegram or Viber bot ([docs/GATEWAY_QUICK_START.md](docs/GATEWAY_QUICK_START.md)) |
+| `onit serve loop "task" --period 60` | Repeat a task on a timer |
+| `onit --container` | Run the whole agent inside a hardened Docker container ([docs/DOCKER.md](docs/DOCKER.md)) |
 
 ## Documentation
 
-- [Gateway Quick Start](docs/GATEWAY_QUICK_START.md) — Telegram and Viber bot setup
-- [Testing](docs/TESTING.md) — Running the test suite
-- [Docker](docs/DOCKER.md) — Container setup: `--container` launcher, manual `docker run`, Compose stack, GPU pass-through, troubleshooting
-- [Web Authentication](docs/WEB_AUTHENTICATION.md) — Web UI authentication reference
-- [Web Deployment](docs/DEPLOYMENT_WEB.md) — Production deployment with HTTP/HTTPS
-- [HTTPS with docker-compose](docs/HTTPS_DEPLOYMENT.md) — Built-in Caddy TLS, free Let's Encrypt certificates, persistent data path, post-install smoke tests
-- [Benchmarks](benchmarks/README.md) — Capability benchmark suite (Inspect AI) and results
-
-## TODO
-
-- [x] Integrate a [Mistral Search Toolkit](https://mistral.ai/news/search-toolkit/)–style pipeline for knowledge/RAG search over in-house data. See [Local Search over In-House Data](#local-search-over-in-house-data).
+- [Model Serving](docs/MODEL_SERVING.md) — vLLM, Ollama, MLX, OpenRouter, Ollama cloud, multi-endpoint failover
+- [CLI Reference](docs/CLI.md) — every command and flag, including the `serve` modes
+- [Configuration](docs/CONFIGURATION.md) — config file, environment variables, sampling, fact-checking
+- [MCP Tools](docs/TOOLS.md) — the default tools, sandbox paths, notes, code execution
+- [Local Search](docs/LOCAL_SEARCH.md) — indexing and searching in-house documents
+- [Isolation Modes](docs/ISOLATION.md) — containers, command allowlisting, permission rules
+- [Docker](docs/DOCKER.md) — `--container`, manual `docker run`, Compose stack, GPU pass-through
+- [Web Authentication](docs/WEB_AUTHENTICATION.md) · [Web Deployment](docs/DEPLOYMENT_WEB.md) · [HTTPS](docs/HTTPS_DEPLOYMENT.md)
+- [Gateway Quick Start](docs/GATEWAY_QUICK_START.md) — Telegram and Viber bots
+- [Architecture](docs/ARCHITECTURE.md) · [Testing](docs/TESTING.md) · [Benchmarks](benchmarks/README.md)
 
 ## License
 

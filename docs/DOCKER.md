@@ -19,7 +19,7 @@ OnIt can run fully containerized in two ways:
   docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi
   ```
 
-- **For the `onit --container` path**: OnIt installed on the host (`pip install onit`, or from source — see the README [Getting Started](../README.md#getting-started)) and, before the first containerized run, `onit setup` completed on the host so the launcher has a config and secrets to bridge in.
+- **For the `onit --container` path**: OnIt installed on the host (`pip install onit`, or from source — see the README [Quick Start](../README.md#quick-start)) and, before the first containerized run, `onit setup` completed on the host so the launcher has a config and secrets to bridge in.
 
 ## Quick start: `onit --container`
 

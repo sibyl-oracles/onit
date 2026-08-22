@@ -5,7 +5,7 @@ Google OAuth2 sign-in, only Google-hosted mail accounts are accepted, and
 each session is private to the account that created it.
 
 Step-by-step credential setup lives in the README under
-[`onit serve web`](../README.md#onit-serve-web). This document covers how the
+[`onit serve web`](CLI.md#onit-serve-web). This document covers how the
 flow works, the configuration reference, and troubleshooting.
 
 ## Why authentication is required
