@@ -4,38 +4,51 @@
 
 ### New Features
 
-- **Streaming Output** — Chat responses now stream token-by-token in the terminal UI, web UI, and A2A client for a more responsive experience.
-- **Tokens/sec Indicator** — Real-time tok/s display during streaming output in both terminal and web interfaces.
-- **Auto Model Detection** — The model is now auto-detected from the LLM endpoint, removing the need to set it explicitly for vLLM hosts. OpenRouter users can still override with `--model`.
-- **VLM Web Image Fetch** — New MCP server (`VlmWebMCPServer`) for fetching and processing images from web URLs in vision-language model workflows.
-- **Web UI Tool Calls** — Tool call details are now shown inline during the spinner/thinking phase in the web UI.
-- **Windows Support** — OnIt now works on Windows with platform-specific fixes for signal handling and terminal UI.
-- **Container Mode** (`--container`) — Run the entire OnIt process inside a hardened Docker container. Supports GPU pass-through (`--container-gpus`), extra bind mounts (`--container-mount`), memory cap (`--container-memory`), and custom `/dev/shm` and `/tmp` sizes.
-- **Plan Mode** (`--plan FILE`) — Load a markdown or text file as the initial prompt/plan for a chat session, useful for kicking off coding or analysis workflows from a prepared specification.
-- **Context Compaction** — Automatic context-window compaction summarises older messages when the context limit is approached, with a streaming inline notification so users can see when compaction occurred.
+- **Native Web UI** — The web UI no longer runs on Gradio. It is now a FastAPI app with a hand-written front end (`src/ui/api.py` + `src/ui/static/`) served over SSE, with streaming tokens, inline tool-call detail during the thinking phase, code and image rendering, copy buttons, and a login screen (`--no-login` to disable). Gradio is gone from the dependency list.
+- **Voice Mode** (`onit --voice`) — Full-duplex speech-to-speech. Audio is handled end to end by NVIDIA NemotronLabs VoiceChat 11B over an OpenAI-Realtime-compatible WebSocket (`--voice-url`); OnIt supplies the tools and the work. Install with `onit[voice]`. See [docs/VOICE.md](docs/VOICE.md).
+- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, `onit ask`, and `onit serve {a2a,web,gateway,loop}`. Plain `onit` still opens terminal chat.
+- **Persistent Sessions** — Terminal chat resumes the last session by default. `onit sessions` lists, tags, rebuilds, and clears them; `--resume TAG_OR_ID` (or `last`) reopens one; `--restart-session` starts fresh.
+- **Two-Host Load Balancing** — Serve from two endpoints at once with `--host2`/`--model2` and pick a policy with `--load-balancer {sticky,round_robin,random,least_busy}`. Endpoints are health-ranked, and Ollama endpoints stay in reserve unless `--no-ollama-fallback-only` puts them in normal rotation.
+- **Agent Harness Capabilities** — All six harness phases from the NOOA framework landed: run-state budgeting, a result store that keeps large tool results readable instead of truncating them (`result_read` / `result_grep`), harness tools, early stopping, and answer verification. See [docs/HARNESS_CAPABILITIES.md](docs/HARNESS_CAPABILITIES.md).
+- **Answer Verification** — Answers stream to the user and are then checked against the evidence the run gathered, in a fast stage the user waits for and a thorough stage that runs behind the delivered answer. Set `verify_answers: false` to hand back the answer unchecked.
+- **Code as Action** (`code_execution`, off by default) — A per-session Python interpreter that keeps variables between calls and exposes every registered tool as a function, collapsing multi-turn tool chains into one block. Off by default: the code runs with OnIt's privileges and no path jail, so enable it only where the deployment is already isolated (`onit --container`).
+- **Self-Improvement Trajectories** — OnIt records what its own runs did (`src/learn/`); `onit learn` shows the summary as a table or `--json`, and `onit learn --session ID` prints one trajectory. See [docs/SELF_IMPROVEMENT.md](docs/SELF_IMPROVEMENT.md).
+- **Local Search over In-House Data** — A local search MCP server modeled on the Mistral Search Toolkit: parse → chunk → embed/index, then BM25, dense, or hybrid retrieval over PDF, Markdown, text/CSV, DOCX, and XLSX. Documents and index never leave the machine. Install with `onit[search]`. See [docs/LOCAL_SEARCH.md](docs/LOCAL_SEARCH.md).
+- **Per-User MCP Isolation** — MCP tool servers are started per user, and MCP ports are chosen after the default servers exist, so concurrent users on one host no longer share tool-server state or collide on ports. See [docs/ISOLATION.md](docs/ISOLATION.md).
+- **Bash Command Policy** — Command classification (`src/mcp/servers/tasks/os/bash/command_policy.py`) routes long-running commands to `serve` rather than the bash tool and enforces the blocklist in one place.
+- **Container Mode** (`--container`) — Run the whole OnIt process inside a hardened Docker container, with GPU pass-through (`--container-gpus`), extra bind mounts (`--container-mount`), a memory cap (`--container-memory`), custom `/dev/shm` and `/tmp` sizes, and opt-in package installs (`--container-allow-installs`).
 - **Target Environment** (`--target-env`) — Point the agent's bash tool at a specific conda or virtual environment's Python, pip, and binaries without leaving the host shell.
-- **Unrestricted Mode** (`--unrestricted`) — Opt-in flag that grants the agent full host filesystem access, lifting the default sandbox path restrictions for power users and CI pipelines.
-- **Ollama Cloud Support** — Connect to hosted Ollama cloud endpoints in addition to local Ollama servers.
+- **Unrestricted Mode** (`--unrestricted`) — Opt-in flag granting full host filesystem access, lifting the default sandbox path restrictions for power users and CI pipelines.
+- **Streaming Output** — Chat responses stream token-by-token in the terminal UI, web UI, and A2A client, with a live tok/s indicator. `--no-stream` turns it off.
+- **Auto Model Detection** — The model is auto-detected from the LLM endpoint, so vLLM hosts no longer need it set explicitly. `--model` still overrides.
+- **Context Compaction** — Automatic context-window compaction summarises older messages as the limit approaches, with a streaming inline notice when it happens.
+- **MLX and Ollama Cloud** — Added local MLX serving on Apple silicon and hosted Ollama cloud endpoints alongside vLLM, local Ollama, and OpenRouter. See [docs/MODEL_SERVING.md](docs/MODEL_SERVING.md).
+- **VLM Web Image Fetch** — New MCP server (`VLMToolsMCPServer`) for fetching and processing images from web URLs in vision-language workflows.
+- **Windows Support** — Platform-specific fixes for signal handling and the terminal UI.
+- **SWE-bench Harness** — `onit[swe_bench]` extra and benchmark plumbing for running OnIt against SWE-bench through inspect-ai.
 
 ### Improvements
 
-- **DeepSeek v4 Compatibility** — Increased continuation token budget (64 → 512) to accommodate models like DeepSeek that prepend thinking tokens before tool-call JSON, preventing premature truncation of tool calls.
-- **Show Logs for Web & A2A** — The `--show-logs` flag now applies to web UI and A2A server modes, not just terminal and gateway.
-- **3 Default MCP Servers** — Added a third default MCP server for VLM web image URL fetching alongside the existing Prompts and Tools servers.
-- **Repetition Penalty** — Repetition penalty is now applied automatically for Ollama models (higher default when thinking mode is off) to reduce output looping.
+- **Docs Rewrite** — New guides for architecture, CLI, configuration, tools, isolation, model serving, local search, voice, HTTPS deployment, harness capabilities, and self-improvement; README simplified to a quick start.
+- **Removed `--plan` and `--sandbox`** — `--plan FILE` and the `--sandbox` flag are gone. Sandbox path restrictions are now the default behaviour, lifted with `--unrestricted`; MCP sandbox delegation is configured through an MCP server rather than a flag.
+- **Token Accounting** — Reworked token-length calculation and `max_tokens` handling across models with different context windows, plus a CLI override.
+- **DeepSeek v4 Compatibility** — Continuation token budget raised (64 → 512) so models that prepend thinking tokens before tool-call JSON are not truncated mid-call.
+- **Repetition Penalty** — Applied automatically for Ollama models (higher default with thinking mode off) to reduce output looping.
+- **Show Logs Everywhere** — `--show-logs` applies to web UI and A2A server modes, not just terminal and gateway.
+- **4 Default MCP Servers** — The unified Tools server is split into local and net profiles (`ToolsLocalMCPServer`, `ToolsNetMCPServer`), joining `PromptsMCPServer` and the new `VLMToolsMCPServer`.
 - **a2a-sdk 1.0** — Upgraded to `a2a-sdk>=1.0.0` for improved A2A protocol compatibility.
-- **Prompt Engineering** — Improved prompt templates for better instruction generation.
+- **Prompt Engineering** — Reworked prompt templates: more concise instructions, date awareness, and better plan generation.
 
 ### Bug Fixes
 
 - Fixed token length calculation errors causing premature context truncation.
 - Fixed context compaction triggering incorrectly in some conversation flows.
-- Fixed `max_tokens` handling for models with varying context window sizes.
-- Fixed chat API errors in edge cases with tool call sequences.
-- Fixed planning continuation count not resetting after a successful tool call, which could cause the agent to give up too early on complex multi-tool tasks.
-- Fixed terminal UI rendering issues and text display bugs.
+- Fixed planning continuation count not resetting after a successful tool call, which could make the agent give up early on multi-tool tasks.
+- Fixed early stopping firing before the task was actually finished, and unfinished answers being returned as final.
+- Fixed httpx-related MCP client errors and request timeouts.
+- Fixed tok/s reporting, truncated output, and several terminal and web UI rendering bugs.
 - Fixed git credential handling in container mode.
-- Fixed `--show` flag not applying correctly in some invocation paths.
+- Fixed `--show` not applying correctly in some invocation paths.
 
 ## v0.1.3c
 
