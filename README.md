@@ -109,29 +109,23 @@ export OPENROUTER_API_KEY=...        # OpenRouter
 onit
 ```
 
-That's the text UI. MCP tools start automatically, the last session resumes, and the
-agent works out of `~/sandbox` by default. Type `\bye` (or Ctrl+D) to leave.
-
-```bash
-onit --restart-session               # start fresh instead of resuming
-onit --host http://localhost:11434/v1 --model qwen3:30b   # override the configured endpoint
-onit --data-path ~/work              # work in a different directory
-onit --think                         # reasoning mode, if the model supports it
-onit --show-logs                     # show what the tools are doing
-```
+That's the text UI. MCP tools start automatically, the agent works out of `~/sandbox`,
+and `\bye` (or Ctrl+D) leaves. Running `onit` again picks the conversation back up where
+you left it.
 
 ## Day to day
 
+A few flags worth knowing:
+
 ```bash
-onit sessions                        # list saved sessions
-onit sessions --tag abc123 "my-chat" # name one for easy recall
-onit resume my-chat                  # continue a specific session
-onit setup --show                    # review the current configuration
+onit --restart-session   # forget the previous conversation and start clean
+onit --think             # reasoning mode, if the model supports it
+onit --show-logs         # show what the tools are doing
+onit --data-path ~/work  # work in a directory other than ~/sandbox
 ```
 
-Files the agent reads and writes stay inside its working directory (`data_path`,
-`~/sandbox` by default) — paths outside it are refused. Point it at a read-only folder
-of your own documents to ask questions about them:
+The agent reads and writes only inside its working directory — paths outside it are
+refused. To ask about documents you keep elsewhere, point it at a folder:
 
 ```bash
 export ONIT_DOCUMENTS_PATH=~/company-docs
@@ -139,7 +133,8 @@ onit
 > what is our vacation policy?
 ```
 
-Full flag list: [docs/CLI.md](docs/CLI.md). Tool-by-tool reference: [docs/TOOLS.md](docs/TOOLS.md).
+Full flag list, plus juggling several named sessions: [docs/CLI.md](docs/CLI.md).
+Tool-by-tool reference: [docs/TOOLS.md](docs/TOOLS.md).
 
 ## Configuration
 
@@ -150,7 +145,7 @@ serving:
   host: http://localhost:11434/v1
   model: qwen3:30b
   max_context_tokens: 131072   # set it when the server doesn't report its own
-  think: true
+  think: true                  # reasoning mode; off by default
   max_tokens: 32768
 
 theme: white          # or "dark"
