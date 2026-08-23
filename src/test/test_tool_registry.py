@@ -1,5 +1,6 @@
 """Tests for src/type/tools.py — ToolRegistry, ToolHandler, RequestHandler."""
 
+import asyncio
 import inspect
 import os
 import sys
@@ -365,6 +366,12 @@ class TestPooledClient:
 # Long enough that a hung call would fail the test's own timeout first.
 _REQUEST_TIMEOUT_STANDIN = 30
 
+
+def _fake_stdio_spec():
+    """A launch spec for a server no test ever starts."""
+    return {"command": sys.executable, "args": ["-c", "pass"],
+            "env": {}, "cwd": None, "log_file": None}
+
 class TestConnectionHygiene:
     """The client must not POST into a connection the server is closing.
 
@@ -407,6 +414,86 @@ class TestConnectionHygiene:
         from type.tools import _transport_for
 
         assert _transport_for("server.py") == "server.py"
+
+    @pytest.mark.asyncio
+    async def test_one_stdio_subprocess_is_shared_by_every_pooled_call(self):
+        """A transport dropped rather than closed is torn down by __del__.
+
+        __del__ signals the connect task without awaiting it, and whatever the
+        server writes during that unwind hits a stream the session has already
+        closed — an unretrieved BrokenResourceError printed over the UI, and a
+        subprocess that outlived the client.  Handing back the same transport
+        is what stops one being dropped in the first place.
+        """
+        from type.tools import _transport_for, _STDIO_SPECS
+
+        _STDIO_SPECS["stdio://Shared"] = _fake_stdio_spec()
+        try:
+            first = _transport_for("stdio://Shared")
+            assert _transport_for("stdio://Shared") is first
+            assert first.keep_alive is True
+        finally:
+            _STDIO_SPECS.pop("stdio://Shared", None)
+
+    @pytest.mark.asyncio
+    async def test_a_one_shot_caller_gets_a_subprocess_it_can_close(self):
+        """Discovery must not borrow the session the tool calls will run on.
+
+        The log handler and timeout belong to whoever connects first, so a
+        borrowed session would route the pooled client's tool output nowhere.
+        keep_alive=False is what lets the client context close this one.
+        """
+        from type.tools import _transport_for, _STDIO_SPECS
+
+        _STDIO_SPECS["stdio://OneShot"] = _fake_stdio_spec()
+        try:
+            shared = _transport_for("stdio://OneShot")
+            one_shot = _transport_for("stdio://OneShot", shared=False)
+            assert one_shot is not shared
+            assert one_shot.keep_alive is False
+            # Nor may it displace the shared one.
+            assert _transport_for("stdio://OneShot") is shared
+        finally:
+            _STDIO_SPECS.pop("stdio://OneShot", None)
+
+    @pytest.mark.asyncio
+    async def test_a_discarded_stdio_session_takes_its_subprocess_with_it(self):
+        """keep_alive holds the subprocess past the client's own close.
+
+        Closing the transport is what reaps it, and close() awaits the connect
+        task, so a teardown-race error is retrieved here instead of surfacing
+        on the terminal later.
+        """
+        from type.tools import _PooledClient
+
+        client = MagicMock()
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.transport = MagicMock()
+        client.transport.close = AsyncMock()
+
+        pooled = _PooledClient("stdio://Discarded", asyncio.get_running_loop())
+        pooled._client = client
+        await pooled._discard()
+
+        client.transport.close.assert_awaited_once()
+        assert pooled._client is None
+
+    @pytest.mark.asyncio
+    async def test_an_http_session_is_discarded_without_touching_its_transport(self):
+        """Only a stdio transport owns a process that outlives its client."""
+        from type.tools import _PooledClient
+
+        client = MagicMock()
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.transport = MagicMock()
+        client.transport.close = AsyncMock()
+
+        pooled = _PooledClient("http://127.0.0.1:18201/sse",
+                               asyncio.get_running_loop())
+        pooled._client = client
+        await pooled._discard()
+
+        client.transport.close.assert_not_awaited()
 
     def test_transport_tracebacks_are_collapsed_to_one_line(self):
         """The SDK logs the whole stack at ERROR; recovery happens here."""

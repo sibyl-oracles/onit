@@ -30,7 +30,7 @@ import httpx
 from fastmcp import Client
 from abc import ABC, abstractmethod
 from mcp.types import ImageContent, TextContent, AudioContent
-from typing import Callable, TypedDict
+from typing import Any, Callable, TypedDict
 
 import logging
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -245,8 +245,64 @@ def is_stdio_url(url: object) -> bool:
     return isinstance(url, str) and url.startswith(STDIO_SCHEME)
 
 
-def _transport_for(url: str):
+# The long-lived stdio transport for each server, keyed the way the client
+# pool is: fastmcp binds a transport to the loop its connect task runs on.
+# Held here so it is closed rather than collected — see _stdio_transport.
+_STDIO_TRANSPORTS: dict[tuple[str, int], tuple[Any, asyncio.AbstractEventLoop]] = {}
+
+
+def _new_stdio_transport(spec: dict, keep_alive: bool):
+    from pathlib import Path
+    from fastmcp.client.transports import StdioTransport
+    return StdioTransport(
+        command=spec["command"],
+        args=spec["args"],
+        env=spec["env"],
+        cwd=spec["cwd"],
+        keep_alive=keep_alive,
+        log_file=Path(spec["log_file"]) if spec["log_file"] else None,
+    )
+
+
+def _stdio_transport(url: str, spec: dict):
+    """The one transport — and so the one subprocess — for ``url``.
+
+    A ``keep_alive`` transport outlives the client that opened it, so a caller
+    that lets go of one leaves its subprocess running until the collector
+    reaches it.  ``__del__`` then signals the connect task without awaiting
+    it, and anything the server writes during that unwind lands in a stream
+    the session has already closed: a BrokenResourceError nobody retrieves,
+    printed over whatever the user was reading.  Keeping the transport here
+    means it is reused instead of respawned, and closed instead of collected.
+
+    Without a running loop there is nothing to key on and nothing that could
+    have connected yet, so the caller gets a transport of its own.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return _new_stdio_transport(spec, keep_alive=True)
+    key = (url, id(loop))
+    entry = _STDIO_TRANSPORTS.get(key)
+    # The loop is held alongside the transport so it cannot be collected while
+    # this entry is filed under its id(), which would let a later loop reuse
+    # the address and inherit a subprocess belonging to a dead one.
+    if entry is None or entry[1] is not loop:
+        entry = (_new_stdio_transport(spec, keep_alive=True), loop)
+        _STDIO_TRANSPORTS[key] = entry
+    return entry[0]
+
+
+def _transport_for(url: str, shared: bool = True):
     """The transport to connect to ``url`` with.
+
+    ``shared`` is what a stdio caller says about how long it wants the
+    subprocess for.  Shared is the pooled client's answer: one process per
+    server, reused by every tool call.  A one-shot caller — discovery, a test
+    — passes False and gets a process of its own that fastmcp shuts down when
+    its client context exits.  It cannot have the shared one: the session's
+    log handler and timeout are fixed by whoever connects first, so a borrowed
+    session would quietly route the pooled client's tool output nowhere.
 
     Returns the URL unchanged — letting fastmcp infer the transport at its own
     connection defaults — for anything that is not an HTTP MCP server, or if
@@ -254,18 +310,13 @@ def _transport_for(url: str):
     """
     spec = _STDIO_SPECS.get(url) if isinstance(url, str) else None
     if spec is not None:
-        from pathlib import Path
-        from fastmcp.client.transports import StdioTransport
-        return StdioTransport(
-            command=spec["command"],
-            args=spec["args"],
-            env=spec["env"],
-            cwd=spec["cwd"],
-            # One subprocess per OnIt process, held across the open/close
-            # cycles of the pooled client rather than respawned per call.
-            keep_alive=True,
-            log_file=Path(spec["log_file"]) if spec["log_file"] else None,
-        )
+        if not shared:
+            # keep_alive=False makes the client context exit close the
+            # subprocess, which awaits the connect task and swallows what it
+            # raises — the difference between a clean shutdown and the
+            # collector tripping over one later.
+            return _new_stdio_transport(spec, keep_alive=False)
+        return _stdio_transport(url, spec)
     if is_stdio_url(url):
         raise ValueError(
             f"No launch spec registered for {url}; call register_stdio_server() "
@@ -366,11 +417,26 @@ class _PooledClient:
 
     async def _discard(self) -> None:
         client, self._client = self._client, None
-        if client is not None:
+        if client is None:
+            return
+        try:
+            await client.__aexit__(None, None, None)
+        except Exception:
+            pass
+        # Leaving the client is not enough for a stdio server: keep_alive is
+        # what holds its subprocess across the pooled client's own open/close
+        # cycles, so a session discarded as unusable would keep its process
+        # and its half-torn-down streams until the collector reached it.
+        # close() waits for the connect task and swallows what it raises,
+        # which is what keeps the teardown's BrokenResourceError off the
+        # terminal, and leaves the transport ready to connect again.
+        transport = getattr(client, "transport", None)
+        if is_stdio_url(self.url) and transport is not None:
             try:
-                await client.__aexit__(None, None, None)
+                await transport.close()
             except Exception:
-                pass
+                logger.debug("closing stdio transport for %s failed",
+                             self.url, exc_info=True)
 
     async def _watch_session(self, client: Client, call: asyncio.Future) -> None:
         """Ping until ``call`` finishes, raising once the session is unwritable.

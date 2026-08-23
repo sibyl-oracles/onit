@@ -34,6 +34,38 @@ class TestRemoveTags:
         result = remove_tags("<a>one</a> <b>two</b>")
         assert result == "one two"
 
+    def test_bare_less_than_is_not_a_tag(self):
+        """A comparison in prose is not an opening tag.
+
+        The regression this guards: an answer containing "0.709 < 0.712" and a
+        closing wrapper tag anywhere after it lost everything between the two.
+        """
+        text = ("mean **0.70931** < 0.71205 -> rejected\n\n"
+                "## Round 2\ntext the user needs\n</answer>")
+        out = remove_tags(text)
+        assert "< 0.71205" in out
+        assert "text the user needs" in out
+        assert "</answer>" not in out
+
+    def test_digit_after_less_than_is_not_a_tag(self):
+        assert remove_tags("if x<3 then y>4") == "if x<3 then y>4"
+
+    def test_tag_does_not_span_a_second_open_bracket(self):
+        assert remove_tags("a < b and <i>c</i> < d") == "a < b and c < d"
+
+    def test_keeps_markdown_autolinks(self):
+        assert remove_tags("see <https://example.com> now") == "see <https://example.com> now"
+
+    def test_removes_attributed_tags(self):
+        assert remove_tags('<div class="x">y</div>') == "y"
+
+    def test_removes_model_special_tokens(self):
+        assert remove_tags("answer<|im_end|>") == "answer"
+
+    def test_removes_comments_and_doctypes(self):
+        assert remove_tags("<!-- note -->keep") == "keep"
+        assert remove_tags("<!DOCTYPE html>keep") == "keep"
+
 
 # ── text_between_tags ───────────────────────────────────────────────────────
 

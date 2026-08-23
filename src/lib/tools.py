@@ -305,7 +305,11 @@ async def _discover_server_tools(
     last_error: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         try:
-            async with Client(_transport_for(url)) as client:
+            # A one-shot transport: discovery asks a stdio server what it has
+            # once, and shutting its subprocess down here is what keeps the
+            # tool calls that follow on the pooled client's own session, whose
+            # log handler is the one that reaches the UI.
+            async with Client(_transport_for(url, shared=False)) as client:
                 tools_list = await client.list_tools()
                 resources_list = await client.list_resources()
                 tools_list.extend(resources_list)

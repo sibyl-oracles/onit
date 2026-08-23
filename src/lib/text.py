@@ -1,6 +1,26 @@
 import re
 
-_TAG_RE = re.compile(r'<[^>]+>')
+# Only spans that are actually tag-shaped.  A bare "<" is ordinary prose in a
+# model answer — "mean 0.709 < 0.712", a generic in a sentence, a stray
+# comparison — and a pattern of <[^>]+> pairs that "<" with the next ">" it can
+# find, which may be a closing wrapper tag thousands of characters later.  The
+# whole answer between the two then disappears, silently and only for answers
+# that happen to contain the character.  So the name has to look like a name:
+# "<" followed by whitespace or a digit is left alone, and no tag may span a
+# second "<".  The alternatives cover model special tokens (<|im_end|>) and
+# comments/doctypes, which are tags for this purpose but not named ones.
+_TAG_RE = re.compile(
+    r"""<
+        (?:
+            /?[A-Za-z][A-Za-z0-9:._-]*      # <b>  </div>  <answer>  <br/>
+            (?:\s[^<>]*)?                   #   attributes
+            /?
+          | \|[^<>|]{0,64}\|                # <|im_end|>, <|endoftext|>
+          | ![^<>]{0,400}                   # <!-- comment -->, <!DOCTYPE ...>
+        )
+    >""",
+    re.VERBOSE,
+)
 
 # Separates the two halves of an agent instruction.
 #

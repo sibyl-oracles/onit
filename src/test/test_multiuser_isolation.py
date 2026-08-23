@@ -243,7 +243,7 @@ class TestStdioToolsAreNotShared:
         bob.mkdir()
 
         async def cwd_of(url, data_path):
-            async with Client(_transport_for(url)) as client:
+            async with Client(_transport_for(url, shared=False)) as client:
                 result = await client.call_tool(
                     "bash", {"command": "pwd", "data_path": str(data_path)})
                 return json.loads(str(result.content[0].text))["cwd"]
@@ -264,7 +264,7 @@ class TestStdioToolsAreNotShared:
         secret = alice / "secret.txt"
         secret.write_text("alice's notes")
 
-        async with Client(_transport_for(_spawn_spec("ToolsLocal_bob2", bob))) as client:
+        async with Client(_transport_for(_spawn_spec("ToolsLocal_bob2", bob), shared=False)) as client:
             result = await client.call_tool(
                 "read_file", {"path": str(secret), "data_path": str(bob)})
 
@@ -272,7 +272,7 @@ class TestStdioToolsAreNotShared:
 
     async def test_the_stdio_server_serves_only_the_local_tools(self, tmp_path):
         """The stateless tools stay on the socket server; none reach the pipe."""
-        async with Client(_transport_for(_spawn_spec("ToolsLocal_p", tmp_path))) as client:
+        async with Client(_transport_for(_spawn_spec("ToolsLocal_p", tmp_path), shared=False)) as client:
             names = {t.name for t in await client.list_tools()}
 
         assert "bash" in names

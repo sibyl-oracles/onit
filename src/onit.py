@@ -2152,13 +2152,18 @@ class OnIt(BaseModel):
             )
             return
         # If streaming already persisted the message via stream_end(), replace
-        # it rather than adding a duplicate.  Matched on prefix, not equality:
-        # the run can append to what it streamed — a turn-limit notice, a
-        # resumed final answer — and an equality check treats the longer text
-        # as a second message, showing the user the same block twice.
+        # it rather than adding a duplicate.  Matched on prefix, not equality,
+        # and in both directions: the run can append to what it streamed — a
+        # turn-limit notice, a resumed final answer — and it can also hand back
+        # less than it streamed, because the answer is tag-stripped on the way
+        # here and the strip can remove something stream_end() kept.  Either
+        # way it is the same turn's answer, and an equality check posts it to
+        # the panel a second time — the shortened copy landing under the full
+        # one, which reads as an answer that was cut off.
         _last = self.chat_ui.messages[-1] if self.chat_ui.messages else None
         if (_last and hasattr(_last, 'role') and _last.role == "assistant"
-                and _last.content and response.startswith(_last.content)):
+                and _last.content and (response.startswith(_last.content)
+                                       or _last.content.startswith(response))):
             from src.ui.text import Message
             self.chat_ui.messages[-1] = Message(
                 role=_last.role, content=response,

@@ -1578,3 +1578,69 @@ class TestSandboxAvailable:
             assert not interp.alive
         finally:
             await shutdown_all()
+
+
+# ── _handle_successful_response: one answer, one block ──────────────────────
+
+class TestFinalAnswerBlock:
+    """The panel must show a turn's answer once.
+
+    The answer reaches the panel twice — once from stream_end() as it streams,
+    and once here with the elapsed time attached — and the second write is a
+    replacement only while the two texts agree.  Tag-stripping on the way here
+    is what can make them disagree.
+    """
+
+    def _onit(self, tmp_path):
+        from src.ui.text import ChatUI
+        with _mock_discover():
+            onit = OnIt(config=_make_config(tmp_path))
+        onit.chat_ui = ChatUI()
+        onit.session_path = str(tmp_path / "session.jsonl")
+        onit.session_id = "s1"
+        onit.data_path = str(tmp_path / "data")
+        onit._persist_run_state = MagicMock()
+        onit._record_trajectory = MagicMock()
+        return onit
+
+    def _handle(self, onit, response):
+        onit._handle_successful_response(response, "task", "1.5s", MagicMock())
+
+    def test_streamed_answer_is_replaced_not_repeated(self, tmp_path):
+        onit = self._onit(tmp_path)
+        onit.chat_ui.add_message("assistant", "the answer")
+        self._handle(onit, "the answer")
+        assert [m.content for m in onit.chat_ui.messages] == ["the answer"]
+        assert onit.chat_ui.messages[-1].elapsed == "1.5s"
+
+    def test_a_resumed_tail_extends_the_same_block(self, tmp_path):
+        onit = self._onit(tmp_path)
+        onit.chat_ui.add_message("assistant", "the answer")
+        self._handle(onit, "the answer, continued")
+        assert [m.content for m in onit.chat_ui.messages] == ["the answer, continued"]
+
+    def test_a_shortened_answer_does_not_post_a_second_block(self, tmp_path):
+        """The regression: an answer holding a bare "<" came back from the tag
+        strip shorter than it streamed, and landed under the full copy as a
+        block that reads as cut off."""
+        onit = self._onit(tmp_path)
+        onit.chat_ui.add_message("assistant", "the answer with a tail")
+        self._handle(onit, "the answer")
+        assert [m.content for m in onit.chat_ui.messages] == ["the answer"]
+
+    def test_a_different_answer_is_its_own_block(self, tmp_path):
+        onit = self._onit(tmp_path)
+        onit.chat_ui.add_message("assistant", "the first answer")
+        self._handle(onit, "a second, unrelated answer")
+        assert len(onit.chat_ui.messages) == 2
+
+    def test_comparison_in_an_answer_survives_the_tag_strip(self, tmp_path):
+        """End to end over the path that lost the tail: a wrapper tag is
+        removed, the comparison and everything after it are kept."""
+        onit = self._onit(tmp_path)
+        answer = ("mean **0.70931** < 0.71205 -> rejected\n\n"
+                  "## Round 2\ntext the user needs\n</answer>")
+        self._handle(onit, answer)
+        stored = onit.chat_ui.messages[-1].content
+        assert "< 0.71205" in stored
+        assert stored.endswith("text the user needs")
