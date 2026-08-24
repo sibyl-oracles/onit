@@ -2212,6 +2212,94 @@ def _extract_final_response(content: str | None, full_reasoning: str, full_conte
     return last_response
 
 
+def _is_reasoning_only(content: str | None, full_reasoning: str,
+                       full_content: str) -> bool:
+    """True when a turn produced thinking and no answer at all.
+
+    A thinking model that spends its whole output budget reasoning ends the
+    turn with an empty ``content`` and a full reasoning field.  The fallback in
+    _extract_final_response then hands that thinking back as the reply, which
+    is right for a host that simply puts the answer in the other field — and
+    wrong for a resume.  Thinking is not a partial answer: handed back as one,
+    with a prompt asking the model to continue from where it stopped, it only
+    makes the model think the same thoughts again, and every pass gets stitched
+    on to the last until the user is reading the same paragraph four times.
+    """
+    answer = content or ""
+    if "</think>" in answer:
+        answer = _strip_think_blocks(answer)
+    if answer.strip():
+        return False  # the turn wrote real answer text; resume from that
+    return bool(_extract_final_response(content, full_reasoning, full_content).strip())
+
+
+# How much of a resumed turn to match against the answer so far when looking
+# for the seam.  Long enough that a match is not a coincidence, short enough
+# that the scan stays linear on an answer of any length.
+_OVERLAP_PROBE = 120
+# A resumed turn shorter than this is not treated as a repeat just because its
+# text appears somewhere in the answer already: a resume that closes a bracket
+# or finishes a word is a few characters long, and those few characters are
+# bound to occur earlier in any long answer.
+_MIN_REPEAT_CHARS = 40
+
+
+def _overlap_len(prefix: str, partial: str) -> int:
+    """How much of ``partial``'s opening the answer so far already ends with.
+
+    The length of the longest suffix of ``prefix`` that ``partial`` repeats at
+    its start — the seam to drop when stitching the two together.
+    """
+    probe = partial[:_OVERLAP_PROBE]
+    if not probe:
+        return 0
+    # A seam longer than the probe: find where the probe sits in ``prefix`` and
+    # check the rest from there.  Earliest match first — the earlier the seam
+    # starts in ``prefix``, the more of ``prefix`` the resumed turn repeated.
+    if len(partial) >= _OVERLAP_PROBE:
+        idx = prefix.find(probe)
+        while idx != -1:
+            if partial.startswith(prefix[idx:]):
+                return len(prefix) - idx
+            idx = prefix.find(probe, idx + 1)
+    # A seam shorter than the probe never matches the search above, since only
+    # the head of the probe is in ``prefix`` at all.  Scan for it directly,
+    # longest first, bounded by the probe so this stays cheap on long answers.
+    for size in range(min(len(prefix), len(partial), _OVERLAP_PROBE), 0, -1):
+        if prefix.endswith(partial[:size]):
+            return size
+    return 0
+
+
+def _stitch_continuation(prefix: str, partial: str) -> str:
+    """Join a resumed turn onto the answer so far, dropping what it repeats.
+
+    ``_FINAL_CONTINUATION_PROMPT`` asks the model not to repeat itself, and a
+    model that obeys can be concatenated as it stands.  One that does not —
+    routinely a thinking model, which re-derives an answer rather than picking
+    it up mid-sentence — hands back the same text again, and a run that
+    concatenates blindly shows the user three copies of one paragraph.
+
+    Returning ``prefix`` unchanged is also the signal that the resume achieved
+    nothing, which is why the caller compares lengths rather than resuming on
+    faith.
+    """
+    if not prefix:
+        return partial
+    if not partial.strip():
+        return prefix
+    # The seam comes first: a turn that repeats the last paragraph and then
+    # carries on is the good case, and trimming the seam keeps what it added.
+    trimmed = partial[_overlap_len(prefix, partial):]
+    if not trimmed.strip():
+        return prefix  # the turn was the seam and nothing else
+    if len(partial.strip()) >= _MIN_REPEAT_CHARS and partial.strip() in prefix:
+        # Repeated text that is not at the seam: a turn that went back and
+        # re-wrote a paragraph from the middle of the answer.
+        return prefix
+    return prefix + trimmed
+
+
 # Delimiters that come in pairs.  An answer holding one of these open on its
 # last line stopped in the middle of writing it.
 _UNCLOSED_PAIRS = (("(", ")"), ("[", "]"))
@@ -3668,16 +3756,29 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # _looks_incomplete has no evidence for.
             _swallowed = _output_unaccounted(
                 _completion_tokens, _full_content or _content or "", _full_reasoning)
+            # The answer as the user would see it with this turn stitched on,
+            # repeated text dropped.  Both the "is it still cut off?" question
+            # and the "did resuming achieve anything?" one are asked of this.
+            _stitched = _stitch_continuation(state.final_answer_prefix, _partial)
             _cut_short = (_finish_reason == "length"
-                          or _looks_incomplete(state.final_answer_prefix + _partial)
+                          or _looks_incomplete(_stitched)
                           or _swallowed)
-            if _cut_short and state.final_continuation_count < MAX_FINAL_CONTINUATIONS:
+            # Two turns that look truncated but that resuming cannot mend, and
+            # that resuming actively makes worse — each pass costs a full
+            # generation and adds another copy of text already on screen.
+            _thinking_only = _is_reasoning_only(_content, _full_reasoning, _full_content)
+            # Only text already written can be repeated: a first turn that came
+            # back empty is a hiccup worth one resume, not a stall.
+            _stalled = (bool(state.final_answer_prefix)
+                        and len(_stitched) <= len(state.final_answer_prefix))
+            if (_cut_short and not _thinking_only and not _stalled
+                    and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
                 state.final_continuation_count += 1
                 state.force_compact = False  # don't discard the partial answer
                 # A planning continuation earlier in the run may have capped the
                 # budget; resuming an answer under that cap truncates it again.
                 state.active_max_tokens = max_tokens
-                state.final_answer_prefix += _partial
+                state.final_answer_prefix = _stitched
                 if _partial.strip():
                     # An empty partial in the history is a turn that said
                     # nothing; the continuation prompt reads as the whole ask.
@@ -3697,13 +3798,27 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 )
                 continue
             if _cut_short:
-                # Out of resumes.  The answer that follows stops mid-thought,
-                # and the run has no way to finish it — say so rather than let
-                # it read as a complete reply.
+                # No resume, or no more of them.  The answer that follows stops
+                # mid-thought and the run has no way to finish it — say so, and
+                # say which of the three reasons it was, rather than let it read
+                # as a complete reply.  Budget first: a run that has spent its
+                # resumes stopped for that reason whatever else is also true.
+                if state.final_continuation_count >= MAX_FINAL_CONTINUATIONS:
+                    _stop_why = (
+                        f"Answer is still incomplete after {MAX_FINAL_CONTINUATIONS} "
+                        "resume attempts — it may stop mid-sentence.")
+                elif _thinking_only:
+                    _stop_why = (
+                        "The model spent its whole output budget thinking and never "
+                        "wrote an answer; its thinking is below. Raise max_tokens, or "
+                        "turn thinking off for this task.")
+                else:
+                    _stop_why = (
+                        "The resumed reply added nothing the answer did not already "
+                        "have, so the run stopped rather than spend more attempts "
+                        "repeating it — the answer may stop mid-sentence.")
                 _log_to_ui_or_verbose(
-                    f"Answer is still incomplete after {MAX_FINAL_CONTINUATIONS} "
-                    "resume attempts — it may stop mid-sentence.",
-                    chat_ui, verbose, level="warning", notify=True,
+                    _stop_why, chat_ui, verbose, level="warning", notify=True,
                 )
 
             # Detect planning responses: the model announced intent ("Let me create X")
@@ -3784,9 +3899,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             state.force_tool_call = False
             state.active_max_tokens = max_tokens
             _final = _extract_final_response(_content, _full_reasoning, _full_content)
-            # Stitch on any text from earlier turns that were truncated and resumed.
+            # Stitch on any text from earlier turns that were truncated and
+            # resumed, dropping whatever this turn repeated of them.
             if state.final_answer_prefix:
-                _final = state.final_answer_prefix + _final
+                _final = _stitch_continuation(state.final_answer_prefix, _final)
             # The one exit that hands back an answer about the world.  Every
             # other return above is the loop reporting on itself — a limit hit,
             # a model that cannot call tools — and there is nothing in those to

@@ -23,7 +23,8 @@ from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _ACK_CONTINUATION_PROMPT,
                                 _extract_final_response, _looks_incomplete,
                                 _output_unaccounted, _log_to_ui_or_verbose,
-                                _reasoning_text,
+                                _reasoning_text, _is_reasoning_only,
+                                _stitch_continuation,
                                 _execute_tool, _compact_context, chat)
 
 
@@ -1301,11 +1302,18 @@ class TestPlanningContinuation:
     @pytest.mark.asyncio
     async def test_truncated_final_answer_resume_is_bounded(self):
         """If the model keeps getting truncated, resumes are capped and whatever
-        text accumulated is still returned (never less than before)."""
+        text accumulated is still returned (never less than before).
+
+        Every turn writes a different chunk, so what stops this run is the
+        resume budget.  A model that returns the *same* chunk each time stops
+        sooner — see TestThinkingIsNotAPartialAnswer.
+        """
         mock_client = AsyncMock()
         # Always truncated — model never finishes.
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion_with_finish(content="chunk ", finish_reason="length")
+            side_effect=(_mock_completion_with_finish(
+                content=f"chunk{n} ", finish_reason="length")
+                for n in itertools.count())
         )
 
         with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
@@ -1320,7 +1328,7 @@ class TestPlanningContinuation:
         # 1 initial + MAX_FINAL_CONTINUATIONS (3) resumes = 4 calls.
         assert mock_client.chat.completions.create.call_count == 4
         # All four chunks are stitched into the returned answer.
-        assert result == "chunk " * 4
+        assert result == "chunk0 chunk1 chunk2 chunk3 "
 
     @pytest.mark.asyncio
     async def test_planning_exhausted_returns_error(self):
@@ -2712,11 +2720,16 @@ class TestResumeIncompleteAnswer:
 
     @pytest.mark.asyncio
     async def test_resumes_are_bounded(self):
-        """A model that never finishes the sentence still ends the run."""
+        """A model that never finishes the sentence still ends the run.
+
+        Each turn writes something new: what has to stop this run is the
+        resume budget, not the repeat guard.
+        """
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(_mock_completion_with_finish(
-                content="and then (", finish_reason="stop")))
+            side_effect=(_mock_completion_with_finish(
+                content=f"step {n} and then (", finish_reason="stop")
+                for n in itertools.count()))
 
         with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
              patch("model.serving.chat._resolve_model_id",
@@ -2896,6 +2909,132 @@ class TestResumeWhenOutputWentMissing:
         assert any("resuming" in m for _, m in notices), notices
         assert any(lvl == "warning" and "still incomplete" in m
                    for lvl, m in notices), notices
+
+
+# ── resuming a cut-off answer without repeating it ──────────────────────────
+
+_THINKING = (
+    "Now I'm realizing the core issue: scoring a 20-epoch run against a trial "
+    "that asked for chunk=60 teaches TPE the wrong lesson about that chunk "
+    "value. The cleanest fix is to let the candidates finish, score them "
+    "honestly, then retrain them with their correct chunk sizes next round."
+)
+
+
+class TestStitchContinuation:
+    def test_the_first_piece_stands_alone(self):
+        assert _stitch_continuation("", "the answer") == "the answer"
+
+    def test_a_clean_continuation_is_concatenated(self):
+        assert _stitch_continuation(
+            "The floor is 4.4 ", "UTMOS.") == "The floor is 4.4 UTMOS."
+
+    def test_a_restated_line_is_joined_at_the_seam(self):
+        """The ordinary case: the model restates where it left off, then goes on."""
+        prefix = "Kokoro 82M is the reference, and the naturalness floor"
+        partial = " and the naturalness floor sits at 4.4 UTMOS."
+        assert _stitch_continuation(prefix, partial) == (
+            "Kokoro 82M is the reference, and the naturalness floor sits at 4.4 UTMOS.")
+
+    def test_a_turn_that_only_repeats_adds_nothing(self):
+        assert _stitch_continuation(_THINKING, _THINKING) == _THINKING
+
+    def test_a_repeat_that_carries_on_keeps_what_it_added(self):
+        assert _stitch_continuation(
+            "Context. " + _THINKING, _THINKING + " Retrain instead."
+        ) == "Context. " + _THINKING + " Retrain instead."
+
+    def test_a_paragraph_rewritten_from_the_middle_is_dropped(self):
+        prefix = _THINKING + " So the plan is to let them finish."
+        assert _stitch_continuation(prefix, _THINKING) == prefix
+
+    def test_short_text_is_not_a_repeat_just_because_it_occurred_earlier(self):
+        """A resume that closes a bracket is a few characters long, and those
+        few characters are in every long answer already."""
+        prefix = "The (first) run and then ("
+        assert _stitch_continuation(prefix, "second)") == prefix + "second)"
+
+
+class TestIsReasoningOnly:
+    def test_thinking_with_no_answer(self):
+        assert _is_reasoning_only("", "weighing the options", "") is True
+
+    def test_an_answer_alongside_thinking_is_not(self):
+        assert _is_reasoning_only("4.4 UTMOS.", "weighing the options", "") is False
+
+    def test_an_answer_after_a_closed_think_block_is_not(self):
+        assert _is_reasoning_only("weighing</think>4.4 UTMOS.", "", "") is False
+
+    def test_a_turn_that_said_nothing_at_all_is_not(self):
+        assert _is_reasoning_only("", "", "") is False
+
+
+class TestThinkingIsNotAPartialAnswer:
+    @pytest.mark.asyncio
+    async def test_truncated_thinking_is_not_resumed(self):
+        """The bug this guards: a thinking model spends its whole budget on
+        reasoning, the empty-content fallback hands that thinking back as the
+        answer, and resuming it makes the model think the same thoughts again —
+        once per resume, every copy stitched onto the last."""
+        notices = []
+
+        class _UI:
+            def notice(self, message, level="info"):
+                notices.append((level, message))
+
+            def __getattr__(self, name):
+                return lambda *a, **k: None
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(_mock_completion_with_usage(
+                "", completion_tokens=4000, reasoning=_THINKING,
+                finish_reason="length")))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Score the candidates.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                chat_ui=_UI(),
+                max_ack_continuations=0,
+                verify_answers=False,  # count the loop's calls, not the checker's
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 1
+        assert result.count("Now I'm realizing") == 1
+        assert any(lvl == "warning" and "budget thinking" in m
+                   for lvl, m in notices), notices
+
+    @pytest.mark.asyncio
+    async def test_a_resume_that_repeats_itself_stops_the_run(self):
+        """A resume that hands back the same text has not resumed anything.
+        Spending the rest of the budget on it only buys more copies."""
+        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+                "quarter, and throughput is unchanged at 42 tokens per second (")
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(_mock_completion_with_finish(
+                content=para, finish_reason="length")))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Summarize the run.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_ack_continuations=0,
+                verify_answers=False,  # count the loop's calls, not the checker's
+            ), timeout=30)
+
+        # 1 initial + 1 resume that repeated itself, rather than 1 + 3.
+        assert mock_client.chat.completions.create.call_count == 2
+        assert result.count("naturalness floor") == 1
 
 
 class TestLogToUiOrVerbose:
