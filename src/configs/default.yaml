@@ -9,7 +9,7 @@ serving:
   # N tool calls pays for N reasoning passes. Set false to keep thinking for
   # the opening turn, where the approach is decided, and drop it for the rest
   # of the loop — the final answer included. Latency for deliberation.
-  # think_tool_turns: true
+  think_tool_turns: false
   # Max output tokens per response. 32768 fits any single answer and keeps the
   # context-compaction threshold healthy (~90%) on large-context models.
   max_tokens: 32768
