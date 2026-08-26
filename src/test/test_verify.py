@@ -934,8 +934,13 @@ class TestChatWiring:
         answer_call, verify_call = client.chat.completions.create.call_args_list
         assert (verify_call.kwargs["extra_body"]["chat_template_kwargs"]
                 == {"enable_thinking": False})
-        # The answer itself is untouched — it is the part worth deliberating.
-        assert "enable_thinking" not in str(answer_call.kwargs.get("extra_body", {}))
+        # The check spends nothing on thinking whatever the run does, and it
+        # says so rather than leaving it to the template's default — which on
+        # Qwen3 is thinking *on*.  This run has think off, so the answer call
+        # says the same thing; with think on it would say the opposite.  What
+        # neither call does any more is stay silent about it.
+        assert (answer_call.kwargs["extra_body"]["chat_template_kwargs"]
+                == {"enable_thinking": False})
 
     @pytest.mark.asyncio
     async def test_a_host_that_rejects_template_kwargs_is_retried_plainly(self):

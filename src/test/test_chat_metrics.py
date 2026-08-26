@@ -520,7 +520,43 @@ class TestThinkToolTurns:
         repeating it before every tool-call JSON is what costs the loop."""
         sent = await self._run(think_tool_turns=False)
         assert sent[0]["enable_thinking"] is True
-        assert sent[1] is None
+        assert sent[1] == {"enable_thinking": False}
+
+    @pytest.mark.asyncio
+    async def test_thinking_off_is_said_not_left_unsaid(self):
+        """Qwen3's chat template defaults the switch on, so omitting it is not
+        the same as turning it off — that is what made think_tool_turns:false a
+        no-op and left the final turn reasoning instead of answering."""
+        sent = await self._run(think_tool_turns=False)
+        assert all(kw is not None and "enable_thinking" in kw for kw in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_host_that_refuses_the_switch_still_gets_its_answer(self):
+        """Saying "thinking off" costs a parameter a validating server may
+        reject. It refuses the whole request when it does, so the refusal has
+        to be remembered and the retry sent plainly — otherwise turning the
+        switch on for every turn would take those hosts down with it."""
+        from openai import OpenAIError
+
+        reset_endpoint_caches()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            OpenAIError("unknown chat_template_kwargs"),
+            _mock_completion("The answer."),
+        ])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="qwen3-30b"):
+            result = await chat(
+                host="http://localhost:8000/v1", instruction="q",
+                safety_queue=asyncio.Queue(), think=False,
+                verify_answers=False,
+            )
+        assert result == "The answer."
+        calls = mock_client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["extra_body"]["chat_template_kwargs"] == {
+            "enable_thinking": False}
+        assert "chat_template_kwargs" not in calls[1].kwargs["extra_body"]
 
 
 # ── endpoint metadata caching ───────────────────────────────────────────────

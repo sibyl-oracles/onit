@@ -2975,7 +2975,12 @@ class TestThinkingIsNotAPartialAnswer:
         """The bug this guards: a thinking model spends its whole budget on
         reasoning, the empty-content fallback hands that thinking back as the
         answer, and resuming it makes the model think the same thoughts again —
-        once per resume, every copy stitched onto the last."""
+        once per resume, every copy stitched onto the last.
+
+        One retry is allowed, and it is not a resume: it goes out with thinking
+        switched off, so the model cannot spend it reasoning.  What must never
+        happen is the stitching — the thinking appears once in the answer no
+        matter how many times the model hands back nothing but thinking."""
         notices = []
 
         class _UI:
@@ -3004,10 +3009,50 @@ class TestThinkingIsNotAPartialAnswer:
                 verify_answers=False,  # count the loop's calls, not the checker's
             ), timeout=30)
 
-        assert mock_client.chat.completions.create.call_count == 1
+        # 1 initial + 1 answer-or-nothing retry, and no more: the retry is
+        # spent once per task whether or not it produced an answer.
+        assert mock_client.chat.completions.create.call_count == 2
+        _retry = mock_client.chat.completions.create.call_args_list[1]
+        assert (_retry.kwargs["extra_body"]["chat_template_kwargs"]
+                == {"enable_thinking": False})
         assert result.count("Now I'm realizing") == 1
         assert any(lvl == "warning" and "budget thinking" in m
                    for lvl, m in notices), notices
+
+    @pytest.mark.asyncio
+    async def test_thinking_with_no_answer_is_asked_again_without_thinking(self):
+        """The failure this fixes: the run ends on a screen full of the model's
+        working and no answer under it. Asked again with the switch off, the
+        model writes the answer the thinking was already leading to."""
+        answer = "c011 is half-scored; c012r is unscored; c013 lands at 03:20."
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_usage(
+                "", completion_tokens=4000, reasoning=_THINKING,
+                finish_reason="length"),
+            _mock_completion_with_usage(answer, completion_tokens=40),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Where does each run stand?",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                think=True,
+                max_ack_continuations=0,
+                verify_answers=False,
+            ), timeout=30)
+
+        assert result == answer
+        # The thinking went into the history so the answer is written from the
+        # work already done — but it is not what the user is handed.
+        assert "Now I'm realizing" not in result
+        _retry = mock_client.chat.completions.create.call_args_list[1]
+        assert (_retry.kwargs["extra_body"]["chat_template_kwargs"]
+                == {"enable_thinking": False})
 
     @pytest.mark.asyncio
     async def test_a_resume_that_repeats_itself_stops_the_run(self):

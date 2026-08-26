@@ -82,6 +82,7 @@ from src.mcp.servers.tasks.os.bash.command_policy import (
     INSTALL_DENIED_MSG,
     INSTALL_SEALED_MSG,
     POLICY,
+    SINGLE_TENANT_COMMANDS,
     Decision,
     ask_or_deny as _ask_or_deny,
     check_command as _check_command_policy,
@@ -897,6 +898,12 @@ def _allowed_commands(base: str | None = None) -> frozenset:
     widens another's allowlist.
     """
     extra = set()
+    if not _multi_tenant():
+        # Read-only process inspection, on the same reasoning ask_scope() uses
+        # to withhold "path" here: what one user may see of another is not the
+        # session's to waive. An operator who wants it on the web UI anyway
+        # can still list it in permissions.allowedCommands.
+        extra.update(SINGLE_TENANT_COMMANDS)
     env_extra = os.environ.get("ONIT_ALLOWED_COMMANDS", "")
     extra.update(c.strip() for c in env_extra.split(",") if c.strip())
     _, _, settings_extra = _load_permissions()

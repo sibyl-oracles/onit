@@ -531,6 +531,17 @@ DEFAULT_ALLOWED_COMMANDS = frozenset({
     "onit",
 })
 
+# Read-only process inspection, added to the allowlist by the bash server only
+# where one person owns every process it could list (see _allowed_commands).
+# Kept out of the default set above rather than in it because `ps` shows the
+# whole OS account, and on the web UI that single account is shared by every
+# logged-in person: `ps aux` there hands one user another user's command lines
+# — tokens passed as argv, session directories — which is the separation the
+# jail exists to maintain. On a terminal the person at the prompt already owns
+# those processes, and `kill` has been allowlisted all along, so refusing them
+# the pid lookup that precedes it bought nothing.
+SINGLE_TENANT_COMMANDS = frozenset({"ps", "pgrep"})
+
 # Executables that are refused rather than asked about when they are not on
 # the allowlist — and refused as CRITICAL, because reaching for one is a
 # different kind of event from reaching for a linter nobody listed.
@@ -1001,11 +1012,18 @@ def evaluate_command(command: str, allowed: frozenset,
                         "something a user can authorize: it grants access to "
                         "other accounts, other hosts, or the machine itself."),
                     subjects=(exe,), severity=CRITICAL)
+            # No "Command blocked:" prefix here, unlike the refusals around
+            # it: this one reason is read under both verdicts, and which one
+            # it was is already carried by the transport — a refusal goes back
+            # as status "blocked" with guidance not to retry, a question as
+            # status "needs_approval". Prefixing it made an askable command
+            # read to the model as permanently denied, and it would abandon
+            # the command instead of letting the prompt reach a human.
             if hit := merge(_ask_or_deny(
-                    _blocked(
-                        f"'{exe}' is not in the command allowlist. Extend it via "
-                        "ONIT_ALLOWED_COMMANDS or permissions.allowedCommands in "
-                        "settings.json if this command should be permitted."),
+                    f"'{exe}' is not in the command allowlist, so it needs "
+                    "authorization before it can run. Extend the list via "
+                    "ONIT_ALLOWED_COMMANDS or permissions.allowedCommands in "
+                    "settings.json if this command should be permitted.",
                     (exe,), "command", ask_scope)):
                 return hit
             # Not allowlisted and not yet approved: its arguments say nothing

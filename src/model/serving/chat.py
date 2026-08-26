@@ -2355,6 +2355,16 @@ _ACK_CONTINUATION_PROMPT = (
     "the next tool you need, or give the final answer if the task is already done."
 )
 
+# Prompt for the one retry given to a turn that reasoned and never answered.
+# Paired with thinking switched off for that turn — the prompt asks and the
+# switch enforces, because a model that just spent a whole budget thinking will
+# do it again if the template still lets it.
+_NO_THINK_RETRY_PROMPT = (
+    "You have already done the thinking for this task. Write the final answer "
+    "now, directly and in full. Do not reason further, do not restate the "
+    "question, and do not call any more tools."
+)
+
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -3505,6 +3515,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         except Exception as e:  # a scheduler that refuses must not fail the turn
             logger.warning("Could not schedule the background fact-check: %s", e)
 
+    # The answer-or-nothing retry: set for the next turn only, and spent once
+    # per task.  Per-task rather than per-session, because a task that ends
+    # having used it has ended — nothing carries the flag forward.
+    _no_think_next = False
+    _no_think_retries = 0
+
     while True:
         state.iteration_count += 1
         if MAX_CHAT_ITERATIONS > 0 and state.iteration_count > MAX_CHAT_ITERATIONS:
@@ -3585,8 +3601,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _finish_reason: str | None = None
         _completion_tokens = 0  # set from usage where the provider reports it
         # Reasoning on the opening turn is the plan; on later turns it is spent
-        # deciding which tool to call next.  See think_tool_turns.
-        _turn_think = think and (think_tool_turns or state.iteration_count == 1)
+        # deciding which tool to call next.  See think_tool_turns.  The third
+        # term is the answer-or-nothing retry below, and it lasts exactly one
+        # turn: it is consumed here whether or not it was set.
+        _turn_think = (think and (think_tool_turns or state.iteration_count == 1)
+                       and not _no_think_next)
+        _no_think_next = False
 
         # Pre-call compaction: state.last_prompt_tokens is from the previous API call and may
         # underestimate the true prompt size after large tool results were appended.
@@ -3665,7 +3685,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         "presence_penalty": presence_penalty,
                         "repetition_penalty": repetition_penalty,
                     }
-                    if _turn_think:
+                    if _turn_think and not _template_kwargs_unsupported(host):
                         _chat_template_kwargs: dict = {"enable_thinking": True}
                         # preserve_thinking is only supported on Qwen3.6+
                         _model_lower = model.lower()
@@ -3678,6 +3698,17 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         if _qwen3_ver is not None and _qwen3_ver >= 3.6:
                             _chat_template_kwargs["preserve_thinking"] = True
                         _extra_body["chat_template_kwargs"] = _chat_template_kwargs
+                    elif not _turn_think and not _template_kwargs_unsupported(host):
+                        # Thinking off has to be *said*, not left unsaid.  The
+                        # Qwen3 family's chat template reads a missing
+                        # ``enable_thinking`` as thinking on, so omitting the
+                        # switch made both ``think: false`` and
+                        # ``think_tool_turns: false`` no-ops against vLLM: the
+                        # model reasoned on every turn anyway, the reasoning
+                        # arrived on ``reasoning_content`` where the answer
+                        # should have been, and a final turn that thought to
+                        # the end of its budget returned no answer at all.
+                        _extra_body["chat_template_kwargs"] = {"enable_thinking": False}
                     completion_kwargs = dict(
                         model=model,
                         messages=messages,
@@ -3817,6 +3848,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         f"Falling back to auto-detected model: {model}",
                         chat_ui, verbose, level="warning")
             except OpenAIError as e:
+                # A host that validates chat_template_kwargs refuses the whole
+                # request over the thinking switch.  Remember that and the
+                # retry below goes out without it — the same bargain
+                # _verify_ask strikes, and the reason every turn now sends the
+                # switch rather than only the thinking ones.
+                if (not is_ollama and _is_parameter_rejection(e)
+                        and not _template_kwargs_unsupported(host)):
+                    _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
+                    logger.info("Host %s rejected chat_template_kwargs (%s); "
+                                "retrying without the thinking switch.", host, e)
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
@@ -3986,6 +4027,33 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _log_to_ui_or_verbose(
                     f"Final response truncated ({_why}); resuming "
                     f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
+                    chat_ui, verbose, level="info", notify=True,
+                )
+                continue
+            if _thinking_only and _no_think_retries < 1:
+                # The turn produced thinking and no answer.  Resuming it as a
+                # cut-off answer is what _is_reasoning_only exists to prevent —
+                # the model thinks the same thoughts again and the user reads
+                # the same paragraph twice.  Asking again with thinking *off*
+                # is a different move and does not have that failure: the first
+                # token the model is allowed to write is the answer.
+                #
+                # One attempt, and the reasoning is kept in the history so the
+                # answer is written from the work already done rather than from
+                # nothing.  If it comes back empty too, the fallback below still
+                # hands the thinking over — this only ever adds an answer.
+                _no_think_retries += 1
+                _no_think_next = True
+                state.force_compact = False
+                state.active_max_tokens = max_tokens
+                _reasoning_note = (_full_reasoning or "").strip()
+                if _reasoning_note:
+                    messages.append({"role": "assistant",
+                                     "content": _reasoning_note})
+                messages.append({"role": "user", "content": _NO_THINK_RETRY_PROMPT})
+                _log_to_ui_or_verbose(
+                    "The model reasoned but never wrote an answer; asking once "
+                    "more with thinking switched off...",
                     chat_ui, verbose, level="info", notify=True,
                 )
                 continue
