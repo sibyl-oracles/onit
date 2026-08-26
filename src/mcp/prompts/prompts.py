@@ -22,14 +22,14 @@ import logging
 from pathlib import Path
 
 try:
-    from ...lib.text import INSTRUCTION_SPLIT
+    from ...lib.text import INSTRUCTION_SPLIT, REFERENCE_ONLY
     from ..servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
     from ..servers.tasks.os.bash.command_policy import installs_sealed
     from ..servers.tasks.os.bash.approvals import (
         approval_channel_available as _approvals_available)
     from ..servers.tasks.shared import uvicorn_config
 except ImportError:  # server started as a script rather than a package module
-    from lib.text import INSTRUCTION_SPLIT
+    from lib.text import INSTRUCTION_SPLIT, REFERENCE_ONLY
     from mcp.servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
     from mcp.servers.tasks.os.bash.command_policy import installs_sealed
     from mcp.servers.tasks.os.bash.approvals import (
@@ -140,20 +140,23 @@ async def build_assistant_instruction(task: str,
 You are {agent_name}, an AI agent built by {developer}. You can call tools and use a file system to finish a task.
 """
 
-   # Marked reference-only on purpose.  This block opens the volatile half, so
-   # it is the first thing in the user message and the only instruction-shaped
-   # text a continuation prompt or a compaction summary leaves nearby.  Without
-   # the marker a weak model treats it as something to comply with and replies
-   # "Working directory confirmed: <uuid>" — the data_path basename read back —
-   # instead of doing the task.
+   # Marked reference-only on purpose (REFERENCE_ONLY, whose comment carries the
+   # reason).  This block opens the volatile half, so it is the first thing in
+   # the user message and the only instruction-shaped text a continuation prompt
+   # or a compaction summary leaves nearby.
+   #
+   # The staging line is gated rather than hedged with "if a sandbox is
+   # available": the caller already knows, and a run without one should not read
+   # a rule about a filesystem it cannot reach.
+   staging_line = ("\n  - Keep files in the sandbox. Use this directory only to "
+                   "move files in and out." if sandbox_available else "")
    context_block = f"""
 ## Context
-Reference only. Do not repeat or acknowledge this section.
+{REFERENCE_ONLY}
 - Today's date: {current_date}
 - Working directory: `{data_path}`
   - Every path you write starts here.
-  - Search here first, not in `/` or the home directory.
-  - If a sandbox is available, keep files there. Use this directory only to move files in and out.
+  - Search here first, not in `/` or the home directory.{staging_line}
 """
 
    template = default_template
@@ -207,7 +210,7 @@ Files are kept on a file server at {upload_prefix}/.
    sandbox_block = ""
    if sandbox_available:
       sandbox_block = """
-## Code Sandbox
+## Code sandbox
 Run every piece of code inside the sandbox container. Never run code in the
 agent environment. Use the sandbox tools for every file you read, write or
 delete inside it. Never change a file outside it.
@@ -226,8 +229,14 @@ the task asked for, and is saved or committed.
 
    # Announce the install block up front, or the agent discovers it only by
    # trying — burning turns on pip, then uv, then a vendored wheel. Shares
-   # installs_sealed() with the policy layer that enforces it, so the two cannot
-   # disagree. Goes in the static half so it stays prefix-cacheable.
+   # installs_sealed() with the policy layer, so the block appears exactly when
+   # the rule is on. Only the *gate* is shared, not the wording, so the list
+   # below stays open-ended on purpose: enforcement blocks ~24 managers
+   # (_SYSTEM_PKG_MANAGERS plus conda/npx/go and friends), and an exhaustive
+   # copy here would be a second list to keep in sync — a model told only about
+   # `apt` reasonably tries `apt-get`, then `brew`, burning the turns this
+   # announcement exists to prevent. Goes in the static half so it stays
+   # prefix-cacheable.
    #
    # Every block below is kept short and literal on purpose: a small model
    # follows six one-line imperatives more reliably than six paragraphs, and the
@@ -235,20 +244,18 @@ the task asked for, and is saved or committed.
    no_install_block = ""
    if installs_sealed():
       no_install_block = """
-## Package Installation Is Disabled
-You cannot install anything. `pip`, `uv`, `pipx`, `npm`, `yarn`, `pnpm`, `gem`,
-`cargo` and `apt` installs are refused. Workarounds are refused too: vendoring a
-wheel, `curl | sh`, `python -m pip`, building from source. No flag, variable or
-other tool changes this.
+## Package installation is disabled
+You cannot install anything. Every package manager is refused — `pip`, `uv`,
+`pipx`, `npm`, `yarn`, `pnpm`, `gem`, `cargo`, `conda`, `apt`, `brew` and the
+rest. So are workarounds: vendoring a wheel, `curl | sh`, `python -m pip`,
+building from source. No flag, variable or other tool changes this.
 
 Do this instead:
 1. Check what is already installed with `pip list` or `python -c "import x"`.
-2. Use a package that is installed.
-3. If the task truly needs a missing package, stop and tell the user the name of
+2. If the task truly needs a missing package, stop and tell the user the name of
    the package and that an operator must install it.
 
-Never retry a failed install. Never say a task is blocked without naming the
-package that is missing.
+Never retry a failed install.
 """
 
    # How a refusal should land. Announced whether or not anyone is reachable,
@@ -258,7 +265,7 @@ package that is missing.
    # differently. Paired with the approval line only where approvals exist,
    # so the prompt never promises a prompt nobody will see.
    policy_block = """
-## When a Command Is Refused
+## When a command is refused
 A refused command did not run. Getting it to run is not your task.
 1. Read the reason.
 2. Do the task a different way, or tell the user what you need.
@@ -277,7 +284,7 @@ user to approve a command yourself. Never repeat a command the user declined.
    research_block = ""
    if local_search_available or web_search_available:
       research_block += """
-## Research and Citations
+## Research and citations
 Some messages need no tools. Answer these directly, with no tool call: a
 greeting, a thank-you, or anything the conversation already answers.
 When a question needs information you do not have, follow these steps:
@@ -357,13 +364,11 @@ true" is a guess.
 """
 
       if local_search_available:
-         if web_search_available:
-            no_hit = ("run one more query with different terms. If that also "
-                      "fails, use the web, and say plainly that the answer came "
-                      "from the web and not from the in-house documents.")
-         else:
-            no_hit = ("run one more query with different terms. If that also "
-                      "fails, say the local documents do not cover it.")
+         # Only the fallback differs; the retry is the same either way.
+         no_hit = "run one more query with different terms. If that also fails, " + (
+            "use the web, and say plainly that the answer came from the web and "
+            "not from the in-house documents." if web_search_available
+            else "say the local documents do not cover it.")
          # What `documents` and `results` are, how they rank, and the README trap
          # are all stated in local_search's own tool description, which ships with
          # every request regardless of this prompt. Restating them here cost ~350
@@ -402,7 +407,7 @@ in a tool result.
    # half with the other standing rules.  Gated because the tools it describes
    # are only offered to a run that has tools at all (see chat()).
    harness_block = """
-## Notes and Your Context Window
+## Notes and your context window
 Your context window is finite. When it fills up, the conversation is summarized
 and the details are lost, including tool results you have not used yet.
 - `context_status` tells you how full the window is, what this run has done, and
@@ -419,7 +424,7 @@ copies of tool output, and they last for this session only.
    # its own, and describing two tools the run does not offer is how a model
    # ends up calling one and being told it does not exist.
    result_block = """
-## Large Tool Results
+## Large tool results
 A result too large for the conversation is saved whole. You see only its opening,
 under a line like `[result:NNNN · tool · N chars]`. The rest is not lost. Use the
 handle on that line to reach it.
@@ -435,7 +440,7 @@ tool to recover output you already hold a handle for.
    # run_code has added an interpreter round trip to buy nothing, and one that
    # never reaches for it pays a turn per step of work that has no branches.
    code_block = """
-## Running Python With `run_code`
+## Running Python with `run_code`
 `run_code(code)` runs Python in a session that keeps its variables between calls.
 Every tool listed above is also a Python function of the same name, and returns
 parsed JSON where the tool answers with JSON.

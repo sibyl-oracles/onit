@@ -1033,7 +1033,10 @@ def _strip_old_images(messages: list) -> None:
 # attached — a cron run, an A2A server, a gateway bot — therefore behaves
 # exactly as it did before approvals existed.
 
-APPROVAL_TIMEOUT = 300  # matches the server's ticket lifetime
+# How long the prompt may stand before silence is taken for a no. Deliberately
+# shorter than the server's ticket lifetime (approvals.PENDING_TTL), so an
+# answer given at the very end of this window still meets a ticket that exists.
+APPROVAL_TIMEOUT = 300
 
 _APPROVAL_SCOPES = ("once", "session", "deny")
 
@@ -1080,14 +1083,70 @@ def _approval_refused(request: dict, note: str) -> str:
     })
 
 
+def _same_question(first: dict, second: dict) -> bool:
+    """Whether a second ticket asks what the person has already answered.
+
+    The command has to be the one they read, and the subjects no wider than
+    the ones they saw named. Anything else is a new question — a second
+    directory, an executable the first pass never reached — and has to be put
+    to them rather than answered on their behalf.
+    """
+    if str(first.get("command", "")) != str(second.get("command", "")):
+        return False
+    seen = {str(s) for s in (first.get("subjects") or [])}
+    asked = {str(s) for s in (second.get("subjects") or [])}
+    return asked <= seen
+
+
+async def _run_approved(invoke, retry_args: dict, request: dict,
+                        timeout) -> str:
+    """Re-issue the gated call, following at most one re-ask of the question.
+
+    A ticket is short-lived and lives only in the server's memory, so the one
+    minted for this command can be gone by the time the answer comes back:
+    the person took longer over it than its lifetime, or the server was
+    restarted while the prompt stood. The server then has no record of the
+    question, mints a fresh ticket and asks again — and the person should
+    never see that, because they already answered this exact question.
+    Redeeming the new ticket with the answer they gave is that answer
+    arriving late, not a second approval.
+
+    Once, and only for the same command with no wider subjects. A server that
+    asks something new, or asks the same thing forever, still ends in a
+    refusal rather than a loop.
+    """
+    for attempt in (1, 2):
+        try:
+            result = await asyncio.wait_for(invoke(retry_args), timeout=timeout)
+        except asyncio.TimeoutError:
+            return (f"- tool call timed out after {timeout} seconds. "
+                    "Tool might have succeeded but no response was received. "
+                    "Check expected output.")
+        result = "" if result is None else str(result)
+        again = _approval_request(result)
+        if again is None:
+            return result
+        if attempt == 2 or not _same_question(request, again):
+            break
+        logger.debug("approval ticket for %s was not recognised; redeeming the "
+                     "server's replacement with the same answer",
+                     request.get("command", ""))
+        retry_args = dict(retry_args, approval_token=again["approval_id"])
+    return _approval_refused(
+        request, "It was approved but the server asked again; "
+                 "treating that as a refusal.")
+
+
 async def _resolve_approval(function_name: str, function_arguments: dict,
                             tool_response: str, invoke, chat_ui, verbose: bool,
                             timeout) -> str:
     """Ask a person about a gated call, then re-issue it or refuse it.
 
-    ``invoke`` re-runs the tool with the arguments given. It is called at most
-    once more, whatever the answer: a yes carries the ticket, a no carries the
-    scope that tells the server to remember the refusal.
+    ``invoke`` re-runs the tool with the arguments given: a yes carries the
+    ticket, a no carries the scope that tells the server to remember the
+    refusal. A no re-runs it exactly once; a yes may re-run it a second time
+    if the server no longer recognises the ticket (see _run_approved), which
+    is the same answer arriving late rather than a new one.
     """
     request = _approval_request(tool_response)
     if request is None:
@@ -1114,18 +1173,7 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
         retry_args = dict(function_arguments)
         retry_args["approval_token"] = request["approval_id"]
         retry_args["approval_scope"] = "session"
-        try:
-            result = await asyncio.wait_for(invoke(retry_args), timeout=timeout)
-        except asyncio.TimeoutError:
-            return (f"- tool call timed out after {timeout} seconds. "
-                    "Tool might have succeeded but no response was received. "
-                    "Check expected output.")
-        result = "" if result is None else str(result)
-        if _approval_request(result) is not None:
-            return _approval_refused(
-                request, "It was auto-approved but the server asked again; "
-                         "treating that as a refusal.")
-        return result
+        return await _run_approved(invoke, retry_args, request, timeout)
 
     ask = getattr(chat_ui, "ask_approval", None)
     if not callable(ask):
@@ -1164,21 +1212,7 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
             pass
         return _approval_refused(request, "A person declined it.")
 
-    try:
-        result = await asyncio.wait_for(invoke(retry_args), timeout=timeout)
-    except asyncio.TimeoutError:
-        return (f"- tool call timed out after {timeout} seconds. "
-                "Tool might have succeeded but no response was received. "
-                "Check expected output.")
-    result = "" if result is None else str(result)
-    # An approved call that comes back asking again would loop. It should not
-    # happen — the server re-checks with the approved subject held in place —
-    # but if it ever does, one refusal is better than an endless prompt.
-    if _approval_request(result) is not None:
-        return _approval_refused(
-            request, "It was approved but the server asked again; "
-                     "treating that as a refusal.")
-    return result
+    return await _run_approved(invoke, retry_args, request, timeout)
 
 
 async def _execute_tool(function_name: str, function_arguments: dict,

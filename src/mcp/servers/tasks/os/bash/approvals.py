@@ -55,7 +55,16 @@ from dataclasses import dataclass, field
 # A ticket is useless after this long. Long enough for someone to read the
 # command and think about it; short enough that an unanswered prompt from an
 # abandoned session is not left standing.
-PENDING_TTL = 300.0
+#
+# It must outlive the harness's own prompt window (chat.APPROVAL_TIMEOUT) with
+# room to spare, and that is the whole reason it is not 300. Set equal to it,
+# every answer given near the end of the window arrived at a ticket that had
+# just expired: the person said yes, the server had already forgotten the
+# question and asked it again, and the harness reported the command blocked
+# right after they approved it. The margin is what keeps a slow answer — the
+# common one, since reading a long command takes a minute — from landing on a
+# ticket that is no longer there.
+PENDING_TTL = 900.0
 
 # Bounds on in-memory state, so a session that asks endlessly cannot grow the
 # server. Both are far above any real interactive rate.

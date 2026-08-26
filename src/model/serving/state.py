@@ -49,6 +49,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+try:
+    from ...lib.text import REFERENCE_ONLY
+except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
+    from lib.text import REFERENCE_ONLY
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
@@ -161,7 +166,7 @@ class RunState:
         if not lines:
             return ""
         return ("\n## Earlier in this session\n"
-                "Reference only. Do not repeat or acknowledge this section.\n"
+                + REFERENCE_ONLY + "\n"
                 + "\n".join(lines) + "\n"
                 "Build on what already worked. Do not repeat it.\n")
 

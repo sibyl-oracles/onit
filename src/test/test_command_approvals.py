@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import src.mcp.servers.tasks.os.bash.mcp_server as bash_mod  # noqa: E402
+import src.model.serving.chat as chat_module  # noqa: E402
 from src.mcp.servers.tasks.os.bash import approvals  # noqa: E402
 from src.mcp.servers.tasks.os.bash.command_policy import (  # noqa: E402
     DEFAULT_ALLOWED_COMMANDS,
@@ -432,6 +433,86 @@ class TestOneQuestionPerCommand:
             command=f"cat {outside}/deep/note.txt", data_path=base))
         assert r["status"] == "success"
         assert "hello" in r["stdout"]
+
+
+class TestASlowAnswer:
+    """The person reads the command, thinks, and answers a few minutes later.
+
+    That is the ordinary case, not an edge one — a gated command is usually a
+    long one, and the prompt names paths worth looking at before saying yes.
+    It has to survive the wait.
+    """
+
+    def test_the_ticket_outlives_the_prompt(self):
+        """The two clocks are not allowed to be equal.
+
+        Set to the same number, a yes given near the end of the prompt window
+        reached a ticket the server had just expired, and the answer came back
+        as "blocked" moments after the person approved it.
+        """
+        from src.model.serving import chat
+        assert approvals.PENDING_TTL > chat.APPROVAL_TIMEOUT
+
+    async def test_a_yes_after_the_ticket_expired_still_runs(
+            self, with_human, tmp_path, bash_tool, monkeypatch):
+        """And if it does expire anyway, the server's re-ask is not a refusal."""
+        monkeypatch.delenv("ONIT_WEB_UI", raising=False)
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        base = _session(tmp_path, "s")
+        command = f"ls {outside}"
+
+        asked = json.loads(await bash_tool(command=command, data_path=base))
+        assert asked["status"] == "needs_approval"
+
+        # Every ticket the server is holding ages past its lifetime while the
+        # prompt stands.
+        for pending in approvals.BROKER._pending.values():
+            pending.created -= approvals.PENDING_TTL + 1
+
+        registry = _ReaskingRegistry(bash_tool, base)
+        result = await chat_module._resolve_approval(
+            "bash", {"command": command, "data_path": base},
+            json.dumps(asked), registry, _UI(answer="session"),
+            verbose=False, timeout=10)
+        assert json.loads(result)["status"] == "success"
+        # The person was asked once, not twice.
+        assert registry.tickets == 2
+
+
+    async def test_a_new_question_is_not_answered_on_their_behalf(self):
+        """The guard that makes following a re-ask safe.
+
+        Redeeming the server's replacement ticket is the person's own answer
+        arriving late — but only while the replacement asks what they read.
+        A second question naming a subject they never saw is a new one, and
+        answering it for them would grant reach nobody agreed to.
+        """
+        first = {"command": "ls /a", "subjects": ["path:/a"]}
+        assert chat_module._same_question(
+            first, {"command": "ls /a", "subjects": ["path:/a"]})
+        assert chat_module._same_question(
+            first, {"command": "ls /a", "subjects": []})
+        # A subject they never saw named.
+        assert not chat_module._same_question(
+            first, {"command": "ls /a", "subjects": ["path:/a", "path:/b"]})
+        # A different command behind the same answer.
+        assert not chat_module._same_question(
+            first, {"command": "rm -rf /a", "subjects": ["path:/a"]})
+
+
+class _ReaskingRegistry:
+    """Re-issues the call against the real bash tool, counting the tickets used."""
+
+    def __init__(self, bash_tool, base):
+        self.bash_tool = bash_tool
+        self.base = base
+        self.tickets = 0
+
+    async def __call__(self, args):
+        self.tickets += 1
+        return await self.bash_tool(**args)
 
 
 class TestAskScope:

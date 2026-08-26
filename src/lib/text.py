@@ -35,6 +35,15 @@ _TAG_RE = re.compile(
 # HTML-comment sentinel if one ever came back through.
 INSTRUCTION_SPLIT = "\n[[onit:session-context]]\n"
 
+# Opens any block the model must read but must not answer.  Without it a weak
+# model treats a reference section as something to comply with and replies
+# "Working directory confirmed: <uuid>" — the data_path basename read back —
+# instead of doing the task.  Shared because the same marker has to open the
+# context block in the prompt builder and the resume note in RunState: the two
+# render into one instruction a few hundred tokens apart, and a partial reword
+# ships two contradictory versions of the same rule.
+REFERENCE_ONLY = "Reference only. Do not repeat or acknowledge this section."
+
 
 def split_instruction(instruction: str) -> tuple[str, str]:
     """Split an instruction into its (static, volatile) halves.

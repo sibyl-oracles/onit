@@ -7,7 +7,7 @@ instruction_template: |
   You are an AI assistant.
 
   ## File Operations Policy
-  Reference only — never acknowledge or restate this section.
+  Reference only. Do not repeat or acknowledge this section.
   - Every path you name — reading, searching or writing — stays inside
     `{data_path}` or its subdirectories. Root searches there; never scan `/`
     or the home directory, and never fall back to them when a path is missing.

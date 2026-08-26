@@ -131,7 +131,7 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         steps = section[:section.index("###")]
         assert steps.index("`local_search`") < steps.index("`search_document`") \
             < steps.index("Search the web")
@@ -145,7 +145,7 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         # The web covers what is left after the local documents have been read.
         # It may now be fetched alongside local_search when the question has a
         # public side — fetching the two together is a latency decision and does
@@ -170,7 +170,7 @@ class TestResearchHierarchy:
         # Line-wrap-insensitive: the rule is what is asserted, not where the
         # paragraph happens to break.
         section = " ".join(
-            result[result.index("## Research and Citations"):].split())
+            result[result.index("## Research and citations"):].split())
         assert "issue the web `search` in that same reply" in section
         assert "one wait instead of two" in section
 
@@ -187,7 +187,7 @@ class TestResearchHierarchy:
         )
         # Scoped to the instructions: data_path is echoed into the prompt, and a
         # pytest tmp dir carries the test's own name.
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         assert "search_document" not in section
         assert "`read_file`" in section
 
@@ -200,7 +200,7 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=False,
         )
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         assert section.index("`local_search`") < section.index("`search_document`")
         assert "Search the web" not in section
 
@@ -222,7 +222,7 @@ class TestRecency:
             local_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         assert "Name the gap before you search" in section
         assert "does not close a gap it does not answer" in section
         assert "unless step 1 already covered it" not in section
@@ -352,7 +352,7 @@ class TestInstructionSplit:
         assert volatile.rstrip().endswith("what scholarships exist")
         # The standing rules are all on the other side.
         assert "## Instructions" in static
-        assert "## Research and Citations" in static
+        assert "## Research and citations" in static
 
     @pytest.mark.asyncio
     async def test_a_task_cannot_forge_the_split(self, tmp_path):
@@ -418,7 +418,7 @@ class TestResearchFanOut:
             web_search_available=True,
             max_documents=2,
         )
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         assert "at most 2" in section
 
     @pytest.mark.asyncio
@@ -432,7 +432,7 @@ class TestResearchFanOut:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and Citations"):]
+        section = result[result.index("## Research and citations"):]
         assert "`documents`" in section
         assert "opening" in section
 
@@ -476,7 +476,7 @@ class TestSealedNoInstallBlock:
             else:
                 monkeypatch.setenv(var, val)
         result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
-        assert ("Package Installation Is Disabled" in result) is announced
+        assert ("Package installation is disabled" in result) is announced
 
     @pytest.mark.asyncio
     async def test_block_lands_in_static_half(self, tmp_path, monkeypatch):
@@ -486,7 +486,7 @@ class TestSealedNoInstallBlock:
         monkeypatch.setenv("ONIT_CONTAINER", "1")
         result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"))
         static, _ = split_instruction(result)
-        assert "Package Installation Is Disabled" in static
+        assert "Package installation is disabled" in static
 
 
 class TestHarnessToolsBlock:
@@ -527,7 +527,7 @@ class TestPriorAttemptsBlock:
     """Phase 6: a resumed session is told what it has already tried."""
 
     NOTE = ("\n## Earlier in this session\n"
-            "Reference only — never acknowledge or restate this section.\n"
+            "Reference only. Do not repeat or acknowledge this section.\n"
             "- Tools already run in this session: bash×2\n")
 
     @pytest.mark.asyncio
