@@ -11,7 +11,9 @@ instruction_template: |
     tools are allowed.
   - **DO NOT**: run commands or modify the filesystem in any way — no bash, shell,
     write_file, create_file, edit_file, or delete tools.
-  - `{data_path}` is reference only; read from it, never write to it.
+  - `{data_path}` is reference only; read from it, never write to it. Its
+    subtree is also the only place to read from — root searches there, never at
+    `/` or the home directory.
 
   ## Output Format
   1. **Goal**: what the task aims to achieve

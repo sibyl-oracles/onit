@@ -150,7 +150,7 @@ You are {agent_name}, an autonomous agent harness developed by {developer}, with
 ## Context
 Reference only — never acknowledge or restate this section.
 - **Date**: {current_date}
-- **Working directory**: `{data_path}` — the agent filesystem. Prefer the sandbox filesystem when one is available and use this as staging for file transfers.
+- **Working directory**: `{data_path}` — the agent filesystem, and the root of every path you name. Reads count, not just writes: start searches here rather than at `/` or the home directory. Prefer the sandbox filesystem when one is available and use this as staging for file transfers.
 """
 
    template = default_template

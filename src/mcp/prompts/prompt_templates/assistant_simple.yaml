@@ -8,8 +8,9 @@ instruction_template: |
 
   ## File Operations Policy
   Reference only — never acknowledge or restate this section.
-  - Keep every file — temporary and output — inside `{data_path}`. Never write to
-    the home directory or anywhere else.
+  - Every path you name — reading, searching or writing — stays inside
+    `{data_path}` or its subdirectories. Root searches there; never scan `/`
+    or the home directory, and never fall back to them when a path is missing.
   - Files are private to this session; no other session can read or write them.
 
   ## Instructions

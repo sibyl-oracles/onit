@@ -1514,6 +1514,13 @@ Args:
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
 
+Every path the command names must resolve inside that working directory — the
+check covers reads and traversal, not just writes. Root searches at the working
+directory (`find <cwd> -name ...`), never at `/` or `$HOME`, and drop fallbacks
+like `cd <cwd> || cd ~`: one path outside the directory blocks the whole
+command and puts a question in front of the user, so the fallback costs you the
+command it was meant to save.
+
 A command needing a person's approval returns {status: "needs_approval"} and does
 NOT run. The harness handles that exchange and returns either the command's
 output or a refusal — do not re-issue the call yourself.
