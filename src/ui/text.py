@@ -68,6 +68,13 @@ HORIZONTAL_THICK = Box(
     "━━━━\n"
 )
 
+# How long the approval prompt may stand before the question is dropped.
+# A little under model.serving.chat.APPROVAL_TIMEOUT (300s), which cancels
+# this coroutine outright when it fires: expiring on our own terms first is
+# what lets the person be told the question timed out, rather than being left
+# with a prompt on screen that has quietly stopped meaning anything.
+APPROVAL_TIMEOUT = 285.0
+
 @dataclass
 class Message:
     """Strongly typed message structure"""
@@ -737,21 +744,17 @@ class ChatUI:
         _say("     1) run once    2) allow for this session    "
              "3) refuse  [default]", "dim")
 
-        def _read(prompt: str) -> str:
-            try:
-                return input(prompt).strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                return "\x00"  # not an answer: stdin is gone, so stop asking
-
+        deadline = time.monotonic() + APPROVAL_TIMEOUT
         choice = None
-        loop = asyncio.get_running_loop()
+        expired = False
         for attempt in range(3):
             prompt = "  ➤ approve? [1/2/3] " if attempt == 0 else \
                      "  ➤ please answer 1 (once), 2 (session) or 3 (refuse): "
-            try:
-                answer = await loop.run_in_executor(None, _read, prompt)
-            except Exception:
-                answer = "\x00"
+            answer = await self._read_approval_answer(prompt, deadline)
+            if answer is None:  # nobody answered in time
+                expired = True
+                choice = "deny"
+                break
             if answer == "\x00" or answer == "":
                 choice = "deny"
                 break
@@ -761,12 +764,149 @@ class ChatUI:
         if choice is None:
             choice = "deny"
 
-        _say({"once": "     ✓ approved — running once",
-              "session": "     ✓ approved for this session",
-              "deny": "     ✖ refused — the command will not run"}[choice],
-             "dim")
+        if expired:
+            _say(f"     ✖ no answer in {int(APPROVAL_TIMEOUT / 60)} minutes "
+                 "— refused; the command will not run", "dim")
+            _say("     Ask again if you still want it — the approval it was "
+                 "waiting on has expired.", "dim")
+        else:
+            _say({"once": "     ✓ approved — running once",
+                  "session": "     ✓ approved for this session",
+                  "deny": "     ✖ refused — the command will not run"}[choice],
+                 "dim")
         self.console.print()
         return choice
+
+    # ── Reading one typed answer ──────────────────────────────────
+    #
+    # Never input() on a pooled worker thread. A thread parked in a blocking
+    # read cannot be cancelled, so when the prompt above it timed out that
+    # thread stayed sitting on stdin — and then ate the keystrokes meant for
+    # the next prompt. An answer given a little too late did not just miss its
+    # window; it disappeared, and every line typed after it disappeared too,
+    # which from the outside is a terminal that has locked up for good.
+    #
+    # Polling instead means every wait is at an await point: a timeout or a
+    # cancelled run leaves nothing behind holding the terminal.
+
+    async def _read_approval_answer(self, prompt: str,
+                                    deadline: float) -> Optional[str]:
+        """One typed answer, or None when ``deadline`` passed with none.
+
+        Returns the answer lowercased and stripped, "" for a bare Enter, and
+        "\x00" when stdin is gone — the caller reads all three as a refusal,
+        but only silence is worth explaining on screen.
+        """
+        try:
+            if not sys.stdin.isatty():
+                # A pipe, a redirect, a test harness: nobody is being slow at
+                # a terminal, and input() handles a decorated stdin that a raw
+                # fd read would not.
+                return await self._read_answer_piped(prompt, deadline)
+            if sys.platform == "win32":
+                return await self._read_answer_console(prompt, deadline)
+            return await self._read_answer_tty(prompt, deadline)
+        except (EOFError, KeyboardInterrupt):
+            return "\x00"
+        except Exception as e:
+            self.add_log(f"approval prompt could not read stdin: {e}", "debug")
+            return "\x00"
+
+    async def _read_answer_tty(self, prompt: str,
+                               deadline: float) -> Optional[str]:
+        """Poll a POSIX terminal for a line, giving up at ``deadline``.
+
+        The terminal is in canonical mode here — the prompt runs between
+        turns, not inside the raw-mode reader of ``get_user_input`` — so the
+        line arrives assembled and echoed, and this only has to wait for it.
+        """
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        fd = sys.stdin.fileno()
+        typed = ""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                return None
+            if not _select.select([fd], [], [], 0)[0]:
+                await asyncio.sleep(min(0.05, remaining))
+                continue
+            chunk = os.read(fd, 1024)
+            if not chunk:
+                return "\x00"  # stdin closed under us
+            typed += chunk.decode("utf-8", errors="replace")
+            if "\n" in typed or "\r" in typed:
+                return typed.splitlines()[0].strip().lower()
+
+    async def _read_answer_console(self, prompt: str,
+                                   deadline: float) -> Optional[str]:
+        """The same poll on a Windows console, which has no selectable fd."""
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        typed: list[str] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                return None
+            if not msvcrt.kbhit():  # type: ignore[name-defined]
+                await asyncio.sleep(min(0.05, remaining))
+                continue
+            char = msvcrt.getwch()  # type: ignore[name-defined]
+            if char in ("\r", "\n"):
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                return "".join(typed).strip().lower()
+            if char in ("\x03", "\x04"):  # Ctrl+C, Ctrl+D
+                return "\x00"
+            if char in ("\x00", "\xe0"):  # arrow or function key
+                msvcrt.getwch()  # type: ignore[name-defined]  drop the scan code
+                continue
+            if char in ("\b", "\x7f"):
+                if typed:
+                    typed.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            if char.isprintable():
+                typed.append(char)
+                sys.stdout.write(char)
+                sys.stdout.flush()
+
+    async def _read_answer_piped(self, prompt: str,
+                                 deadline: float) -> Optional[str]:
+        """Read from a non-terminal stdin, still without blocking the loop.
+
+        Its own daemon thread rather than the default executor: a pipe that
+        never sends a line would otherwise leave a non-daemon thread parked in
+        input(), and the interpreter waits for those on the way out.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        def _read() -> None:
+            try:
+                answer = input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "\x00"
+            except Exception:
+                answer = "\x00"
+            try:
+                loop.call_soon_threadsafe(
+                    lambda: future.done() or future.set_result(answer))
+            except RuntimeError:
+                pass  # the loop closed while we read; nobody is waiting
+
+        threading.Thread(target=_read, name="onit-approval-read",
+                         daemon=True).start()
+        try:
+            return await asyncio.wait_for(
+                future, timeout=max(0.0, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            return None
 
     def show_turn_limit(self, limit: int) -> None:
         """Print an inline warning when the chat loop stops at its turn ceiling.

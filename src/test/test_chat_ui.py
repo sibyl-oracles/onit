@@ -347,6 +347,23 @@ class TestNotice:
 # ── approval prompt ─────────────────────────────────────────────────────────
 
 
+class _NotATTY:
+    """A stdin that is honest about not being a terminal.
+
+    Wraps whatever stdin the suite was started with — captured or real — so a
+    test drives the prompt's non-terminal path regardless.
+    """
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def isatty(self):
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
 class TestAskApproval:
     """The terminal prompt for a command policy will not run on its own.
 
@@ -383,7 +400,12 @@ class TestAskApproval:
             prompts.append(prompt)
             return queued.pop(0)
 
-        with patch("builtins.input", _input):
+        # isatty pinned false, so the prompt takes its non-terminal path and
+        # reads through input() no matter how the suite was started. Under
+        # `pytest -s` stdin is the real terminal, and without this these tests
+        # would poll it for five minutes instead of reading the queue.
+        with patch("builtins.input", _input), \
+                patch.object(sys, "stdin", _NotATTY(sys.stdin)):
             choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
         return choice, buf.getvalue(), prompts
 
@@ -449,6 +471,105 @@ class TestAskApproval:
         def _eof(prompt=""):
             raise EOFError
 
-        with patch("builtins.input", _eof):
+        with patch("builtins.input", _eof), \
+                patch.object(sys, "stdin", _NotATTY(sys.stdin)):
             choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
         assert choice == "deny"
+
+    def test_a_timed_out_prompt_does_not_swallow_the_next_answer(self, chat_ui):
+        """The hang this replaced input() to fix.
+
+        The prompt used to read stdin with input() on a pooled worker thread.
+        A thread blocked in a read cannot be cancelled, so once the question
+        timed out that thread stayed on stdin and consumed whatever was typed
+        next — the late "2", and then every line meant for the prompt after
+        it. The terminal looked frozen for the rest of the session.
+
+        So: give up at the deadline, and leave the answer typed a moment later
+        sitting in the terminal where the next reader will find it.
+        """
+        import asyncio
+        import pty
+        import time as _time
+
+        master, slave = pty.openpty()
+        try:
+            stdin = os.fdopen(slave, "r")
+            with patch.object(sys, "stdin", stdin):
+                late = asyncio.run(chat_ui._read_answer_tty(
+                    "  ➤ approve? ", _time.monotonic() + 0.2))
+                assert late is None, "the prompt should stop at its deadline"
+
+                # Typed just after the question expired — the keystrokes the
+                # abandoned thread used to eat.
+                os.write(master, b"2\n")
+                after = asyncio.run(chat_ui._read_answer_tty(
+                    "  ➤ ", _time.monotonic() + 5))
+            assert after == "2"
+        finally:
+            os.close(master)
+            try:
+                stdin.close()
+            except Exception:
+                os.close(slave)
+
+    def test_an_unanswered_prompt_refuses_and_says_so(self, chat_ui):
+        """Silence ends the question rather than standing on screen forever.
+
+        And it is called out: a refusal the person never chose reads as the
+        run ignoring them unless the screen says the question expired.
+        """
+        import asyncio
+        import threading as _threading
+
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=100, force_terminal=False)
+        chat_ui.stop_status = lambda: None
+        chat_ui.stop_thinking = lambda: None
+        answered = _threading.Event()
+
+        def _never(prompt=""):
+            answered.wait(30)  # a person who is not at the keyboard
+            return "2"
+
+        with patch("ui.text.APPROVAL_TIMEOUT", 0.3), \
+                patch("builtins.input", _never), \
+                patch.object(sys, "stdin", _NotATTY(sys.stdin)):
+            try:
+                choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
+            finally:
+                answered.set()  # let the reader thread go
+
+        assert choice == "deny"
+        assert "no answer in" in buf.getvalue()
+
+    def test_the_abandoned_reader_cannot_hold_the_process_open(self, chat_ui):
+        """A reader left waiting on a pipe must not keep the interpreter up.
+
+        The default executor's threads are not daemons and are joined at exit,
+        so a prompt nobody answers would have made shutdown hang too.
+        """
+        import asyncio
+        import threading as _threading
+
+        release = _threading.Event()
+
+        def _never(prompt=""):
+            release.wait(30)
+            return "1"
+
+        async def _run():
+            with patch("builtins.input", _never), \
+                    patch.object(sys, "stdin", _NotATTY(sys.stdin)):
+                import time as _time
+                return await chat_ui._read_answer_piped(
+                    "? ", _time.monotonic() + 0.3)
+
+        try:
+            assert asyncio.run(_run()) is None
+            readers = [t for t in _threading.enumerate()
+                       if t.name == "onit-approval-read"]
+            assert readers, "the reader should still be the one blocked"
+            assert all(t.daemon for t in readers)
+        finally:
+            release.set()
