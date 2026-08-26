@@ -157,13 +157,13 @@ class RunState:
             lines.append(f"- Turns spent so far: {self.total_turns}")
         phrase = _STOP_PHRASES.get(self.stop_reason)
         if phrase and self.stop_reason != STOP_ANSWERED:
-            lines.append(f"- The last attempt ended early — {phrase}.")
+            lines.append(f"- The last attempt ended early: {phrase}.")
         if not lines:
             return ""
         return ("\n## Earlier in this session\n"
-                "Reference only — never acknowledge or restate this section.\n"
+                "Reference only. Do not repeat or acknowledge this section.\n"
                 + "\n".join(lines) + "\n"
-                "Build on work that already succeeded rather than repeating it.\n")
+                "Build on what already worked. Do not repeat it.\n")
 
     # ── accumulation across the tasks of a session ──────────────────────────
 
