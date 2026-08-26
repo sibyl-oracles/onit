@@ -3037,6 +3037,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # no registry behind it runs one turn and never compacts, so the schemas
     # would be paid for on every request to buy nothing — and a model told to
     # keep notes in a conversation that cannot outlive them will keep them.
+    async def _harness_approval(name, args, result, handler):
+        """The approval exchange for a tool called from inside the interpreter.
+
+        Same helper the direct tool path uses, so the two cannot drift into
+        answering the question differently.
+        """
+        return await _resolve_approval(
+            name, args, result, lambda a: handler(**a), chat_ui, verbose,
+            timeout if timeout and timeout > 0 else DEFAULT_TOOL_TIMEOUT)
+
     harness = HarnessTools(data_path=data_path,
                            max_context_tokens=max_context_tokens,
                            enabled=bool(tools) and kwargs.get('harness_tools', True),
@@ -3052,7 +3062,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                            else DEFAULT_TOOL_TIMEOUT,
                            code_timeout=_as_float(
                                kwargs.get('code_timeout', DEFAULT_CODE_TIMEOUT),
-                               DEFAULT_CODE_TIMEOUT))
+                               DEFAULT_CODE_TIMEOUT),
+                           approval_resolver=_harness_approval)
     tools = tools + _api_tool_payload(harness.tool_items())
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so

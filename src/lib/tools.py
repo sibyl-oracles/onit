@@ -163,6 +163,19 @@ logger.setLevel(logging.INFO)
 _SCHEMA_KEYS = ('properties', 'required', 'additionalProperties',
                 '$defs', 'definitions')
 
+# Parameters the harness fills in and the model must never be offered.
+#
+# Unlike ``data_path`` and ``session_id`` — which are advertised, because a
+# model setting one is harmless (the harness overwrites it) — these two are a
+# capability the model actively wants: they are how a command that needs a
+# person's approval gets to run. Advertising them meant the model saw a
+# parameter it could set, tried it, and spent turns on a call the harness
+# strips before it ever leaves. Not describing them is what stops that.
+#
+# Removing them from the *description* only. The server still accepts them,
+# which is what lets the harness re-issue an approved call.
+_HARNESS_ONLY_PARAMS = ('approval_token', 'approval_scope')
+
 
 def _build_parameters(tool_item: Any) -> dict:
     """Extract parameter schema from a tool or resource item.
@@ -183,6 +196,19 @@ def _build_parameters(tool_item: Any) -> dict:
             if key in schema:
                 parameters[key] = schema[key]
         parameters.setdefault('properties', {})
+        props = parameters.get('properties')
+        if isinstance(props, dict):
+            hidden = [n for n in _HARNESS_ONLY_PARAMS if n in props]
+            if hidden:
+                # Copied before editing: the schema belongs to the MCP client's
+                # cached tool object, and other readers of it are entitled to
+                # see what the server actually declared.
+                parameters['properties'] = {k: v for k, v in props.items()
+                                            if k not in _HARNESS_ONLY_PARAMS}
+                required = parameters.get('required')
+                if isinstance(required, list):
+                    parameters['required'] = [
+                        r for r in required if r not in _HARNESS_ONLY_PARAMS]
         return parameters
 
     if hasattr(tool_item, 'arguments') and tool_item.arguments:

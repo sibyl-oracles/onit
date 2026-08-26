@@ -263,7 +263,8 @@ class HarnessTools:
                  enabled: bool = True, result_store: bool = True,
                  code_execution: bool = False, session_id: str = "",
                  tool_registry=None, tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
-                 code_timeout: float = DEFAULT_CODE_TIMEOUT):
+                 code_timeout: float = DEFAULT_CODE_TIMEOUT,
+                 approval_resolver=None):
         self.enabled = bool(enabled)
         self.data_path = data_path or ""
         self.max_context_tokens = max_context_tokens
@@ -274,6 +275,11 @@ class HarnessTools:
         self.session_id = session_id or ""
         self.tool_registry = tool_registry
         self.code_execution = bool(enabled) and bool(code_execution)
+        # How a tool call made from inside the interpreter reaches a human when
+        # policy will not run it alone. Supplied by the chat loop, which owns
+        # the UI; absent, a gated call comes back as the refusal it would be
+        # in any run with nobody to ask.
+        self.approval_resolver = approval_resolver
         self.tool_timeout = float(tool_timeout)
         self.code_timeout = float(code_timeout)
         # Large tool results, kept on disk and reached by handle (results.py).
@@ -496,7 +502,14 @@ class HarnessTools:
         if handler is None:
             raise LookupError(f"no handler registered for {name!r}")
         result = await handler(**kwargs)
-        return "" if result is None else str(result)
+        result = "" if result is None else str(result)
+        # A command the policy will not run alone answers with a question, not
+        # a result. Code calling a tool has to go through the same exchange as
+        # the model calling it directly — otherwise `run_code` would be the way
+        # around the prompt, which is worse than not offering code at all.
+        if self.approval_resolver is not None and "needs_approval" in result:
+            result = await self.approval_resolver(name, kwargs, result, handler)
+        return result
 
     @property
     def interpreter(self):

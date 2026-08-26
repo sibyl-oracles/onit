@@ -87,7 +87,17 @@ MAX_LIVE_INTERPRETERS = 8
 
 # Parameters the harness owns.  Never accepted from inside the interpreter, and
 # never present in a generated signature — see the module docstring.
-INJECTED_PARAMS = ("session_id", "data_path")
+# Parameters the parent binds on every call, whatever the child asked for.
+#
+# The approval pair is here for a sharper reason than the other two. A tool
+# result that needs a person's approval carries the ticket id — the model can
+# read it, because it is in the payload. If code could then pass that id back
+# as ``approval_token``, the model would be approving its own commands and the
+# prompt would be decoration. Stripping them at the boundary means a ticket
+# minted for a call from inside the interpreter can only ever be redeemed by
+# the harness, which is the thing that asks the human.
+INJECTED_PARAMS = ("session_id", "data_path",
+                   "approval_token", "approval_scope")
 
 # Anything the bindings would shadow or that would not survive being written as
 # a Python identifier.

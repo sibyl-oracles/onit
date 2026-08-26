@@ -217,6 +217,13 @@ Anything protecting someone else stays machine-enforced:
 Approvals are per session and never persisted: a grant that outlived the
 session that asked for it would be a capability nobody remembers giving.
 
+The `approval_token` / `approval_scope` arguments belong to the harness. They
+are not described to the model, are stripped from any tool call it makes, and
+are stripped again at the interpreter boundary — so a ticket id the model can
+read out of a `needs_approval` payload is worth nothing to it. A tool called
+from `run_code` goes through the same prompt as one the model calls directly;
+with `code_execution` enabled and no one to ask, it is refused rather than run.
+
 ## Auto-Containment
 
 **Auto-containment is off by default** (`ONIT_CONTAIN_THRESHOLD=0`) and must be

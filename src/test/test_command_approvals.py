@@ -800,3 +800,143 @@ class TestEndToEnd:
         # rather than another prompt.
         assert bash_mod._APPROVALS.was_refused(f"mytool > {marker}",
                                                bash_mod._session_base(base))
+
+
+# ── the code-as-action path ────────────────────────────────────────────────
+
+
+class TestInterpreterCannotApproveItself:
+    """Code the model writes must not be a way around the prompt.
+
+    A needs_approval payload carries the ticket id — it has to, the harness
+    reads it from there, and the model can see it. Everything here exists so
+    that seeing it is worth nothing: only the harness, which is the thing that
+    asks a person, can redeem one.
+    """
+
+    class _Registry:
+        def __init__(self, tool):
+            self.tools = {"bash": True}
+            self._tool = tool
+
+        def tool_accepts_param(self, tool_name, param_name):
+            return param_name == "data_path"
+
+        def __getitem__(self, name):
+            async def handler(**kwargs):
+                return await self._tool(**kwargs)
+            return handler
+
+    def _harness(self, tmp_path, bash_tool, **kw):
+        from src.model.serving.harness import HarnessTools
+
+        base = _session(tmp_path, "s")
+        return base, HarnessTools(data_path=base, session_id="s",
+                                  tool_registry=self._Registry(bash_tool),
+                                  code_execution=True, **kw)
+
+    async def test_a_ticket_read_from_a_result_cannot_be_redeemed(
+            self, enforced, with_human, tmp_path, bash_tool):
+        base, harness = self._harness(tmp_path, bash_tool)
+        command = "mytool --version"
+
+        asked = json.loads(await harness._run_tool("bash", {"command": command}))
+        assert asked["status"] == "needs_approval"
+
+        # The attack: hand the ticket straight back.
+        forged = json.loads(await harness._run_tool("bash", {
+            "command": command,
+            "approval_token": asked["approval_id"],
+            "approval_scope": "session",
+        }))
+        assert forged["status"] == "needs_approval"
+
+    async def test_the_parameters_are_not_in_the_generated_signatures(self):
+        """A parameter the boundary strips must not be offered to the code
+        that would fill it in."""
+        from src.model.serving.interpreter import bindings_for
+
+        binds = bindings_for([{"function": {
+            "name": "bash",
+            "description": "run a command",
+            "parameters": {
+                "properties": {"command": {}, "data_path": {},
+                               "approval_token": {}, "approval_scope": {}},
+                "required": ["command"]},
+        }}])
+        assert [p["name"] for p in binds[0]["params"]] == ["command"]
+
+    async def test_a_gated_call_from_code_still_reaches_a_person(
+            self, enforced, with_human, tmp_path, bash_tool):
+        """Closing the bypass must not turn code-as-action into a dead end:
+        the call goes through the same prompt the direct path uses."""
+        answers = []
+
+        async def _resolver(name, args, result, handler):
+            answers.append(json.loads(result)["command"])
+            retry = dict(args)
+            retry["approval_token"] = json.loads(result)["approval_id"]
+            retry["approval_scope"] = "once"
+            return await handler(**retry)
+
+        base, harness = self._harness(tmp_path, bash_tool,
+                                      approval_resolver=_resolver)
+        result = json.loads(await harness._run_tool(
+            "bash", {"command": "mytool --version"}))
+        assert answers == ["mytool --version"]
+        assert result["status"] != "needs_approval"
+
+    async def test_with_no_resolver_it_is_refused_rather_than_run(
+            self, enforced, with_human, tmp_path, bash_tool):
+        base, harness = self._harness(tmp_path, bash_tool)
+        result = json.loads(await harness._run_tool(
+            "bash", {"command": "mytool --version"}))
+        assert result["status"] == "needs_approval"
+
+
+class TestApprovalParamsAreHiddenFromTheModel:
+    """The model is never shown the parameters the harness fills in.
+
+    ``data_path`` is advertised because a model setting it is harmless — the
+    harness overwrites it. These two are different: they are the mechanism by
+    which a gated command runs, so a model that can see them will try them,
+    and every such call is a turn spent on arguments that get stripped.
+    """
+
+    def _schema(self, properties, required=None):
+        from types import SimpleNamespace
+        from src.lib.tools import _build_parameters
+
+        tool = SimpleNamespace(inputSchema={
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
+            "additionalProperties": False,
+        })
+        return _build_parameters(tool)
+
+    def test_they_are_not_described(self):
+        params = self._schema({
+            "command": {"type": "string"},
+            "data_path": {"type": "string"},
+            "approval_token": {"type": "string"},
+            "approval_scope": {"type": "string"},
+        }, required=["command"])
+        assert sorted(params["properties"]) == ["command", "data_path"]
+
+    def test_a_tool_without_them_is_untouched(self):
+        props = {"query": {"type": "string"}, "limit": {"type": "integer"}}
+        params = self._schema(props, required=["query"])
+        assert sorted(params["properties"]) == ["limit", "query"]
+        assert params["required"] == ["query"]
+
+    def test_the_servers_own_schema_is_not_mutated(self):
+        """The dict belongs to the MCP client's cached tool object."""
+        from types import SimpleNamespace
+        from src.lib.tools import _build_parameters
+
+        schema = {"type": "object",
+                  "properties": {"command": {}, "approval_token": {}},
+                  "required": ["command"]}
+        _build_parameters(SimpleNamespace(inputSchema=schema))
+        assert "approval_token" in schema["properties"]
