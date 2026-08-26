@@ -673,13 +673,34 @@ class ChatUI:
 
     # ── Approval prompt ────────────────────────────────────────────
 
+    # What a typed answer means. Deliberately wide: someone reading a prompt
+    # about a command they want to run types the word that comes to mind, and
+    # the cost of not recognising it used to be a silent refusal that read as
+    # the prompt being broken.
+    #
+    # "allow" is the ambiguous one — the screen offers it as the label for the
+    # session-wide choice, but on its own it just means yes. It maps to the
+    # narrower answer: being asked again next time is a small annoyance, while
+    # a session-wide grant nobody meant to give is not.
+    _APPROVAL_WORDS = {
+        "1": "once", "y": "once", "yes": "once", "yeah": "once", "yep": "once",
+        "o": "once", "once": "once", "ok": "once", "okay": "once",
+        "run": "once", "allow": "once", "approve": "once", "go": "once",
+        "2": "session", "a": "session", "all": "session", "always": "session",
+        "s": "session", "session": "session", "chat": "session",
+        "3": "deny", "n": "deny", "no": "deny", "nope": "deny",
+        "deny": "deny", "refuse": "deny", "reject": "deny", "stop": "deny",
+        "cancel": "deny", "q": "deny", "quit": "deny",
+    }
+
     async def ask_approval(self, request: dict) -> str:
         """Ask the person at the terminal about a command policy will not run.
 
-        Returns "once", "session" or "deny". Deny is the answer to anything
-        else — an empty line, an interrupt, a closed stdin — because the
-        command not running is the safe outcome and the one the user gets by
-        doing nothing.
+        Returns "once", "session" or "deny". Deny is what silence means — an
+        empty line, an interrupt, a closed stdin — because the command not
+        running is the safe outcome and the one you get by doing nothing. An
+        answer that is merely unrecognised is *not* silence, though, and is
+        asked again rather than treated as a no.
 
         The read runs in a worker thread so the agent's event loop keeps
         turning while the prompt is up: the stop key has to stay live, and a
@@ -693,40 +714,57 @@ class ChatUI:
         reason = str(request.get("reason", "")).strip()
         subjects = [str(s) for s in (request.get("subjects") or [])]
 
+        # markup=False on every line below, and it is not cosmetic: Rich reads
+        # square brackets as style tags, so "[y]" was being parsed as a tag and
+        # dropped — the key hints rendered as blank space. The command is worse
+        # than cosmetic: `grep '[0-9]'` would print with the character class
+        # eaten, which is a prompt showing something other than what would run.
+        def _say(text: str, style: str) -> None:
+            self.console.print(text, style=style, markup=False, highlight=False)
+
         self.console.print()
-        self.console.print("  ⚠  OnIt wants to run a command that policy does "
-                           "not allow on its own", style="bold yellow")
+        _say("  ⚠  OnIt wants to run a command that policy does not allow on "
+             "its own", "bold yellow")
         for line in command.splitlines() or [""]:
-            self.console.print(f"     {line}", style="bold white")
+            _say(f"     {line}", "bold white")
         if reason:
-            self.console.print(f"     {reason}", style="dim")
+            _say(f"     {reason}", "dim")
         # Named explicitly, because "session" grants more than the command on
         # screen and the difference should not be a surprise later.
         if subjects:
-            self.console.print(f"     Approving for the session allows: "
-                               f"{', '.join(subjects)}", style="dim")
-        self.console.print("     [y] run once   [a] allow for this session   "
-                           "[n] refuse (default)", style="dim")
+            _say(f"     Approving for this session also allows: "
+                 f"{', '.join(subjects)}", "dim")
+        _say("     1) run once    2) allow for this session    "
+             "3) refuse  [default]", "dim")
 
-        def _read() -> str:
+        def _read(prompt: str) -> str:
             try:
-                return input("  ➤ approve? ").strip().lower()
+                return input(prompt).strip().lower()
             except (EOFError, KeyboardInterrupt):
-                return ""
+                return "\x00"  # not an answer: stdin is gone, so stop asking
 
-        try:
-            answer = await asyncio.get_running_loop().run_in_executor(None, _read)
-        except Exception:
-            answer = ""
+        choice = None
+        loop = asyncio.get_running_loop()
+        for attempt in range(3):
+            prompt = "  ➤ approve? [1/2/3] " if attempt == 0 else \
+                     "  ➤ please answer 1 (once), 2 (session) or 3 (refuse): "
+            try:
+                answer = await loop.run_in_executor(None, _read, prompt)
+            except Exception:
+                answer = "\x00"
+            if answer == "\x00" or answer == "":
+                choice = "deny"
+                break
+            choice = self._APPROVAL_WORDS.get(answer)
+            if choice:
+                break
+        if choice is None:
+            choice = "deny"
 
-        choice = {"y": "once", "yes": "once", "1": "once",
-                  "a": "session", "all": "session", "always": "session",
-                  }.get(answer, "deny")
-        self.console.print(
-            {"once": "     ✓ approved, once",
-             "session": "     ✓ approved for this session",
-             "deny": "     ✖ refused"}[choice],
-            style="dim")
+        _say({"once": "     ✓ approved — running once",
+              "session": "     ✓ approved for this session",
+              "deny": "     ✖ refused — the command will not run"}[choice],
+             "dim")
         self.console.print()
         return choice
 

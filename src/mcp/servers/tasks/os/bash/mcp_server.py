@@ -1166,12 +1166,26 @@ def _evaluate_bash_command(command: str, base: str | None = None,
     pending: Decision | None = None
 
     def note(decision: Decision) -> Decision | None:
-        """Return denials to the caller at once; hold on to the first ask."""
+        """Return denials at once; merge asks into a single question.
+
+        Merged, not first-wins: a command that reaches two directories outside
+        the jail has to be approvable in one answer. Asking about the first,
+        then meeting the second on the way back through, produced a refusal
+        immediately after the user had said yes — which reads, correctly, as
+        the prompt having ignored them.
+        """
         nonlocal pending
         if decision.verdict == DENY:
             return decision
-        if decision.verdict == ASK and pending is None:
-            pending = decision
+        if decision.verdict == ASK:
+            if pending is None:
+                pending = decision
+            else:
+                pending = Decision(
+                    ASK,
+                    pending.reason + " " + decision.reason,
+                    subjects=tuple(dict.fromkeys(pending.subjects
+                                                 + decision.subjects)))
         return None
 
     # User-configured settings rules: enforced for the web UI (and when the
@@ -1220,7 +1234,6 @@ def _evaluate_bash_command(command: str, base: str | None = None,
                     f"Command blocked: {description} is not allowed.",
                     (f"pattern:{description}",), kind, ask_scope, base)):
                 return hit
-            break
 
     # In container mode the container itself is the filesystem boundary —
     # skip the path allowlist so agent commands can reach --container-mount
@@ -1288,31 +1301,41 @@ def _evaluate_command_paths(check_command: str, base: str | None,
             return True
         return False
 
-    def _refuse(raw: str) -> Decision:
+    offenders: list = []
+
+    def _collect(raw: str) -> None:
         path = os.path.normpath(raw)
-        reason = (f"Command blocked: references path '{path}' outside allowed directories. "
-                  f"Commands must operate within DATA_PATH ({abs_data})"
-                  + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
-                  + ".")
         # The subject is the directory, not the file: approving one file of a
         # project and then being asked again about the next one beside it is
         # a prompt nobody reads by the third time.
         root = path if os.path.isdir(path) else os.path.dirname(path) or path
-        return _ask_unless_granted(reason, (f"path:{root}",), "path",
-                                   ask_scope, base)
+        if (path, root) not in offenders:
+            offenders.append((path, root))
 
     # Match Unix-style absolute paths (/...)
     for match in re.finditer(r'(?:^|(?<=\s)|(?<=[;|&><]))(/[^\s;|&><"\'`\)]+)', check_command):
         if not _is_allowed_path(match.group(1)):
-            return _refuse(match.group(1))
+            _collect(match.group(1))
 
     # Match Windows-style absolute paths (C:\... or C:/...)
     if IS_WINDOWS:
         for match in re.finditer(r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', check_command):
             if not _is_allowed_path(match.group(1)):
-                return _refuse(match.group(1))
+                _collect(match.group(1))
 
-    return Decision(ALLOW)
+    if not offenders:
+        return Decision(ALLOW)
+
+    # Every path in one question. A command commonly names two or three —
+    # `ls ~/project; cat ~/notes` — and approving them one at a time means the
+    # user answers, watches the command fail, and answers again.
+    names = ", ".join(f"'{p}'" for p, _ in offenders)
+    reason = (f"Command blocked: references path {names} outside allowed "
+              f"directories. Commands must operate within DATA_PATH ({abs_data})"
+              + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
+              + ".")
+    subjects = tuple(dict.fromkeys(f"path:{root}" for _, root in offenders))
+    return _ask_unless_granted(reason, subjects, "path", ask_scope, base)
 
 
 def _gate_command(command: str, base: str | None,
@@ -1363,6 +1386,17 @@ def _gate_command(command: str, base: str | None,
                                               ask_scope=scope)
         if decision.allowed:
             return None
+        if decision.needs_human:
+            # Should not happen: the question carries every subject in the
+            # command, and all of them were just granted. If it ever does,
+            # ask again rather than refuse — the user said yes, and answering
+            # a second question is a better outcome than being told no right
+            # after saying yes.
+            logger.warning("approved command still needs approval: %s",
+                           decision.reason)
+            return json.dumps(_APPROVALS.request(command, base,
+                                                 decision.subjects,
+                                                 decision.reason))
         # Approved for one thing, refused for another: the refusal wins, and
         # the model is told why rather than being asked a second question.
         _record_violation(decision, command, base)

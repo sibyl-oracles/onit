@@ -725,6 +725,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Run with unrestricted host filesystem access. "
                              "The agent can read/write any path, use any working directory, "
                              "and install packages freely. Use only in trusted environments.")
+    parser.add_argument("--auto", action="store_true", default=False,
+                        help="Answer yes to every command approval prompt, so a run "
+                             "never stops to ask. Only questions that would have been "
+                             "put to a person are answered: privilege escalation, "
+                             "container and remote-shell tools, operator deny rules, "
+                             "and the session path jail on a shared web deployment are "
+                             "still refused. Use for unattended runs.")
     parser.add_argument("--container", action="store_true", default=False,
                         help="Run the entire OnIt process inside a hardened Docker container "
                              "so a breach cannot reach the host OS.")
@@ -1187,12 +1194,35 @@ def main():
     # nobody will ever answer. Set here rather than inferred inside the
     # servers, because "is anyone watching" is a fact about how OnIt was
     # started and nothing downstream can recover it.
+    #
+    # --auto is a channel of its own: the answer comes from the flag rather
+    # than from a person, so it works in the modes that have no one attached —
+    # which is where an unattended run actually needs it.
     _interactive = not (config_data.get('a2a') or config_data.get('gateway')
                         or config_data.get('loop'))
-    if _interactive:
+    if _interactive or args.auto:
         os.environ['ONIT_APPROVAL_CHANNEL'] = '1'
     else:
         os.environ.pop('ONIT_APPROVAL_CHANNEL', None)
+
+    if args.auto:
+        # Set for the harness, which is what answers the prompts; the tool
+        # servers never read it. Approving is still answering a question the
+        # policy chose to ask, so this cannot reach anything the policy would
+        # have refused outright — see docs/ISOLATION.md, "Command Approvals".
+        os.environ['ONIT_AUTO_APPROVE'] = '1'
+        _where = ("every session of this deployment" if config_data.get('web')
+                  else "this run")
+        print(f"Warning: --auto approves command prompts automatically for "
+              f"{_where}. Commands outside the session directory, unlisted "
+              f"executables and unpinned installs will run without asking.",
+              file=sys.stderr)
+        if os.environ.get('ONIT_ASK_APPROVAL') == '0':
+            print("Warning: ONIT_ASK_APPROVAL=0 is also set, which refuses "
+                  "those commands instead of asking. Nothing is left for "
+                  "--auto to approve.", file=sys.stderr)
+    else:
+        os.environ.pop('ONIT_AUTO_APPROVE', None)
 
     if args.target_env:
         bin_path = _resolve_env_bin(args.target_env)

@@ -342,3 +342,113 @@ class TestNotice:
         chat_ui.console = Console(file=buf, width=120)
         chat_ui.notice("resuming (1/3)")
         assert "resuming (1/3)" in buf.getvalue()
+
+
+# ── approval prompt ─────────────────────────────────────────────────────────
+
+
+class TestAskApproval:
+    """The terminal prompt for a command policy will not run on its own.
+
+    Both defects this pins were reported as "the approve UI is not
+    responding", and neither was a hang: the key hints were invisible and the
+    word the user typed was not recognised, so the prompt looked inert while
+    quietly refusing.
+    """
+
+    REQUEST = {
+        "command": "ls /home/rowel; grep '[0-9]' notes.txt",
+        "reason": "Command blocked: references path '/home/rowel' outside "
+                  "allowed directories.",
+        "subjects": ["path:/home/rowel"],
+    }
+
+    def _ask(self, chat_ui, answers):
+        """Run the prompt with ``answers`` queued on stdin.
+
+        Returns the choice, what the console rendered, and the prompts that
+        were put to the reader — the re-prompt goes to input()'s own prompt
+        argument rather than through Rich, so it is only visible here.
+        """
+        import asyncio
+
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=100, force_terminal=False)
+        chat_ui.stop_status = lambda: None
+        chat_ui.stop_thinking = lambda: None
+        queued = list(answers)
+        prompts = []
+
+        def _input(prompt=""):
+            prompts.append(prompt)
+            return queued.pop(0)
+
+        with patch("builtins.input", _input):
+            choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
+        return choice, buf.getvalue(), prompts
+
+    def test_the_keys_are_actually_on_screen(self, chat_ui):
+        """Rich reads square brackets as style tags.
+
+        Written as "[y] run once", the hints were parsed as markup and
+        rendered as blank space, leaving a prompt that asked a question and
+        showed no way to answer it.
+        """
+        _, out, _prompts = self._ask(chat_ui, ["1"])
+        assert "1) run once" in out
+        assert "2) allow for this session" in out
+        assert "3) refuse" in out
+
+    def test_the_command_is_shown_as_it_would_run(self, chat_ui):
+        """Same markup problem, but load-bearing: a character class or a glob
+        in the command must reach the screen intact, or the person is
+        approving something other than what they were shown."""
+        _, out, _prompts = self._ask(chat_ui, ["3"])
+        assert "grep '[0-9]' notes.txt" in out
+
+    @pytest.mark.parametrize("typed,expected", [
+        ("1", "once"), ("y", "once"), ("yes", "once"), ("run", "once"),
+        # Ambiguous — the screen offers "allow" as the session label, but on
+        # its own it just means yes, so it takes the narrower reading.
+        ("allow", "once"),
+        ("2", "session"), ("a", "session"), ("always", "session"),
+        ("3", "deny"), ("n", "deny"), ("no", "deny"),
+    ])
+    def test_words_people_actually_type(self, chat_ui, typed, expected):
+        choice, _, _prompts = self._ask(chat_ui, [typed])
+        assert choice == expected
+
+    def test_silence_is_a_refusal(self, chat_ui):
+        choice, _, _prompts = self._ask(chat_ui, [""])
+        assert choice == "deny"
+
+    def test_an_unrecognised_answer_is_asked_again(self, chat_ui):
+        """Not the same as silence.
+
+        Someone who typed something is present and answering; refusing them on
+        a spelling is how the prompt earned its reputation for ignoring input.
+        """
+        choice, _out, prompts = self._ask(chat_ui, ["huh?", "1"])
+        assert choice == "once"
+        assert len(prompts) == 2
+        assert "please answer" in prompts[1]
+
+    def test_it_gives_up_rather_than_looping(self, chat_ui):
+        choice, _out, prompts = self._ask(chat_ui, ["huh?", "what", "eh"])
+        assert len(prompts) == 3
+        assert choice == "deny"
+
+    def test_a_closed_stdin_refuses_at_once(self, chat_ui):
+        import asyncio
+
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=100, force_terminal=False)
+        chat_ui.stop_status = lambda: None
+        chat_ui.stop_thinking = lambda: None
+
+        def _eof(prompt=""):
+            raise EOFError
+
+        with patch("builtins.input", _eof):
+            choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
+        assert choice == "deny"

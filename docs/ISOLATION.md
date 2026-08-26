@@ -160,6 +160,37 @@ buttons. The run is paused until it is answered.
 - **Refuse** — the command is not run, and the same command is refused rather
   than re-asked for the rest of the session.
 
+One command is one question, however many things it needs approving for.
+`ls ~/project; mytool ~/notes` names two directories outside the jail and an
+unlisted executable, and all three appear in a single prompt — approving them
+one at a time would mean answering, watching the command fail on the next one,
+and answering again.
+
+### `--auto`
+
+`onit --auto` answers every prompt with yes, so an unattended run never stops:
+
+```bash
+onit --auto serve a2a          # a server with no one watching
+onit --auto --loop 30m "check the build"
+onit --container --auto        # a sandboxed run that should not block
+```
+
+The flag substitutes for the *person*, not for the policy. It answers tickets,
+and a refusal is not a ticket — so `sudo`, `docker`, `ssh`, `systemctl`,
+operator `deny` rules and everything else in the "never" rows above stay
+refused with `--auto` exactly as without it. What it does grant, silently, is
+the askable set: unlisted executables, unpinned installs, and (on a
+single-user host) paths outside the session directory. Each one is written to
+the run log as `--auto approved: <command>`, so what was allowed on your
+behalf can be read back afterwards.
+
+On `serve web` the flag applies to **every** session of the deployment. The
+askable set there already excludes the path jail and the environment, so it
+cannot hand one logged-in user another's data — but it does mean any of them
+can run any executable. `ONIT_ASK_APPROVAL=0` refuses instead of asking, and
+wins over `--auto`: with both set, nothing is asked and nothing is approved.
+
 **Where there is nobody to ask, the answer is no.** `ONIT_APPROVAL_CHANNEL` is
 set only for the terminal and web UIs; an A2A server, a gateway bot and a
 `--loop` run keep the old fail-closed behaviour with the identical refusal

@@ -24,6 +24,7 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
 | `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
+| `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
 | `--container` | Run the entire OnIt process inside a hardened Docker container | `false` |
 | `--mcp-sse URL` | Add an external MCP server (SSE transport, repeatable) | — |

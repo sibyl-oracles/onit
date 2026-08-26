@@ -35,7 +35,14 @@ def _set_data_path(tmp_path):
     bash_mod._VIOLATIONS = {}
     bash_mod._CONTAINED = set()
     bash_mod._APPROVALS.reset()
+    # These tests pin the behaviour of a deployment with nobody to ask, where
+    # every unlisted command is refused outright. An ONIT_APPROVAL_CHANNEL
+    # left behind by another test module would turn those refusals into
+    # approval prompts and the assertions into a mystery.
+    _saved_channel = os.environ.pop("ONIT_APPROVAL_CHANNEL", None)
     yield
+    if _saved_channel is not None:
+        os.environ["ONIT_APPROVAL_CHANNEL"] = _saved_channel
     bash_mod.DATA_PATH = old_data
     bash_mod.DOCUMENTS_PATH = old_docs
     bash_mod._SANDBOX_ENV = old_env

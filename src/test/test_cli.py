@@ -595,3 +595,96 @@ class TestSessionSelection:
         assert "resume_session_id" not in self._run(["serve", "a2a"])
         assert "resume_session_id" not in self._run(["serve", "gateway", "telegram"])
         assert "resume_session_id" not in self._run(["serve", "loop", "check things"])
+
+
+class TestApprovalChannelWiring:
+    """Which runs can ask a person, and which answer for themselves.
+
+    The tool servers inherit these variables at spawn time and cannot work any
+    of it out for themselves — "is anyone watching" is a fact about how OnIt
+    was started. Getting it wrong in the permissive direction would mint
+    approval tickets in a run with nobody to answer them.
+    """
+
+    @pytest.fixture
+    def sessions(self, tmp_path, monkeypatch):
+        """A minimal config main() can resolve without touching the host."""
+        import yaml
+        from src import setup as setup_mod
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "session_path": str(tmp_path / "sessions"),
+            "serving": {"host": "http://localhost:8000/v1"},
+        }))
+        monkeypatch.setattr("src.cli._find_default_config", lambda: str(cfg))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        return cfg
+
+    # main() writes these with a plain os.environ assignment, which monkeypatch
+    # cannot see and so cannot undo — and monkeypatch.delenv on a variable that
+    # was not set records nothing to restore either. Snapshot and put back by
+    # hand, or a leaked ONIT_APPROVAL_CHANNEL turns every later test's refusal
+    # into an approval prompt.
+    _ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
+                 "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self):
+        saved = {var: os.environ.get(var) for var in self._ENV_VARS}
+        for var in self._ENV_VARS:
+            os.environ.pop(var, None)
+        yield
+        for var, value in saved.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+
+    def _run(self, argv):
+        """Run main() up to dispatch, so only the env wiring is exercised."""
+        from src.cli import main
+        with patch.object(sys, "argv", ["onit"] + argv), \
+                patch("src.cli._setup_servers"), \
+                patch("src.cli._dispatch_mode"):
+            main()
+
+    def test_the_terminal_can_ask(self, sessions):
+        self._run([])
+        assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
+        assert "ONIT_AUTO_APPROVE" not in os.environ
+
+    def test_the_web_ui_can_ask(self, sessions):
+        self._run(["serve", "web", "--no-login"])
+        assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
+
+    def test_a_server_run_cannot(self, sessions):
+        """No one is attached to an A2A server, so it must not mint tickets."""
+        self._run(["serve", "a2a"])
+        assert "ONIT_APPROVAL_CHANNEL" not in os.environ
+
+    def test_a_loop_run_cannot(self, sessions):
+        self._run(["serve", "loop", "check things"])
+        assert "ONIT_APPROVAL_CHANNEL" not in os.environ
+
+    def test_auto_answers_for_itself(self, sessions):
+        self._run(["--auto"])
+        assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
+
+    def test_auto_gives_an_unattended_run_a_channel(self, sessions):
+        """--auto is a channel of its own — the answer comes from the flag,
+        which is exactly what a run with nobody watching needs."""
+        self._run(["--auto", "serve", "loop", "check things"])
+        assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
+        assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
+
+    def test_auto_says_so(self, sessions, capsys):
+        self._run(["--auto"])
+        assert "--auto approves command prompts automatically" in capsys.readouterr().err
+
+    def test_auto_warns_when_it_has_nothing_to_approve(self, sessions,
+                                                       monkeypatch, capsys):
+        monkeypatch.setenv("ONIT_ASK_APPROVAL", "0")
+        self._run(["--auto"])
+        assert "Nothing is left for --auto to approve" in capsys.readouterr().err

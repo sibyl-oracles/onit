@@ -350,6 +350,90 @@ class TestNonNegotiable:
         assert r["status"] == "blocked"
 
 
+class TestOneQuestionPerCommand:
+    """Everything a command needs approving for goes in one question.
+
+    Reported as the prompt ignoring the answer: a command naming two
+    directories outside the jail asked about the first, and then — with the
+    user's yes in hand — refused on the second. Answering a question and
+    being told no is worse than never being asked.
+    """
+
+    async def test_two_stray_paths_are_one_prompt(self, with_human, tmp_path,
+                                                  bash_tool, monkeypatch):
+        monkeypatch.delenv("ONIT_WEB_UI", raising=False)
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        outside_a = tmp_path / "elsewhere"
+        outside_b = tmp_path / "further"
+        outside_a.mkdir()
+        outside_b.mkdir()
+        base = _session(tmp_path, "s")
+        command = f"ls {outside_a}; echo ---; ls {outside_b}"
+
+        asked = json.loads(await bash_tool(command=command, data_path=base))
+        assert asked["status"] == "needs_approval"
+        assert set(asked["subjects"]) == {f"path:{outside_a}",
+                                          f"path:{outside_b}"}
+
+        ran = json.loads(await bash_tool(command=command, data_path=base,
+                                         approval_token=asked["approval_id"]))
+        assert ran["status"] == "success", ran
+
+    async def test_a_stray_path_and_an_unlisted_tool_are_one_prompt(
+            self, enforced, with_human, tmp_path, bash_tool, monkeypatch):
+        monkeypatch.delenv("ONIT_WEB_UI", raising=False)
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        base = _session(tmp_path, "s")
+        command = f"mytool {outside}"
+
+        asked = json.loads(await bash_tool(command=command, data_path=base))
+        assert asked["status"] == "needs_approval"
+        assert set(asked["subjects"]) == {"mytool", f"path:{outside}"}
+
+        ran = json.loads(await bash_tool(command=command, data_path=base,
+                                         approval_token=asked["approval_id"]))
+        assert ran["status"] != "needs_approval"
+        assert "allowlist" not in json.dumps(ran)
+        assert "outside allowed directories" not in json.dumps(ran)
+
+    async def test_once_really_is_once(self, with_human, tmp_path, bash_tool,
+                                       monkeypatch):
+        monkeypatch.delenv("ONIT_WEB_UI", raising=False)
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        base = _session(tmp_path, "s")
+        command = f"ls {outside}"
+        asked = json.loads(await bash_tool(command=command, data_path=base))
+        await bash_tool(command=command, data_path=base,
+                        approval_token=asked["approval_id"],
+                        approval_scope="once")
+        again = json.loads(await bash_tool(command=command, data_path=base))
+        assert again["status"] == "needs_approval"
+
+    async def test_a_session_path_grant_covers_what_is_under_it(
+            self, with_human, tmp_path, bash_tool, monkeypatch):
+        monkeypatch.delenv("ONIT_WEB_UI", raising=False)
+        monkeypatch.delenv("ONIT_CONTAINER", raising=False)
+        outside = tmp_path / "elsewhere"
+        (outside / "deep").mkdir(parents=True)
+        (outside / "deep" / "note.txt").write_text("hello\n")
+        base = _session(tmp_path, "s")
+
+        asked = json.loads(await bash_tool(command=f"ls {outside}",
+                                           data_path=base))
+        await bash_tool(command=f"ls {outside}", data_path=base,
+                        approval_token=asked["approval_id"],
+                        approval_scope="session")
+        # A different file under the approved directory does not ask again.
+        r = json.loads(await bash_tool(
+            command=f"cat {outside}/deep/note.txt", data_path=base))
+        assert r["status"] == "success"
+        assert "hello" in r["stdout"]
+
+
 class TestAskScope:
     def test_no_channel_no_scope(self, monkeypatch):
         monkeypatch.delenv("ONIT_APPROVAL_CHANNEL", raising=False)
@@ -563,6 +647,87 @@ class TestNeverAskCommands:
             r = json.loads(await bash_tool(command=command, data_path=base))
             assert r["status"] != "needs_approval", command
             assert "allowlist" not in json.dumps(r), command
+
+
+class TestAutoApprove:
+    """--auto answers the prompts so an unattended run never stops.
+
+    The flag substitutes for the person, not for the policy: it can only ever
+    say yes to a question the policy chose to ask, which is what keeps it from
+    being a general "ignore the rules" switch.
+    """
+
+    @pytest.fixture
+    def auto(self, monkeypatch):
+        monkeypatch.setenv("ONIT_AUTO_APPROVE", "1")
+
+    async def test_it_runs_without_asking(self, auto):
+        registry = _GatedRegistry()
+        ui = _UI(answer="deny")  # would refuse if it were consulted
+        messages = await _run(registry, ui)
+        assert ui.asked == []
+        assert registry.calls[1]["approval_token"] == "ticket-1"
+        assert "ran" in messages[-1]["content"]
+
+    async def test_it_works_with_no_ui_at_all(self, auto):
+        """The unattended modes are the point: a --loop or gateway run has no
+        one to ask, and before the flag every gated command there was
+        refused."""
+        registry = _GatedRegistry()
+        messages = await _run(registry, _NoAskUI())
+        assert "ran" in messages[-1]["content"]
+
+    async def test_it_takes_session_scope(self, auto):
+        """Same authority as approving each call, one round trip instead of
+        one per call."""
+        registry = _GatedRegistry()
+        await _run(registry, _UI())
+        assert registry.calls[1]["approval_scope"] == "session"
+
+    async def test_it_is_written_down(self, auto):
+        """An unattended run that quietly widened its own reach is the thing
+        to avoid, so what was approved has to be readable afterwards."""
+        registry = _GatedRegistry()
+        ui = _UI()
+        await _run(registry, ui)
+        assert any("--auto approved" in line for line in ui.logs)
+
+    async def test_off_by_default(self):
+        registry = _GatedRegistry()
+        ui = _UI(answer="once")
+        await _run(registry, ui)
+        assert len(ui.asked) == 1
+
+    async def test_it_cannot_reach_what_was_never_asked(self, enforced, auto,
+                                                        tmp_path, bash_tool,
+                                                        monkeypatch):
+        """The bound that makes the flag safe to offer.
+
+        --auto lives in the harness and answers tickets. A refusal is not a
+        ticket, so nothing on the never-ask list, and nothing critical, has an
+        answer the flag could give.
+        """
+        monkeypatch.setenv("ONIT_APPROVAL_CHANNEL", "1")
+        base = _session(tmp_path, "s")
+        for command in ("sudo ls /", "docker run -v /:/host alpine",
+                        "ssh user@host", "systemctl restart nginx"):
+            r = json.loads(await bash_tool(command=command, data_path=base))
+            assert r["status"] == "blocked", command
+
+    async def test_a_shared_deployment_still_holds_its_boundaries(
+            self, auto, with_human, tmp_path, bash_tool, monkeypatch):
+        """--auto on `serve web` does not hand one logged-in user the jail.
+
+        The flag answers questions; on a multi-tenant deployment the jail and
+        the environment are never questions, so there is nothing to answer.
+        """
+        monkeypatch.setenv("ONIT_WEB_UI", "1")
+        monkeypatch.setattr(bash_mod, "_PERMISSIONS_CACHE", None)
+        base = _session(tmp_path, "s")
+        assert json.loads(await bash_tool(command="cat /etc/hosts",
+                                          data_path=base))["status"] == "blocked"
+        assert json.loads(await bash_tool(command="printenv",
+                                          data_path=base))["status"] == "blocked"
 
 
 # ── both halves, joined ────────────────────────────────────────────────────
