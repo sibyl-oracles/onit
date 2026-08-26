@@ -1020,6 +1020,124 @@ def _strip_old_images(messages: list) -> None:
                 msg["content"] = text + "\n[image omitted — already analyzed]"
 
 
+# ── Human-in-the-loop approvals ──────────────────────────────────────────
+#
+# A tool that will not decide alone answers with a needs_approval payload
+# instead of a result: the call did not run, and someone has to say yes. That
+# exchange happens entirely between this module and the UI. The model asked
+# for a command and gets back either the command's output or a refusal — it
+# never sees the ticket, never learns it could ask again, and cannot approve
+# anything on its own behalf.
+#
+# With no UI able to ask, the answer is no. Every deployment without a person
+# attached — a cron run, an A2A server, a gateway bot — therefore behaves
+# exactly as it did before approvals existed.
+
+APPROVAL_TIMEOUT = 300  # matches the server's ticket lifetime
+
+_APPROVAL_SCOPES = ("once", "session", "deny")
+
+
+def _approval_request(tool_response: str) -> Optional[dict]:
+    """The approval request in a tool result, if that is what it is."""
+    if not tool_response or "needs_approval" not in tool_response:
+        return None
+    try:
+        payload = json.loads(tool_response)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") != "needs_approval" or not payload.get("approval_id"):
+        return None
+    return payload
+
+
+def _approval_refused(request: dict, note: str) -> str:
+    """What the model is told when the answer is no.
+
+    It reads as a refusal, not as a prompt that failed, because those call for
+    different next turns: one is "find another way", the other is "try again
+    in a moment". Only the first is true here.
+    """
+    return json.dumps({
+        "error": f"{request.get('reason') or 'Command blocked by policy.'} {note}",
+        "command": request.get("command", ""),
+        "status": "blocked",
+        "retryable": False,
+        "guidance": ("The command was not run. Do not retry it and do not "
+                     "rewrite it to get past the check. Take a different "
+                     "approach, or tell the user what you need and why."),
+    })
+
+
+async def _resolve_approval(function_name: str, function_arguments: dict,
+                            tool_response: str, invoke, chat_ui, verbose: bool,
+                            timeout) -> str:
+    """Ask a person about a gated call, then re-issue it or refuse it.
+
+    ``invoke`` re-runs the tool with the arguments given. It is called at most
+    once more, whatever the answer: a yes carries the ticket, a no carries the
+    scope that tells the server to remember the refusal.
+    """
+    request = _approval_request(tool_response)
+    if request is None:
+        return tool_response
+
+    ask = getattr(chat_ui, "ask_approval", None)
+    if not callable(ask):
+        return _approval_refused(
+            request, "No one is available to approve it in this session.")
+
+    _log_to_ui_or_verbose(
+        f"{function_name} needs approval: {request.get('reason', '')}",
+        chat_ui, verbose, level="warning")
+
+    try:
+        answer = ask(request)
+        if asyncio.iscoroutine(answer) or isinstance(answer, asyncio.Future):
+            answer = await asyncio.wait_for(answer, timeout=APPROVAL_TIMEOUT)
+    except asyncio.TimeoutError:
+        answer = "deny"
+    except Exception as e:  # a UI that cannot ask is a UI that answers no
+        logger.debug("approval prompt failed for %s: %s", function_name, e)
+        answer = "deny"
+
+    scope = str(answer or "deny").strip().lower()
+    if scope not in _APPROVAL_SCOPES:
+        scope = "deny"
+
+    retry_args = dict(function_arguments)
+    retry_args["approval_token"] = request["approval_id"]
+    retry_args["approval_scope"] = scope
+
+    if scope == "deny":
+        # Still re-issued: the server has a ticket outstanding and needs to be
+        # told it was refused, so that the same command coming round again is
+        # met with the earlier answer instead of a fresh prompt.
+        try:
+            await asyncio.wait_for(invoke(retry_args), timeout=timeout)
+        except Exception:
+            pass
+        return _approval_refused(request, "A person declined it.")
+
+    try:
+        result = await asyncio.wait_for(invoke(retry_args), timeout=timeout)
+    except asyncio.TimeoutError:
+        return (f"- tool call timed out after {timeout} seconds. "
+                "Tool might have succeeded but no response was received. "
+                "Check expected output.")
+    result = "" if result is None else str(result)
+    # An approved call that comes back asking again would loop. It should not
+    # happen — the server re-checks with the approved subject held in place —
+    # but if it ever does, one refusal is better than an endless prompt.
+    if _approval_request(result) is not None:
+        return _approval_refused(
+            request, "It was approved but the server asked again; "
+                     "treating that as a refusal.")
+    return result
+
+
 async def _execute_tool(function_name: str, function_arguments: dict,
                         tool_call_id: str, tool_registry, timeout, data_path,
                         chat_ui, verbose, messages: list,
@@ -1064,6 +1182,14 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         function_arguments["session_id"] = session_id
     if data_path and not _is_harness_call and tool_registry and tool_registry.tool_accepts_param(function_name, "data_path"):
         function_arguments["data_path"] = data_path
+    # Approval arguments belong to the harness, never to the model. A server
+    # that gates a command on a human's answer trusts these to have come from
+    # the code that asked one; dropped unconditionally here, a value the model
+    # invented cannot reach it. The same reasoning as data_path above, and the
+    # same rule: the harness value wins, and there is no harness value yet on
+    # a first attempt.
+    for _key in ("approval_token", "approval_scope"):
+        function_arguments.pop(_key, None)
     # Intercept sandbox_download_file for /workspace/ paths.  The container
     # volume-mounts data_path as /workspace, so those files already exist on
     # the host — no need to call the remote server (which may be containerized
@@ -1220,7 +1346,11 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                 if chat_ui and hasattr(chat_ui, 'tool_log'):
                     async def _log_handler(msg):
                         chat_ui.tool_log(function_name, msg.data, level=msg.level)
-                tool_task = asyncio.ensure_future(tool_handler(log_handler=_log_handler, **function_arguments))
+
+                def _invoke(args: dict):
+                    return tool_handler(log_handler=_log_handler, **args)
+
+                tool_task = asyncio.ensure_future(_invoke(function_arguments))
 
                 async def _heartbeat(interval=10):
                     """Send periodic progress events to keep SSE alive."""
@@ -1249,6 +1379,14 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             if is_structured and chat_ui:
                 chat_ui.stop_tool_spinner()
             tool_response = "" if tool_response is None else str(tool_response)
+            # A gated command comes back as a question rather than a result.
+            # Answering it is the harness's job, not the model's: this either
+            # runs the command with a person's approval attached or turns the
+            # question into a refusal, and only the outcome reaches the model.
+            if not _timed_out:
+                tool_response = await _resolve_approval(
+                    function_name, function_arguments, tool_response,
+                    _invoke, chat_ui, verbose, timeout)
             _vision_b64, _vision_mime = None, None
             if data_path and "file_data_base64" in tool_response:
                 tool_response, _vision_b64, _vision_mime = _extract_base64_file(tool_response, data_path)

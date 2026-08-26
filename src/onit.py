@@ -319,10 +319,16 @@ class StreamingAdapter:
 
     def __init__(self, on_token=None, on_complete=None, show_logs=False,
                  throttle_tokens=0, on_tool_status=None, on_tool_result=None,
-                 on_answer_start=None, on_correction=None, on_think=None):
+                 on_answer_start=None, on_correction=None, on_think=None,
+                 on_approval=None):
         self.on_token = on_token
         self.on_complete = on_complete
         self.on_think = on_think
+        # Present only when the caller has a person it can put the question
+        # to. chat() checks for the method, so a caller that passes nothing
+        # here gets a UI with no ask_approval at all and every gated command
+        # is refused — the right answer for a run nobody is watching.
+        self._on_approval = on_approval
         self.show_logs = show_logs
         self._throttle_tokens = throttle_tokens
         self._on_tool_status = on_tool_status
@@ -348,6 +354,16 @@ class StreamingAdapter:
         self._token_count = 0
         self._pending: list[asyncio.Task] = []
         self.messages = []
+
+    # ── approvals ────────────────────────────────────────────────
+    def __getattr__(self, name):
+        # ask_approval exists only when a callback was supplied. Defining it
+        # unconditionally and returning "deny" would look the same to the
+        # model but not to the person: chat() would report that someone was
+        # asked and said no, when in truth nobody was asked.
+        if name == "ask_approval" and self.__dict__.get("_on_approval"):
+            return self.__dict__["_on_approval"]
+        raise AttributeError(name)
 
     # ── streaming ────────────────────────────────────────────────
     def set_metrics(self, sink: dict) -> None:
@@ -1404,6 +1420,7 @@ class OnIt(BaseModel):
                            answer_start_callback=None,
                            correction_callback=None,
                            think_callback=None,
+                           approval_callback=None,
                            session_id: str | None = None) -> str:
         """Process a single task and return the response string.
 
@@ -1438,6 +1455,12 @@ class OnIt(BaseModel):
                 each reasoning token, kept apart from ``stream_callback`` so
                 the caller can show the model's working without it landing in
                 the answer.
+            approval_callback: Optional ``async (request) -> "once"|"session"
+                |"deny"`` asked before a command the policy will not run on
+                its own authority. Passing it is what makes those commands
+                possible at all: a caller that cannot reach a person leaves it
+                unset and every such command is refused, which is what a
+                scheduled or headless run should do.
         """
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
         effective_session_path = session_path or self.session_path
@@ -1456,7 +1479,8 @@ class OnIt(BaseModel):
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
         _adapter = None
-        if ((stream_callback or think_callback) and self.stream) or tool_result_callback:
+        if (((stream_callback or think_callback) and self.stream)
+                or tool_result_callback or approval_callback):
             _adapter = StreamingAdapter(
                 on_token=stream_callback,
                 on_complete=stream_complete_callback,
@@ -1467,6 +1491,7 @@ class OnIt(BaseModel):
                 on_tool_result=tool_result_callback,
                 on_answer_start=answer_start_callback,
                 on_correction=correction_callback,
+                on_approval=approval_callback,
             )
 
         effective_session_id = session_id or self.session_id

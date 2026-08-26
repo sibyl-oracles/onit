@@ -105,7 +105,10 @@ On top of the glob rules, the bash tool can enforce a **command allowlist backed
 | `ONIT_COMMAND_ALLOWLIST` | `1` = enforce everywhere, `0` = disable. Unset: enforced inside `--container`, off on the host. |
 | `ONIT_ALLOWED_COMMANDS` | Comma-separated extra executables to allow (e.g. `mytool,deno`). |
 | `ONIT_ALLOW_PACKAGE_INSTALL` | `1` = permit package-manager installs (pinned versions only). Set by `--container-allow-installs`. |
-| `ONIT_CONTAIN_THRESHOLD` | Blocked commands before auto-containment. Default `0` (disabled); set a positive number to enable. |
+| `ONIT_CONTAIN_THRESHOLD` | Critical refusals before auto-containment. Default `0` (disabled); set a positive number to enable. |
+| `ONIT_CONTAIN_WINDOW` | Seconds the containment counter looks back over. Default `600`. |
+| `ONIT_APPROVAL_CHANNEL` | `1` when this run has a person who can approve commands. Set automatically by `onit` for the terminal and web UIs; never set for `serve a2a`, gateways or `--loop`. |
+| `ONIT_ASK_APPROVAL` | `0` disables approval prompts, so every unlisted command is refused outright. |
 
 The allowlist can also be extended in `settings.json` (read in the web UI, or when `ONIT_SETTINGS` is set explicitly):
 
@@ -129,19 +132,103 @@ npx cowsay@1.5.0                 # OK (pinned one-off execution)
 
 Lockfile-driven installs (`npm ci`, bare `npm install`) are allowed since versions come from the lockfile. `onit-install-ml` (the curated CUDA-matched ML installer) is allowlisted only when installs are enabled.
 
+## Command Approvals
+
+An allowlist has three possible answers, not two, and OnIt now uses all three:
+**allow**, **ask a person**, and **refuse**. A command that matches nothing —
+an executable nobody thought to list, an install nobody pre-approved — used to
+come back as a refusal, which is why an agent would spend turns rewording a
+command that was never going to run. Those now pause and ask.
+
+```
+mytool --version
+  ⚠  OnIt wants to run a command that policy does not allow on its own
+     mytool --version
+     Command blocked: 'mytool' is not in the command allowlist.
+     [y] run once   [a] allow for this session   [n] refuse (default)
+```
+
+In the web UI the same question appears as a card in the transcript with three
+buttons. The run is paused until it is answered.
+
+- **Run once** — this exact command, this one time. The ticket is bound to the
+  command text and the session directory, is single-use, and expires after 5
+  minutes.
+- **Allow for this chat** — adds what was asked about (the executable, the
+  directory, installs for that tool) to the session's own allowlist. It lives
+  in memory, in that session only, and is gone when the process exits.
+- **Refuse** — the command is not run, and the same command is refused rather
+  than re-asked for the rest of the session.
+
+**Where there is nobody to ask, the answer is no.** `ONIT_APPROVAL_CHANNEL` is
+set only for the terminal and web UIs; an A2A server, a gateway bot and a
+`--loop` run keep the old fail-closed behaviour with the identical refusal
+message.
+
+### What a person may not approve
+
+Approval can only lift restrictions that protect *the person answering*.
+Anything protecting someone else stays machine-enforced:
+
+| Refusal | Askable? | Why |
+|---|---|---|
+| Unlisted executable | yes | The allowlist already permits `python`, `node`, `perl` and `bash`; a linter it missed is not the boundary. |
+| Unpinned install (`pip install requests`) | yes | Pinning is a reproducibility rule, and the pinned form is already allowed. |
+| Path outside the session jail | terminal only | On the web UI the jail is the only thing separating logged-in users, and no session may waive it. |
+| `env`, `ps`, `/etc/passwd`, `curl \| sh` | terminal only | The tool environment carries the *operator's* `GITHUB_TOKEN` on a shared deployment. |
+| Settings-file `allow` rule miss | terminal only | On the web UI the operator's rules are the boundary around users. |
+| Settings-file `deny` rule | **no** | Someone wrote it down explicitly. |
+| `sudo`, `mkfs`, `shutdown`, kernel and firewall changes | **no** | Host-wide; not one user's to authorize. |
+| `docker`, `kubectl`, `ssh`, `rsync`, `systemctl`, `crontab`, `useradd`, … | **no** | Access to other accounts, other hosts, or the machine itself — see `NEVER_ASK_COMMANDS`. |
+| Installs in the containerized web UI | **no** | Sealed; there is no yes to give. |
+| Anything the parser could not analyze | **no** | Nobody can approve what nobody can read. |
+
+Approvals are per session and never persisted: a grant that outlived the
+session that asked for it would be a capability nobody remembers giving.
+
 ## Auto-Containment
 
-**Auto-containment is off by default** (`ONIT_CONTAIN_THRESHOLD=0`) and must be opted into. Blocked commands are always blocked and logged regardless; the threshold only controls whether repeated violations escalate to a persistent server-wide lockdown.
+**Auto-containment is off by default** (`ONIT_CONTAIN_THRESHOLD=0`) and must be
+opted into. Blocked commands are always blocked and logged regardless; the
+threshold only controls whether repeated violations escalate to a lockdown.
 
-When `ONIT_CONTAIN_THRESHOLD` is set to a positive number, policy violations (blocked commands) are counted per server process, and on reaching the threshold the bash MCP server **auto-contains**:
+When `ONIT_CONTAIN_THRESHOLD` is set to a positive number and that many
+**critical** refusals happen within `ONIT_CONTAIN_WINDOW` seconds (default
+600), the session auto-contains:
 
-- `bash`, `serve start`, `write_file`, `edit_file`, `transform_text`, and `send_file` refuse all further calls;
-- `serve`-managed background processes registered at the data-directory root are stopped;
-- a marker file (`.onit-containment.json`, containing the violation log) is written to the data directory so containment **survives restarts**.
+- `bash`, `serve start`, `write_file`, `edit_file`, `transform_text` and
+  `send_file` refuse all further calls **for that session**;
+- `serve`-managed background processes registered under that session are
+  stopped;
+- a marker file (`.onit-containment.json`, containing the violation log) is
+  written to the session directory so containment **survives restarts**.
 
-Read-only tools (`read_file`, `search_*`) keep working so the session can be diagnosed. To lift containment, unset `ONIT_CONTAIN_THRESHOLD` (the check short-circuits on `0`, so a stale marker is ignored without a restart), or delete the marker file and restart the MCP server.
+Read-only tools (`read_file`, `search_*`) keep working so the session can be
+diagnosed. To lift containment, unset `ONIT_CONTAIN_THRESHOLD` (the check
+short-circuits on `0`, so a stale marker is ignored without a restart), or
+delete the marker file and restart the MCP server.
 
-Two properties to weigh before enabling it. The counter is a **process-lifetime total with no decay**, so violations accumulate across an entire session rather than measuring a rate. And on the host the most common violation is a benign path slip — an absolute path outside the session jail, e.g. `/etc/`, `/opt/homebrew/bin/`, or another session's data directory — not an adversarial command. A low threshold therefore tends to strand long-lived sessions over accumulated typos. Inside `--container` the container itself is already the filesystem boundary, and the path allowlist is skipped there.
+### What counts as a violation
 
-The marker lives at the **data-directory root, not the session jail**, so containment is deliberately server-wide: one session's violations contain every later session on that host until the marker is removed.
+Only **critical** refusals — the ones that mean something went wrong rather
+than something was not anticipated:
 
+- catastrophic system operations (`sudo`, `mkfs`, `shutdown`, kernel modules);
+- an executable on the never-ask list (`docker`, `ssh`, `crontab`, …);
+- a rule an operator wrote in `settings.json` under `deny`;
+- **re-submitting a command a person already declined.**
+
+An unlisted executable, an unpinned install and a path outside the jail do
+*not* count. They are the ordinary friction of an agent finding the edges of
+the policy — and they are now questions rather than refusals anyway.
+
+Three properties, each of which used to be the opposite:
+
+- The counter **decays**. It is a rate over `ONIT_CONTAIN_WINDOW`, not a
+  process-lifetime total, so an agent that trips once an hour is not treated
+  like one trying ten things in ten seconds.
+- Containment is **scoped to the session** that earned it. The marker lives in
+  that session's directory; only a refusal with no session context contains
+  the server as a whole. One user's bad turn stranding every later session on
+  a shared host was a denial of service wearing a safety feature's clothes.
+- Benign path slips no longer accumulate, because they are no longer counted.

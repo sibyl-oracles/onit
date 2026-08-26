@@ -1486,3 +1486,72 @@ class TestVerifyLinksSSRF:
 
         assert ui._probe_url("http://evil.example.com/") is False
         assert called["probed"] is False
+
+
+# ── command approvals ───────────────────────────────────────────────────────
+
+
+class TestApprovalEndpoint:
+    """POST /api/approval answers a command the agent is blocked on.
+
+    The answer decides whether a command runs, so the routing is the security
+    property: the session comes from the caller's own cookie, and only that
+    session's outstanding questions can be resolved. An approval id travels to
+    the browser in a tool result, so it has to be worthless to anyone else.
+    """
+
+    def _pending(self, ui, sid, approval_id, loop):
+        session = ui._web_sessions[sid]
+        future = loop.create_future()
+        session.pending_approvals[approval_id] = future
+        return future
+
+    def test_answers_this_session(self, client, ui, bg_loop):
+        sid = client.get("/api/history").json()["session_id"]
+        future = self._pending(ui, sid, "tok-1", bg_loop)
+        res = client.post("/api/approval",
+                          json={"approval_id": "tok-1", "decision": "once"},
+                          headers={"X-Session-Id": sid})
+        assert res.json()["ok"] is True
+        deadline = time.time() + 2
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        assert future.result() == "once"
+
+    def test_another_session_cannot_answer_it(self, client, ui, bg_loop):
+        mine = client.get("/api/history").json()["session_id"]
+        theirs = client.get("/api/history",
+                            headers={"X-Session-Id": str(uuid.uuid4())}
+                            ).json()["session_id"]
+        future = self._pending(ui, mine, "tok-2", bg_loop)
+        res = client.post("/api/approval",
+                          json={"approval_id": "tok-2", "decision": "session"},
+                          headers={"X-Session-Id": theirs})
+        assert res.json()["ok"] is False
+        assert not future.done()
+
+    def test_an_unknown_answer_is_a_refusal(self, client, ui, bg_loop):
+        sid = client.get("/api/history").json()["session_id"]
+        future = self._pending(ui, sid, "tok-3", bg_loop)
+        client.post("/api/approval",
+                    json={"approval_id": "tok-3", "decision": "definitely"},
+                    headers={"X-Session-Id": sid})
+        deadline = time.time() + 2
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        assert future.result() == "deny"
+
+    def test_answering_twice_changes_nothing(self, client, ui, bg_loop):
+        sid = client.get("/api/history").json()["session_id"]
+        future = self._pending(ui, sid, "tok-4", bg_loop)
+        client.post("/api/approval",
+                    json={"approval_id": "tok-4", "decision": "once"},
+                    headers={"X-Session-Id": sid})
+        deadline = time.time() + 2
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        second = client.post("/api/approval",
+                             json={"approval_id": "tok-4", "decision": "session"},
+                             headers={"X-Session-Id": sid})
+        assert second.json()["ok"] is False
+        assert future.result() == "once"

@@ -74,11 +74,27 @@ from src.mcp.servers.tasks.shared import (
     SEARCH_DOCUMENT_DESCRIPTION,
 )
 from src.mcp.servers.tasks.os.bash.command_policy import (
+    ALLOW,
+    ASK,
+    CRITICAL,
+    DENY,
     DEFAULT_ALLOWED_COMMANDS,
     INSTALL_DENIED_MSG,
     INSTALL_SEALED_MSG,
+    POLICY,
+    Decision,
+    ask_or_deny as _ask_or_deny,
     check_command as _check_command_policy,
+    evaluate_command as _evaluate_command_policy,
     installs_sealed as _installs_sealed,
+)
+from src.mcp.servers.tasks.os.bash.approvals import (
+    BROKER as _APPROVALS,
+    DENY as _SCOPE_DENY,
+    ONCE as _SCOPE_ONCE,
+    SESSION as _SCOPE_SESSION,
+    ask_scope as _ask_scope,
+    multi_tenant as _multi_tenant,
 )
 
 import logging
@@ -450,21 +466,25 @@ _ALWAYS_BLOCKED_PATTERNS = [
     (re.compile(r'\bbcdedit\b', re.IGNORECASE), "bcdedit command"),
 ]
 
-# Blocked command patterns for the bash tool
+# Blocked command patterns for the bash tool.
+#
+# Two lists, because "blocked" covered two very different things. The first is
+# non-negotiable: privilege escalation, host-wide state, kernel and firewall
+# changes, disk destruction. Nobody using OnIt is entitled to authorize those,
+# and on a shared host the person at the prompt is not the only person they
+# would affect.
+#
+# The second is discretionary — refusals that exist because *this* machine may
+# not want them, not because they are attacks. Listing processes, reading the
+# environment, reading /etc/passwd, installing something with the system
+# package manager: a developer does these hourly, and Claude Code runs them
+# after a one-line confirmation. Those become questions for a human rather
+# than dead ends, and only where a human answering is the whole story: each
+# carries the scope key that decides where it may be asked (see
+# approvals.ask_scope, which withholds "system" and "path" on a multi-tenant
+# deployment).
 _BLOCKED_PATTERNS = [
-    # Environment variable access
-    (re.compile(r'\benv\b', re.IGNORECASE), "env command"),
-    (re.compile(r'\bprintenv\b', re.IGNORECASE), "printenv command"),
-    (re.compile(r'\bexport\s', re.IGNORECASE), "export command"),
-    (re.compile(r'/proc/self/environ', re.IGNORECASE), "/proc/self/environ"),
-    # Process listings
-    (re.compile(r'\bps\b', re.IGNORECASE), "ps command"),
-    (re.compile(r'\btop\b', re.IGNORECASE), "top command"),
-    (re.compile(r'\bhtop\b', re.IGNORECASE), "htop command"),
-    (re.compile(r'/proc/\d+', re.IGNORECASE), "/proc access"),
-    (re.compile(r'/proc/self\b', re.IGNORECASE), "/proc/self access"),
-    # Sensitive system files
-    (re.compile(r'/etc/passwd', re.IGNORECASE), "/etc/passwd"),
+    # Sensitive system files that no answer makes safe to hand over
     (re.compile(r'/etc/shadow', re.IGNORECASE), "/etc/shadow"),
     (re.compile(r'/etc/sudoers', re.IGNORECASE), "/etc/sudoers"),
     # Destructive filesystem operations
@@ -491,8 +511,6 @@ _BLOCKED_PATTERNS = [
     (re.compile(r'\binit\s+[06]\b', re.IGNORECASE), "init runlevel change"),
     (re.compile(r'\bsystemctl\s+(start|stop|restart|disable|enable|mask|reboot|poweroff|halt)', re.IGNORECASE), "systemctl service control"),
     # Network / exfiltration
-    (re.compile(r'\bcurl\b.*\|\s*(ba)?sh', re.IGNORECASE), "curl piped to shell"),
-    (re.compile(r'\bwget\b.*\|\s*(ba)?sh', re.IGNORECASE), "wget piped to shell"),
     (re.compile(r'\bnc\b\s+-[el]', re.IGNORECASE), "netcat listener"),
     (re.compile(r'\bncat\b', re.IGNORECASE), "ncat command"),
     (re.compile(r'\bsocat\b', re.IGNORECASE), "socat command"),
@@ -503,12 +521,6 @@ _BLOCKED_PATTERNS = [
     (re.compile(r'\brmmod\b', re.IGNORECASE), "rmmod command"),
     (re.compile(r'\bmodprobe\b', re.IGNORECASE), "modprobe command"),
     (re.compile(r'\bsysctl\s+-w\b', re.IGNORECASE), "sysctl write"),
-    # Package managers (prevent installs that could alter the system)
-    (re.compile(r'\bapt(-get)?\s+(install|remove|purge|dist-upgrade)', re.IGNORECASE), "apt package modification"),
-    (re.compile(r'\byum\s+(install|remove|erase|update)', re.IGNORECASE), "yum package modification"),
-    (re.compile(r'\bdnf\s+(install|remove|erase|upgrade)', re.IGNORECASE), "dnf package modification"),
-    (re.compile(r'\bpacman\s+-[SRU]', re.IGNORECASE), "pacman package modification"),
-    (re.compile(r'\bbrew\s+(install|uninstall|remove)', re.IGNORECASE), "brew package modification"),
     # Windows-specific dangerous commands
     (re.compile(r'\bformat\b\s+[A-Za-z]:', re.IGNORECASE), "format drive"),
     (re.compile(r'\bdiskpart\b', re.IGNORECASE), "diskpart command"),
@@ -517,6 +529,40 @@ _BLOCKED_PATTERNS = [
     (re.compile(r'\bsc\s+(delete|stop|config)\b', re.IGNORECASE), "sc service command"),
     (re.compile(r'\bbcdedit\b', re.IGNORECASE), "bcdedit command"),
     (re.compile(r'\bschtasks\s+/(create|delete)\b', re.IGNORECASE), "scheduled task modification"),
+]
+
+# (pattern, description, scope key). Refused unless the scope key is in
+# approvals.ask_scope(); when it is, a person is asked instead.
+_ASKABLE_PATTERNS = [
+    # Environment inspection. Blocked because the tool environment carries
+    # GITHUB_TOKEN and whatever else the keychain handed the process — which
+    # is the operator's secret on a shared deployment, and the reader's own on
+    # a personal one. Hence "system": askable in a terminal, never on the web.
+    (re.compile(r'\benv\b', re.IGNORECASE), "env command", "system"),
+    (re.compile(r'\bprintenv\b', re.IGNORECASE), "printenv command", "system"),
+    (re.compile(r'\bexport\s', re.IGNORECASE), "export command", "system"),
+    (re.compile(r'/proc/self/environ', re.IGNORECASE), "/proc/self/environ", "system"),
+    # Process listings: what the OS already shows this account, no more.
+    (re.compile(r'\bps\b', re.IGNORECASE), "ps command", "system"),
+    (re.compile(r'\btop\b', re.IGNORECASE), "top command", "system"),
+    (re.compile(r'\bhtop\b', re.IGNORECASE), "htop command", "system"),
+    (re.compile(r'/proc/\d+', re.IGNORECASE), "/proc access", "system"),
+    (re.compile(r'/proc/self\b', re.IGNORECASE), "/proc/self access", "system"),
+    # World-readable on every Unix; kept behind a prompt because asking for it
+    # by name is worth a look, not because the contents are secret.
+    (re.compile(r'/etc/passwd', re.IGNORECASE), "/etc/passwd", "system"),
+    # Piping a download into a shell. The canonical install one-liner and the
+    # canonical way to run unreviewed code; on a personal machine that is the
+    # user's own call to make, and it is exactly the call they came to make.
+    (re.compile(r'\bcurl\b.*\|\s*(ba)?sh', re.IGNORECASE), "curl piped to shell", "system"),
+    (re.compile(r'\bwget\b.*\|\s*(ba)?sh', re.IGNORECASE), "wget piped to shell", "system"),
+    # System package managers. The AST policy gates these too when the
+    # allowlist is enforced; here they are caught in host mode as well.
+    (re.compile(r'\bapt(-get)?\s+(install|remove|purge|dist-upgrade)', re.IGNORECASE), "apt package modification", "install"),
+    (re.compile(r'\byum\s+(install|remove|erase|update)', re.IGNORECASE), "yum package modification", "install"),
+    (re.compile(r'\bdnf\s+(install|remove|erase|upgrade)', re.IGNORECASE), "dnf package modification", "install"),
+    (re.compile(r'\bpacman\s+-[SRU]', re.IGNORECASE), "pacman package modification", "install"),
+    (re.compile(r'\bbrew\s+(install|uninstall|remove)', re.IGNORECASE), "brew package modification", "install"),
 ]
 
 # Matches a heredoc construct and its body for stripping before security checks.
@@ -752,19 +798,35 @@ def _split_shell_segments(command: str) -> list[str]:
     return segments
 
 
-def _check_permission_rules(command: str) -> str | None:
+def _evaluate_permission_rules(command: str,
+                               ask_scope: frozenset = frozenset(),
+                               base: str | None = None) -> Decision:
     """Evaluate the command against user-configured allow/deny rules.
-    Returns an error message when blocked, else None."""
+
+    A deny rule is an operator writing down, in a file, that this must not
+    happen. It is never a question — and it counts as a critical refusal,
+    because an agent hitting one has walked into something someone explicitly
+    fenced off rather than something nobody got round to listing.
+
+    A miss against a non-empty allow list is the softer case: it means the
+    rule author enumerated what they wanted and this was not on the list.
+    That is askable, but only under "system" scope — a scope withheld on a
+    multi-tenant deployment, where the allow list is the operator's boundary
+    around users who must not be able to widen it themselves.
+    """
     allow, deny, _ = _load_permissions()
     if not allow and not deny:
-        return None
+        return Decision(ALLOW)
 
     segments = _split_shell_segments(command)
     for seg in segments:
         for pattern in deny:
             if fnmatch.fnmatchcase(seg, pattern):
-                return (f"Command blocked by permissions deny rule "
-                        f"'Bash({pattern})' in {_settings_path()}.")
+                return Decision(
+                    DENY,
+                    f"Command blocked by permissions deny rule "
+                    f"'Bash({pattern})' in {_settings_path()}.",
+                    severity=CRITICAL)
 
     if allow:
         # Skip the full-command segment when it chains multiple commands;
@@ -772,10 +834,19 @@ def _check_permission_rules(command: str) -> str | None:
         check = segments[1:] if len(segments) > 1 else segments
         for seg in check:
             if not any(fnmatch.fnmatchcase(seg, pattern) for pattern in allow):
-                return (f"Command blocked: '{seg}' does not match any "
-                        f"permissions allow rule in {_settings_path()}.")
+                return _ask_unless_granted(
+                    f"Command blocked: '{seg}' does not match any "
+                    f"permissions allow rule in {_settings_path()}.",
+                    (f"rule:{seg.split()[0] if seg.split() else seg}",),
+                    "system", ask_scope, base)
 
-    return None
+    return Decision(ALLOW)
+
+
+def _check_permission_rules(command: str) -> str | None:
+    """String form of :func:`_evaluate_permission_rules` (no human to ask)."""
+    decision = _evaluate_permission_rules(command)
+    return None if decision.allowed else decision.reason
 
 
 # =============================================================================
@@ -816,9 +887,15 @@ def _package_installs_allowed() -> bool:
     return os.environ.get("ONIT_ALLOW_PACKAGE_INSTALL") == "1"
 
 
-def _allowed_commands() -> frozenset:
-    """Default allowlist extended by ONIT_ALLOWED_COMMANDS (comma-separated)
-    and permissions.allowedCommands in the settings file."""
+def _allowed_commands(base: str | None = None) -> frozenset:
+    """Default allowlist extended by ONIT_ALLOWED_COMMANDS (comma-separated),
+    permissions.allowedCommands in the settings file, and anything a human
+    approved for the lifetime of session ``base``.
+
+    Session grants are keyed by the session directory — the value the harness
+    injects and the model cannot influence — so one session's approval never
+    widens another's allowlist.
+    """
     extra = set()
     env_extra = os.environ.get("ONIT_ALLOWED_COMMANDS", "")
     extra.update(c.strip() for c in env_extra.split(",") if c.strip())
@@ -828,35 +905,81 @@ def _allowed_commands() -> frozenset:
         # Curated installer for heavy ML packages (see Dockerfile). Exempt
         # from pinning: it selects CUDA-matched wheels from a fixed index.
         extra.add("onit-install-ml")
+    if base:
+        extra.update(_APPROVALS.commands_for(base))
     return DEFAULT_ALLOWED_COMMANDS | frozenset(extra)
 
 
-def _check_command_allowlist(check_command: str) -> str | None:
-    return _check_command_policy(
-        check_command, _allowed_commands(),
-        allow_installs=_package_installs_allowed(),
+def _installs_allowed_for(base: str | None) -> bool:
+    """Installs permitted by configuration, or by a human for this session.
+
+    A session grant cannot lift the seal: where installs are sealed there is
+    no override by design, and an approval prompt that appeared to offer one
+    would be lying to the person answering it.
+    """
+    if _installs_sealed():
+        return False
+    if _package_installs_allowed():
+        return True
+    return bool(base and _APPROVALS.installs_allowed(base))
+
+
+def _evaluate_command_allowlist(check_command: str, base: str | None = None,
+                                ask_scope: frozenset = frozenset()) -> Decision:
+    if _installs_sealed():
+        # Where the seal is in force there is no yes to give, so there is no
+        # question to ask. Offering the prompt anyway would put a person in
+        # the position of authorizing something that cannot happen either way
+        # — and then leave the model reading a refusal that says a human
+        # declined, when what actually happened is that the environment did.
+        ask_scope = ask_scope - {"install"}
+    return _evaluate_command_policy(
+        check_command, _allowed_commands(base),
+        allow_installs=_installs_allowed_for(base),
         denied_msg=(INSTALL_SEALED_MSG if _installs_sealed()
-                    else INSTALL_DENIED_MSG))
+                    else INSTALL_DENIED_MSG),
+        ask_scope=ask_scope)
+
+
+def _check_command_allowlist(check_command: str) -> str | None:
+    decision = _evaluate_command_allowlist(check_command)
+    return None if decision.allowed else decision.reason
 
 
 # ── Auto-containment ─────────────────────────────────────────────────────
-# After ONIT_CONTAIN_THRESHOLD blocked commands the server enters containment:
-# all execution/write/send tools refuse to run and managed background processes
-# are stopped. Containment persists across restarts via a marker file in
-# DATA_PATH; delete it (or set the threshold to 0) to lift containment.
+# After ONIT_CONTAIN_THRESHOLD *critical* refusals inside ONIT_CONTAIN_WINDOW
+# seconds, a session is contained: its execution/write/send tools refuse to
+# run and its managed background processes are stopped. Containment persists
+# across restarts via a marker file; delete it (or set the threshold to 0) to
+# lift it.
 #
-# Disabled by default (threshold 0), everywhere. The violation counter is a
-# process-lifetime total with no decay, and on the host its most common trigger
-# is a benign path slip (an absolute path outside the session jail), so a low
-# default locked long-lived sessions out over accumulated typos rather than
-# over anything adversarial. Blocked commands are still blocked and logged —
-# only the escalation to a persistent lockdown is off. Set
-# ONIT_CONTAIN_THRESHOLD to a positive number to re-enable it.
+# Disabled by default (threshold 0), everywhere. Three things decide what
+# counts, and each of them exists because the previous design counted the
+# wrong thing:
+#
+#   * Only CRITICAL refusals count — sudo, mkfs, an operator's explicit deny
+#     rule, or a command a person already said no to. An unlisted executable
+#     or a path outside the jail is ordinary friction: it is now a question
+#     rather than a refusal, and it never counts. That removes the failure
+#     mode the old counter was famous for, where a long session accumulated
+#     benign path slips until it locked itself out.
+#   * The count decays. It is a rate over ONIT_CONTAIN_WINDOW, not a
+#     process-lifetime total, so an agent that trips once an hour is not the
+#     same as one trying ten things in ten seconds — and only the second one
+#     is what containment is for.
+#   * Containment is scoped to the session that earned it. The marker goes in
+#     that session's own directory; only a refusal with no session context
+#     contains the server as a whole. One user's bad turn stranding every
+#     later session on a shared host was a denial of service wearing a
+#     safety feature's clothes.
 
 _DEFAULT_CONTAIN_THRESHOLD = 0
+_DEFAULT_CONTAIN_WINDOW = 600
 _CONTAINMENT_MARKER = ".onit-containment.json"
-_VIOLATIONS: list = []
-_CONTAINED = False
+# base -> [{time, reason, command}], newest last. "" is the server-wide scope.
+_VIOLATIONS: dict = {}
+# Bases known to be contained, plus "" when the server as a whole is.
+_CONTAINED: set = set()
 
 
 def _contain_threshold() -> int:
@@ -867,54 +990,74 @@ def _contain_threshold() -> int:
         return _DEFAULT_CONTAIN_THRESHOLD
 
 
-def _containment_marker_path() -> str:
-    return os.path.join(os.path.realpath(os.path.expanduser(DATA_PATH)),
-                        _CONTAINMENT_MARKER)
+def _contain_window() -> float:
+    try:
+        return float(os.environ.get("ONIT_CONTAIN_WINDOW",
+                                    _DEFAULT_CONTAIN_WINDOW))
+    except ValueError:
+        return float(_DEFAULT_CONTAIN_WINDOW)
 
 
-def _is_contained() -> bool:
-    global _CONTAINED
+def _contain_scope(base: str | None) -> str:
+    """The key a violation is counted under and a marker is written for."""
+    if not base:
+        return ""
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    return "" if base == abs_data else base
+
+
+def _containment_marker_path(base: str | None = None) -> str:
+    root = base or os.path.realpath(os.path.expanduser(DATA_PATH))
+    return os.path.join(root, _CONTAINMENT_MARKER)
+
+
+def _is_contained(base: str | None = None) -> bool:
+    """True when this session, or the server as a whole, is locked down."""
     if _contain_threshold() <= 0:
         return False
-    if _CONTAINED:
-        return True
-    if os.path.isfile(_containment_marker_path()):
-        _CONTAINED = True
-        return True
+    scope = _contain_scope(base)
+    for key in {"", scope}:
+        if key in _CONTAINED:
+            return True
+        marker = _containment_marker_path(key or None)
+        if os.path.isfile(marker):
+            _CONTAINED.add(key)
+            return True
     return False
 
 
-def _containment_error(context: str = "") -> str:
+def _containment_error(context: str = "", base: str | None = None) -> str:
     return json.dumps({
         "error": ("Server is contained after repeated policy violations. "
                   "Command execution, file writes, and file transfers are "
                   "disabled. To lift containment, remove "
-                  f"{_containment_marker_path()} and restart the MCP server."),
+                  f"{_containment_marker_path(_contain_scope(base) or None)} "
+                  "and restart the MCP server."),
         "status": "contained",
         **({"command": context} if context else {}),
     })
 
 
-def _enter_containment() -> None:
-    """Lock down the server: persist the marker and stop managed processes."""
-    global _CONTAINED
-    _CONTAINED = True
+def _enter_containment(base: str | None = None) -> None:
+    """Lock down a session (or the server): persist the marker, stop its
+    managed processes."""
+    scope = _contain_scope(base)
+    _CONTAINED.add(scope)
     try:
-        marker = _containment_marker_path()
+        marker = _containment_marker_path(scope or None)
         _secure_makedirs(os.path.dirname(marker))
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump({
                 "contained_at": datetime.now().isoformat(),
-                "violations": _VIOLATIONS[-20:],
+                "scope": scope or "server",
+                "violations": _VIOLATIONS.get(scope, [])[-20:],
             }, f, indent=2)
     except Exception as e:
         logger.error(f"Failed to persist containment marker: {e}")
-    # Stop everything the serve tool has launched. Containment is server-wide
-    # and has no session context, so this reaches the DATA_PATH-root registry
-    # only — processes registered under a session jail survive.
+    # Stop everything the serve tool has launched for this scope.
     try:
-        registry = _load_serve_registry()
+        registry = _load_serve_registry(scope or None)
         for entry in registry.values():
             if _process_running(entry["pid"]):
                 try:
@@ -924,76 +1067,192 @@ def _enter_containment() -> None:
     except Exception as e:
         logger.error(f"Failed to stop managed processes on containment: {e}")
     logger.error(
-        f"AUTO-CONTAINMENT: {len(_VIOLATIONS)} policy violations reached the "
-        f"threshold ({_contain_threshold()}). Execution disabled; managed "
-        "processes stopped.")
+        f"AUTO-CONTAINMENT ({scope or 'server-wide'}): "
+        f"{len(_VIOLATIONS.get(scope, []))} critical policy violations reached "
+        f"the threshold ({_contain_threshold()}) within "
+        f"{_contain_window():.0f}s. Execution disabled; managed processes "
+        "stopped.")
 
 
-def _record_violation(reason: str, command: str) -> None:
-    """Count a blocked command; trip containment at the threshold."""
+def _record_violation(decision: Decision, command: str,
+                      base: str | None = None) -> None:
+    """Count a critical refusal; trip containment at the threshold.
+
+    Refusals below CRITICAL are logged by the caller and forgotten here. They
+    are the ones a well-behaved agent produces while finding the edges of the
+    policy, and treating a search for the edges as an attack is what made the
+    old counter unusable.
+    """
+    if decision.severity != CRITICAL:
+        return
     threshold = _contain_threshold()
     if threshold <= 0:
         return
-    _VIOLATIONS.append({
+    scope = _contain_scope(base)
+    now = time.monotonic()
+    window = _contain_window()
+    recent = [v for v in _VIOLATIONS.get(scope, []) if now - v["at"] <= window]
+    recent.append({
+        "at": now,
         "time": datetime.now().isoformat(),
-        "reason": reason[:500],
+        "reason": (decision.reason or "")[:500],
         "command": (command or "")[:500],
     })
+    _VIOLATIONS[scope] = recent
     logger.error(
-        f"Policy violation {len(_VIOLATIONS)}/{threshold}: {reason}")
-    if len(_VIOLATIONS) >= threshold and not _CONTAINED:
-        _enter_containment()
+        f"Policy violation {len(recent)}/{threshold} in {window:.0f}s "
+        f"({scope or 'server-wide'}): {decision.reason}")
+    if len(recent) >= threshold and scope not in _CONTAINED:
+        _enter_containment(base)
 
 
-def _validate_bash_command(command: str, base: str | None = None) -> str | None:
-    """Check command for blocked patterns and path references outside allowed dirs
-    (the per-session ``base`` when given, else DATA_PATH).
-    Returns error message or None if command is allowed."""
+# ── Refusals the model can act on ────────────────────────────────────────
+
+def _refusal(decision: Decision, command: str) -> str:
+    """The tool result for a command that will not run.
+
+    A refusal is a turn the model has to spend, so it should buy something.
+    Beyond the reason, it says the call did not run, that the same call will
+    not run later either, and — the part that decides whether the next turn
+    is useful — that the way forward is a different approach rather than a
+    different spelling of this one. Without that, the observed behaviour is a
+    retry loop: quote the path, escape it, split the pipeline, try again.
+    """
+    payload = {
+        "error": decision.reason,
+        "command": command,
+        "status": "blocked",
+        "retryable": False,
+        "guidance": ("This command was refused by policy and was not run. "
+                     "Retrying it, rewriting it to evade the check, or "
+                     "reaching the same effect through another tool will be "
+                     "refused as well. Take a different approach, or tell the "
+                     "user what you need and why."),
+    }
+    if decision.severity == CRITICAL:
+        payload["guidance"] = (
+            "This command was refused and was not run. It is in the class of "
+            "operations this deployment never permits, from any tool, under "
+            "any setting. Do not look for another route to it. Say plainly "
+            "what you were trying to do and let the user decide.")
+    return json.dumps(payload)
+
+
+def _ask_unless_granted(reason: str, subjects: tuple, kind: str,
+                        ask_scope: frozenset, base: str | None) -> Decision:
+    """Ask about ``subjects``, unless this session's human already said yes.
+
+    The grant lookup comes first so that re-checking an approved command is
+    quiet. Every ask in this module goes through here for that reason: a
+    check that asked again after approval would turn one prompt into a loop.
+    """
+    if base and subjects and all(_APPROVALS.granted(base, s) for s in subjects):
+        return Decision(ALLOW)
+    return _ask_or_deny(reason, subjects, kind, ask_scope)
+
+
+def _evaluate_bash_command(command: str, base: str | None = None,
+                           ask_scope: frozenset = frozenset()) -> Decision:
+    """Decide what to do with a bash command: run it, ask a person, refuse it.
+
+    The order is the order of authority. An operator's written rules come
+    first, then the parsed allowlist, then the pattern lists, then the session
+    path jail. A refusal short-circuits; a question does not — the checks keep
+    running, because a command that needs approval for one thing and is
+    forbidden for another must come back forbidden, not as a prompt whose
+    "yes" leads nowhere.
+    """
     check_command = _strip_heredoc_bodies(command)
+    pending: Decision | None = None
+
+    def note(decision: Decision) -> Decision | None:
+        """Return denials to the caller at once; hold on to the first ask."""
+        nonlocal pending
+        if decision.verdict == DENY:
+            return decision
+        if decision.verdict == ASK and pending is None:
+            pending = decision
+        return None
 
     # User-configured settings rules: enforced for the web UI (and when the
     # settings path is explicitly set), in every mode including the
     # relaxations below. The text UI skips them (see _settings_rules_active).
-    if err := _check_permission_rules(check_command):
-        return err
+    if hit := note(_evaluate_permission_rules(check_command, ask_scope, base)):
+        return hit
 
     # In unrestricted mode only the catastrophic always-blocked ops are checked;
     # path restrictions and package-manager/env blocks are lifted. An explicit
     # ONIT_COMMAND_ALLOWLIST=1 still enforces the allowlist.
     if _in_unrestricted():
         if os.environ.get("ONIT_COMMAND_ALLOWLIST") == "1":
-            if err := _check_command_allowlist(check_command):
-                return err
+            if hit := note(_evaluate_command_allowlist(check_command, base,
+                                                       ask_scope)):
+                return hit
         for pattern, description in _ALWAYS_BLOCKED_PATTERNS:
             if pattern.search(check_command):
-                return f"Command blocked: {description} is not allowed."
-        return None
+                return Decision(DENY,
+                                f"Command blocked: {description} is not allowed.",
+                                severity=CRITICAL)
+        return pending or Decision(ALLOW)
+
+    # Patterns nobody may authorize. Checked ahead of the allowlist so that
+    # `sudo` is refused as privilege escalation rather than as an unlisted
+    # executable — the message is the true one, and the severity that drives
+    # auto-containment is the true one too.
+    for pattern, description in _BLOCKED_PATTERNS:
+        if pattern.search(check_command):
+            return Decision(DENY,
+                            f"Command blocked: {description} is not allowed.",
+                            severity=CRITICAL)
 
     # AST-based allowlist: every executable in the command (including inside
     # $(...), pipelines, loops, and shell -c payloads) must be allowlisted;
     # package-manager installs are gated and must be version-pinned.
     if _allowlist_enforced():
-        if err := _check_command_allowlist(check_command):
-            return err
+        if hit := note(_evaluate_command_allowlist(check_command, base,
+                                                   ask_scope)):
+            return hit
 
-    # Check blocked command patterns
-    for pattern, description in _BLOCKED_PATTERNS:
+    # Patterns a person may authorize, where this deployment has one to ask.
+    for pattern, description, kind in _ASKABLE_PATTERNS:
         if pattern.search(check_command):
-            return f"Command blocked: {description} is not allowed."
+            if hit := note(_ask_unless_granted(
+                    f"Command blocked: {description} is not allowed.",
+                    (f"pattern:{description}",), kind, ask_scope, base)):
+                return hit
+            break
 
     # In container mode the container itself is the filesystem boundary —
     # skip the path allowlist so agent commands can reach --container-mount
     # directories and any other path visible to the container.
     if _in_container():
-        return None
+        return pending or Decision(ALLOW)
 
-    # Check for absolute path references outside allowed directories
+    if hit := note(_evaluate_command_paths(check_command, base, ask_scope)):
+        return hit
+    return pending or Decision(ALLOW)
+
+
+def _evaluate_command_paths(check_command: str, base: str | None,
+                            ask_scope: frozenset) -> Decision:
+    """Check absolute paths in the command against the session jail.
+
+    On a single-tenant machine an absolute path outside the jail is the most
+    common refusal there is, and almost always a benign one — /etc, a
+    Homebrew prefix, the user's own project directory. Those become questions.
+    On a multi-tenant deployment they stay refusals: the jail is the only
+    thing separating one logged-in person's session from another's, and it is
+    not the session's to waive. approvals.ask_scope withholds "path" there, so
+    the difference is one place, not scattered through this function.
+    """
     abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH)) if DOCUMENTS_PATH else None
 
     # Normalize for comparison (on Windows, realpath uses backslashes)
     abs_data_lower = abs_data.lower() if IS_WINDOWS else abs_data
     abs_docs_lower = abs_docs.lower() if (IS_WINDOWS and abs_docs) else abs_docs
+
+    granted_roots = _APPROVALS.roots_for(base) if base else frozenset()
 
     target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
     # Allow the entire env prefix (parent of bin/) so scripts can reference
@@ -1014,6 +1273,10 @@ def _validate_bash_command(command: str, base: str | None = None) -> str | None:
                 return True
             if abs_docs and norm.startswith(abs_docs):
                 return True
+        # Roots a person approved for this session, earlier in this run.
+        for root in granted_roots:
+            if norm == root or norm.startswith(root.rstrip(os.sep) + os.sep):
+                return True
         # Allow the target conda env (bin/, lib/, share/, etc.)
         if target_env_prefix and norm.startswith(target_env_prefix):
             return True
@@ -1025,26 +1288,179 @@ def _validate_bash_command(command: str, base: str | None = None) -> str | None:
             return True
         return False
 
+    def _refuse(raw: str) -> Decision:
+        path = os.path.normpath(raw)
+        reason = (f"Command blocked: references path '{path}' outside allowed directories. "
+                  f"Commands must operate within DATA_PATH ({abs_data})"
+                  + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
+                  + ".")
+        # The subject is the directory, not the file: approving one file of a
+        # project and then being asked again about the next one beside it is
+        # a prompt nobody reads by the third time.
+        root = path if os.path.isdir(path) else os.path.dirname(path) or path
+        return _ask_unless_granted(reason, (f"path:{root}",), "path",
+                                   ask_scope, base)
+
     # Match Unix-style absolute paths (/...)
     for match in re.finditer(r'(?:^|(?<=\s)|(?<=[;|&><]))(/[^\s;|&><"\'`\)]+)', check_command):
         if not _is_allowed_path(match.group(1)):
-            path = os.path.normpath(match.group(1))
-            return (f"Command blocked: references path '{path}' outside allowed directories. "
-                    f"Commands must operate within DATA_PATH ({abs_data})"
-                    + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
-                    + ".")
+            return _refuse(match.group(1))
 
     # Match Windows-style absolute paths (C:\... or C:/...)
     if IS_WINDOWS:
         for match in re.finditer(r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', check_command):
             if not _is_allowed_path(match.group(1)):
-                path = os.path.normpath(match.group(1))
-                return (f"Command blocked: references path '{path}' outside allowed directories. "
-                        f"Commands must operate within DATA_PATH ({abs_data})"
-                        + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
-                        + ".")
+                return _refuse(match.group(1))
 
-    return None
+    return Decision(ALLOW)
+
+
+def _gate_command(command: str, base: str | None,
+                  approval_token: str = "",
+                  approval_scope: str = _SCOPE_ONCE) -> str | None:
+    """Run one command past the policy. Returns a tool result, or None to run.
+
+    Three answers, and each is a different kind of turn for the model:
+
+    * ``None`` — go ahead.
+    * a ``needs_approval`` payload — the call did not run and a person is
+      being asked. The harness handles this one; the model only ever sees the
+      outcome, which is why the payload does not tell it to retry.
+    * a refusal — the call did not run and will not. It carries guidance to
+      stop rather than to rephrase.
+
+    ``approval_token`` is minted by this server and re-issued by the harness,
+    which overwrites the argument on every call, so a value the model made up
+    never arrives here. Redeeming one does not skip the checks: the command is
+    evaluated again with the approved subjects held in place, so a rule that
+    changed since the ticket was minted still applies.
+    """
+    if approval_token and base and approval_scope == _SCOPE_DENY:
+        # The person said no. Recorded so the same command coming back is a
+        # refusal rather than a second prompt — and so that coming back is
+        # itself the signal auto-containment watches for.
+        _APPROVALS.refuse(approval_token, command, base)
+        return _refusal(Decision(
+            DENY,
+            "Command blocked: the user was asked to approve this command "
+            "and declined it."), command)
+
+    if base and _APPROVALS.was_refused(command, base):
+        decision = Decision(
+            DENY,
+            "Command blocked: a person was asked about this exact command "
+            "earlier in this session and declined it.",
+            severity=CRITICAL)
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    scope = _ask_scope()
+    if approval_token and base and _APPROVALS.redeem(
+            approval_token, command, base, approval_scope):
+        pending = _pending_subjects_of(command, base, scope)
+        with _APPROVALS.transient(base, pending):
+            decision = _evaluate_bash_command(command, base=base,
+                                              ask_scope=scope)
+        if decision.allowed:
+            return None
+        # Approved for one thing, refused for another: the refusal wins, and
+        # the model is told why rather than being asked a second question.
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    decision = _evaluate_bash_command(command, base=base, ask_scope=scope)
+    if decision.allowed:
+        return None
+    if decision.needs_human and base:
+        return json.dumps(_APPROVALS.request(command, base, decision.subjects,
+                                             decision.reason))
+    _record_violation(decision, command, base)
+    return _refusal(decision, command)
+
+
+def _gate_serve_command(command: str, base: str | None,
+                        approval_token: str = "",
+                        approval_scope: str = _SCOPE_ONCE) -> str | None:
+    """The gate for ``serve start``: rules and allowlist, but not the path jail.
+
+    Background servers legitimately live outside DATA_PATH, which is why the
+    path check is skipped here — it always was. Everything else, approvals
+    included, is the same policy the foreground tool applies.
+    """
+    check = _strip_heredoc_bodies(command)
+    if approval_token and base and approval_scope == _SCOPE_DENY:
+        # The person said no. Recorded so the same command coming back is a
+        # refusal rather than a second prompt — and so that coming back is
+        # itself the signal auto-containment watches for.
+        _APPROVALS.refuse(approval_token, command, base)
+        return _refusal(Decision(
+            DENY,
+            "Command blocked: the user was asked to approve this command "
+            "and declined it."), command)
+
+    if base and _APPROVALS.was_refused(command, base):
+        decision = Decision(
+            DENY,
+            "Command blocked: a person was asked about this exact command "
+            "earlier in this session and declined it.",
+            severity=CRITICAL)
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    ask_scope = _ask_scope()
+
+    def evaluate() -> Decision:
+        decision = _evaluate_permission_rules(check, ask_scope, base)
+        if not decision.allowed:
+            return decision
+        if _allowlist_enforced() and not _in_unrestricted():
+            return _evaluate_command_allowlist(check, base, ask_scope)
+        return Decision(ALLOW)
+
+    if approval_token and base and _APPROVALS.redeem(
+            approval_token, command, base, approval_scope):
+        first = evaluate()
+        subjects = first.subjects if first.needs_human else ()
+        with _APPROVALS.transient(base, subjects):
+            decision = evaluate()
+        if decision.allowed:
+            return None
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    decision = evaluate()
+    if decision.allowed:
+        return None
+    if decision.needs_human and base:
+        return json.dumps(_APPROVALS.request(command, base, decision.subjects,
+                                             decision.reason))
+    _record_violation(decision, command, base)
+    return _refusal(decision, command)
+
+
+def _pending_subjects_of(command: str, base: str | None,
+                         ask_scope: frozenset) -> tuple:
+    """What the ticket for ``command`` was about, recomputed at redemption.
+
+    The subjects are not taken from the request the client echoes back: they
+    are derived again from the command itself, so the set held in place
+    during re-evaluation is the policy's own answer and not something a
+    caller supplied.
+    """
+    decision = _evaluate_bash_command(command, base=base, ask_scope=ask_scope)
+    return decision.subjects if decision.needs_human else ()
+
+
+def _validate_bash_command(command: str, base: str | None = None) -> str | None:
+    """String form of :func:`_evaluate_bash_command` with no human to ask.
+
+    Every ask collapses to the refusal it would have been before approvals
+    existed, which is what callers with no approval channel — and the tests
+    that pin the fail-closed behaviour — depend on.
+    """
+    decision = _evaluate_bash_command(command, base=base)
+    return None if decision.allowed else decision.reason
+
 
 
 # =============================================================================
@@ -1060,8 +1476,13 @@ Args:
 - cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
 - timeout: Max seconds to wait (default: 300, and 300 is also the hard ceiling)
 - data_path: Session working directory — set automatically by the harness; leave unset.
+- approval_token, approval_scope: set by the harness when a person has approved a command; leave unset. Values you supply are discarded before the call is made.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
+
+A command needing a person's approval returns {status: "needs_approval"} and does
+NOT run. The harness handles that exchange and returns either the command's
+output or a refusal — do not re-issue the call yourself.
 
 For work that may take longer than 300 seconds — installs, builds, full test
 suites, training runs — use the serve tool instead. It runs the command in the
@@ -1077,23 +1498,24 @@ async def bash(
     cwd: str = ".",
     timeout: int = DEFAULT_TIMEOUT,
     data_path: str = "",
+    approval_token: str = "",
+    approval_scope: str = _SCOPE_ONCE,
     ctx: Context = None,
 ) -> str:
     if err := _validate_required(command=command):
         return err
-    if _is_contained():
-        return _containment_error(command)
     try:
         base = _session_base(data_path)
-
-        # Validate command against blocklist and path restrictions
-        if err_msg := _validate_bash_command(command, base=base):
-            _record_violation(err_msg, command)
-            return json.dumps({
-                "error": err_msg,
-                "command": command,
-                "status": "blocked"
-            })
+    except ValueError as e:
+        return json.dumps({"error": str(e), "command": command,
+                           "status": "error"})
+    if _is_contained(base):
+        return _containment_error(command, base)
+    try:
+        # Allow, ask a person, or refuse (see _gate_command).
+        if gated := _gate_command(command, base, approval_token,
+                                  approval_scope):
+            return gated
 
         # Validate and normalize working directory
         # Default to the session jail root when cwd is "." (default) to avoid
@@ -1422,10 +1844,10 @@ def write_file(
 ) -> str:
     if err := _validate_required(path=path, content=content):
         return err
-    if _is_contained():
-        return _containment_error()
     try:
         base = _session_base(data_path)
+        if _is_contained(base):
+            return _containment_error(base=base)
         file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
 
         # Create directory with owner-only permissions
@@ -1524,10 +1946,10 @@ def edit_file(
 ) -> str:
     if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
         return err
-    if _is_contained():
-        return _containment_error()
     try:
         base = _session_base(data_path)
+        if _is_contained(base):
+            return _containment_error(base=base)
         file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
 
         if not os.path.isfile(file_path):
@@ -1690,6 +2112,8 @@ def serve(
     cwd: Optional[str] = None,
     lines: int = 50,
     data_path: str = "",
+    approval_token: str = "",
+    approval_scope: str = _SCOPE_ONCE,
 ) -> str:
     if err := _validate_required(action=action):
         return err
@@ -1705,22 +2129,17 @@ def serve(
     if action == "start":
         if err := _validate_required(command=command):
             return err
-        if _is_contained():
-            return _containment_error(command)
+        if _is_contained(base):
+            return _containment_error(command, base)
 
         # serve skips the path-based bash validation by design (servers live
         # outside DATA_PATH), but user-configured permission rules and the
-        # AST command allowlist still apply so serve cannot bypass them.
-        err_msg = _check_permission_rules(_strip_heredoc_bodies(command))
-        if not err_msg and _allowlist_enforced() and not _in_unrestricted():
-            err_msg = _check_command_allowlist(_strip_heredoc_bodies(command))
-        if err_msg:
-            _record_violation(err_msg, command)
-            return json.dumps({
-                "error": err_msg,
-                "command": command,
-                "status": "blocked"
-            })
+        # AST command allowlist still apply so serve cannot bypass them —
+        # including the approval path, so that a long-running job is not the
+        # way around a prompt a foreground command would have raised.
+        if gated := _gate_serve_command(command, base, approval_token,
+                                        approval_scope):
+            return gated
 
         registry = _load_serve_registry(base)
 
@@ -1964,12 +2383,13 @@ def send_file(
 ) -> str:
     if err := _validate_required(path=path):
         return err
-    if _is_contained():
-        return _containment_error()
     try:
+        base = _session_base(data_path)
+        if _is_contained(base):
+            return _containment_error(base=base)
         # Validate path is within allowed directories
         # (relative paths are resolved against the session jail root)
-        file_path = _validate_read_path(path, base=_session_base(data_path))
+        file_path = _validate_read_path(path, base=base)
 
         if not os.path.isfile(file_path):
             return json.dumps({"error": f"File not found: {file_path}", "path": path})
@@ -2243,10 +2663,9 @@ def transform_text(
     is_file: bool = False,
     data_path: str = "",
 ) -> str:
-    if _is_contained():
-        return _containment_error()
-
     base = _session_base(data_path)
+    if _is_contained(base):
+        return _containment_error(base=base)
 
     # Pre-resolve file path before validation (bash server convention)
     def _bash_validate_read_path(p: str) -> str:

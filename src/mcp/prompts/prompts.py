@@ -25,11 +25,15 @@ try:
     from ...lib.text import INSTRUCTION_SPLIT
     from ..servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
     from ..servers.tasks.os.bash.command_policy import installs_sealed
+    from ..servers.tasks.os.bash.approvals import (
+        approval_channel_available as _approvals_available)
     from ..servers.tasks.shared import uvicorn_config
 except ImportError:  # server started as a script rather than a package module
     from lib.text import INSTRUCTION_SPLIT
     from mcp.servers.tasks.local.search.toolkit import MAX_DOCUMENT_SUMMARIES
     from mcp.servers.tasks.os.bash.command_policy import installs_sealed
+    from mcp.servers.tasks.os.bash.approvals import (
+        approval_channel_available as _approvals_available)
     from mcp.servers.tasks.shared import uvicorn_config
 
 # How many documents an answer may open. Tied to the number a result page
@@ -229,6 +233,27 @@ Use what is installed; check with `pip list` or `python -c "import x"` before
 assuming a package is missing. If the task truly needs a missing one, name it and
 say an operator must add it. Never retry the install, and never call a task
 blocked by a failed install without naming the package.
+"""
+
+   # How a refusal should land. Announced whether or not anyone is reachable,
+   # because the behaviour it asks for — stop, say so, move on — is the same
+   # either way, and the failure it prevents is the same too: a model that
+   # meets a blocked command and spends the next four turns quoting the path
+   # differently. Paired with the approval line only where approvals exist,
+   # so the prompt never promises a prompt nobody will see.
+   policy_block = """
+## When A Command Is Refused
+A refused command did not run, and running it is not the problem to solve.
+Read the reason, then either take a different route or tell the user what you
+need. Never retry the same command, reword it to slip past the check, or reach
+for another tool to do the same thing.
+"""
+   if _approvals_available():
+      policy_block += """
+Some commands pause for the user's approval instead. That happens outside your
+turn: wait for the result, which is either the command's output or a refusal.
+Do not ask the user to approve anything yourself, and do not repeat a command
+they declined.
 """
 
    # Add research and citation instructions based on available search tools
@@ -432,7 +457,7 @@ wrapping it in code is two.
 
    # Standing rules: the same bytes on every request whichever template is in
    # use, so they belong in the static half in both branches below.
-   rules = (topic_block + sandbox_block + no_install_block
+   rules = (topic_block + sandbox_block + no_install_block + policy_block
             + research_block + harness_block + result_block + code_block
             + instructions_block)
    # The file server URL carries the session's upload id, and the task is the

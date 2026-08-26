@@ -43,12 +43,18 @@ from rich.theme import Theme
 from rich.prompt import Prompt
 from rich.status import Status
 from rich.rule import Rule
+from rich.table import Table
 from rich.box import Box
 from rich.box import ROUNDED, HEAVY
 from datetime import datetime
 import re
 
 from typing import Callable, Optional, Any, Literal, Union
+
+try:
+    from src import __version__ as ONIT_VERSION
+except Exception:  # package metadata unavailable (e.g. standalone import)
+    ONIT_VERSION = ""
 
 
 HORIZONTAL_THICK = Box(
@@ -407,7 +413,7 @@ class ChatUI:
                 subtitle_align = "right"
 
             header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
-            footer = Rule(subtitle, characters="━", style="blue", align=subtitle_align)
+            footer = self._render_footer_rule(subtitle, subtitle_align)
             return Group(header, Text(""), content, footer)
 
         except Exception as e:
@@ -416,6 +422,22 @@ class ChatUI:
                 Rule("[bold red]⚠️  Rendering Error[/]", characters="━", style="red"),
                 Text(f"Error rendering messages: {e}", style="error"),
             )
+
+    def _render_footer_rule(self, subtitle: str = "", align: str = "left"):
+        """Footer rule with the OnIt version pinned to the right end of the same line."""
+        if not ONIT_VERSION:
+            return Rule(subtitle, characters="━", style="blue", align=align)
+
+        grid = Table.grid(expand=True)
+        grid.add_column(ratio=1)
+        grid.add_column(justify="right", no_wrap=True)
+        # a right-aligned subtitle ends flush against our cell, so keep them apart
+        lead = " ━━ " if align == "right" else "━━ "
+        grid.add_row(
+            Rule(subtitle, characters="━", style="blue", align=align),
+            Text(f"{lead}OnIt v{ONIT_VERSION} ━━", style="blue"),
+        )
+        return grid
 
     def _render_welcome_panel(self) -> Group:
         """Render welcome message when no messages exist."""
@@ -427,7 +449,7 @@ class ChatUI:
         welcome.append("'Ctl+c' to close", style=self.theme.styles.get("user", "bold cyan"))
 
         header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
-        footer = Rule(characters="━", style="blue")
+        footer = self._render_footer_rule(f"📁 {self.data_path}" if self.data_path else "")
         return Group(header, Text(""), Align.center(welcome, vertical="middle"), Text(""), footer)
 
     def _render_tool_call_message(self, content: Text, name: str, args_str: str, msg_time: str) -> None:
@@ -648,6 +670,65 @@ class ChatUI:
             "error": ("✖", "bold red"),
         }.get(level, ("ℹ", "dim"))
         self.console.print(f"  {mark}  {message}", style=style)
+
+    # ── Approval prompt ────────────────────────────────────────────
+
+    async def ask_approval(self, request: dict) -> str:
+        """Ask the person at the terminal about a command policy will not run.
+
+        Returns "once", "session" or "deny". Deny is the answer to anything
+        else — an empty line, an interrupt, a closed stdin — because the
+        command not running is the safe outcome and the one the user gets by
+        doing nothing.
+
+        The read runs in a worker thread so the agent's event loop keeps
+        turning while the prompt is up: the stop key has to stay live, and a
+        run that has been asked to stop should not be waiting on an answer to
+        a question that no longer matters.
+        """
+        self.stop_status()
+        self.stop_thinking()  # no spinner writing over the prompt
+
+        command = str(request.get("command", "")).strip()
+        reason = str(request.get("reason", "")).strip()
+        subjects = [str(s) for s in (request.get("subjects") or [])]
+
+        self.console.print()
+        self.console.print("  ⚠  OnIt wants to run a command that policy does "
+                           "not allow on its own", style="bold yellow")
+        for line in command.splitlines() or [""]:
+            self.console.print(f"     {line}", style="bold white")
+        if reason:
+            self.console.print(f"     {reason}", style="dim")
+        # Named explicitly, because "session" grants more than the command on
+        # screen and the difference should not be a surprise later.
+        if subjects:
+            self.console.print(f"     Approving for the session allows: "
+                               f"{', '.join(subjects)}", style="dim")
+        self.console.print("     [y] run once   [a] allow for this session   "
+                           "[n] refuse (default)", style="dim")
+
+        def _read() -> str:
+            try:
+                return input("  ➤ approve? ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return ""
+
+        try:
+            answer = await asyncio.get_running_loop().run_in_executor(None, _read)
+        except Exception:
+            answer = ""
+
+        choice = {"y": "once", "yes": "once", "1": "once",
+                  "a": "session", "all": "session", "always": "session",
+                  }.get(answer, "deny")
+        self.console.print(
+            {"once": "     ✓ approved, once",
+             "session": "     ✓ approved for this session",
+             "deny": "     ✖ refused"}[choice],
+            style="dim")
+        self.console.print()
+        return choice
 
     def show_turn_limit(self, limit: int) -> None:
         """Print an inline warning when the chat loop stops at its turn ceiling.

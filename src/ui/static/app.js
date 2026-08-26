@@ -1235,6 +1235,19 @@
         note.append(label, body);
         turn.content.appendChild(note);
       },
+      approval(d) {
+        // A command the policy will not run on its own authority. The run is
+        // paused on this answer, so the prompt goes in the transcript where
+        // the user is already looking rather than in a dialog they have to
+        // find, and it stays put until it is answered or expires.
+        renderApproval(turn, d);
+        scrollToBottom();
+      },
+      approval_closed(d) {
+        const card = approvals.get(d.approval_id);
+        if (card && !card.dataset.answered) settleApproval(card, "expired");
+        approvals.delete(d.approval_id);
+      },
       error(d) {
         chip.remove();
         settleThinking();
@@ -1419,6 +1432,87 @@
     } catch (e) {
       console.info("Voice unavailable:", e && e.message);
     }
+  }
+
+  // ── Command approvals ──────────────────────────────────────────
+  // The agent is blocked on the answer, so these are deliberately plain: the
+  // command as it will run, why it needs asking, and three buttons. Refusing
+  // is the default and the safe outcome, which is why closing the tab or
+  // ignoring the card ends the same way as pressing it.
+
+  const approvals = new Map();
+
+  function settleApproval(card, outcome) {
+    card.dataset.answered = "1";
+    const actions = card.querySelector(".approval-actions");
+    if (actions) actions.remove();
+    const verdict = document.createElement("div");
+    verdict.className = "approval-verdict";
+    verdict.textContent = {
+      once: "Approved — run once",
+      session: "Approved for this chat",
+      deny: "Refused",
+      expired: "No answer — refused",
+    }[outcome] || "Refused";
+    card.appendChild(verdict);
+  }
+
+  function renderApproval(turn, d) {
+    const card = document.createElement("div");
+    card.className = "approval-card";
+    approvals.set(d.approval_id, card);
+
+    const head = document.createElement("div");
+    head.className = "approval-head";
+    head.textContent = "OnIt wants to run a command that needs your approval";
+    card.appendChild(head);
+
+    // textContent, not innerHTML: the command is the agent's text and the
+    // reason quotes it back. Neither is ours to trust as markup.
+    const cmd = document.createElement("pre");
+    cmd.className = "approval-command";
+    cmd.textContent = d.command || "";
+    card.appendChild(cmd);
+
+    if (d.reason) {
+      const why = document.createElement("div");
+      why.className = "approval-reason";
+      why.textContent = d.reason;
+      card.appendChild(why);
+    }
+    if ((d.subjects || []).length) {
+      const scope = document.createElement("div");
+      scope.className = "approval-reason";
+      scope.textContent = "Allowing for this chat also permits: " +
+        d.subjects.join(", ");
+      card.appendChild(scope);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+    [
+      ["Run once", "once", "approval-btn primary"],
+      ["Allow for this chat", "session", "approval-btn"],
+      ["Refuse", "deny", "approval-btn danger"],
+    ].forEach(([label, decision, cls]) => {
+      const btn = document.createElement("button");
+      btn.className = cls;
+      btn.textContent = label;
+      btn.addEventListener("click", async () => {
+        if (card.dataset.answered) return;
+        settleApproval(card, decision);
+        try {
+          await api("/api/approval", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ approval_id: d.approval_id, decision }),
+          });
+        } catch (e) { /* the run times out into a refusal on its own */ }
+      });
+      actions.appendChild(btn);
+    });
+    card.appendChild(actions);
+    turn.content.appendChild(card);
   }
 
   async function readSSE(res, onEvent) {

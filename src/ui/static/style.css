@@ -322,6 +322,68 @@ textarea { font-family: var(--font); }
   padding: 10px 14px;
 }
 
+/* A command waiting on the user's approval. Loud enough not to be scrolled
+   past — the run is stopped until it is answered — and plain enough that the
+   command itself is the thing being read. */
+.approval-card {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--warning, #b7791f) 40%, transparent);
+  background: color-mix(in srgb, var(--warning, #b7791f) 8%, transparent);
+}
+
+.approval-head {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.approval-command {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--code-bg, rgba(0, 0, 0, 0.06));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.approval-reason {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.approval-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: var(--surface, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.approval-btn:hover { background: var(--surface-hover, rgba(0, 0, 0, 0.05)); }
+.approval-btn.primary { border-color: var(--accent, #2b6cb0); color: var(--accent, #2b6cb0); }
+.approval-btn.danger { border-color: var(--danger); color: var(--danger); }
+
+.approval-verdict {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 /* A fact-check that finished after its answer did. Quiet on purpose: the
    corrected text is already in the bubble above, and this only says why it
    changed. */

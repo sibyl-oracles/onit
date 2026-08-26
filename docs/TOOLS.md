@@ -52,6 +52,12 @@ A2A server sessions each work in their own subdirectory `<data_path>/<session_id
 
 Paths outside the allowed roots are rejected. The checks are relaxed in `--container` mode (the container is the isolation boundary) and in `--unrestricted` mode.
 
+On a single-user terminal run, a path outside the roots is put to the user as an
+approval prompt rather than refused outright — the most common refusal there is
+a benign one, and the person at the prompt already owns the files. On the web UI
+it stays a refusal: the jail is what separates one logged-in user's session from
+another's. See [Command Approvals](ISOLATION.md#command-approvals).
+
 ### Disabling tools
 
 Some tools can be switched off via environment variables: `ONIT_DISABLE_WEB_SEARCH` (removes `search`), `ONIT_DISABLE_WEATHER` (removes `get_weather`), and `ONIT_DISABLE_LOCAL_SEARCH` (removes `index_documents` and `local_search`).

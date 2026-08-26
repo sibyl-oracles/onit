@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -31,14 +32,16 @@ def _set_data_path(tmp_path):
     bash_mod.DATA_PATH = str(tmp_path)
     bash_mod.DOCUMENTS_PATH = None
     bash_mod._SANDBOX_ENV = None
-    bash_mod._VIOLATIONS = []
-    bash_mod._CONTAINED = False
+    bash_mod._VIOLATIONS = {}
+    bash_mod._CONTAINED = set()
+    bash_mod._APPROVALS.reset()
     yield
     bash_mod.DATA_PATH = old_data
     bash_mod.DOCUMENTS_PATH = old_docs
     bash_mod._SANDBOX_ENV = old_env
-    bash_mod._VIOLATIONS = []
-    bash_mod._CONTAINED = False
+    bash_mod._VIOLATIONS = {}
+    bash_mod._CONTAINED = set()
+    bash_mod._APPROVALS.reset()
 
 
 # ── search_directory ───────────────────────────────────────────────────────
@@ -687,7 +690,11 @@ class TestCommandAllowlist:
 
 
 class TestAutoContainment:
-    """Repeated policy violations lock down execution/write/send tools."""
+    """Repeated *critical* refusals lock down execution/write/send tools.
+
+    What counts changed with approvals: an unlisted executable is a question,
+    not a violation, so the commands here are ones nobody may authorize.
+    """
 
     @pytest.fixture
     def bash_tool(self):
@@ -704,24 +711,71 @@ class TestAutoContainment:
         leak into the next test.
         """
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "5")
-        monkeypatch.setattr(bash_mod, "_CONTAINED", True)
+        monkeypatch.setattr(bash_mod, "_CONTAINED", {""})
 
     async def test_containment_after_threshold(self, enforced, monkeypatch,
                                                tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "3")
         for _ in range(3):
-            r = json.loads(await bash_tool(command="evilbin"))
+            r = json.loads(await bash_tool(command="sudo rm -rf /var"))
             assert r["status"] == "blocked"
         # Now even an allowed command is refused.
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] == "contained"
         assert os.path.isfile(bash_mod._containment_marker_path())
 
+    async def test_policy_refusals_never_contain(self, enforced, monkeypatch,
+                                                 tmp_path, bash_tool):
+        """An unlisted executable is friction, not an attack.
+
+        This is the case the old counter got wrong: a session that keeps
+        reaching for tools nobody listed would accumulate violations until it
+        locked itself out, over nothing anyone would call adversarial.
+        """
+        monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
+        for _ in range(6):
+            r = json.loads(await bash_tool(command="evilbin --x"))
+            assert r["status"] == "blocked"
+        r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
+        assert r["status"] in ("success", "failed")
+
+    async def test_violations_decay_out_of_the_window(self, enforced,
+                                                      monkeypatch, tmp_path,
+                                                      bash_tool):
+        """Two refusals an hour apart are not a burst."""
+        monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
+        monkeypatch.setenv("ONIT_CONTAIN_WINDOW", "0.05")
+        await bash_tool(command="sudo rm -rf /var")
+        time.sleep(0.1)
+        await bash_tool(command="sudo rm -rf /var")
+        r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
+        assert r["status"] in ("success", "failed")
+
+    async def test_containment_is_scoped_to_the_session(self, enforced,
+                                                        monkeypatch, tmp_path,
+                                                        bash_tool):
+        """One session's lockdown must not strand the next one.
+
+        The marker used to live at the data-directory root whatever earned it,
+        so a single bad session contained every later session on the host.
+        """
+        alice = tmp_path / "alice"
+        bob = tmp_path / "bob"
+        alice.mkdir()
+        bob.mkdir()
+        monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
+        for _ in range(2):
+            await bash_tool(command="sudo rm -rf /var", data_path=str(alice))
+        assert json.loads(await bash_tool(
+            command="ls .", data_path=str(alice)))["status"] == "contained"
+        assert json.loads(await bash_tool(
+            command="ls .", data_path=str(bob)))["status"] in ("success", "failed")
+
     async def test_below_threshold_not_contained(self, enforced, monkeypatch,
                                                  tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "3")
         for _ in range(2):
-            await bash_tool(command="evilbin")
+            await bash_tool(command="sudo rm -rf /var")
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
@@ -729,7 +783,7 @@ class TestAutoContainment:
                                            tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "0")
         for _ in range(10):
-            await bash_tool(command="evilbin")
+            await bash_tool(command="sudo rm -rf /var")
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
@@ -744,7 +798,7 @@ class TestAutoContainment:
         if container:
             monkeypatch.setenv("ONIT_CONTAINER", "1")
         for _ in range(10):
-            r = json.loads(await bash_tool(command="evilbin"))
+            r = json.loads(await bash_tool(command="sudo rm -rf /var"))
             assert r["status"] == "blocked"
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
@@ -762,7 +816,7 @@ class TestAutoContainment:
         monkeypatch.setenv("ONIT_CONTAINER", "1")
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
         for _ in range(2):
-            await bash_tool(command="evilbin")
+            await bash_tool(command="sudo rm -rf /var")
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] == "contained"
 
@@ -787,12 +841,12 @@ class TestAutoContainment:
     def test_marker_persists_containment(self, enforced, contained, tmp_path):
         bash_mod._enter_containment()
         # Simulate a restart: in-memory flag cleared, marker still on disk.
-        bash_mod._CONTAINED = False
+        bash_mod._CONTAINED = set()
         assert bash_mod._is_contained() is True
 
     def test_reads_still_work_when_contained(self, tmp_path):
         (tmp_path / "readable.txt").write_text("still visible\n")
-        bash_mod._CONTAINED = True
+        bash_mod._CONTAINED = {""}
         read_fn = bash_mod.read_file.fn if hasattr(bash_mod.read_file, "fn") \
             else bash_mod.read_file
         result = json.loads(read_fn(path=str(tmp_path / "readable.txt")))

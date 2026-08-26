@@ -1178,6 +1178,22 @@ def main():
     if config_data.get('web'):
         os.environ['ONIT_WEB_UI'] = '1'
 
+    # Declare, before the tool servers are spawned and inherit it, whether
+    # this run has a person who can be asked about a command the policy will
+    # not run on its own. Only the two interactive front ends do: the terminal
+    # chat and the web UI, both of which implement the prompt. A gateway bot,
+    # an A2A server and a --loop run have nobody at the other end, so their
+    # tool servers keep refusing outright rather than minting approval tickets
+    # nobody will ever answer. Set here rather than inferred inside the
+    # servers, because "is anyone watching" is a fact about how OnIt was
+    # started and nothing downstream can recover it.
+    _interactive = not (config_data.get('a2a') or config_data.get('gateway')
+                        or config_data.get('loop'))
+    if _interactive:
+        os.environ['ONIT_APPROVAL_CHANNEL'] = '1'
+    else:
+        os.environ.pop('ONIT_APPROVAL_CHANNEL', None)
+
     if args.target_env:
         bin_path = _resolve_env_bin(args.target_env)
         if bin_path:

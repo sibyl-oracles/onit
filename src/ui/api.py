@@ -124,6 +124,12 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 # Sentinel pushed into the event queue when a chat turn is finished
 _END = ("__end__", None)
 
+# How long a command approval stays on screen before it is refused. Matched to
+# the server's ticket lifetime (mcp/servers/tasks/os/bash/approvals.py): a
+# prompt outliving the ticket behind it would collect an answer that can no
+# longer be redeemed, which reads to the user as their "yes" being ignored.
+APPROVAL_TIMEOUT = 300
+
 # Spellings of "no verdict" that a rating request may send on purpose, to undo
 # a thumb pressed earlier. Anything else that fails to parse as a rating is a
 # malformed request, not a retraction.
@@ -487,6 +493,12 @@ class ApiSession:
     # delivered so a fact-check finishing behind it still has somewhere to
     # send a correction.  See _run_task.
     open_stream: Optional[queue.Queue] = None
+    # approval_id -> Future waiting on this session's answer. Per session, so
+    # a ticket raised in one browser tab can only ever be answered from that
+    # session — on a deployment where several people are logged in at once,
+    # whose question it is has to be part of the routing and not a detail the
+    # request body gets to assert.
+    pending_approvals: dict = field(default_factory=dict)
 
 
 class WebApiUI:
@@ -1047,6 +1059,42 @@ class WebApiUI:
                 # it is grounded for this session.
                 self._record_email_sources(session, result or "")
 
+            async def _on_approval(request):
+                """Put a gated command to this session's browser and wait.
+
+                The answer decides whether a command runs, so it has to come
+                back over a channel tied to this session: the future is stored
+                on the session, and POST /api/approval can only resolve one it
+                finds on the session its own cookie identifies. An id leaking
+                into the transcript — it is a tool result, the model sees it —
+                therefore buys nobody anything.
+
+                Anything that is not a clear yes is a no: a timeout, a closed
+                tab, a browser that never answers.
+                """
+                approval_id = str(request.get("approval_id") or "")
+                if not approval_id:
+                    return "deny"
+                loop = asyncio.get_running_loop()
+                future = loop.create_future()
+                session.pending_approvals[approval_id] = future
+                events.put_nowait(("approval", {
+                    "approval_id": approval_id,
+                    "command": request.get("command", ""),
+                    "reason": request.get("reason", ""),
+                    "subjects": request.get("subjects", []),
+                    "expires_in": request.get("expires_in", APPROVAL_TIMEOUT),
+                }))
+                try:
+                    return await asyncio.wait_for(future,
+                                                  timeout=APPROVAL_TIMEOUT)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    return "deny"
+                finally:
+                    session.pending_approvals.pop(approval_id, None)
+                    events.put_nowait(("approval_closed",
+                                       {"approval_id": approval_id}))
+
             def _on_correction(answer, note):
                 # Arrives after `done` — the answer is already on screen and
                 # the composer is already unlocked.  The stream is still open
@@ -1080,6 +1128,7 @@ class WebApiUI:
                 tool_result_callback=_on_tool_result,
                 answer_start_callback=_on_answer_start,
                 correction_callback=_on_correction,
+                approval_callback=_on_approval,
                 session_id=session.session_id,
             )
             elapsed = time.monotonic() - start
@@ -1122,6 +1171,13 @@ class WebApiUI:
             logger.error("Error processing task: %s", e)
             events.put_nowait(("error", {"message": f"Error: {e}"}))
         finally:
+            # A question still on screen when the run ends can never be
+            # answered usefully — the call it was gating is gone. Refuse them
+            # so nothing is left waiting on a person who has nothing to say.
+            for _pending in list(session.pending_approvals.values()):
+                if not _pending.done():
+                    _pending.set_result("deny")
+            session.pending_approvals.clear()
             # The turn is over as far as the user is concerned: the composer
             # unlocks here, whatever is still being checked behind the answer.
             session.processing = False
@@ -1419,6 +1475,35 @@ class WebApiUI:
             # previous answer.
             self._cancel_session_check(session)
             return {"stopped": True, "session_id": sid}
+
+        @app.post("/api/approval")
+        async def api_approval(request: Request):
+            """Answer a command approval this session is waiting on.
+
+            The session comes from the caller's own cookie, never from the
+            body, and the id is looked up only among that session's pending
+            questions. Someone who learns another session's approval id — it
+            travels in a tool result, so assume they can — still has nothing
+            to resolve it with.
+            """
+            sid, session = self._resolve_session(request)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            approval_id = str(body.get("approval_id") or "")
+            decision = str(body.get("decision") or "deny").strip().lower()
+            if decision not in ("once", "session", "deny"):
+                decision = "deny"
+            future = session.pending_approvals.get(approval_id)
+            if future is None or future.done():
+                # Expired, already answered, or never this session's to answer.
+                return {"ok": False, "reason": "no pending approval",
+                        "session_id": sid}
+            loop = self._loop or asyncio.get_running_loop()
+            loop.call_soon_threadsafe(
+                lambda: future.done() or future.set_result(decision))
+            return {"ok": True, "decision": decision, "session_id": sid}
 
         @app.post("/api/clear")
         async def api_clear(request: Request):
