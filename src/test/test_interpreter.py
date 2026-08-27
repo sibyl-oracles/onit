@@ -277,14 +277,35 @@ class TestInjectedParametersCannotBeOverridden:
 
     @pytest.mark.asyncio
     async def test_the_signature_has_no_place_to_put_them(self, interp):
+        """``**_harness`` is not a place to put them: it is where the two
+        approval parameters go to be dropped, and everything else lands in
+        the TypeError below."""
         out = await interp.run("import inspect; print(inspect.signature(local_search))")
-        assert out["stdout"].strip() == "(query, top_k=None)"
+        assert out["stdout"].strip() == "(query, top_k=None, **_harness)"
 
     @pytest.mark.asyncio
     async def test_passing_them_as_keywords_is_a_type_error(self, interp):
         out = await interp.run('local_search("Q3", data_path="/etc")')
         assert out["ok"] is False
         assert "unexpected keyword argument" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_keyword_is_still_a_type_error(self, interp):
+        out = await interp.run('local_search("Q3", tpo_k=3)')
+        assert out["ok"] is False
+        assert "tpo_k" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_an_approval_argument_is_dropped_not_raised(self, interp):
+        """The parent discards it either way. Raising costs the command: the
+        model reads a TypeError as a broken tool and retries with a smaller
+        one, having done nothing wrong except name a parameter it had seen in
+        a needs_approval payload."""
+        out = await interp.run('print(local_search("Q3", '
+                               'approval_token="stolen", approval_scope="session"))')
+        assert out["ok"] is True, out["error"]
+        name, kwargs = interp.calls[-1]
+        assert (name, kwargs) == ("local_search", {"query": "Q3"})
 
     @pytest.mark.asyncio
     async def test_call_tool_cannot_smuggle_them_either(self, interp):

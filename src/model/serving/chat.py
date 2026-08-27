@@ -1122,6 +1122,26 @@ async def _run_approved(invoke, retry_args: dict, request: dict,
             return (f"- tool call timed out after {timeout} seconds. "
                     "Tool might have succeeded but no response was received. "
                     "Check expected output.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The re-issued call is the harness's, not the model's: it carries
+            # a ticket the model never saw and arguments it did not write. Let
+            # the exception out and it reaches the model as a bare "Error: …"
+            # against a call it cannot see, which reads as a flaky tool and is
+            # answered by trying the command again — the one thing that must
+            # not happen to a command a person has just approved.
+            logger.warning("re-issuing the approved %s failed: %s",
+                           request.get("command", ""), e)
+            return json.dumps({
+                "error": f"The command was approved, but re-running it failed: {e}",
+                "command": request.get("command", ""),
+                "status": "error",
+                "retryable": False,
+                "guidance": ("The approval was not the problem and the same "
+                             "command will fail the same way. Say what "
+                             "happened, or take a different approach."),
+            })
         result = "" if result is None else str(result)
         again = _approval_request(result)
         if again is None:

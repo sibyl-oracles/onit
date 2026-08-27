@@ -779,6 +779,28 @@ class TestAutoApprove:
         await _run(registry, ui)
         assert len(ui.asked) == 1
 
+    async def test_a_re_issue_that_raises_is_answered_not_re_raised(self, auto):
+        """The approved call is the harness's, made with a ticket the model
+        never saw. Letting the exception out puts a bare "Error: ..." against
+        arguments the model cannot see, which reads as a flaky tool and is
+        answered by running the command again — the last thing that should
+        happen to a command that was just approved."""
+        class _Raises(_GatedRegistry):
+            def __getitem__(self, name):
+                inner = super().__getitem__(name)
+
+                async def handler(log_handler=None, **kwargs):
+                    if kwargs.get("approval_token"):
+                        raise RuntimeError("input validation error")
+                    return await inner(log_handler=log_handler, **kwargs)
+                return handler
+
+        messages = await _run(_Raises(), _UI())
+        answer = json.loads(messages[-1]["content"])
+        assert answer["status"] == "error"
+        assert answer["retryable"] is False
+        assert "input validation error" in answer["error"]
+
     async def test_it_cannot_reach_what_was_never_asked(self, enforced, auto,
                                                         tmp_path, bash_tool,
                                                         monkeypatch):
@@ -1021,3 +1043,14 @@ class TestApprovalParamsAreHiddenFromTheModel:
                   "required": ["command"]}
         _build_parameters(SimpleNamespace(inputSchema=schema))
         assert "approval_token" in schema["properties"]
+
+    async def test_the_description_does_not_name_them_either(self):
+        """Hiding the parameters and then describing them in prose is worse
+        than doing neither: the model reads the description, writes the
+        argument, and spends the turn on a value that never leaves — with
+        ``additionalProperties: false`` in the schema it saw, no less."""
+        tool = await bash_mod.mcp.get_tool("bash")
+        assert "approval_token" not in (tool.description or "")
+        assert "approval_scope" not in (tool.description or "")
+        # Still accepted, which is what lets the harness re-issue the call.
+        assert "approval_token" in tool.parameters["properties"]

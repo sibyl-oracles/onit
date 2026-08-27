@@ -96,8 +96,8 @@ MAX_LIVE_INTERPRETERS = 8
 # prompt would be decoration. Stripping them at the boundary means a ticket
 # minted for a call from inside the interpreter can only ever be redeemed by
 # the harness, which is the thing that asks the human.
-INJECTED_PARAMS = ("session_id", "data_path",
-                   "approval_token", "approval_scope")
+APPROVAL_PARAMS = ("approval_token", "approval_scope")
+INJECTED_PARAMS = ("session_id", "data_path") + APPROVAL_PARAMS
 
 # Anything the bindings would shadow or that would not survive being written as
 # a Python identifier.
@@ -240,20 +240,41 @@ NS = {"__name__": "__main__", "__builtins__": __builtins__,
       "call_tool": call_tool, "ToolError": ToolError, "Row": Row}
 
 
+# Accepted and thrown away, rather than raising like any other keyword the
+# signature does not have. A model that has seen a ``needs_approval`` payload
+# knows an ``approval_token`` exists, and writing one into a call from code
+# was a TypeError from a function that never declared it — a hard failure,
+# for a value the parent discards anyway, and one the model answers by giving
+# up on the command and trying a smaller one.
+#
+# Only this pair. ``data_path`` and ``session_id`` are the isolation boundary,
+# and code reaching for those should hear about it: they stay a TypeError, as
+# does every actual typo.
+_DISCARDED = %(approval_params)r
+
+
 def _bind(specs):
     for spec in specs:
         args = []
         for p in spec["params"]:
             args.append(p["name"] if p["required"] else p["name"] + "=None")
+        args.append("**_harness")
         names = [p["name"] for p in spec["params"]]
         # Optional parameters left at None are dropped rather than sent: a
         # server that distinguishes "absent" from "null" should see absent.
+        # _DISCARDED is written into the source rather than read from the
+        # module: these run with NS as their globals, and NS is swept of
+        # everything that is not a callable between statements.
         src = (
             "def %%s(%%s):\n"
+            "    _extra = [k for k in _harness if k not in %%r]\n"
+            "    if _extra:\n"
+            "        raise TypeError(%%r + '() got an unexpected keyword '\n"
+            "                        'argument %%%%r' %%%% _extra[0])\n"
             "    _a = {}\n"
             "%%s"
             "    return call_tool(%%r, **_a)\n"
-        ) %% (spec["name"], ", ".join(args),
+        ) %% (spec["name"], ", ".join(args), _DISCARDED, spec["name"],
              "".join("    if %%s is not None: _a[%%r] = %%s\n" %% (n, n, n)
                      for n in names),
              spec["name"])
@@ -338,7 +359,8 @@ while True:
 
 
 def child_source(max_stdout: int = MAX_STDOUT_CHARS) -> str:
-    return _CHILD_SOURCE % {"max_stdout": int(max_stdout)}
+    return _CHILD_SOURCE % {"max_stdout": int(max_stdout),
+                            "approval_params": APPROVAL_PARAMS}
 
 
 class InterpreterError(RuntimeError):

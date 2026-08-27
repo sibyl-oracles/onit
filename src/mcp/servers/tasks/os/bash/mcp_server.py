@@ -1517,7 +1517,6 @@ Args:
 - cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
 - timeout: Max seconds to wait (default: 300, and 300 is also the hard ceiling)
 - data_path: Session working directory — set automatically by the harness; leave unset.
-- approval_token, approval_scope: set by the harness when a person has approved a command; leave unset. Values you supply are discarded before the call is made.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
 
@@ -1546,6 +1545,11 @@ async def bash(
     cwd: str = ".",
     timeout: int = DEFAULT_TIMEOUT,
     data_path: str = "",
+    # Not described in the tool's Args list above, deliberately: the harness
+    # fills these in, and a model told the parameters exist will try them —
+    # spending a turn on a value that every dispatch path strips before the
+    # call leaves. The server still accepts them, which is what lets the
+    # harness re-issue an approved call.
     approval_token: str = "",
     approval_scope: str = _SCOPE_ONCE,
     ctx: Context = None,

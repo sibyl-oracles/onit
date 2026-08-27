@@ -228,11 +228,16 @@ Approvals are per session and never persisted: a grant that outlived the
 session that asked for it would be a capability nobody remembers giving.
 
 The `approval_token` / `approval_scope` arguments belong to the harness. They
-are not described to the model, are stripped from any tool call it makes, and
-are stripped again at the interpreter boundary — so a ticket id the model can
-read out of a `needs_approval` payload is worth nothing to it. A tool called
-from `run_code` goes through the same prompt as one the model calls directly;
-with `code_execution` enabled and no one to ask, it is refused rather than run.
+are not described to the model, are not in the schema it is given, are
+stripped from any tool call it makes, and are stripped again at the
+interpreter boundary — so a ticket id the model can read out of a
+`needs_approval` payload is worth nothing to it. Naming one from inside
+`run_code` drops it rather than raising, since the value was going to be
+discarded anyway and a `TypeError` there costs the command it was attached to;
+`data_path` and `session_id`, which are the isolation boundary rather than the
+harness's own bookkeeping, still raise. A tool called from `run_code` goes
+through the same prompt as one the model calls directly; with `code_execution`
+enabled and no one to ask, it is refused rather than run.
 
 ## Auto-Containment
 
