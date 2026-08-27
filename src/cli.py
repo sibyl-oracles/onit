@@ -725,13 +725,23 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Run with unrestricted host filesystem access. "
                              "The agent can read/write any path, use any working directory, "
                              "and install packages freely. Use only in trusted environments.")
-    parser.add_argument("--auto", action="store_true", default=False,
+    # Default on for a run that belongs to the person who started it, off for
+    # one that serves other people (see the approval wiring further down), so
+    # the flag is passed with a value only to override that.
+    parser.add_argument("--auto", action="store_true", default=None, dest="auto",
                         help="Answer yes to every command approval prompt, so a run "
-                             "never stops to ask. Only questions that would have been "
-                             "put to a person are answered: privilege escalation, "
-                             "container and remote-shell tools, operator deny rules, "
-                             "and the session path jail on a shared web deployment are "
-                             "still refused. Use for unattended runs.")
+                             "never stops to ask. On by default for your own runs "
+                             "(terminal chat, --loop, one-shot); pass it explicitly "
+                             "to get the same for a web, gateway or A2A deployment, "
+                             "which serves other people and so keeps asking. Only "
+                             "questions that would have been put to a person are "
+                             "answered: privilege escalation, container and "
+                             "remote-shell tools, operator deny rules, and the "
+                             "session path jail on a shared web deployment are still "
+                             "refused.")
+    parser.add_argument("--no-auto", "--ask", action="store_false", dest="auto",
+                        help="Ask before running a command policy will not run on "
+                             "its own, instead of approving it automatically.")
     parser.add_argument("--container", action="store_true", default=False,
                         help="Run the entire OnIt process inside a hardened Docker container "
                              "so a breach cannot reach the host OS.")
@@ -1186,37 +1196,59 @@ def main():
         os.environ['ONIT_WEB_UI'] = '1'
 
     # Declare, before the tool servers are spawned and inherit it, whether
-    # this run has a person who can be asked about a command the policy will
-    # not run on its own. Only the two interactive front ends do: the terminal
-    # chat and the web UI, both of which implement the prompt. A gateway bot,
-    # an A2A server and a --loop run have nobody at the other end, so their
-    # tool servers keep refusing outright rather than minting approval tickets
-    # nobody will ever answer. Set here rather than inferred inside the
-    # servers, because "is anyone watching" is a fact about how OnIt was
-    # started and nothing downstream can recover it.
+    # this run can answer at all about a command the policy will not run on
+    # its own. Only the two interactive front ends have a person to ask: the
+    # terminal chat and the web UI, both of which implement the prompt. A
+    # gateway bot, an A2A server and a --loop run have nobody at the other
+    # end, so unless something else is answering they keep refusing outright
+    # rather than minting approval tickets nobody will ever answer. Set here
+    # rather than inferred inside the servers, because "is anyone watching" is
+    # a fact about how OnIt was started and nothing downstream can recover it.
     #
-    # --auto is a channel of its own: the answer comes from the flag rather
-    # than from a person, so it works in the modes that have no one attached —
-    # which is where an unattended run actually needs it.
+    # Automatic approval is a channel of its own: the answer comes from the
+    # switch rather than from a person, so it works in the modes that have no
+    # one attached — which is where an unattended run actually needs it.
     _interactive = not (config_data.get('a2a') or config_data.get('gateway')
                         or config_data.get('loop'))
-    if _interactive or args.auto:
+
+    # Whether the prompts are answered by the flag rather than by a person.
+    # Unset means take the default, and the default turns on whose run this
+    # is. A terminal chat, a --loop and a one-shot belong to whoever started
+    # them: they already hold the shell OnIt is running commands from, so
+    # stopping to ask them protects nobody, and the prompt is one more thing
+    # to get stuck on. A web, gateway or A2A deployment answers to people who
+    # are not the operator — on a shared host the approval prompt is part of
+    # what keeps one session out of another's way — so those keep asking
+    # unless --auto says otherwise in as many words.
+    _serves_others = bool(config_data.get('web') or config_data.get('a2a')
+                          or config_data.get('gateway'))
+    _auto = (not _serves_others) if args.auto is None else args.auto
+    _auto_by_default = _auto and args.auto is None
+
+    if _interactive or _auto:
         os.environ['ONIT_APPROVAL_CHANNEL'] = '1'
     else:
         os.environ.pop('ONIT_APPROVAL_CHANNEL', None)
 
-    if args.auto:
+    if _auto:
         # Set for the harness, which is what answers the prompts; the tool
         # servers never read it. Approving is still answering a question the
         # policy chose to ask, so this cannot reach anything the policy would
         # have refused outright — see docs/ISOLATION.md, "Command Approvals".
         os.environ['ONIT_AUTO_APPROVE'] = '1'
-        _where = ("every session of this deployment" if config_data.get('web')
-                  else "this run")
-        print(f"Warning: --auto approves command prompts automatically for "
-              f"{_where}. Commands outside the session directory, unlisted "
-              f"executables and unpinned installs will run without asking.",
-              file=sys.stderr)
+        if _auto_by_default:
+            # Short, because it prints on every ordinary run. Each approval
+            # is still reported as it happens, so this only has to say which
+            # way the switch is set and how to move it.
+            print("Command approvals: approving automatically "
+                  "(--no-auto to be asked instead).", file=sys.stderr)
+        else:
+            _where = ("every session of this deployment"
+                      if config_data.get('web') else "this run")
+            print(f"Warning: --auto approves command prompts automatically for "
+                  f"{_where}. Commands outside the session directory, unlisted "
+                  f"executables and unpinned installs will run without asking.",
+                  file=sys.stderr)
         if os.environ.get('ONIT_ASK_APPROVAL') == '0':
             print("Warning: ONIT_ASK_APPROVAL=0 is also set, which refuses "
                   "those commands instead of asking. Nothing is left for "

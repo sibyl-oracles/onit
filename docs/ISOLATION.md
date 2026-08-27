@@ -145,7 +145,7 @@ mytool --version
   ⚠  OnIt wants to run a command that policy does not allow on its own
      mytool --version
      Command blocked: 'mytool' is not in the command allowlist.
-     [y] run once   [a] allow for this session   [n] refuse (default)
+     1) run once    2) allow for this session    3) refuse  [default]
 ```
 
 In the web UI the same question appears as a card in the transcript with three
@@ -166,23 +166,32 @@ unlisted executable, and all three appear in a single prompt — approving them
 one at a time would mean answering, watching the command fail on the next one,
 and answering again.
 
-### `--auto`
+### Automatic approval (`--auto` / `--no-auto`)
 
-`onit --auto` answers every prompt with yes, so an unattended run never stops:
+Answering yes to every prompt is **the default for a run that is yours**: the
+terminal chat, a `--loop`, a one-shot `onit ask`. You are already at the shell
+OnIt runs its commands from, so stopping to ask you protects nothing — it only
+puts a prompt between you and the work. Each approval is still logged.
 
 ```bash
+onit                           # approves automatically
+onit --no-auto                 # ask me instead (alias: --ask)
 onit --auto serve a2a          # a server with no one watching
-onit --auto --loop 30m "check the build"
-onit --container --auto        # a sandboxed run that should not block
+onit --auto serve web          # a deployment: opt in explicitly
 ```
 
-The flag substitutes for the *person*, not for the policy. It answers tickets,
+**A deployment keeps asking.** `serve web`, `serve a2a` and the gateway bots
+answer to people who are not the operator, so they need `--auto` spelled out.
+Without it a web session shows the question as a card in the transcript, and
+an A2A or gateway run — which has nobody to show it to — refuses.
+
+The switch substitutes for the *person*, not for the policy. It answers tickets,
 and a refusal is not a ticket — so `sudo`, `docker`, `ssh`, `systemctl`,
 operator `deny` rules and everything else in the "never" rows above stay
-refused with `--auto` exactly as without it. What it does grant, silently, is
+refused with it exactly as without it. What it does grant, silently, is
 the askable set: unlisted executables, unpinned installs, and (on a
 single-user host) paths outside the session directory. Each one is written to
-the run log as `--auto approved: <command>`, so what was allowed on your
+the run log as `auto-approved: <command>`, so what was allowed on your
 behalf can be read back afterwards.
 
 On `serve web` the flag applies to **every** session of the deployment. The
@@ -191,10 +200,11 @@ cannot hand one logged-in user another's data — but it does mean any of them
 can run any executable. `ONIT_ASK_APPROVAL=0` refuses instead of asking, and
 wins over `--auto`: with both set, nothing is asked and nothing is approved.
 
-**Where there is nobody to ask, the answer is no.** `ONIT_APPROVAL_CHANNEL` is
-set only for the terminal and web UIs; an A2A server, a gateway bot and a
-`--loop` run keep the old fail-closed behaviour with the identical refusal
-message.
+**Where there is nobody to ask and nothing answering, the answer is no.**
+`ONIT_APPROVAL_CHANNEL` is set for the terminal and web UIs, which have a
+person, and for any run that approves automatically. An A2A server, a gateway
+bot, or a `--loop` started with `--no-auto` has neither, and fails closed with
+the identical refusal message.
 
 ### What a person may not approve
 

@@ -17,6 +17,27 @@ from src.cli import (
 
 # ── _find_default_config ────────────────────────────────────────────────────
 
+# main() writes the approval variables with a plain os.environ assignment,
+# which monkeypatch cannot see and so cannot undo — and monkeypatch.delenv on
+# a variable that was not set records nothing to restore either. Every test in
+# this file that reaches main() therefore leaks them, whatever it was actually
+# testing: a leaked ONIT_AUTO_APPROVE turns a later module's refusal into an
+# approval. Snapshot and put back by hand, for the whole file.
+_APPROVAL_ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
+                      "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
+
+
+@pytest.fixture(autouse=True)
+def _restore_approval_env():
+    saved = {var: os.environ.get(var) for var in _APPROVAL_ENV_VARS}
+    yield
+    for var, value in saved.items():
+        if value is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = value
+
+
 class TestFindDefaultConfig:
     def test_finds_config_in_configs_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -622,25 +643,12 @@ class TestApprovalChannelWiring:
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         return cfg
 
-    # main() writes these with a plain os.environ assignment, which monkeypatch
-    # cannot see and so cannot undo — and monkeypatch.delenv on a variable that
-    # was not set records nothing to restore either. Snapshot and put back by
-    # hand, or a leaked ONIT_APPROVAL_CHANNEL turns every later test's refusal
-    # into an approval prompt.
-    _ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
-                 "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
-
+    # These tests read what main() set, so they start from none of the
+    # variables set; _restore_approval_env puts the outer values back after.
     @pytest.fixture(autouse=True)
     def _clean_env(self):
-        saved = {var: os.environ.get(var) for var in self._ENV_VARS}
-        for var in self._ENV_VARS:
+        for var in _APPROVAL_ENV_VARS:
             os.environ.pop(var, None)
-        yield
-        for var, value in saved.items():
-            if value is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = value
 
     def _run(self, argv):
         """Run main() up to dispatch, so only the env wiring is exercised."""
@@ -650,26 +658,59 @@ class TestApprovalChannelWiring:
                 patch("src.cli._dispatch_mode"):
             main()
 
-    def test_the_terminal_can_ask(self, sessions):
+    def test_your_own_run_answers_for_itself(self, sessions):
+        """A terminal run belongs to the person who started it: they already
+        hold the shell, so it approves rather than stopping to ask them."""
         self._run([])
         assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
+        assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
+
+    def test_no_auto_puts_the_question_back(self, sessions):
+        self._run(["--no-auto"])
+        assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
+        assert "ONIT_AUTO_APPROVE" not in os.environ
+
+    def test_ask_is_the_same_switch(self, sessions):
+        self._run(["--ask"])
         assert "ONIT_AUTO_APPROVE" not in os.environ
 
     def test_the_web_ui_can_ask(self, sessions):
         self._run(["serve", "web", "--no-login"])
         assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
 
+    def test_the_web_ui_still_asks_by_default(self, sessions):
+        """A deployment serves people who are not the operator, and on a
+        shared host the prompt is part of what keeps sessions apart. Only an
+        explicit --auto answers for them."""
+        self._run(["serve", "web", "--no-login"])
+        assert "ONIT_AUTO_APPROVE" not in os.environ
+
     def test_a_server_run_cannot(self, sessions):
         """No one is attached to an A2A server, so it must not mint tickets."""
         self._run(["serve", "a2a"])
         assert "ONIT_APPROVAL_CHANNEL" not in os.environ
+        assert "ONIT_AUTO_APPROVE" not in os.environ
 
-    def test_a_loop_run_cannot(self, sessions):
+    def test_a_loop_run_answers_for_itself(self, sessions):
+        """A --loop is the operator's own unattended run, so it approves
+        rather than refusing every gated command outright."""
         self._run(["serve", "loop", "check things"])
+        assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
+        assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
+
+    def test_a_loop_run_with_no_auto_cannot_ask(self, sessions):
+        """Nobody is watching a loop, so turning the switch off leaves no
+        channel at all rather than a prompt no one will answer."""
+        self._run(["--no-auto", "serve", "loop", "check things"])
         assert "ONIT_APPROVAL_CHANNEL" not in os.environ
+        assert "ONIT_AUTO_APPROVE" not in os.environ
 
     def test_auto_answers_for_itself(self, sessions):
         self._run(["--auto"])
+        assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
+
+    def test_auto_answers_for_a_deployment_when_asked_to(self, sessions):
+        self._run(["--auto", "serve", "web", "--no-login"])
         assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
 
     def test_auto_gives_an_unattended_run_a_channel(self, sessions):
@@ -680,8 +721,16 @@ class TestApprovalChannelWiring:
         assert os.environ.get("ONIT_AUTO_APPROVE") == "1"
 
     def test_auto_says_so(self, sessions, capsys):
-        self._run(["--auto"])
+        self._run(["--auto", "serve", "web", "--no-login"])
         assert "--auto approves command prompts automatically" in capsys.readouterr().err
+
+    def test_the_default_says_so_more_quietly(self, sessions, capsys):
+        """It prints on every ordinary run, so it says which way the switch
+        is set and how to move it, and leaves the warning to the flag."""
+        self._run([])
+        err = capsys.readouterr().err
+        assert "Command approvals: approving automatically" in err
+        assert "--no-auto" in err
 
     def test_auto_warns_when_it_has_nothing_to_approve(self, sessions,
                                                        monkeypatch, capsys):

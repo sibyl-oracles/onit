@@ -771,7 +771,7 @@ class TestAutoApprove:
         registry = _GatedRegistry()
         ui = _UI()
         await _run(registry, ui)
-        assert any("--auto approved" in line for line in ui.logs)
+        assert any("auto-approved" in line for line in ui.logs)
 
     async def test_off_by_default(self):
         registry = _GatedRegistry()

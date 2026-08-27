@@ -1042,7 +1042,7 @@ _APPROVAL_SCOPES = ("once", "session", "deny")
 
 
 def _auto_approve() -> bool:
-    """Whether --auto is answering the prompts instead of a person.
+    """Whether the automatic switch is answering the prompts, not a person.
 
     Read per call rather than cached: it is the kind of switch a test flips,
     and a run that read it once at import would ignore that.
@@ -1153,21 +1153,21 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
         return tool_response
 
     if _auto_approve():
-        # --auto answers the question rather than removing it: the ticket is
-        # still minted, still bound to this command and this session, and the
-        # command is still re-checked before it runs. What the flag skips is
-        # the person, not the policy — so it can never reach anything the
-        # policy refused outright rather than asked about.
+        # Approving automatically answers the question rather than removing
+        # it: the ticket is still minted, still bound to this command and this
+        # session, and the command is still re-checked before it runs. What is
+        # skipped is the person, not the policy — so it can never reach
+        # anything the policy refused outright rather than asked about.
         #
-        # Session scope, not once: the flag says yes to everything askable
-        # anyway, so the reachable set is identical either way and this is the
-        # one that does not mint a ticket per call.
+        # Session scope, not once: it says yes to everything askable anyway,
+        # so the reachable set is identical either way and this is the one
+        # that does not mint a ticket per call.
         #
         # Logged with notify, because an unattended run that silently widened
         # its own reach is the thing to avoid here. The user should be able to
         # read back what was approved on their behalf.
         _log_to_ui_or_verbose(
-            f"--auto approved: {str(request.get('command', '')).strip()[:200]}"
+            f"auto-approved: {str(request.get('command', '')).strip()[:200]}"
             f" ({request.get('reason', '')})",
             chat_ui, verbose, level="warning", notify=True)
         retry_args = dict(function_arguments)
