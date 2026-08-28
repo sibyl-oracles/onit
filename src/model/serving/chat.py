@@ -3267,6 +3267,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             f"serving.max_context_tokens (or --max-context-tokens) for the "
             f"real size.", chat_ui, verbose, level="info")
 
+    # Both budgets are final here — the window has been asked for, guessed at,
+    # or taken from config — so this is the first point the UI can name them.
+    if chat_ui and hasattr(chat_ui, "set_token_budgets"):
+        chat_ui.set_token_budgets(max_output_tokens=max_tokens,
+                                  max_context_tokens=max_context_tokens)
+
     # ── loop policy ─────────────────────────────────────────────────────────
     #
     # Every one of these is a ceiling on a way the loop can fail to terminate,

@@ -157,6 +157,7 @@ class ChatUI:
         self.data_path = ""  # set when code files are saved to a data directory
         self._context_pct: float = 0.0  # context window usage 0-100, updated after each LLM call
         self._context_max_tokens: int = 0  # max context window size in tokens
+        self._max_output_tokens: int = 0  # max tokens one response may produce
         self._stream_header_printed = False  # lazy: header deferred until first visible token
         self._stream_pending = ""  # buffer tokens until first non-whitespace
         self._stream_think_started = False  # True while a think block is open
@@ -644,11 +645,19 @@ class ChatUI:
     # ── Context usage display ──────────────────────────────────────
 
     def _fmt_ctx_label(self) -> str:
-        """Return a compact ctx label like 'ctx:42%/128k'."""
+        """Return a compact budget label like
+        'ctx: 42%, max context toks: 262k, max output toks: 131k'.
+
+        The percentage sits next to the context number it is a percentage of,
+        so the two budgets read as what they are: how big the window is
+        (``--max-context-tokens``) and how much of one reply fits inside it
+        (``--max-tokens``).  Either number is omitted while it is unknown.
+        """
         label = f"ctx: {self._context_pct:.0f}%"
         if self._context_max_tokens:
-            k = f"{self._context_max_tokens // 1000:,}"
-            label += f", max toks: {k}k"
+            label += f", max context toks: {self._context_max_tokens // 1000:,}k"
+        if self._max_output_tokens:
+            label += f", max output toks: {self._max_output_tokens // 1000:,}k"
         return label
 
     def set_context_usage(self, pct: float, max_tokens: int = 0) -> None:
@@ -656,6 +665,19 @@ class ChatUI:
         self._context_pct = pct
         if max_tokens:
             self._context_max_tokens = max_tokens
+
+    def set_token_budgets(self, max_output_tokens: int = 0,
+                          max_context_tokens: int = 0) -> None:
+        """Record the two token budgets the run was given.
+
+        Called once the endpoint has been asked what its window is, which is
+        the first moment either number is final; zero means "still unknown"
+        and leaves the previous value alone.
+        """
+        if max_output_tokens:
+            self._max_output_tokens = max_output_tokens
+        if max_context_tokens:
+            self._context_max_tokens = max_context_tokens
 
     def show_context_compaction(self, orig_msg_count: int, summary_chars: int) -> None:
         """Print an inline notification when the context window is compacted."""

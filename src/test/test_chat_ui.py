@@ -573,3 +573,42 @@ class TestAskApproval:
             assert all(t.daemon for t in readers)
         finally:
             release.set()
+
+# ── token budget label ──────────────────────────────────────────────────────
+
+class TestTokenBudgetLabel:
+    """The status label names both budgets, so a run's two token limits — the
+    window and one reply's share of it — are told apart on sight."""
+
+    def test_both_budgets_are_labelled(self, chat_ui):
+        chat_ui.set_token_budgets(max_output_tokens=131072,
+                                  max_context_tokens=262144)
+        chat_ui.set_context_usage(42.0)
+        assert chat_ui._fmt_ctx_label() == (
+            "ctx: 42%, max context toks: 262k, max output toks: 131k")
+
+    def test_context_percentage_sits_beside_the_context_budget(self, chat_ui):
+        chat_ui.set_token_budgets(max_output_tokens=131072,
+                                  max_context_tokens=262144)
+        chat_ui.set_context_usage(10.0)
+        label = chat_ui._fmt_ctx_label()
+        assert label.index("ctx: ") < label.index("max context toks") \
+            < label.index("max output toks")
+
+    def test_unknown_output_budget_is_left_out(self, chat_ui):
+        chat_ui.set_context_usage(42.0, max_tokens=262144)
+        assert chat_ui._fmt_ctx_label() == "ctx: 42%, max context toks: 262k"
+
+    def test_zero_means_unchanged(self, chat_ui):
+        chat_ui.set_token_budgets(max_output_tokens=4096,
+                                  max_context_tokens=32768)
+        chat_ui.set_token_budgets()  # nothing known yet — must not clear them
+        assert chat_ui._max_output_tokens == 4096
+        assert chat_ui._context_max_tokens == 32768
+
+    def test_usage_updates_do_not_drop_the_output_budget(self, chat_ui):
+        """set_context_usage fires after every API call; it owns the
+        percentage and the window, and must leave the other budget alone."""
+        chat_ui.set_token_budgets(max_output_tokens=131072)
+        chat_ui.set_context_usage(80.0, max_tokens=262144)
+        assert "max output toks: 131k" in chat_ui._fmt_ctx_label()
