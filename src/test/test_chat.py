@@ -3102,3 +3102,48 @@ class TestLogToUiOrVerbose:
 
         _log_to_ui_or_verbose("truncated", _UI(), verbose=False, notify=True)
         assert seen == ["truncated"]
+
+
+# ── default token budgets ───────────────────────────────────────────────────
+
+class TestDefaultTokenBudgets:
+    """What a run gets when neither the config nor the CLI says anything.  The
+    output cap is a ceiling that shrinks to fit the window, and the window
+    itself is only guessed at when nobody could tell us the real number."""
+
+    async def _first_call_kwargs(self, tmp_path, detected, **chat_kwargs):
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion("Done."))
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"), \
+             patch("model.serving.chat._get_model_max_context",
+                   new_callable=AsyncMock, return_value=detected):
+            await chat(host="http://localhost:8000/v1", instruction="hi",
+                       safety_queue=asyncio.Queue(), data_path=str(tmp_path),
+                       **chat_kwargs)
+        return client.chat.completions.create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_unreported_window_falls_back_to_the_default(self, tmp_path):
+        """262144 assumed, so the 131072 output default still fits under it."""
+        from model.serving.chat import (DEFAULT_MAX_TOKENS,
+                                        DEFAULT_MAX_CONTEXT_TOKENS)
+        assert DEFAULT_MAX_TOKENS == 131072
+        assert DEFAULT_MAX_CONTEXT_TOKENS == 262144
+        kwargs = await self._first_call_kwargs(tmp_path, detected=None)
+        assert kwargs["max_tokens"] == DEFAULT_MAX_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_reported_window_wins_over_the_fallback(self, tmp_path):
+        """A server that publishes 32768 is believed, and the output ceiling
+        shrinks to what is left of it rather than asking for 131072."""
+        kwargs = await self._first_call_kwargs(tmp_path, detected=32768)
+        assert kwargs["max_tokens"] < 32768
+
+    @pytest.mark.asyncio
+    async def test_explicit_max_tokens_still_wins(self, tmp_path):
+        kwargs = await self._first_call_kwargs(tmp_path, detected=None,
+                                               max_tokens=4096)
+        assert kwargs["max_tokens"] == 4096

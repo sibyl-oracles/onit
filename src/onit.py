@@ -48,7 +48,8 @@ from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
-from .model.serving.chat import chat, decode_rate, summarize_metrics
+from .model.serving.chat import (chat, decode_rate, summarize_metrics,
+                                DEFAULT_MAX_TOKENS)
 from .model.serving.state import RunState, state_path_for
 from .model.serving.balancer import (DEFAULT_PRIORITY, LoadBalancer,
                                      ServerEndpoint)
@@ -1513,7 +1514,7 @@ class OnIt(BaseModel):
             'verbose': self.verbose or self.show_logs,
             'data_path': effective_data_path,
             'session_id': effective_session_id,
-            'max_tokens': self.model_serving.get('max_tokens', 32768),
+            'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
             'max_context_tokens': self.model_serving.get('max_context_tokens', None),
             'session_history': self.load_session_history(session_path=effective_session_path),
             'stream': self.stream,
@@ -1834,7 +1835,7 @@ class OnIt(BaseModel):
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', 32768),
+                          'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history()}
                 for _k in SERVING_PASSTHROUGH:
@@ -2388,7 +2389,7 @@ class OnIt(BaseModel):
                           'verbose': self.verbose,
                           'data_path': self.data_path,
                           'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', 32768),
+                          'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
                           'max_context_tokens': self.model_serving.get('max_context_tokens', None),
                           'session_history': self.load_session_history(),
                           'stream': self.stream}

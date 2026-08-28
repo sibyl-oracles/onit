@@ -12,8 +12,9 @@ serving:
   host: http://localhost:11434/v1
   model: qwen3:30b
   max_context_tokens: 131072   # set it when the server doesn't report its own
+                               # (unreported and unset falls back to 262144)
   think: true                  # reasoning mode; off by default
-  max_tokens: 32768
+  max_tokens: 131072
 
 theme: white          # or "dark"
 timeout: 600
@@ -53,7 +54,10 @@ serving:
   # model: auto-detected from endpoint. Set explicitly for OpenRouter:
   # model: google/gemini-2.5-pro
   think: true
-  max_tokens: 32768   # max output tokens per response (fits any single answer)
+  max_tokens: 131072  # max output tokens per response (default; clamped to
+                      # whatever is left of the context window per request)
+  # Both budgets are also CLI flags, which accept a k/M suffix:
+  #   onit --max-tokens 1M --max-context-tokens 1M
   # Sampling parameters (all optional — sensible defaults apply):
   # temperature: 1.0
   # top_p: 0.95

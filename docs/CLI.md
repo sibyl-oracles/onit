@@ -17,6 +17,8 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--config FILE` | Path to YAML configuration file | `configs/default.yaml` |
 | `--host URL` | LLM serving host URL. Overrides config and `ONIT_HOST` | — |
 | `--model NAME` | Model name. Skips auto-detection from endpoint | — |
+| `--max-tokens N` | Max output tokens per model response. Accepts `32768`, `128k`, `1M`. Each request is still clamped to what is left of the context window. Overrides `serving.max_tokens` | `131072` |
+| `--max-context-tokens N` | Context window size in tokens (`128k`, `1M`). Set it when the server does not report its own, or to hold the agent to a smaller window. On Ollama it also sizes `num_ctx` unless `serving.num_ctx` is set. Overrides `serving.max_context_tokens` | detected from endpoint, else `262144` |
 | `--verbose` | Enable verbose logging | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--no-stream` | Disable token streaming | `false` |

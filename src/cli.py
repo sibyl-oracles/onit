@@ -22,6 +22,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -567,6 +568,26 @@ def _merge_base(override: dict, base: dict):
             base[key] = value
 
 
+def _token_count(text: str) -> int:
+    """Parse a token count written as a plain number or with a k/M suffix.
+
+    ``32768``, ``128k`` and ``1M`` are all accepted (case-insensitive, with
+    underscores or commas allowed as digit separators), because the numbers
+    these flags take are the kind nobody wants to spell out in full.
+    """
+    cleaned = text.strip().replace(",", "").replace("_", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kKmM]?)", cleaned)
+    if not match:
+        raise argparse.ArgumentTypeError(
+            f"invalid token count: {text!r} (use e.g. 32768, 128k, or 1M)")
+    value = float(match.group(1)) * {"": 1, "k": 1_000, "m": 1_000_000}[
+        match.group(2).lower()]
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"token count must be at least 1, got {text!r}")
+    return int(value)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -703,6 +724,24 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Ollama endpoints in normal load-balancing "
                              "rotation. Overrides serving.ollama_fallback_only "
                              "in the config YAML.")
+    parser.add_argument("--max-tokens", type=_token_count, default=None,
+                        dest="max_tokens", metavar="N",
+                        help="Max output tokens per model response, e.g. 32768, "
+                             "128k or 1M. Each request is still clamped to what "
+                             "is left of the context window. Overrides "
+                             "serving.max_tokens in the config YAML "
+                             "(default: 131072).")
+    parser.add_argument("--max-context-tokens", type=_token_count, default=None,
+                        dest="max_context_tokens", metavar="N",
+                        help="Context window size in tokens, e.g. 128k or 1M. "
+                             "Normally detected from the endpoint; set it when "
+                             "the server does not report its own, or to hold the "
+                             "agent to a smaller window than the model allows. "
+                             "On Ollama this also sizes num_ctx unless "
+                             "serving.num_ctx says otherwise. Overrides "
+                             "serving.max_context_tokens in the config YAML "
+                             "(default: whatever the endpoint reports, else "
+                             "262144).")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
     parser.add_argument("--think", action="store_true", default=None,
@@ -877,6 +916,16 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     if getattr(args, 'ollama_fallback_only', None) is not None:
         config_data.setdefault('serving', {})['ollama_fallback_only'] = \
             args.ollama_fallback_only
+    if getattr(args, 'max_tokens', None) is not None:
+        config_data.setdefault('serving', {})['max_tokens'] = args.max_tokens
+    if getattr(args, 'max_context_tokens', None) is not None:
+        serving_cfg = config_data.setdefault('serving', {})
+        serving_cfg['max_context_tokens'] = args.max_context_tokens
+        # Ollama allocates its KV cache from num_ctx and otherwise auto-sizes it
+        # to a ceiling well below a 1M window, so an explicit context size has to
+        # reach that knob too — unless the config names num_ctx itself, which is
+        # the more specific setting and keeps precedence.
+        serving_cfg.setdefault('num_ctx', args.max_context_tokens)
     if args.think:
         config_data.setdefault('serving', {})['think'] = True
     if args.data_path:

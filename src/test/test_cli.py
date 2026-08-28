@@ -471,6 +471,80 @@ class TestHostOverrides:
         assert resolved["serving"]["ollama_fallback_only"] is False
 
 
+# ── --max-tokens / --max-context-tokens ─────────────────────────────────────
+
+class TestTokenLimitOverrides:
+    """The two token budgets are reachable from the CLI, in the units people
+    actually quote them in ("1M"), and they land on the serving keys chat()
+    reads rather than anywhere else."""
+
+    def _resolve(self, tmp_path, monkeypatch, cfg, cli_args):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        args = _build_parser().parse_args(["--config", str(path)] + cli_args)
+        return _parse_and_resolve_config(args)
+
+    _CFG = {"serving": {"host": "http://localhost:8000/v1"}}
+
+    @pytest.mark.parametrize("text,expected", [
+        ("32768", 32768),
+        ("128k", 128_000),
+        ("1M", 1_000_000),
+        ("1m", 1_000_000),
+        ("1.5M", 1_500_000),
+        ("1_048_576", 1_048_576),
+        ("1,048,576", 1_048_576),
+    ])
+    def test_suffixes_and_separators(self, text, expected):
+        from src.cli import _token_count
+        assert _token_count(text) == expected
+
+    @pytest.mark.parametrize("text", ["lots", "", "-5", "1G", "1.2.3", "0"])
+    def test_rejects_nonsense(self, text):
+        import argparse
+        from src.cli import _token_count
+        with pytest.raises(argparse.ArgumentTypeError):
+            _token_count(text)
+
+    def test_max_tokens_overrides_config(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://localhost:8000/v1", "max_tokens": 32768}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, ["--max-tokens", "1M"])
+        assert resolved["serving"]["max_tokens"] == 1_000_000
+
+    def test_max_context_tokens_overrides_config(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://localhost:8000/v1",
+                           "max_context_tokens": 131072}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg,
+                                 ["--max-context-tokens", "1M"])
+        assert resolved["serving"]["max_context_tokens"] == 1_000_000
+
+    def test_max_context_tokens_sizes_ollama_num_ctx(self, tmp_path, monkeypatch):
+        # Ollama auto-sizes num_ctx to a ceiling far below 1M, so the flag has
+        # to reach that knob or the window the user asked for never exists.
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                 ["--max-context-tokens", "1M"])
+        assert resolved["serving"]["num_ctx"] == 1_000_000
+
+    def test_configured_num_ctx_wins(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://localhost:11434/v1", "num_ctx": 65536}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg,
+                                 ["--max-context-tokens", "1M"])
+        assert resolved["serving"]["num_ctx"] == 65536
+        assert resolved["serving"]["max_context_tokens"] == 1_000_000
+
+    def test_flags_absent_leave_config_alone(self, tmp_path, monkeypatch):
+        cfg = {"serving": {"host": "http://localhost:8000/v1", "max_tokens": 4096}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, [])
+        assert resolved["serving"]["max_tokens"] == 4096
+        assert "max_context_tokens" not in resolved["serving"]
+        assert "num_ctx" not in resolved["serving"]
+
+
 # ── onit learn ──────────────────────────────────────────────────────────────
 
 class TestLearnCommand:

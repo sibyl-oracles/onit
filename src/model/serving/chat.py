@@ -64,6 +64,19 @@ logger = logging.getLogger(__name__)
 # Larger responses are truncated to avoid blowing up the context window.
 MAX_TOOL_RESPONSE = 16000
 
+# Output tokens per response when nothing says otherwise.  Sized for a long
+# answer on a modern long-context model; a request is still clamped down to
+# what is left of the context window before it goes out, so this is a ceiling
+# rather than a reservation.
+DEFAULT_MAX_TOKENS = 131072
+
+# Context window assumed when the size of the real one cannot be established:
+# the endpoint does not publish it (OpenRouter) or the query for it failed.
+# Only a fallback — a window reported by the server, configured in
+# ``serving.max_context_tokens``, or passed with ``--max-context-tokens`` wins
+# over it, because those are the real number and this is a guess.
+DEFAULT_MAX_CONTEXT_TOKENS = 262144
+
 # Stall detection for the "no timeout" (-1) configuration.  Even with no
 # overall request timeout, the connect phase and the gap between streamed
 # chunks must be bounded — otherwise a wedged server (e.g. vLLM guided
@@ -3082,7 +3095,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
     session_id = kwargs.get('session_id', '')
-    max_tokens = kwargs.get('max_tokens', 32768)
+    max_tokens = kwargs.get('max_tokens', DEFAULT_MAX_TOKENS)
     temperature = kwargs.get('temperature', 0.6)
     top_p = kwargs.get('top_p', 0.95)
     top_k = kwargs.get('top_k', 20)
@@ -3241,6 +3254,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # Keep compaction accounting consistent with the window Ollama allocates.
         if max_context_tokens is None:
             max_context_tokens = num_ctx
+
+    # Nothing knew the real window: no configured value, no CLI flag, and
+    # either a provider that does not publish one or a query that failed.  An
+    # assumed size beats None, which switched compaction and output clamping
+    # off entirely and let the run walk into a context-length error instead.
+    if max_context_tokens is None:
+        max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
+        _log_to_ui_or_verbose(
+            f"Model context window unknown; assuming "
+            f"{DEFAULT_MAX_CONTEXT_TOKENS:,} tokens. Set "
+            f"serving.max_context_tokens (or --max-context-tokens) for the "
+            f"real size.", chat_ui, verbose, level="info")
 
     # ── loop policy ─────────────────────────────────────────────────────────
     #

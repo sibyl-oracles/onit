@@ -139,7 +139,8 @@ being read from disk.
 Any other OpenAI-compatible local server (LM Studio, llama.cpp's
 `llama-server`, mlx-omni-server) works the same way: give OnIt the `/v1` base
 URL, name the model, and set `max_context_tokens` if the server doesn't publish
-`max_model_len`.
+`max_model_len` — an unpublished window falls back to an assumed 262144, which
+is wrong (and will eventually overflow) on a smaller model.
 
 ## OpenRouter.ai
 
