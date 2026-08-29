@@ -12,6 +12,7 @@ Usage:
 
 import getpass
 import os
+import re
 import sys
 
 import yaml
@@ -32,18 +33,30 @@ _SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.yaml")
 # Split by what the key is for so the wizard can ask for model-serving
 # credentials alongside the endpoints they authenticate, and keep unrelated
 # integrations in their own section.
-SERVING_SECRETS = [
-    ("host_key",               "OpenRouter API key",
+# An endpoint's API key is now asked for and stored per endpoint, addressed by
+# its URL (see endpoint_secret_name below), because that is what a key actually
+# belongs to: two vLLM servers with different keys could not be expressed by a
+# single ``vllm_api_key``, and nothing but the URL decided which of these four
+# a request used.
+#
+# These stay readable so an install predating that keeps working — a host with
+# no key of its own falls back to whichever of them its URL selects — but the
+# wizard no longer offers them, and nothing writes them any more.
+LEGACY_SERVING_SECRETS = [
+    ("host_key",               "OpenRouter API key (legacy fallback)",
      "OPENROUTER_API_KEY"),
-    ("ollama_api_key",         "Ollama API key (enables web search and cloud LLM access)",
-     "OLLAMA_API_KEY"),
-    ("vllm_api_key",           "vLLM API key (required if vLLM is started with --api-key)",
+    ("vllm_api_key",           "vLLM API key (legacy fallback)",
      "VLLM_API_KEY"),
-    ("host2_key",              "LLM API key for the second model server (optional)",
+    ("host2_key",              "Second model server key (legacy fallback)",
      "ONIT_HOST2_KEY"),
 ]
 
 INTEGRATION_SECRETS = [
+    # Still prompted, and not only a serving credential: without it the web
+    # search tool is switched off (see cli.py), which is why it did not move
+    # into the per-endpoint keys with the rest.
+    ("ollama_api_key",         "Ollama API key (web search + Ollama hosts)",
+     "OLLAMA_API_KEY"),
     ("openweathermap_api_key", "OpenWeatherMap API key (enables weather tool)",
      "OPENWEATHERMAP_API_KEY"),
     ("telegram_bot_token",     "Telegram bot token (for gateway mode)",
@@ -60,7 +73,7 @@ INTEGRATION_SECRETS = [
      "HF_TOKEN"),
 ]
 
-SECRETS = SERVING_SECRETS + INTEGRATION_SECRETS
+SECRETS = LEGACY_SERVING_SECRETS + INTEGRATION_SECRETS
 
 # Lookup table: keyring_key → env_var_name (for keys that have one).
 # Used by get_secret() to check env vars before keyring/file — critical in
@@ -108,7 +121,7 @@ DEFAULT_HOST = "http://localhost:8000/v1"
 # Example endpoints shown at the top of the wizard, one per provider.
 ENDPOINT_EXAMPLES = (
     "vLLM: http://localhost:8000/v1  |  "
-    "Ollama cloud: https://ollama.com  |  "
+    "Ollama cloud: https://api.ollama.com  |  "
     "Ollama local: http://localhost:11434/v1  |  "
     "OpenRouter: https://openrouter.ai/api/v1"
 )
@@ -229,6 +242,131 @@ def get_secret(key: str) -> str | None:
     return _file_get_secret(key)
 
 
+# ── Per-endpoint API keys ───────────────────────────────────────────
+# One key per endpoint, addressed by its URL. The URL is the identity because
+# it is the only field an endpoint cannot be without: ``name`` is optional and
+# editable, and an index moves the moment a server is added above it.
+
+_ENDPOINT_SECRET_PREFIX = "endpoint_key:"
+
+# Which provider-named secret still authenticates a host that has no key of
+# its own. First matching fragment wins; the last entry is the default, and
+# matches nothing explicitly. ``required`` marks a provider that cannot answer
+# at all without a key, where a missing one is worth an error rather than an
+# attempt.
+LEGACY_ENDPOINT_KEYS = (
+    (("openrouter.ai",), "host_key", "OPENROUTER_API_KEY", "OpenRouter", True),
+    (("ollama.com", "ollama.ai"), "ollama_api_key", "OLLAMA_API_KEY",
+     "Ollama cloud", True),
+    ((), "vllm_api_key", "VLLM_API_KEY", "vLLM", False),
+)
+
+
+def normalize_host(host: str) -> str:
+    """The form of a URL that addresses its key.
+
+    A trailing slash is the one difference between two spellings of the same
+    endpoint that a user will not notice and that would otherwise hide the key
+    they just stored.
+    """
+    return (host or "").strip().rstrip("/")
+
+
+def endpoint_secret_name(host: str) -> str:
+    """Keychain entry name holding the API key for ``host``."""
+    return f"{_ENDPOINT_SECRET_PREFIX}{normalize_host(host)}"
+
+
+def endpoint_env_var(host: str) -> str:
+    """Env var an endpoint's key may be injected under.
+
+    Needed where the OS keychain is unreachable — inside a container, or a
+    deployment that ships secrets as environment. Two URLs differing only in
+    punctuation slug to the same name; the keychain entry keeps the URL whole,
+    so only this form can collide, and only between endpoints that are nearly
+    the same address already.
+    """
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", normalize_host(host)).strip("_").upper()
+    return f"ONIT_ENDPOINT_KEY_{slug}"
+
+
+def get_endpoint_key(host: str) -> str | None:
+    """The API key stored for one endpoint: env var > keychain > file."""
+    if not host:
+        return None
+    value = os.environ.get(endpoint_env_var(host))
+    if value:
+        return value
+    return get_secret(endpoint_secret_name(host))
+
+
+def store_endpoint_key(host: str, value: str) -> None:
+    store_secret(endpoint_secret_name(host), value)
+
+
+def delete_endpoint_key(host: str) -> None:
+    delete_secret(endpoint_secret_name(host))
+
+
+def move_endpoint_key(old_host: str, new_host: str) -> None:
+    """Follow a key to an endpoint's new URL.
+
+    Editing a host would otherwise strand its key under the old address and
+    silently leave the endpoint unauthenticated.
+    """
+    if not old_host or normalize_host(old_host) == normalize_host(new_host):
+        return
+    value = get_secret(endpoint_secret_name(old_host))
+    if value:
+        store_endpoint_key(new_host, value)
+    delete_endpoint_key(old_host)
+
+
+def legacy_key_for(host: str) -> tuple[str, str, str, bool]:
+    """(keyring key, env var, provider label, key is mandatory) for ``host``.
+
+    The rule that used to be spelled out in chat.py's key resolution and again
+    in the wizard's sanity notes; both read it from here now.
+    """
+    host = host or ""
+    for fragments, keyring_key, env_var, label, required in LEGACY_ENDPOINT_KEYS:
+        if any(f in host for f in fragments):
+            return keyring_key, env_var, label, required
+    return LEGACY_ENDPOINT_KEYS[-1][1:]
+
+
+def endpoint_key_label(host: str, in_config: bool = False,
+                       extra_keys: tuple = ()) -> str:
+    """One cell's account of what authenticates ``host``.
+
+    Names the legacy secret rather than saying "fallback", because that case
+    is the one a user cannot guess: the endpoint has no key of its own and is
+    running on something they set up for a different server.
+    """
+    if in_config:
+        return "in config"
+    source = endpoint_key_source(host, extra_keys)
+    if source is None:
+        return "none"
+    return "set" if source == "endpoint" else source
+
+
+def endpoint_key_source(host: str, extra_keys: tuple = ()) -> str | None:
+    """Where ``host`` gets its key from: 'endpoint', a legacy secret's name,
+    or None when nothing authenticates it.
+
+    ``extra_keys`` names secrets that apply to this endpoint by position
+    rather than by URL — ``host2_key`` for the legacy second server.
+    """
+    if get_endpoint_key(host):
+        return "endpoint"
+    keyring_key, env_var, _, _ = legacy_key_for(host)
+    for key in (keyring_key,) + tuple(extra_keys):
+        if get_secret(key):
+            return key
+    return env_var if os.environ.get(env_var) else None
+
+
 def resolve_credential(cli_value: str | None,
                        env_var: str | None,
                        keyring_key: str) -> str | None:
@@ -320,17 +458,21 @@ def _write_endpoints(config: dict, entries: list[dict]) -> None:
             if i < len(entries):
                 serving[host_key] = entries[i]["host"]
                 serving[model_key] = entries[i].get("model") or ""
-                if entries[i].get("host_key"):
-                    serving[key_key] = entries[i]["host_key"]
+                literal = entries[i].get("api_key") or entries[i].get("host_key")
+                if literal:
+                    serving[key_key] = literal
             else:
                 for k in (host_key, model_key, key_key):
                     serving.pop(k, None)
         return
+    # A key written by hand into the YAML is carried across under the current
+    # spelling; the wizard's own keys live in the keychain and appear here as
+    # nothing at all.
     serving["endpoints"] = [
         {k: v for k, v in (("name", e.get("name")),
                            ("host", e["host"]),
                            ("model", e.get("model")),
-                           ("host_key", e.get("host_key")),
+                           ("api_key", e.get("api_key") or e.get("host_key")),
                            ("priority", _entry_priority(e)))
          if v not in (None, "")}
         for e in entries
@@ -353,17 +495,20 @@ def _configured_endpoints(config: dict) -> list[tuple]:
         # survives reordering and is what the user recognizes.
         return [(f"endpoint '{e.get('name') or e['host']}'",
                  "its 'model' key", str(e["host"]), e.get("model"),
-                 ("host2_key", "host_key"))
+                 ("api_key" in e or "host_key" in e), ())
                 for e in entries]
     found = []
-    for host_path, model_path, key_names in (
-        ("serving.host",  "serving.model",  ("host_key",)),
-        ("serving.host2", "serving.model2", ("host2_key", "host_key")),
+    for host_path, model_path, key_path, extra_keys in (
+        ("serving.host",  "serving.model",  "serving.host_key", ()),
+        # The second legacy server takes its own key by position rather than
+        # by URL, so name it alongside whichever one the URL selects.
+        ("serving.host2", "serving.model2", "serving.host2_key", ("host2_key",)),
     ):
         host = str(_get_nested(config, host_path) or "")
         if host:
             found.append((host_path, model_path, host,
-                          _get_nested(config, model_path), key_names))
+                          _get_nested(config, model_path),
+                          bool(_get_nested(config, key_path)), extra_keys))
     return found
 
 
@@ -374,24 +519,28 @@ def _provider_notes(config: dict) -> list[str]:
     needs an explicit model name (auto-detection would pick an arbitrary
     entry from its huge model list); for Ollama cloud an explicit model is
     recommended since auto-detection takes the first available model.
+
+    A key counts wherever it comes from — the endpoint's own, one written into
+    the YAML, or a legacy provider secret — so the note fires when a request
+    would actually fail, not when one particular place is empty.
     """
     notes = []
-    for host_path, model_path, host, model, key_names in \
+    for host_path, model_path, host, model, in_config, extra_keys in \
             _configured_endpoints(config):
-        if "ollama.com" in host or "ollama.ai" in host:
-            if not get_secret("ollama_api_key"):
-                notes.append(f"Note: {host_path} is an Ollama cloud endpoint but no "
-                             "Ollama API key is set (rerun 'onit setup' or export OLLAMA_API_KEY).")
-            if not model:
-                notes.append(f"Note: {model_path} is not set — the first model available at "
-                             f"{host} will be used. Set it to choose (e.g. glm-5.1:cloud).")
-        elif "openrouter.ai" in host:
-            if not any(get_secret(k) for k in key_names):
-                notes.append(f"Note: {host_path} is an OpenRouter endpoint but no "
-                             "LLM API key is set (rerun 'onit setup' or export OPENROUTER_API_KEY).")
-            if not model:
+        _, env_var, label, required = legacy_key_for(host)
+        if not required:
+            continue
+        if not in_config and not endpoint_key_source(host, extra_keys):
+            notes.append(f"Note: {host_path} is a{'n' if label[0] in 'AEIOU' else ''} "
+                         f"{label} endpoint but no API key is set (rerun "
+                         f"'onit setup' or export {env_var}).")
+        if not model:
+            if label == "OpenRouter":
                 notes.append(f"Note: OpenRouter requires an explicit model name — set "
                              f"{model_path} (e.g. google/gemini-2.5-pro).")
+            else:
+                notes.append(f"Note: {model_path} is not set — the first model available at "
+                             f"{host} will be used. Set it to choose (e.g. glm-5.3:cloud).")
     return notes
 
 
@@ -413,18 +562,50 @@ def _print_endpoint_table(entries: list[dict], indent: str = "  ") -> None:
         print(f"{indent}No endpoints configured yet.")
         return
     order = sorted(range(len(entries)), key=lambda i: _entry_priority(entries[i]))
-    width = max(len(e.get("host", "")) for e in entries)
+    models = [e.get("model") or "auto-detect" for e in entries]
+    keys = [entry_key_label(e) for e in entries]
+    width = max(len("HOST"), max(len(e.get("host", "")) for e in entries))
+    mw = max(len("MODEL"), max(len(m) for m in models))
+    kw = max(len("KEY"), max(len(k) for k in keys))
     print(f"{indent}{'#':>2}  {'PRIO':<4}  {'HOST':<{width}}  "
-          f"{'MODEL':<16}  NAME")
+          f"{'MODEL':<{mw}}  {'KEY':<{kw}}  NAME")
     for i in order:
         e = entries[i]
         print(f"{indent}{i + 1:>2}  {_entry_priority(e):<4}  "
               f"{e.get('host', ''):<{width}}  "
-              f"{(e.get('model') or 'auto-detect'):<16}  "
+              f"{models[i]:<{mw}}  {keys[i]:<{kw}}  "
               f"{e.get('name') or ''}")
     if len(entries) > 1 and all(_entry_priority(e) == 0 for e in entries):
         print(f"{indent}All endpoints share one tier — requests are spread "
               f"across them. Use 'p N' to rank one ahead.")
+
+
+def entry_key_label(entry: dict) -> str:
+    """How a config entry's endpoint is authenticated, for the table."""
+    return endpoint_key_label(
+        entry.get("host", ""),
+        in_config=bool(entry.get("api_key") or entry.get("host_key")))
+
+
+def _prompt_endpoint_key(host: str, previous_host: str | None) -> None:
+    """Ask for one endpoint's API key and store it in the keychain.
+
+    The key never goes into config.yaml — that file is world-readable on a
+    shared host, and is the one thing here that gets copied around and pasted
+    into issues.
+    """
+    move_endpoint_key(previous_host or "", host)
+    existing = get_endpoint_key(host)
+    if existing:
+        hint = "••••" + existing[-4:]
+    else:
+        source = endpoint_key_source(host)
+        hint = f"unset, falling back to {source}" if source else "not set"
+    value = getpass.getpass(f"    API key [{hint}]: ").strip()
+    if value == "-":
+        delete_endpoint_key(host)
+    elif value:
+        store_endpoint_key(host, value)
 
 
 def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
@@ -433,6 +614,7 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
     Returns None if no host was given, which cancels an add.
     """
     entry = dict(entry or {})
+    previous_host = entry.get("host")
     host_default = entry.get("host") or (DEFAULT_HOST if is_first else "")
     host = input(f"    Endpoint URL [{host_default or 'required'}]: ").strip()
     host = host or host_default
@@ -440,6 +622,7 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
         print("    No URL given — nothing added.")
         return None
     entry["host"] = host
+    _prompt_endpoint_key(host, previous_host)
 
     model = input(f"    Model name [{entry.get('model') or 'auto-detect'}]: ").strip()
     if model == "-":
@@ -553,30 +736,38 @@ def _print_settings(config: dict, settings: list[tuple]) -> None:
         print(f"  {label:.<40s} {current}")
 
 
+def secret_status(key: str, env_var: str | None) -> str:
+    """One line describing a secret: masked value and where it came from.
+
+    Shared with the in-session ``\\setup`` command so the wizard and the chat
+    UI never disagree about whether a key is set — the question a user asks
+    precisely when a request has just failed for want of one.
+    """
+    source = None
+    value = None
+
+    # Check keyring
+    kr_val = get_secret(key)
+    if kr_val:
+        value = kr_val
+        source = "keychain"
+
+    # Check env var (takes precedence for display)
+    if env_var:
+        env_val = os.environ.get(env_var)
+        if env_val:
+            value = env_val
+            source = "env var"
+
+    if not value:
+        return "not set"
+    return f"••••{value[-4:]} ({source})"
+
+
 def _print_secrets(secrets: list[tuple]) -> None:
     """Print each secret masked, annotated with where it was found."""
     for key, label, env_var in secrets:
-        source = None
-        value = None
-
-        # Check keyring
-        kr_val = get_secret(key)
-        if kr_val:
-            value = kr_val
-            source = "keychain"
-
-        # Check env var (takes precedence for display)
-        if env_var:
-            env_val = os.environ.get(env_var)
-            if env_val:
-                value = env_val
-                source = "env var"
-
-        if value:
-            masked = "••••" + value[-4:]
-            print(f"  {label:.<40s} {masked} ({source})")
-        else:
-            print(f"  {label:.<40s} not set")
+        print(f"  {label:.<40s} {secret_status(key, env_var)}")
 
 
 def show_config():
@@ -591,7 +782,14 @@ def show_config():
     _print_endpoint_table(entries, indent="    ")
     print()
     _print_settings(config, SERVING_SETTINGS)
-    _print_secrets(SERVING_SECRETS)
+    # Only shown once one is actually holding something up: on a fresh install
+    # every endpoint carries its own key and this section is noise.
+    legacy = [entry for entry in LEGACY_SERVING_SECRETS
+              if get_secret(entry[0])]
+    if legacy:
+        print("\n  Legacy fallback keys — used only by an endpoint that has "
+              "none of its own")
+        _print_secrets(legacy)
 
     print("\n  Preferences")
     _print_settings(config, GENERAL_SETTINGS)
@@ -670,11 +868,12 @@ def run_setup(show_only: bool = False):
     print("  " + "─" * 50)
     print(f"  Endpoint examples — {ENDPOINT_EXAMPLES}")
     print("  Model examples — vLLM/local: auto-detect; "
-          "Ollama cloud: glm-5.1:cloud; OpenRouter: google/gemini-2.5-pro")
+          "Ollama cloud: glm-5.3:cloud; OpenRouter: google/gemini-2.5-pro")
+    print("  Each endpoint takes its own API key; leave it blank where the "
+          "server wants none.")
     _edit_endpoints(config)
     print()
     _prompt_settings(config, SERVING_SETTINGS)
-    _prompt_secrets(SERVING_SECRETS)
 
     # ── Preferences ──────────────────────────────────────────────
     print("\n  Preferences")

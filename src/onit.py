@@ -48,6 +48,7 @@ from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
+from .ui.commands import dispatch as dispatch_command
 from .model.serving.chat import (chat, decode_rate, summarize_metrics,
                                 DEFAULT_MAX_TOKENS)
 from .model.serving.state import RunState, state_path_for
@@ -1192,9 +1193,11 @@ class OnIt(BaseModel):
                 priority = DEFAULT_PRIORITY
             endpoints.append(ServerEndpoint(
                 host=host,
-                # chat() resolves a provider-specific key (OLLAMA_API_KEY,
-                # VLLM_API_KEY, ...) when this stays "EMPTY".
-                host_key=str(entry.get('host_key') or 'EMPTY'),
+                # A key written into the YAML. Left "EMPTY", chat() looks up
+                # the key stored for this URL by 'onit setup', then the legacy
+                # provider-named secrets. 'host_key' is the old spelling.
+                host_key=str(entry.get('api_key')
+                             or entry.get('host_key') or 'EMPTY'),
                 model=entry.get('model'),
                 name=str(entry.get('name') or f'server{i + 1}'),
                 priority=priority,
@@ -1214,11 +1217,12 @@ class OnIt(BaseModel):
         if host2 and host2 != serving['host']:
             host2_key = serving.get('host2_key')
             if not host2_key:
-                # Env var ONIT_HOST2_KEY or OS keychain; chat() falls back to
-                # provider-specific keys (e.g. OLLAMA_API_KEY) when "EMPTY".
+                # The key stored for this URL wins over the positional
+                # host2_key, which predates per-endpoint keys; chat() falls
+                # back to the provider-named secrets when both are absent.
                 try:
-                    from .setup import get_secret
-                    host2_key = get_secret('host2_key')
+                    from .setup import get_endpoint_key, get_secret
+                    host2_key = get_endpoint_key(host2) or get_secret('host2_key')
                 except Exception:
                     host2_key = None
             endpoints.append(ServerEndpoint(
@@ -2258,6 +2262,17 @@ class OnIt(BaseModel):
             if not task or len(task) == 0:
                 task = None
                 continue
+
+            # Backslash commands answer for the session itself — \help,
+            # \setup, \model, \host.  They are handled here rather than sent
+            # on, so they cost no tokens and leave no turn in the history the
+            # next task replays.  Only in the text UI: WebApiUI.add_message is
+            # a no-op, so the answer would go nowhere.
+            if not self.web:
+                reply = await dispatch_command(self, task)
+                if reply is not None:
+                    self.chat_ui.add_message("system", reply)
+                    continue
 
             # A new question ends the check still running behind the last
             # answer.  Anything it had to say is about a screen the user has

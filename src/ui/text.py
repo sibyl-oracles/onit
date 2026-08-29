@@ -21,6 +21,7 @@ If not, it will fall back to standard print statements.
 
 '''
 import asyncio
+import getpass
 import json
 import os
 import sys
@@ -410,6 +411,8 @@ class ChatUI:
                 elif role == "tool_result":
                     if self.show_logs:
                         self._render_tool_result_message(content, msg_name, msg_content, msg_time)
+                elif role == "system":
+                    self._render_system_message(content, msg_content, msg_time)
                 else:
                     self._render_assistant_message(content, msg_content, msg_time, msg_elapsed)
 
@@ -454,7 +457,8 @@ class ChatUI:
         welcome.append("Welcome! ", style=self.theme.styles.get("assistant", "bold magenta"))
         welcome.append("Type a message below to start chatting.\n\n", style=self.theme.styles.get("assistant", "bold magenta"))
         welcome.append("Commands: ", style=self.theme.styles.get("user", "bold cyan"))
-        welcome.append("'Ctl+c' to close", style=self.theme.styles.get("user", "bold cyan"))
+        welcome.append("\\help for the list, \\bye or 'Ctl+c' to close",
+                       style=self.theme.styles.get("user", "bold cyan"))
 
         header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
         footer = self._render_footer_rule(f"📁 {self.data_path}" if self.data_path else "")
@@ -517,6 +521,22 @@ class ChatUI:
         msg_content = self._strip_markdown_links(msg_content)
         content.append(f"{msg_content}\n", style="bright_white")
         content.append("└" + "─" * 40 + "\n", style=self.theme.styles.get("assistant", "magenta"))
+
+    def _render_system_message(self, content: Text, msg_content: str, msg_time: str) -> None:
+        """Render a notice the session made itself: a backslash command's
+        answer, a retry, a stopped task.
+
+        Separate from _render_assistant_message because that one labels every
+        block with the model's name, and none of this came from the model —
+        a \\setup listing under an "AI (Qwen3-30B)" header reads as something
+        the model was asked and answered.
+        """
+        content.append("┌─ ⌨️  OnIt ", style=self.theme.styles.get("info", "bold dark_cyan"))
+        content.append(f"[{msg_time}]", style=self.theme.styles.get("timestamp", "cyan"))
+        content.append("\n", style="default")
+        content.append(f"{msg_content}\n", style="bright_white")
+        content.append("└" + "─" * 40 + "\n",
+                       style=self.theme.styles.get("info", "dark_cyan"))
 
     def render_thinking_panel(self) -> Panel:
         """Render thinking indicator in input panel"""
@@ -1814,6 +1834,26 @@ class ChatUI:
                 if cursor_pos < len(current_input):
                     sys.stdout.write('\033[' + str(len(current_input) - cursor_pos) + 'D')
                 sys.stdout.flush()
+
+    def read_secret(self, prompt: str = "API key: ") -> str:
+        """Read one line without echoing it.
+
+        For an API key typed mid-session. The ordinary reader draws every
+        character it accepts and files the finished line in the input history,
+        which for a credential means it sits on screen and comes back on the
+        next press of the up arrow. getpass handles the terminal itself, so
+        this borrows it rather than growing a masked mode of its own.
+
+        Returns "" if the entry is interrupted, which callers treat as a
+        cancel rather than as an empty key.
+        """
+        self.stop_status()
+        self.stop_thinking()
+        try:
+            return getpass.getpass(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return ""
 
     def get_user_input(self) -> str:
         """Get user input from the console with history support (up/down arrows)"""

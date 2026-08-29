@@ -48,9 +48,10 @@ Priority order: CLI flags > environment variables > `~/.onit/config.yaml` > proj
 ```yaml
 serving:
   host: https://openrouter.ai/api/v1
-  host_key: sk-or-v1-your-key-here   # or set OPENROUTER_API_KEY env var
-  # For a vLLM host started with --api-key, put the key here or set the
-  # VLLM_API_KEY env var / keychain entry (via onit setup) instead:
+  # Keys are per endpoint. 'onit setup' asks for one alongside each endpoint
+  # URL and stores it in the OS keychain, which keeps it out of this file —
+  # prefer that. Written here it is read first, ahead of the stored one:
+  # host_key: sk-or-v1-your-key-here   # ('api_key' in an endpoints list)
   # model: auto-detected from endpoint. Set explicitly for OpenRouter:
   # model: google/gemini-2.5-pro
   think: true
@@ -70,7 +71,8 @@ serving:
   # session's inference sticks to its host and fails over to the other
   # only on timeout/error (the failed host cools down for 60s):
   # host2: http://localhost:8001/v1
-  # host2_key: sk-...              # or ONIT_HOST2_KEY env var / keychain
+  # host2_key: sk-...              # optional; 'onit setup' stores host2's key
+                                 # under its URL instead
   # model2: auto-detected from host2 unless set
   # load_balancer: sticky          # or: round_robin, random, least_busy
   # Ollama endpoints (cloud or local) are fallback-only: while any

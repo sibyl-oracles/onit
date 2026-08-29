@@ -415,6 +415,39 @@ class TestOnItInitialize:
         # config readers that still expect a single host.
         assert onit.model_serving["host"] == "http://gpu-a:8000/v1"
 
+    def test_endpoints_list_takes_a_per_entry_api_key(self, tmp_path):
+        """One key per endpoint, which is what a key actually belongs to:
+        two vLLM servers with different keys had no way to say so."""
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://gpu-a:8000/v1", "api_key": "sk-a"},
+            {"host": "http://gpu-b:8000/v1", "api_key": "sk-b"},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert [ep.host_key for ep in onit.load_balancer.endpoints] == \
+            ["sk-a", "sk-b"]
+
+    def test_endpoints_list_still_reads_the_old_host_key_spelling(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://gpu-a:8000/v1", "host_key": "sk-old"}]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.endpoints[0].host_key == "sk-old"
+
+    def test_an_entry_without_a_key_defers_to_the_keychain(self, tmp_path):
+        """"EMPTY" is the signal that chat() should look the key up by URL,
+        so a config file need not carry one at all."""
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [{"host": "http://gpu-a:8000/v1"}]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.endpoints[0].host_key == "EMPTY"
+
     def test_endpoints_list_routes_by_priority(self, tmp_path):
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]

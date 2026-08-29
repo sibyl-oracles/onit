@@ -41,16 +41,31 @@ vllm serve ... --api-key key1 key2 key3
 Then give OnIt one of those keys (the others are for your other clients):
 
 ```bash
-onit setup   # enter it at the "vLLM API key" prompt (stored in the OS keychain)
+onit setup   # enter it at the endpoint's "API key" prompt
 ```
 
-Or set the environment variable:
+Either way — `onit setup` or `\key` inside a running session — the key is typed
+at a prompt that does not echo it, and is never passed as a command-line
+argument where a shell history or the chat panel would keep it.
 
-```bash
-export VLLM_API_KEY=key1
-```
+The key belongs to the endpoint you entered it under, so two vLLM servers
+started with different keys are simply two entries. It is stored in the OS
+keychain, never in `config.yaml`.
 
-Resolution order: `serving.host_key` in the config YAML > `VLLM_API_KEY` env var > keychain. Without `--api-key` on the vLLM side, no key is needed and OnIt connects as before.
+Resolution order for an endpoint's key:
+
+1. `api_key` on the endpoint (or `serving.host_key` in the legacy config shape)
+2. the key stored for that URL by `onit setup`
+3. `ONIT_ENDPOINT_KEY_<SLUG>`, where the slug is the URL with every run of
+   non-alphanumeric characters replaced by `_` and upper-cased —
+   `http://gpu-2:8000/v1` → `ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1`. Used where
+   the keychain is unreachable; `onit --container` sets it for you.
+4. the legacy provider-named secret the URL selects — `VLLM_API_KEY`,
+   `OPENROUTER_API_KEY` for `openrouter.ai`, `OLLAMA_API_KEY` for Ollama cloud
+
+Step 4 is what an install predating per-endpoint keys runs on; nothing writes
+those any more, and `onit setup --show` lists them separately once one is in
+use. Without `--api-key` on the vLLM side, no key is needed at all.
 
 ## Local Ollama
 
@@ -169,15 +184,18 @@ export OLLAMA_API_KEY=your-ollama-key
 Then point OnIt at the Ollama cloud host and specify a model:
 
 ```bash
-onit --host https://api.ollama.com --model glm-5.1:cloud
+onit --host https://api.ollama.com --model glm-5.3:cloud
 onit --host https://api.ollama.com --model gemma4:31b-cloud
-onit --host https://api.ollama.com --model llama4:scout-cloud
+onit --host https://api.ollama.com --model gpt-oss:120b
 ```
+
+Run `\model` inside a session to list what the endpoint is currently serving —
+the catalogue changes, and a name it no longer carries 404s on the first task.
 
 Enable thinking mode (if supported by the model):
 
 ```bash
-onit --think --host https://api.ollama.com --model glm-5.1:cloud
+onit --think --host https://api.ollama.com --model glm-5.3:cloud
 ```
 
 Model is auto-detected from the endpoint if `--model` is omitted. You can also set the host permanently in your config:
@@ -185,10 +203,12 @@ Model is auto-detected from the endpoint if `--model` is omitted. You can also s
 ```yaml
 serving:
   host: https://api.ollama.com
-  model: glm-5.1:cloud
+  model: glm-5.3:cloud
 ```
 
-> **Note:** Ollama cloud uses the `ollama_api_key` keyring entry (the same key used for the web search tool).
+> **Note:** an Ollama cloud endpoint uses its own key when one is set; without
+> one it falls back to the `ollama_api_key` keyring entry (the same key the web
+> search tool uses).
 
 
 ## Multiple model endpoints
@@ -209,8 +229,9 @@ serving:
       priority: 1                        # same tier as gpu-a → load balanced
     - name: ollama
       host: https://ollama.com
-      model: glm-5.1:cloud               # blank = auto-detect from endpoint
-      host_key: sk-...                   # optional; provider key used if omitted
+      model: glm-5.3:cloud               # blank = auto-detect from endpoint
+      api_key: sk-...                    # optional; prefer 'onit setup', which
+                                         # keeps the key out of this file
       priority: 2                        # only while every tier-1 host is down
   load_balancer: least_busy              # sticky, round_robin, random, least_busy
 ```
@@ -236,7 +257,7 @@ don't have to write the YAML by hand:
    #  PRIO  HOST                     MODEL          NAME
    1  1     http://10.0.0.1:8000/v1  auto-detect    gpu-a
    2  1     http://10.0.0.2:8000/v1  auto-detect    gpu-b
-   3  2     https://ollama.com       glm-5.1:cloud  ollama
+   3  2     https://ollama.com       glm-5.3:cloud  ollama
   Commands: [a]dd  [e]dit N  [d]elete N  [p]riority N  [Enter] done
   endpoints>
 ```

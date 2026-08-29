@@ -37,7 +37,7 @@ The launcher handles everything the manual examples below do by hand:
 - verifies Docker is reachable, builds `onit:local` if missing;
 - runs the container with the full hardening profile (see [What is isolated](#what-is-isolated));
 - bind-mounts `~/.onit/config.yaml` (and `~/.onit/secrets.yaml`, if present) **read-only**;
-- bridges secrets from the host OS keychain as ephemeral env vars — `OPENROUTER_API_KEY`, `OLLAMA_API_KEY`, `VLLM_API_KEY`, `OPENWEATHERMAP_API_KEY`, `TELEGRAM_BOT_TOKEN`, `VIBER_BOT_TOKEN`, `GITHUB_TOKEN`, `HF_TOKEN`. They are never baked into the image;
+- bridges secrets from the host OS keychain as ephemeral env vars — `OPENROUTER_API_KEY`, `OLLAMA_API_KEY`, `VLLM_API_KEY`, `OPENWEATHERMAP_API_KEY`, `TELEGRAM_BOT_TOKEN`, `VIBER_BOT_TOKEN`, `GITHUB_TOKEN`, `HF_TOKEN`, plus each configured endpoint's own API key as `ONIT_ENDPOINT_KEY_<SLUG>` (the container cannot reach the keychain, and these have no fixed variable name — it is derived from the URL). They are never baked into the image;
 - mounts the named volume `onit-data` at `/home/onit/data` for persistent state;
 - publishes only the ports needed by the selected mode;
 - tears the container down cleanly on Ctrl-C.

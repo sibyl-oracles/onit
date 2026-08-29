@@ -400,6 +400,51 @@ class TestWebOAuthCredentialResolution:
 
 # ── --host / --host2 serving overrides ──────────────────────────────────────
 
+class TestOpenRouterKeyResolution:
+    """The legacy OPENROUTER_API_KEY must not be injected in front of a key
+    stored for this endpoint's own URL — that authenticates as the wrong
+    account with no sign anything went wrong but a 401."""
+
+    def _resolve(self, tmp_path, monkeypatch, host, secrets):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda k: secrets.get(k))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH",
+                            str(tmp_path / "no-setup.yaml"))
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({"serving": {"host": host}}))
+        args = _build_parser().parse_args(["--config", str(path)])
+        return _parse_and_resolve_config(args)["serving"]
+
+    def test_an_endpoint_key_is_left_for_chat_to_find(self, tmp_path,
+                                                      monkeypatch):
+        from src import setup as setup_mod
+        host = "https://openrouter.ai/api/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host, {
+            setup_mod.endpoint_secret_name(host): "sk-endpoint",
+            "host_key": "sk-legacy",
+        })
+        assert "host_key" not in serving
+
+    def test_the_legacy_key_is_still_injected_without_one(self, tmp_path,
+                                                          monkeypatch):
+        host = "https://openrouter.ai/api/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host,
+                                {"host_key": "sk-legacy"})
+        assert serving["host_key"] == "sk-legacy"
+
+    def test_an_endpoint_key_satisfies_the_missing_key_check(self, tmp_path,
+                                                             monkeypatch):
+        """Without this the run exits before it can use the key it has."""
+        from src import setup as setup_mod
+        host = "https://openrouter.ai/api/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host, {
+            setup_mod.endpoint_secret_name(host): "sk-endpoint"})
+        assert serving["host"] == host
+
+
 class TestHostOverrides:
     """An explicit --host without --host2 must yield a single endpoint: any
     host2 left over from config or env would keep the load balancer routing

@@ -301,6 +301,65 @@ def test_check_docker_missing_exits(monkeypatch):
     assert exc.value.code == 1
 
 
+class TestEndpointKeyBridge:
+    """The container cannot reach the host keychain, and a per-endpoint key
+    has no fixed env var — without this bridge an endpoint configured by
+    'onit setup' authenticates on the host and 401s inside the container."""
+
+    def _config(self, tmp_path, monkeypatch, serving):
+        import yaml
+        onit = tmp_path / ".onit"
+        onit.mkdir()
+        (onit / "config.yaml").write_text(yaml.safe_dump({"serving": serving}))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+    def test_each_configured_endpoint_gets_its_key(self, tmp_path, monkeypatch):
+        from container_launcher import _collect_endpoint_key_env
+        from src import setup as setup_mod
+        self._config(tmp_path, monkeypatch, {"endpoints": [
+            {"host": "http://gpu-1:8000/v1"},
+            {"host": "http://gpu-2:8000/v1"},
+        ]})
+        keys = {setup_mod.endpoint_secret_name("http://gpu-1:8000/v1"): "sk-1",
+                setup_mod.endpoint_secret_name("http://gpu-2:8000/v1"): "sk-2"}
+        monkeypatch.setattr(setup_mod, "get_secret", lambda k: keys.get(k))
+        args = _collect_endpoint_key_env()
+        assert "ONIT_ENDPOINT_KEY_HTTP_GPU_1_8000_V1=sk-1" in args
+        assert "ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1=sk-2" in args
+
+    def test_the_legacy_host_pair_is_covered_too(self, tmp_path, monkeypatch):
+        from container_launcher import _collect_endpoint_key_env
+        from src import setup as setup_mod
+        self._config(tmp_path, monkeypatch,
+                     {"host": "http://a:8000/v1", "host2": "http://b:8000/v1"})
+        monkeypatch.setattr(
+            setup_mod, "get_secret",
+            lambda k: "sk-b"
+            if k == setup_mod.endpoint_secret_name("http://b:8000/v1") else None)
+        assert "ONIT_ENDPOINT_KEY_HTTP_B_8000_V1=sk-b" in _collect_endpoint_key_env()
+
+    def test_an_endpoint_without_a_key_is_not_bridged(self, tmp_path, monkeypatch):
+        from container_launcher import _collect_endpoint_key_env
+        from src import setup as setup_mod
+        self._config(tmp_path, monkeypatch, {"host": "http://a:8000/v1"})
+        monkeypatch.setattr(setup_mod, "get_secret", lambda k: None)
+        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTP_A_8000_V1", raising=False)
+        assert _collect_endpoint_key_env() == []
+
+    def test_no_config_file_is_not_an_error(self, tmp_path, monkeypatch):
+        from container_launcher import _collect_endpoint_key_env
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _collect_endpoint_key_env() == []
+
+    def test_an_unreadable_config_is_not_an_error(self, tmp_path, monkeypatch):
+        from container_launcher import _configured_hosts
+        onit = tmp_path / ".onit"
+        onit.mkdir()
+        (onit / "config.yaml").write_text("serving: [not, a, mapping")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _configured_hosts() == []
+
+
 def test_collect_secret_env_honors_host_env(monkeypatch):
     from container_launcher import _collect_secret_env
 

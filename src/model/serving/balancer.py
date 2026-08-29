@@ -168,6 +168,38 @@ class LoadBalancer:
                     return ep
         return self.endpoints[0]
 
+    def assigned(self, key: str | None = None) -> ServerEndpoint:
+        """The endpoint a session is currently pinned to, or the preferred one.
+
+        ``acquire`` is what makes an assignment, so this only ever reports one
+        that already exists — it never creates a sticky binding as a side
+        effect of being asked.  Used by the interactive ``\\model`` and
+        ``\\host`` commands, which have to name the endpoint a change lands on
+        before the next request picks it.
+        """
+        if self.algorithm == "sticky":
+            with self._lock:
+                idx = self._sticky_map.get(key or "")
+            if idx is not None and 0 <= idx < len(self.endpoints):
+                return self.endpoints[idx]
+        return self.preferred
+
+    def is_fallback_only(self, endpoint: ServerEndpoint,
+                         now: float | None = None) -> bool:
+        """True while the implicit Ollama rule is keeping ``endpoint`` out of
+        rotation — it is in the list, but ``acquire`` will not choose it.
+
+        Mirrors the filter in ``acquire``, and exists so a listing can say so:
+        an endpoint shown at the same priority as its peers, quietly serving
+        nothing, is the one routing state a user cannot deduce from the table.
+        """
+        if self.uses_priority or not self.ollama_fallback_only:
+            return False
+        if not endpoint.is_ollama:
+            return False
+        return any(not ep.is_ollama and ep.is_healthy(now)
+                   for ep in self.endpoints)
+
     def describe(self) -> str:
         """Human-readable endpoint rundown for startup output.
 

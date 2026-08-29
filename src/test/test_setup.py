@@ -43,7 +43,7 @@ class TestProviderNotes:
         _patch_secrets(monkeypatch, set())
         config = {"serving": {"host": "https://ollama.com"}}
         notes = _provider_notes(config)
-        assert any("Ollama API key" in n for n in notes)
+        assert any("Ollama cloud endpoint but no API key" in n for n in notes)
         assert any("first model available" in n for n in notes)
 
     def test_ollama_host_with_key_and_model_is_clean(self, monkeypatch):
@@ -85,7 +85,8 @@ class TestProviderNotes:
             {"name": "cloud", "host": "https://ollama.com", "priority": 2},
         ]}}
         notes = _provider_notes(config)
-        assert any("Ollama API key" in n and "cloud" in n for n in notes)
+        assert any("Ollama cloud endpoint but no API key" in n
+                   and "cloud" in n for n in notes)
         assert not any("gpu-a" in n for n in notes)
 
     def test_endpoints_list_supersedes_host_pair(self, monkeypatch):
@@ -125,16 +126,23 @@ class TestSectionGrouping:
     """Model-serving config is asked for together, apart from integrations."""
 
     def test_sections_partition_the_secrets(self):
-        assert (setup_mod.SERVING_SECRETS + setup_mod.INTEGRATION_SECRETS
+        assert (setup_mod.LEGACY_SERVING_SECRETS + setup_mod.INTEGRATION_SECRETS
                 == setup_mod.SECRETS)
 
-    def test_model_serving_keys_are_in_the_serving_section(self):
-        keys = {k for k, _, _ in setup_mod.SERVING_SECRETS}
-        assert keys == {"host_key", "ollama_api_key", "vllm_api_key",
-                        "host2_key"}
+    def test_only_superseded_keys_remain_in_the_serving_section(self):
+        """An endpoint's key is stored per endpoint now; what is left here is
+        read for backwards compatibility and never written."""
+        keys = {k for k, _, _ in setup_mod.LEGACY_SERVING_SECRETS}
+        assert keys == {"host_key", "vllm_api_key", "host2_key"}
+
+    def test_the_ollama_key_stayed_prompted(self):
+        """It gates the web search tool as well as Ollama endpoints, so it is
+        not a serving credential the endpoint keys can absorb."""
+        keys = {k for k, _, _ in setup_mod.INTEGRATION_SECRETS}
+        assert "ollama_api_key" in keys
 
     def test_unrelated_keys_are_not_in_the_serving_section(self):
-        keys = {k for k, _, _ in setup_mod.SERVING_SECRETS}
+        keys = {k for k, _, _ in setup_mod.LEGACY_SERVING_SECRETS}
         for unrelated in ("openweathermap_api_key", "telegram_bot_token",
                           "github_token", "huggingface_token"):
             assert unrelated not in keys
@@ -150,20 +158,154 @@ class TestSectionGrouping:
         assert prompted.isdisjoint(setup_mod._HOST_SETTINGS)
 
 
-def _drive_editor(config, script):
-    """Run _edit_endpoints against a scripted stdin, return the new config."""
+def _fake_keystore(monkeypatch, initial=None):
+    """Replace the OS keychain with a dict, and hand it back.
+
+    The endpoint editor reads and writes real secrets now; without this the
+    tests would prompt the developer's login keychain and leave entries behind
+    in it.
+    """
+    store = dict(initial or {})
+    monkeypatch.setattr(setup_mod, "get_secret", lambda k: store.get(k))
+    monkeypatch.setattr(setup_mod, "store_secret",
+                        lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(setup_mod, "delete_secret",
+                        lambda k: store.pop(k, None))
+    return store
+
+
+def _drive_editor(config, script, keys=()):
+    """Run _edit_endpoints against a scripted stdin, return the new config.
+
+    ``script`` answers input(); ``keys`` answers the API key prompts, which
+    read through getpass and so need a channel of their own. An unscripted key
+    prompt answers blank, which keeps whatever is stored.
+    """
     import builtins
-    it = iter(script)
-    original = builtins.input
+    it, key_it = iter(script), iter(keys)
+    original_input, original_getpass = builtins.input, setup_mod.getpass.getpass
     builtins.input = lambda prompt="": next(it, "")
+    setup_mod.getpass.getpass = lambda prompt="": next(key_it, "")
     try:
         setup_mod._edit_endpoints(config)
     finally:
-        builtins.input = original
+        builtins.input = original_input
+        setup_mod.getpass.getpass = original_getpass
     return config
 
 
+class TestEndpointKeys:
+    """A key belongs to an endpoint, not to a provider: two vLLM servers with
+    different keys could not be told apart by ``vllm_api_key`` alone."""
+
+    @pytest.fixture(autouse=True)
+    def _no_keychain(self, monkeypatch):
+        self.store = _fake_keystore(monkeypatch)
+        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY",
+                    "ONIT_HOST2_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_a_key_is_addressed_by_its_url(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        setup_mod.store_endpoint_key("http://b:8000/v1", "sk-b")
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") == "sk-a"
+        assert setup_mod.get_endpoint_key("http://b:8000/v1") == "sk-b"
+
+    def test_a_trailing_slash_is_the_same_endpoint(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        assert setup_mod.get_endpoint_key("http://a:8000/v1/") == "sk-a"
+
+    def test_deleting_a_key_leaves_the_others(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        setup_mod.store_endpoint_key("http://b:8000/v1", "sk-b")
+        setup_mod.delete_endpoint_key("http://a:8000/v1")
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") is None
+        assert setup_mod.get_endpoint_key("http://b:8000/v1") == "sk-b"
+
+    def test_an_env_var_overrides_the_keychain(self, monkeypatch):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-stored")
+        monkeypatch.setenv(setup_mod.endpoint_env_var("http://a:8000/v1"),
+                           "sk-env")
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") == "sk-env"
+
+    def test_the_env_var_name_is_derived_from_the_url(self):
+        assert (setup_mod.endpoint_env_var("http://gpu-2:8000/v1")
+                == "ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1")
+
+    def test_a_key_follows_its_endpoint_to_a_new_url(self):
+        """Editing the host would otherwise strand the key at the old address
+        and leave the endpoint quietly unauthenticated."""
+        setup_mod.store_endpoint_key("http://old:8000/v1", "sk-a")
+        setup_mod.move_endpoint_key("http://old:8000/v1", "http://new:8000/v1")
+        assert setup_mod.get_endpoint_key("http://new:8000/v1") == "sk-a"
+        assert setup_mod.get_endpoint_key("http://old:8000/v1") is None
+
+    def test_moving_to_the_same_url_is_a_no_op(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        setup_mod.move_endpoint_key("http://a:8000/v1", "http://a:8000/v1/")
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") == "sk-a"
+
+    def test_a_host_with_no_key_moves_nothing(self):
+        setup_mod.move_endpoint_key("http://old:8000/v1", "http://new:8000/v1")
+        assert setup_mod.get_endpoint_key("http://new:8000/v1") is None
+
+
+class TestLegacyKeyFallback:
+    """The provider-named secrets still authenticate an endpoint that has no
+    key of its own, so an install predating per-endpoint keys keeps working."""
+
+    @pytest.fixture(autouse=True)
+    def _no_keychain(self, monkeypatch):
+        self.store = _fake_keystore(monkeypatch)
+        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.mark.parametrize("host,expected", [
+        ("https://openrouter.ai/api/v1", "host_key"),
+        ("https://ollama.com", "ollama_api_key"),
+        ("https://ollama.ai", "ollama_api_key"),
+        ("http://localhost:8000/v1", "vllm_api_key"),
+        ("http://localhost:11434/v1", "vllm_api_key"),
+    ])
+    def test_url_selects_the_legacy_secret(self, host, expected):
+        assert setup_mod.legacy_key_for(host)[0] == expected
+
+    @pytest.mark.parametrize("host,required", [
+        ("https://openrouter.ai/api/v1", True),
+        ("https://ollama.com", True),
+        ("http://localhost:8000/v1", False),
+    ])
+    def test_only_some_providers_cannot_answer_without_a_key(self, host,
+                                                             required):
+        assert setup_mod.legacy_key_for(host)[3] is required
+
+    def test_an_endpoints_own_key_wins_over_the_fallback(self):
+        self.store["vllm_api_key"] = "sk-old"
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-new")
+        assert setup_mod.endpoint_key_source("http://a:8000/v1") == "endpoint"
+
+    def test_the_fallback_is_named_when_it_is_what_applies(self):
+        self.store["vllm_api_key"] = "sk-old"
+        assert (setup_mod.endpoint_key_source("http://a:8000/v1")
+                == "vllm_api_key")
+
+    def test_nothing_anywhere_is_reported_as_nothing(self):
+        assert setup_mod.endpoint_key_source("http://a:8000/v1") is None
+
+    def test_a_positional_key_still_counts_for_the_second_host(self):
+        """serving.host2_key belongs to an endpoint by position, not URL."""
+        self.store["host2_key"] = "sk-2"
+        assert setup_mod.endpoint_key_source(
+            "https://openrouter.ai/api/v1", ("host2_key",)) == "host2_key"
+
+
 class TestEndpointEditor:
+    @pytest.fixture(autouse=True)
+    def _no_keychain(self, monkeypatch):
+        """The editor stores endpoint keys for real — keep them off the
+        developer's login keychain."""
+        self.store = _fake_keystore(monkeypatch)
+
     def test_adds_an_endpoint_with_priority(self, capsys):
         cfg = {"serving": {"host": "http://a:8000/v1"}}
         _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.1:cloud",
@@ -250,6 +392,54 @@ class TestEndpointEditor:
         cfg = {}
         _drive_editor(cfg, ["", "", "", "", ""])
         assert cfg["serving"]["host"] == setup_mod.DEFAULT_HOST
+
+    def test_an_added_endpoints_key_goes_to_the_keychain(self):
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
+        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "0", ""],
+                      keys=["sk-b"])
+        assert setup_mod.get_endpoint_key("http://b:8000/v1") == "sk-b"
+
+    def test_a_key_never_reaches_the_config_file(self):
+        """config.yaml gets copied around and pasted into issues; the
+        keychain does not."""
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
+        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "0", ""],
+                      keys=["sk-b"])
+        import yaml
+        assert "sk-b" not in yaml.safe_dump(cfg)
+
+    def test_blank_keeps_the_stored_key(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
+        _drive_editor(cfg, ["e 1", "", "", "", "", ""], keys=[""])
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") == "sk-a"
+
+    def test_a_dash_clears_the_stored_key(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
+        _drive_editor(cfg, ["e 1", "", "", "", "", ""], keys=["-"])
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") is None
+
+    def test_editing_the_url_carries_the_key_across(self):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
+        _drive_editor(cfg, ["e 1", "http://c:8000/v1", "", "", "", ""],
+                      keys=[""])
+        assert setup_mod.get_endpoint_key("http://c:8000/v1") == "sk-a"
+        assert setup_mod.get_endpoint_key("http://a:8000/v1") is None
+
+    def test_the_table_says_where_each_key_comes_from(self, capsys):
+        setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
+        self.store["vllm_api_key"] = "sk-legacy"
+        cfg = {"serving": {"host": "http://a:8000/v1",
+                           "host2": "http://b:8000/v1"}}
+        _drive_editor(cfg, [""])
+        out = capsys.readouterr().out
+        assert "KEY" in out
+        rows = {ln.split()[2]: ln for ln in out.splitlines()
+                if "http://" in ln and ln.strip()[0].isdigit()}
+        assert "set" in rows["http://a:8000/v1"]
+        assert "vllm_api_key" in rows["http://b:8000/v1"]
 
     def test_bad_row_number_is_reported_not_raised(self, capsys):
         cfg = {"serving": {"host": "http://a:8000/v1"}}

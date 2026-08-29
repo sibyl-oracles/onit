@@ -35,6 +35,8 @@ from pathlib import Path
 
 # Secret keys bridged from host keychain/secrets.yaml into the container env.
 # Kept in sync with src/setup.py SECRETS entries that have an env_var name.
+# Per-endpoint API keys are bridged separately — their env var is derived from
+# the endpoint's URL, so they cannot be listed ahead of time.
 _SECRET_ENV_KEYS = [
     ("host_key", "OPENROUTER_API_KEY"),
     ("ollama_api_key", "OLLAMA_API_KEY"),
@@ -160,6 +162,61 @@ def _collect_secret_env() -> list[str]:
     for keyring_key, env_name in _SECRET_ENV_KEYS:
         # CLI > env > keychain. Env takes precedence if set on the host.
         value = os.environ.get(env_name) or get_secret(keyring_key)
+        if value:
+            env_args.extend(["-e", f"{env_name}={value}"])
+    return env_args
+
+
+def _configured_hosts() -> list[str]:
+    """Every endpoint URL named in ~/.onit/config.yaml, both config shapes."""
+    cfg_path = Path(os.path.expanduser("~/.onit/config.yaml"))
+    if not cfg_path.is_file():
+        return []
+    try:
+        import yaml
+        with open(cfg_path) as f:
+            serving = (yaml.safe_load(f) or {}).get("serving") or {}
+    except Exception:
+        return []
+    if not isinstance(serving, dict):
+        return []
+    hosts = []
+    for entry in serving.get("endpoints") or []:
+        host = entry if isinstance(entry, str) else (
+            entry.get("host") if isinstance(entry, dict) else None)
+        if host:
+            hosts.append(str(host))
+    for key in ("host", "host2"):
+        if serving.get(key):
+            hosts.append(str(serving[key]))
+    return hosts
+
+
+def _collect_endpoint_key_env() -> list[str]:
+    """Bridge each endpoint's own API key in under its derived env var.
+
+    The container cannot reach the host keychain, and unlike the provider-named
+    secrets these have no fixed variable name — it is computed from the URL.
+    Without this an endpoint configured through 'onit setup' would authenticate
+    on the host and 401 inside the container.
+    """
+    try:  # importable as a package module or, in tests, on its own
+        from .setup import endpoint_env_var, get_endpoint_key
+    except ImportError:
+        try:
+            from src.setup import endpoint_env_var, get_endpoint_key
+        except Exception:
+            return []
+    except Exception:
+        return []
+    env_args: list[str] = []
+    seen: set[str] = set()
+    for host in _configured_hosts():
+        env_name = endpoint_env_var(host)
+        if env_name in seen:
+            continue
+        seen.add(env_name)
+        value = get_endpoint_key(host)
         if value:
             env_args.extend(["-e", f"{env_name}={value}"])
     return env_args
@@ -401,6 +458,7 @@ def _run_docker(
     total_bind_mounts = (len(auto_mounts) // 2) + len(mounts or [])
     cmd.extend(_host_user_args(total_bind_mounts))
     cmd.extend(_collect_secret_env())
+    cmd.extend(_collect_endpoint_key_env())
     if allow_installs:
         cmd.extend(["-e", "ONIT_ALLOW_PACKAGE_INSTALL=1"])
     cmd.append(IMAGE_TAG)
@@ -456,7 +514,11 @@ def build_run_command(
         cmd.extend(["-v", m])
     total_bind_mounts = (len(auto_mounts) // 2) + len(mounts or [])
     cmd.extend(_host_user_args(total_bind_mounts))
-    cmd.extend(secret_env if secret_env is not None else _collect_secret_env())
+    if secret_env is not None:
+        cmd.extend(secret_env)
+    else:
+        cmd.extend(_collect_secret_env())
+        cmd.extend(_collect_endpoint_key_env())
     if allow_installs:
         cmd.extend(["-e", "ONIT_ALLOW_PACKAGE_INSTALL=1"])
     cmd.append(IMAGE_TAG)

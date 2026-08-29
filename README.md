@@ -13,7 +13,7 @@ gateways, the full CLI and configuration reference — is in [docs/](docs/).
 
 ## Quick Start
 
-Four steps: environment → model server → keys → run.
+Three steps: install → start a model server → run.
 
 ### 1. Install
 
@@ -41,7 +41,17 @@ and if dependencies ever end up conflicting, recreate the environment from scrat
 Pick whichever matches your hardware. The model must support **tool calling** — OnIt
 does its work through tools, so a model without it will talk but not act.
 
-**Ollama** — simplest, runs anywhere:
+**Ollama cloud** — nothing to install, no GPU:
+
+```bash
+export OLLAMA_API_KEY=...   # free tier — sign in at ollama.com and create a key
+onit --host https://api.ollama.com --model glm-5.3:cloud
+```
+
+That is already a complete run: `--host` and `--model` override everything, so you can
+skip step 3 and come back to it when you want the settings saved.
+
+**Ollama** — local, runs anywhere:
 
 ```bash
 OLLAMA_CONTEXT_LENGTH=131072 ollama serve   # raise the context; the 4096 default truncates agent turns
@@ -66,53 +76,73 @@ vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 --port 8000 \
 ```
 → host `http://localhost:8000/v1`
 
-No GPU at hand? Skip this step and use a hosted endpoint in step 3:
-`https://openrouter.ai/api/v1` (OpenRouter) or `https://api.ollama.com` (Ollama cloud).
+The other hosted option is [OpenRouter](https://openrouter.ai/) —
+`--host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro`, with an
+`OPENROUTER_API_KEY` (paid).
 
-With local Ollama and MLX, **name the model explicitly** — auto-detection picks the
-first entry the server lists, which is rarely the one you meant.
+On a hosted endpoint, and with local Ollama or MLX, **name the model explicitly** —
+auto-detection picks the first entry the server lists, which is rarely the one you meant.
 
-See [docs/MODEL_SERVING.md](docs/MODEL_SERVING.md) for API keys on vLLM, context-window
-sizing, and running several servers with failover.
-
-### 3. Keys
+### 3. Run
 
 ```bash
-onit setup
-```
-
-The wizard asks for your model endpoint (host URL from step 2, plus the model name) and
-the API keys below. Settings land in `~/.onit/config.yaml`; secrets go into your OS
-keychain. Press Enter to skip anything you don't need — you can rerun it any time, and
-`onit setup --show` prints what is currently set.
-
-| Key | What it enables | Getting one |
-|-----|-----------------|-------------|
-| **Ollama API key** | **Web search.** The `search` tool uses the [Ollama web search API](https://ollama.com/blog/web-search); without a key it falls back to DuckDuckGo. The same key unlocks Ollama cloud models. | Free tier — sign in at [ollama.com](https://ollama.com) and create a key. Nothing needs to run locally: the key alone is enough for search. |
-| **OpenWeatherMap** | The `get_weather` tool (current conditions and 5-day forecast). | Free — [openweathermap.org/api](https://openweathermap.org/api). |
-| **vLLM API key** | Only if you started vLLM with `--api-key`. | Whatever you passed to `vllm serve`. |
-| **OpenRouter** | Hosted models, if that is your endpoint. | [openrouter.ai](https://openrouter.ai/) (paid). |
-| **GitHub token** | `git push` from the agent's shell, plus the `github_repo` tool — see [below](#github-and-hugging-face). | GitHub → Settings → Developer settings → Personal access tokens (`repo` scope). |
-| **Hugging Face token** | Model and dataset downloads in `--container` runs — see [below](#github-and-hugging-face). | [huggingface.co](https://huggingface.co) → Settings → Access Tokens. |
-
-Environment variables work too, if you'd rather not use the keychain:
-
-```bash
-export OLLAMA_API_KEY=...            # web search + Ollama cloud
-export OPENWEATHERMAP_API_KEY=...    # weather
-export VLLM_API_KEY=...              # vLLM with --api-key
-export OPENROUTER_API_KEY=...        # OpenRouter
-```
-
-### 4. Run
-
-```bash
+onit setup   # endpoint URL, API key, model name
 onit
 ```
 
-That's the text UI. MCP tools start automatically, the agent works out of `~/sandbox`,
-and `\bye` (or Ctrl+D) leaves. Running `onit` again picks the conversation back up where
-you left it.
+`onit setup` walks through your model endpoints one at a time, asking three things about
+each: its **URL** (from step 2), an **API key** (leave blank if the server needs none),
+and the **model name** — for the Ollama cloud example above, that is
+`https://api.ollama.com`, your Ollama key, and `glm-5.3:cloud`. The key prompt does not
+echo what you type, and the key goes into your OS keychain — never into `config.yaml`.
+Press Enter to skip anything; type `a` at the `endpoints>` prompt to add a second
+server. Rerun it any time, and `onit setup --show` prints what is currently set.
+
+`onit` then launches the text UI. MCP tools start automatically, the agent works out of
+`~/sandbox`, and `\bye` (or Ctrl+D) leaves. Running `onit` again picks the conversation
+back up where you left it.
+
+### Commands inside the session
+
+Lines starting with a backslash are answered by OnIt itself, without a model round trip:
+
+| Command | What it does |
+| --- | --- |
+| `\help` | List the commands. |
+| `\setup` | The endpoints, keys and paths this session is using. |
+| `\model [name]` | Switch model. Bare, it lists what the endpoint serves; `\model -` restores auto-detect. |
+| `\host [add \| rm] [url]` | List the endpoints, switch to one, add another, or drop one. |
+| `\key [n \| url]` | Set an endpoint's API key, typed at a prompt that does not echo it. |
+| `\bye` | End the session (also `\exit`, `\quit`, `\goodbye`). |
+
+A `\host` change lasts until you quit — run `onit setup` to make one permanent. A key
+set with `\key` is stored the same way the wizard stores it. Two things worth knowing:
+
+```
+\host add http://gpu-2:8000/v1         spread this session across both servers
+\host add https://ollama.com --share   Ollama endpoints sit out as a standby while
+                                       another endpoint is healthy; --share puts
+                                       them in rotation on equal terms
+```
+
+Any other line goes to the model, so a message may still start with a backslash.
+
+### Optional keys
+
+None of these are needed to start. Add them with `onit setup`, or as environment
+variables if you would rather skip the keychain.
+
+| Key | What it enables | Getting one |
+|-----|-----------------|-------------|
+| **Ollama API key** (`OLLAMA_API_KEY`) | **Web search.** The `search` tool uses the [Ollama web search API](https://ollama.com/blog/web-search); without a key it falls back to DuckDuckGo. | Free tier — sign in at [ollama.com](https://ollama.com) and create a key. Nothing needs to run locally. |
+| **OpenWeatherMap** (`OPENWEATHERMAP_API_KEY`) | The `get_weather` tool. | Free — [openweathermap.org/api](https://openweathermap.org/api). |
+| **GitHub token** (`GITHUB_TOKEN`) | `git push` from the agent's shell, plus the `github_repo` tool — see [below](#github-and-hugging-face). | GitHub → Settings → Developer settings → Personal access tokens (`repo` scope). |
+| **Hugging Face token** (`HF_TOKEN`) | Model and dataset downloads in `--container` runs — see [below](#github-and-hugging-face). | [huggingface.co](https://huggingface.co) → Settings → Access Tokens. |
+
+Model-server keys are not in this table — `onit setup` asks for each endpoint's key
+beside its URL, so two servers with different keys are simply two entries. See
+[docs/MODEL_SERVING.md](docs/MODEL_SERVING.md) for the full resolution order, running
+several servers with failover, and context-window sizing.
 
 ## Day to day
 

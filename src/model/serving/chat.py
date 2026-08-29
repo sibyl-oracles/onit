@@ -358,61 +358,49 @@ def _is_ollama_host(host: str) -> bool:
 
 
 def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
-    """Resolve the API key based on the host URL.
+    """The API key an endpoint is authenticated with.
 
-    For OpenRouter hosts, use host_key param or OPENROUTER_API_KEY env var
-    or OS keychain. For Ollama cloud hosts, use OLLAMA_API_KEY env var or
-    keychain. For vLLM and other hosts, use host_key param or VLLM_API_KEY
-    env var or keychain, defaulting to "EMPTY" (vLLM without --api-key
-    accepts any bearer token).
+    In order: the key the caller was given (an endpoint's ``api_key`` from the
+    config, or a --host-key on the command line), then the key stored for this
+    endpoint's URL, then the provider-named secret its URL selects.
+
+    That last step is the pre-endpoint-key arrangement, kept so an install that
+    predates it keeps working; ``src.setup.LEGACY_ENDPOINT_KEYS`` holds the
+    URL-to-secret rule, which the setup wizard reads from the same place.
+
+    "EMPTY" is the no-key default: vLLM started without --api-key accepts any
+    bearer token, so an unauthenticated endpoint needs no configuration at all.
+    A provider that cannot answer without a key raises instead, because the
+    alternative is a 401 several seconds into the first task.
     """
-    if "openrouter.ai" in host:
-        if host_key and host_key != "EMPTY":
-            return host_key
-        key = os.environ.get("OPENROUTER_API_KEY", "")
-        if not key:
-            # Try OS keychain via setup module
-            try:
-                from src.setup import get_secret
-                key = get_secret("host_key") or ""
-            except Exception:
-                pass
-        if not key:
-            raise ValueError(
-                "OpenRouter requires an API key. Set it via:\n"
-                "  - onit setup (recommended)\n"
-                "  - serving.host_key in the config YAML\n"
-                "  - OPENROUTER_API_KEY environment variable"
-            )
-        return key
-    if _is_ollama_host(host):
-        if host_key and host_key != "EMPTY":
-            return host_key
-        key = os.environ.get("OLLAMA_API_KEY", "")
-        if not key:
-            try:
-                from src.setup import get_secret
-                key = get_secret("ollama_api_key") or ""
-            except Exception:
-                pass
-        if not key:
-            raise ValueError(
-                "Ollama cloud requires an API key. Set it via:\n"
-                "  - onit setup (recommended)\n"
-                "  - serving.host_key in the config YAML\n"
-                "  - OLLAMA_API_KEY environment variable"
-            )
-        return key
     if host_key and host_key != "EMPTY":
         return host_key
-    key = os.environ.get("VLLM_API_KEY", "")
+    try:
+        from src.setup import get_endpoint_key, get_secret, legacy_key_for
+    except Exception:
+        return host_key
+
+    key = get_endpoint_key(host)
+    if key:
+        return key
+
+    keyring_key, env_var, label, required = legacy_key_for(host)
+    key = os.environ.get(env_var, "")
     if not key:
         try:
-            from src.setup import get_secret
-            key = get_secret("vllm_api_key") or ""
+            key = get_secret(keyring_key) or ""
         except Exception:
             pass
-    return key or host_key
+    if key:
+        return key
+    if required:
+        raise ValueError(
+            f"{label} requires an API key. Set it via:\n"
+            "  - onit setup (recommended)\n"
+            "  - the endpoint's 'api_key' in the config YAML\n"
+            f"  - {env_var} environment variable"
+        )
+    return host_key
 
 
 def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True):
@@ -555,6 +543,28 @@ async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
     logger.info("Auto-detected model: %s from %s", model_id, host)
     _MODEL_ID_CACHE[host] = model_id
     return model_id
+
+
+async def list_models(host: str, host_key: str = "EMPTY",
+                      timeout: float = 15.0) -> list[str]:
+    """Every model id the endpoint at ``host`` will answer for, sorted.
+
+    The auto-detection path above only ever wants the first entry, so it never
+    had a reason to keep the rest.  The interactive ``\\model`` command does:
+    it offers the list to choose from, and a name the endpoint does not serve
+    is a 404 on the next task rather than an error at the moment of typing.
+
+    Raises whatever the client raises — the caller reports it to the user.
+    """
+    api_key = _resolve_api_key(host, host_key)
+    if _is_ollama_host(host):
+        client = _create_ollama_client(host, api_key, timeout, stream=False)
+        resp = await client.list()
+        return sorted(m.model for m in (resp.models or []) if m.model)
+    client = AsyncOpenAI(base_url=host, api_key=api_key,
+                         timeout=_build_client_timeout(timeout, stream=False))
+    models = await client.models.list()
+    return sorted(m.id for m in (models.data or []) if m.id)
 
 
 async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,

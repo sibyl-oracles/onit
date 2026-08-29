@@ -43,7 +43,7 @@ Interactive setup wizard, in three sections:
 
 Settings go to `~/.onit/config.yaml`, secrets to the OS keychain.
 
-Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.1:cloud`), OpenRouter (e.g. `google/gemini-2.5-pro`), or a local Ollama/MLX server hosting several models, where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
+Leave the model name blank to auto-detect it from the endpoint (first available model). Set it explicitly for Ollama cloud (e.g. `glm-5.3:cloud`), OpenRouter (e.g. `google/gemini-2.5-pro`), or a local Ollama/MLX server hosting several models, where auto-detection would pick an arbitrary model. Press Enter to keep a value, type `-` to clear it. The wizard warns when an Ollama cloud or OpenRouter endpoint is missing its API key or model name.
 
 See [Multiple model endpoints](MODEL_SERVING.md#multiple-model-endpoints) for the endpoint editor and how priority routing works.
 

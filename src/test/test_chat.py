@@ -62,6 +62,56 @@ class TestResolveApiKey:
         with pytest.raises(ValueError, match="OpenRouter requires"):
             _resolve_api_key("https://openrouter.ai/api/v1")
 
+    def test_ollama_cloud_missing_key_raises(self):
+        with pytest.raises(ValueError, match="Ollama cloud requires"):
+            _resolve_api_key("https://ollama.com")
+
+    def test_an_endpoints_own_key_is_used(self, monkeypatch):
+        import src.setup
+        monkeypatch.setattr(
+            src.setup, "get_secret",
+            lambda key: "sk-endpoint"
+            if key == src.setup.endpoint_secret_name("http://gpu-2:8000/v1")
+            else None)
+        assert _resolve_api_key("http://gpu-2:8000/v1") == "sk-endpoint"
+
+    def test_two_endpoints_can_hold_different_keys(self, monkeypatch):
+        """The whole point of moving keys onto the endpoint: one provider-named
+        secret could not tell two vLLM servers apart."""
+        import src.setup
+        keys = {src.setup.endpoint_secret_name("http://gpu-1:8000/v1"): "sk-1",
+                src.setup.endpoint_secret_name("http://gpu-2:8000/v1"): "sk-2"}
+        monkeypatch.setattr(src.setup, "get_secret", lambda key: keys.get(key))
+        assert _resolve_api_key("http://gpu-1:8000/v1") == "sk-1"
+        assert _resolve_api_key("http://gpu-2:8000/v1") == "sk-2"
+
+    def test_an_endpoints_own_key_beats_the_legacy_secret(self, monkeypatch):
+        import src.setup
+        host = "https://openrouter.ai/api/v1"
+        monkeypatch.setattr(
+            src.setup, "get_secret",
+            lambda key: "sk-endpoint"
+            if key == src.setup.endpoint_secret_name(host) else "sk-legacy")
+        assert _resolve_api_key(host) == "sk-endpoint"
+
+    def test_an_explicit_key_beats_the_endpoints_own(self, monkeypatch):
+        """A --host-key or an api_key written into the YAML is the most
+        specific thing the caller can say."""
+        import src.setup
+        monkeypatch.setattr(src.setup, "get_secret", lambda key: "sk-stored")
+        assert _resolve_api_key("http://gpu-2:8000/v1", "sk-explicit") \
+            == "sk-explicit"
+
+    def test_an_endpoint_key_env_var_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1", "sk-env")
+        assert _resolve_api_key("http://gpu-2:8000/v1") == "sk-env"
+
+    def test_the_legacy_secret_still_authenticates_an_old_install(self, monkeypatch):
+        import src.setup
+        monkeypatch.setattr(src.setup, "get_secret",
+                            lambda key: "sk-old" if key == "vllm_api_key" else None)
+        assert _resolve_api_key("http://localhost:8000/v1") == "sk-old"
+
 
 # ── _parse_tool_call_from_content ───────────────────────────────────────────
 
