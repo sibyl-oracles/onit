@@ -2,18 +2,25 @@
 
 *OnIt* — the AI is working on the given task and will deliver the results shortly.
 
-OnIt is a terminal AI agent. It runs on a model server you control — [vLLM](https://github.com/vllm-project/vllm),
-[Ollama](https://ollama.com), or [MLX](https://github.com/ml-explore/mlx-lm) on Apple silicon —
-or on a hosted endpoint ([OpenRouter](https://openrouter.ai/), [Ollama cloud](https://ollama.com)),
-and drives its work through [MCP](https://modelcontextprotocol.io/) tools: web search, weather,
+OnIt is an agent harness: it hands a language model a set of tools, a working
+directory, and a memory of what it has already done, then runs the loop until the task
+is finished. The agent is the same whichever way you reach it — a terminal session, a
+browser chat UI, an [A2A](https://a2a-protocol.org/) endpoint, or a Telegram or Viber
+bot. Only the front end changes.
+
+It runs on a model server you control — [vLLM](https://github.com/vllm-project/vllm),
+[SGLang](https://github.com/sgl-project/sglang), [Ollama](https://ollama.com), or
+[MLX](https://github.com/ml-explore/mlx-lm) on Apple silicon — or on a hosted endpoint
+([OpenRouter](https://openrouter.ai/), [Ollama cloud](https://ollama.com)), and drives
+its work through [MCP](https://modelcontextprotocol.io/) tools: web search, weather,
 shell, file editing, and search over your own documents.
 
-This README gets the **text UI** running. Everything else — web UI, containers, bot
-gateways, the full CLI and configuration reference — is in [docs/](docs/).
+This README gets you to a first session in the **text UI**. The other front ends,
+containers, and the full CLI and configuration reference are in [docs/](docs/).
 
 ## Quick Start
 
-Three steps: install → start a model server → run.
+Two steps: install → run.
 
 ### 1. Install
 
@@ -36,54 +43,28 @@ Activate the environment again in every new shell before running `onit`. To pick
 newer commits later: `git pull && pip install -e '.[all]' -U --upgrade-strategy eager` —
 and if dependencies ever end up conflicting, recreate the environment from scratch.
 
-### 2. Start a model server
+### 2. Run
 
-Pick whichever matches your hardware. The model must support **tool calling** — OnIt
-does its work through tools, so a model without it will talk but not act.
-
-**Ollama cloud** — nothing to install, no GPU:
+OnIt talks to any OpenAI-compatible endpoint. The quickest to reach is Ollama cloud —
+nothing to install, no GPU:
 
 ```bash
 export OLLAMA_API_KEY=...   # free tier — sign in at ollama.com and create a key
 onit --host https://api.ollama.com --model glm-5.3:cloud
 ```
 
-That is already a complete run: `--host` and `--model` override everything, so you can
-skip step 3 and come back to it when you want the settings saved.
-
-**Ollama** — local, runs anywhere:
-
-```bash
-OLLAMA_CONTEXT_LENGTH=131072 ollama serve   # raise the context; the 4096 default truncates agent turns
-ollama pull qwen3:30b
-```
-→ host `http://localhost:11434/v1` (the `/v1` suffix is required)
-
-**MLX** — Apple silicon:
-
-```bash
-pip install mlx-lm
-mlx_lm.server --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --port 8080
-```
-→ host `http://localhost:8080/v1`
-
-**vLLM** — NVIDIA GPUs:
-
-```bash
-vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 --port 8000 \
-  --max-model-len 262144 --enable-auto-tool-choice --tool-call-parser hermes \
-  --reasoning-parser qwen3 --chat-template-content-format string
-```
-→ host `http://localhost:8000/v1`
-
-The other hosted option is [OpenRouter](https://openrouter.ai/) —
+That is already a complete run: `--host` and `--model` override everything, so the rest
+of this step is about saving the settings instead of retyping them. The other hosted
+option is [OpenRouter](https://openrouter.ai/) —
 `--host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro`, with an
 `OPENROUTER_API_KEY` (paid).
 
-On a hosted endpoint, and with local Ollama or MLX, **name the model explicitly** —
-auto-detection picks the first entry the server lists, which is rarely the one you meant.
+To run the model on your own hardware instead — vLLM, SGLang, MLX, or Ollama — see
+[docs/RUN_A_MODEL_SERVER.md](docs/RUN_A_MODEL_SERVER.md) and come back with the
+endpoint's URL. Whichever you choose, the model must support **tool calling**: OnIt does
+its work through tools, so a model without it will talk but not act.
 
-### 3. Run
+To make the endpoint stick:
 
 ```bash
 onit setup   # endpoint URL, API key, model name
@@ -91,12 +72,15 @@ onit
 ```
 
 `onit setup` walks through your model endpoints one at a time, asking three things about
-each: its **URL** (from step 2), an **API key** (leave blank if the server needs none),
-and the **model name** — for the Ollama cloud example above, that is
+each: its **URL**, an **API key** (leave blank if the server needs none), and the
+**model name** — for the Ollama cloud example above, that is
 `https://api.ollama.com`, your Ollama key, and `glm-5.3:cloud`. The key prompt does not
 echo what you type, and the key goes into your OS keychain — never into `config.yaml`.
 Press Enter to skip anything; type `a` at the `endpoints>` prompt to add a second
 server. Rerun it any time, and `onit setup --show` prints what is currently set.
+
+On a hosted endpoint, and with local Ollama or MLX, **name the model explicitly** —
+auto-detection picks the first entry the server lists, which is rarely the one you meant.
 
 `onit` then launches the text UI. MCP tools start automatically, the agent works out of
 `~/sandbox`, and `\bye` (or Ctrl+D) leaves. Running `onit` again picks the conversation
@@ -213,7 +197,9 @@ One container-only gotcha: the command allowlist is enforced there and carries `
 `git-lfs` but not `gh` or `hf`. Add what you need with
 `ONIT_ALLOWED_COMMANDS=gh,hf,huggingface-cli` ([docs/ISOLATION.md](docs/ISOLATION.md)).
 
-## Beyond the terminal
+## Other front ends
+
+The same agent, the same sessions, the same tools — reached a different way:
 
 | | |
 |---|---|
@@ -225,7 +211,8 @@ One container-only gotcha: the command allowlist is enforced there and carries `
 
 ## Documentation
 
-- [Model Serving](docs/MODEL_SERVING.md) — vLLM, Ollama, MLX, OpenRouter, Ollama cloud, multi-endpoint failover
+- [Run a Model Server](docs/RUN_A_MODEL_SERVER.md) — serving your own model with vLLM, SGLang, MLX, or Ollama
+- [Model Serving](docs/MODEL_SERVING.md) — connecting OnIt to endpoints: keys, hosted providers, multi-endpoint failover
 - [CLI Reference](docs/CLI.md) — every command and flag, including the `serve` modes
 - [Configuration](docs/CONFIGURATION.md) — config file, environment variables, sampling, fact-checking
 - [MCP Tools](docs/TOOLS.md) — the default tools, sandbox paths, notes, code execution

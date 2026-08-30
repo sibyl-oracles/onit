@@ -592,7 +592,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the CLI argument parser."""
     parser = argparse.ArgumentParser(
         prog="onit",
-        description="OnIt — an intelligent agent for task automation and assistance.",
+        description="OnIt — an agent harness for task automation, in the terminal or on the web.",
     )
 
     subparsers = parser.add_subparsers(dest="command")

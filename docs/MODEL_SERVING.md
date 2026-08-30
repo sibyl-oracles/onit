@@ -1,38 +1,31 @@
 # Model Serving
 
-How to run the LLM behind OnIt: private vLLM, local Ollama, local MLX on Apple
-silicon, OpenRouter, Ollama cloud — and how to combine several of them.
+How OnIt reaches the LLM behind it: a private vLLM or SGLang server, local
+Ollama, local MLX on Apple silicon, OpenRouter, Ollama cloud — how each is
+configured, and how to combine several of them with failover.
 
 For the five-minute version, see the [Quick Start](../README.md#quick-start).
+**Standing up the server itself** — install commands, tool-call parser flags,
+context sizing, GPU memory — is in
+[RUN_A_MODEL_SERVER.md](RUN_A_MODEL_SERVER.md); this page picks up once one is
+running.
 
-## Private vLLM
+## Private vLLM or SGLang
 
-Serve models locally with [vLLM](https://github.com/vllm-project/vllm):
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
-  --max-model-len 262144 --port 8000 \
-  --enable-auto-tool-choice --tool-call-parser hermes \
-  --reasoning-parser qwen3 --tensor-parallel-size 4 \
-  --chat-template-content-format string \
-  --enable-prefix-caching
-```
-
-`--enable-prefix-caching` is on by default in current vLLM and is pinned here
-because OnIt is built around it. Every request opens with the same bytes — the
-tool schemas, then the agent's standing rules — roughly 4k tokens that a warm
-prefix cache skips prefilling entirely. An agent turn re-sends the whole
-conversation to add one tool result, so that saving is paid back on every turn
-of every task, not once per session. Serving without it makes prefill, not
-decode, the thing you wait on.
+Point OnIt at the server's OpenAI-compatible base URL — port 8000 for a default
+vLLM, 30000 for SGLang:
 
 ```bash
 onit --host http://localhost:8000/v1
 ```
 
-To restrict the vLLM server to authorized clients, start it with one or more
-API keys — **space-separated, not comma-separated** (`--api-key` is parsed
-with `nargs="+"`; a comma-joined string becomes one literal key):
+A single-model server can be left to auto-detect the model name. Launch flags
+for both servers — tool-call parsers, prefix caching, tensor parallelism — are
+in [RUN_A_MODEL_SERVER.md](RUN_A_MODEL_SERVER.md).
+
+To restrict the server to authorized clients, start it with one or more API
+keys. On vLLM they are **space-separated, not comma-separated** (`--api-key` is
+parsed with `nargs="+"`; a comma-joined string becomes one literal key):
 
 ```bash
 vllm serve ... --api-key key1 key2 key3
@@ -48,8 +41,8 @@ Either way — `onit setup` or `\key` inside a running session — the key is ty
 at a prompt that does not echo it, and is never passed as a command-line
 argument where a shell history or the chat panel would keep it.
 
-The key belongs to the endpoint you entered it under, so two vLLM servers
-started with different keys are simply two entries. It is stored in the OS
+The key belongs to the endpoint you entered it under, so two servers started
+with different keys are simply two entries. It is stored in the OS
 keychain, never in `config.yaml`.
 
 Resolution order for an endpoint's key:
@@ -70,18 +63,13 @@ use. Without `--api-key` on the vLLM side, no key is needed at all.
 ## Local Ollama
 
 [Ollama](https://ollama.com) runs models on your own machine and exposes an
-OpenAI-compatible API on port 11434. Start the server and pull a model that
+OpenAI-compatible API on port 11434
+([starting it](RUN_A_MODEL_SERVER.md#ollama-anywhere)). Pull a model that
 supports tool calling — OnIt drives every task through MCP tools, so a model
-without tool support will talk but not act:
-
-```bash
-ollama serve                       # or the menu-bar app
-ollama pull qwen3:30b              # any tool-capable model
-```
-
-Point OnIt at it. The **`/v1` suffix is required** — that is the
-OpenAI-compatible path; the bare `http://localhost:11434` root serves Ollama's
-native API and every request 404s:
+without tool support will talk but not act — then point OnIt at it. The
+**`/v1` suffix is required**: that is the OpenAI-compatible path, and the bare
+`http://localhost:11434` root serves Ollama's native API, where every request
+404s.
 
 ```bash
 onit --host http://localhost:11434/v1 --model qwen3:30b
@@ -94,8 +82,9 @@ most recently, not the one you meant.
 **Size the context window on the server.** Local Ollama is reached over the
 OpenAI path, so the automatic `num_ctx` sizing OnIt does for Ollama *cloud*
 doesn't apply — Ollama falls back to its own default (4096 tokens in current
-releases, 2048 in older ones), which truncates long agent turns mid-stream. Raise it when starting the server, and tell OnIt the
-same number so context compaction accounts for it:
+releases, 2048 in older ones), which truncates long agent turns mid-stream.
+Raise it when starting the server, and tell OnIt the same number so context
+compaction accounts for it:
 
 ```bash
 OLLAMA_CONTEXT_LENGTH=131072 ollama serve
@@ -119,12 +108,8 @@ serving:
 ## Local MLX (Apple silicon)
 
 [MLX LM](https://github.com/ml-explore/mlx-lm) runs quantized models on the
-Apple silicon GPU and ships an OpenAI-compatible server:
-
-```bash
-pip install mlx-lm
-mlx_lm.server --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit --port 8080
-```
+Apple silicon GPU and ships an OpenAI-compatible server
+([starting it](RUN_A_MODEL_SERVER.md#mlx-apple-silicon)):
 
 ```bash
 onit --host http://localhost:8080/v1 --model mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit

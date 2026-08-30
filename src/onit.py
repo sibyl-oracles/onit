@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-OnIt: An intelligent agent framework for task automation and assistance.
+OnIt: An agent harness for task automation and assistance.
 
 """
 
