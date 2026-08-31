@@ -39,5 +39,9 @@ htmlcov/
 # Logs
 *.log
 
+# Session artifacts
+tmp/
+.onit/
+
 # Eval
 *.eval
