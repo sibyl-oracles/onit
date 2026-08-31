@@ -60,8 +60,6 @@ BENCHMARKS: dict[str, tuple[str, str]] = {
     "humaneval": ("HumanEval", "coding"),
     "mbpp": ("MBPP", "coding"),
     "bigcodebench": ("BigCodeBench", "coding"),
-    "livecodebench": ("LiveCodeBench Pro", "coding"),
-    "swe_bench": ("SWE-bench", "coding"),
     "metr": ("METR Time Horizon", "long-horizon"),
 }
 

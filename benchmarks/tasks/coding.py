@@ -5,17 +5,10 @@ Two tiers of implementation:
 * **Native** (``humaneval``, ``mbpp``) — self-contained tasks scored by running
   the agent's solution against held-out tests in an Inspect Docker sandbox. They
   use the shared :func:`code_exec_scorer` factory.
-* **Wrapped** (``bigcodebench``, ``livecodebench``) — thin wrappers over the
-  validated ``inspect_evals`` implementations. These use plain ``generate()``
+* **Wrapped** (``bigcodebench``) — thin wrapper over the
+  validated ``inspect_evals`` implementation. These use plain ``generate()``
   solvers, so they work with OnIt's final-answer provider (the agent runs its
   own tool loop internally and returns code, which the task then executes).
-
-``swe_bench`` is wired but **deferred**: its ``inspect_evals`` task drives a
-tool-calling agent inside the grading sandbox, which is incompatible with the
-final-text provider. Benchmarking OnIt on SWE-bench needs the native-tools /
-shared-sandbox bridge (see ``benchmarks/onit_agent.py``). It is excluded from
-the default ``coding``/``all`` categories; invoke it explicitly once the bridge
-lands.
 
 All coding tasks execute model-generated code, so a Docker daemon must be
 available (mirrors OnIt's own ``--container``/MCP-sandbox posture).
@@ -177,31 +170,3 @@ def bigcodebench(subset: list[int] | None = None) -> Task:
     from inspect_evals.bigcodebench import bigcodebench as _bigcodebench
 
     return _bigcodebench(subset=subset)
-
-
-@task
-def livecodebench(difficulty=None) -> Task:
-    """LiveCodeBench Pro: contamination-resistant competitive coding (inspect_evals)."""
-    from inspect_evals.livecodebench_pro import livecodebench_pro
-
-    return livecodebench_pro(difficulty=difficulty)
-
-
-@task
-def swe_bench(dataset: str = "princeton-nlp/SWE-bench_Verified") -> Task:
-    """SWE-bench via the stock ``inspect_evals`` tool-calling agent.
-
-    This does NOT use the OnIt agent — its solver drives Inspect's own
-    tool-calling agent in the grading sandbox, which the final-text OnIt provider
-    cannot satisfy. To benchmark **OnIt** on SWE-bench, use the dedicated runner
-    instead (it lets OnIt edit the repo in its ``data_path`` workspace and grades
-    with the official harness)::
-
-        python -m benchmarks.swe_bench_runner --dataset lite --tier smoke
-
-    See ``benchmarks/README.md`` → "SWE-bench". This wrapper is kept only for
-    comparison against the stock Inspect agent.
-    """
-    from inspect_evals.swe_bench import swe_bench as _swe_bench
-
-    return _swe_bench(dataset=dataset)

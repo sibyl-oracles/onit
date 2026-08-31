@@ -5,6 +5,11 @@ Baseline model pin: **`Qwen/Qwen3.8-27B`** (set as `benchmarks/config.py`
 from earlier runs (Qwen3.**6**-27B on vLLM among them); the first pinned-model
 run will add its `summary.json` under `baselines/` and a row here.
 
+Scope note (2026-08-31): SWE-bench and LiveCodeBench have been **removed** from
+the benchmark suite (runner, task wrappers, `swe_bench` extra, docs). The
+tracked set is bigcodebench, gsm8k, humaneval, mbpp, plus the METR
+time-horizon layer for long-horizon capability.
+
 | Benchmark | Host | Model | Accuracy | Stderr |
 |---|---|---|---|---|
 | bigcodebench | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.518 | 0.015 |

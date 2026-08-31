@@ -25,7 +25,6 @@
 - **MLX and Ollama Cloud** — Added local MLX serving on Apple silicon and hosted Ollama cloud endpoints alongside vLLM, local Ollama, and OpenRouter. See [docs/MODEL_SERVING.md](docs/MODEL_SERVING.md).
 - **VLM Web Image Fetch** — New MCP server (`VLMToolsMCPServer`) for fetching and processing images from web URLs in vision-language workflows.
 - **Windows Support** — Platform-specific fixes for signal handling and the terminal UI.
-- **SWE-bench Harness** — `onit[swe_bench]` extra and benchmark plumbing for running OnIt against SWE-bench through inspect-ai.
 
 ### Improvements
 

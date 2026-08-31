@@ -5,7 +5,7 @@ tasks (``gsm8k`` reasoning, ``humaneval`` coding); later phases fill in the
 remaining benchmarks listed in the suite plan.
 """
 
-from .coding import bigcodebench, humaneval, livecodebench, mbpp, swe_bench
+from .coding import bigcodebench, humaneval, mbpp
 from .reasoning import gsm8k
 
 __all__ = [
@@ -13,6 +13,4 @@ __all__ = [
     "humaneval",
     "mbpp",
     "bigcodebench",
-    "livecodebench",
-    "swe_bench",
 ]

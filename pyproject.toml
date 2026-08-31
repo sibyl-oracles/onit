@@ -74,17 +74,12 @@ bench = [
     "numpy",
     "scikit-learn",
 ]
-swe_bench = [
-    "onit[bench]",
-    "swebench",
-]
 all = [
     "onit[search]",
     "onit[web]",
     "onit[gateway]",
     "onit[test]",
     "onit[bench]",
-    "onit[swe_bench]",
 ]
 
 [project.scripts]

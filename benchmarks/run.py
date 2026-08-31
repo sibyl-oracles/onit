@@ -33,11 +33,6 @@ TASKS = {
     "humaneval": coding.humaneval,
     "mbpp": coding.mbpp,
     "bigcodebench": coding.bigcodebench,
-    "livecodebench": coding.livecodebench,
-    # Agent benchmark: `--tasks swe_bench` is intercepted in main() and routed to
-    # the dedicated OnIt runner (swe_bench_runner). This stock inspect_evals entry
-    # is kept only for direct comparison against Inspect's own tool-calling agent.
-    "swe_bench": coding.swe_bench,
     # METR time-horizon (long-horizon capability). Requires the `mtb` bridge
     # package, Docker, and METR task images; see benchmarks/tasks/metr.py.
     "metr": metr.metr,
@@ -45,13 +40,13 @@ TASKS = {
 CATEGORIES = {
     "reasoning": ["gsm8k"],
     # Provider-compatible coding tasks (all require a Docker daemon).
-    "coding": ["humaneval", "mbpp", "bigcodebench", "livecodebench"],
+    "coding": ["humaneval", "mbpp", "bigcodebench"],
     # The pinned baseline set: the four tasks tracked in RESULTS.md and the
     # regression gate. Run with `--tier sampled` (or full) to produce the
     # summary.json that gets committed under benchmarks/baselines/.
     "baseline": ["bigcodebench", "gsm8k", "humaneval", "mbpp"],
-    # Everything wired and provider-compatible (excludes deferred swe_bench).
-    "all": ["gsm8k", "humaneval", "mbpp", "bigcodebench", "livecodebench"],
+    # Everything wired and provider-compatible.
+    "all": ["gsm8k", "humaneval", "mbpp", "bigcodebench"],
 }
 
 
@@ -68,31 +63,6 @@ def _resolve_task_names(requested: list[str]) -> list[str]:
     # De-duplicate while preserving order.
     seen: set[str] = set()
     return [n for n in names if not (n in seen or seen.add(n))]
-
-
-def _run_swe_bench(args, log_dir: str) -> None:
-    """Run SWE-bench via the dedicated OnIt agent runner.
-
-    The ``swe_bench`` task registered for Inspect drives Inspect's *own*
-    tool-calling agent, which the final-text OnIt provider cannot satisfy — every
-    instance comes back with no patch and grades to 0 (the ``mean=0`` symptom). To
-    actually benchmark OnIt we hand off to ``swe_bench_runner``, which lets OnIt
-    edit a real checkout and grades with the official harness. The final score and
-    per-instance errors are tee'd to a log file under the tier's log dir.
-    """
-    from . import swe_bench_runner
-
-    log_file = f"{log_dir}/swe_bench.log"
-    runner_argv = [
-        "--dataset", "verified",
-        "--tier", args.tier,
-        "--run-id", f"onit-{args.tier}",
-        "--log-file", log_file,
-    ]
-    if args.fresh:
-        runner_argv.append("--fresh")
-    print(f"[bench] swe_bench -> OnIt runner (log: {log_file})")
-    swe_bench_runner.main(runner_argv)
 
 
 def _print_benchmark_list() -> None:
@@ -179,14 +149,6 @@ def main(argv: list[str] | None = None) -> None:
     model = f"onit/{bench_config.model_label()}"
     log_dir = f"{args.log_dir}/{tier.name}"
     task_names = _resolve_task_names(args.tasks)
-
-    # SWE-bench is an agent benchmark and cannot run through the Inspect/final-text
-    # path without grading to 0; route it to the dedicated OnIt runner instead.
-    if "swe_bench" in task_names:
-        _run_swe_bench(args, log_dir)
-        task_names = [n for n in task_names if n != "swe_bench"]
-        if not task_names:
-            return
 
     # Sample-level backstop: a single task may make several bounded agent
     # requests (tool loop), so allow a multiple of the per-request timeout

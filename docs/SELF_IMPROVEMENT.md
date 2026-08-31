@@ -264,7 +264,7 @@ An honest audit. Findings are file-referenced so they can be verified.
 | Asset | Location | Why it matters |
 |---|---|---|
 | Rich per-run telemetry | [`TurnMetrics`](../src/model/serving/chat.py#L95) — turns, tool calls, prefill/decode split, compactions, peak prompt tokens | Free efficiency features for the reward model — already computed |
-| Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L29) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench, livecodebench, SWE-bench runner | **The fitness function** — the single biggest head start, but aimed at the model rather than the scaffold. See gap 5 |
+| Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L29) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench + METR time-horizon layer | **The fitness function** — the single biggest head start, but aimed at the model rather than the scaffold. See gap 5 |
 | Answer verifier | [`verify.py`](../src/model/serving/verify.py) — fact-checks the finished answer against the evidence that produced it; on by default | **An outcome signal that already runs**, already recorded per task and not yet read. See gap 3 |
 | Explicit run state | [`RunState`](../src/model/serving/state.py#L86), [`ResultStore`](../src/model/serving/results.py), [harness tools](../src/model/serving/harness.py) | Phase 0.5 (H2/H4/H6). `stop_reason` is the signal metrics cannot supply |
 | LLM-as-judge | [`benchmarks/scorers/onit_judge.py`](../benchmarks/scorers/onit_judge.py) | Quality gate for open-ended tasks |
@@ -317,7 +317,7 @@ An honest audit. Findings are file-referenced so they can be verified.
    - `benchmarks/baselines/` holds a README and nothing else. No `holdout.jsonl`, no
      `baseline.json`, no `pinned.yaml`. Invariants I1 and I3 are prose, not code.
    - The tasks registered in [`run.py`](../benchmarks/run.py#L30-L41) are gsm8k, humaneval,
-     mbpp, bigcodebench and livecodebench — **single-turn, and near-saturated** at 0.978 /
+     mbpp and bigcodebench — **single-turn, and near-saturated** at 0.978 /
      0.915 / 0.957 in `RESULTS.md`. A playbook cannot move humaneval: there is no
      multi-step tool use in it for a learned workflow to improve, and almost no headroom
      left if there were. Freezing a holdout from these would formalize the error rather
