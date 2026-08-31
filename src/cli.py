@@ -499,7 +499,8 @@ def _assign_free_ports(servers: list, config_data: dict) -> dict:
         return {s['name']: urlparse(s['url']).port for s in targets
                 if s.get('name') and urlparse(s['url']).port}
 
-    ports = find_free_ports(len(targets))
+    port_base = config_data.get('mcp', {}).get('port_base')
+    ports = find_free_ports(len(targets), base=port_base)
     assigned: dict = {}
     for server, port in zip(targets, ports):
         parsed = urlparse(server['url'])

@@ -29,6 +29,7 @@ time-horizon layer for long-horizon capability.
 | gsm8k (sampled, 100) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | 0.980 | 0.014 |
 | gsm8k | https://api.ollama.com | minimax-m3:cloud | 0.937 | 0.007 |
 | gsm8k | https://api.ollama.com | rnj-1:8b | 0.927 | 0.007 |
+| humaneval (full, 164) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.927** | 0.020 |
 | humaneval | https://api.ollama.com | minimax-m3:cloud | 0.921 | 0.021 |
 | humaneval | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.915 | 0.022 |
 | humaneval | https://api.ollama.com | gemma4:31b-cloud | 0.909 | 0.023 |

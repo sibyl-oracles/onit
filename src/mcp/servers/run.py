@@ -129,9 +129,11 @@ def _claim_port(port: int) -> bool:
     return True
 
 
-def find_free_ports(count: int, base: int = DEFAULT_PORT_BASE,
+def find_free_ports(count: int, base: int | None = None,
                     host: str = '127.0.0.1',
                     limit: int = PORT_SEARCH_LIMIT) -> list[int]:
+    if base is None:
+        base = DEFAULT_PORT_BASE
     """Return ``count`` ports at or above ``base`` for this process to use.
 
     A candidate has to pass twice: it must be claimable against other OnIt

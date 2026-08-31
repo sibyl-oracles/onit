@@ -67,10 +67,15 @@ def base_config_data() -> dict[str, Any]:
         "session_path": str(sessions_dir),
         "data_path": str(data_dir),
         "mcp": {
+            # Start the port search well above the interactive agent's range
+            # (18200–18240) so a benchmark run never collides with a running
+            # agent's MCP servers, and the agent's servers never block the
+            # benchmark's port allocation.
+            "port_base": 18400,
             "servers": [
-                {"name": "PromptsMCPServer", "url": "http://127.0.0.1:18200/sse",
+                {"name": "PromptsMCPServer", "url": "http://127.0.0.1:18400/sse",
                  "enabled": True},
-                {"name": "ToolsMCPServer", "url": "http://127.0.0.1:18201/sse",
+                {"name": "ToolsMCPServer", "url": "http://127.0.0.1:18401/sse",
                  "enabled": True},
             ]
         },
