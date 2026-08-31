@@ -2,7 +2,8 @@
 
 External sources behind OnIt's design. Per-document citation lists live with the
 documents that use them — see [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) §Sources for
-the self-improvement literature and [`NOOA_onit_recommendations.md`](NOOA_onit_recommendations.md)
+the self-improvement literature and
+[`archive/NOOA_onit_recommendations.md`](archive/NOOA_onit_recommendations.md)
 §References for the harness-capability papers. This file collects the primary ones.
 
 ---

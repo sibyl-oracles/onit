@@ -38,8 +38,6 @@
 
 ```
 onit/
-├── configs/
-│   └── default.yaml            # Agent configuration
 ├── pyproject.toml              # Package configuration
 ├── src/
 │   ├── cli.py                  # CLI entry point

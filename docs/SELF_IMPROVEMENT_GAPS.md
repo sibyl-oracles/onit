@@ -80,6 +80,7 @@ The most valuable thing in the repo right now is the plan (`docs/SELF_IMPROVEMEN
 
 - [Recursive Self-Improvement](https://www.philschmid.de/recursive-self-improvement) — Philschmid, Aug 21 2026: bounded vs. recursive, verifier ownership, harness-as-extensions
 - `docs/SELF_IMPROVEMENT.md` — the RFC: loops A–D, phases, exit criteria, gap list (§3)
+- `docs/archive/NOOA_onit_recommendations.md` — Aug 8 2026 NOOA capability analysis; superseded by this file, kept for its per-capability code citations. **Open item absorbed from the retired `docs/TODO.md`:** integrate [baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) for OCR support.
 - `src/learn/config.py` — autonomy ladder, `_MAX_IMPLEMENTED = OBSERVE`
 - `src/learn/trajectory.py`, `src/learn/report.py` — what is recorded and how it is summarized
 - `src/model/serving/chat.py:1618,3115,3199` — the dead `memories` hook
