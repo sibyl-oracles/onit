@@ -1,5 +1,7 @@
 # OnIt
 
+[![SafeSkill 90/100](https://img.shields.io/badge/SafeSkill-90%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/sibyl-oracles-onit)
+
 *OnIt* — the AI is working on the given task and will deliver the results shortly.
 
 OnIt is an agent harness: it hands a language model a set of tools, a working
