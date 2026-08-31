@@ -97,10 +97,14 @@ Lines starting with a backslash are answered by OnIt itself, without a model rou
 | `\model [name]` | Switch model. Bare, it lists what the endpoint serves; `\model -` restores auto-detect. |
 | `\host [add \| rm] [url]` | List the endpoints, switch to one, add another, or drop one. |
 | `\key [n \| url]` | Set an endpoint's API key, typed at a prompt that does not echo it. |
+| `\save` | Write the session's endpoints to the config file so the next session starts with them. |
 | `\bye` | End the session (also `\exit`, `\quit`, `\goodbye`). |
 
-A `\host` change lasts until you quit — run `onit setup` to make one permanent. A key
-set with `\key` is stored the same way the wizard stores it. Two things worth knowing:
+A `\host` or `\model` change lasts until you quit; `\save` writes the endpoint list
+into `~/.onit/config.yaml` so it survives. A key set with `\key` is stored in the OS
+keychain the moment you type it, and never goes into that file — so an endpoint you
+added and keyed in a session needs a `\save` for the key to have a row to belong to.
+Two things worth knowing:
 
 ```
 \host add http://gpu-2:8000/v1         spread this session across both servers

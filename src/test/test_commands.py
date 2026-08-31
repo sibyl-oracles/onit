@@ -226,7 +226,8 @@ class TestHost:
     @pytest.mark.asyncio
     async def test_says_the_config_file_is_untouched(self, agent):
         out = await commands.cmd_host(agent, "http://gpu-2:8000/v1")
-        assert "onit setup" in out
+        assert "untouched" in out
+        assert "\\save" in out
 
     @pytest.mark.asyncio
     async def test_a_bare_hostname_is_rejected_with_an_example(self, agent):
@@ -328,8 +329,9 @@ class TestHostAdd:
 
     @pytest.mark.asyncio
     async def test_it_says_the_config_is_untouched(self, agent):
-        assert "onit setup" in await commands.cmd_host(
-            agent, "add http://gpu-3:8000/v1")
+        out = await commands.cmd_host(agent, "add http://gpu-3:8000/v1")
+        assert "untouched" in out
+        assert "\\save" in out
 
 
 class TestHostRemove:
@@ -502,6 +504,12 @@ class TestKey:
                             lambda k, v: self.store.__setitem__(k, v))
         monkeypatch.setattr(setup_mod, "delete_secret",
                             lambda k: self.store.pop(k, None))
+        # The saved-endpoint note reads the config file; without this the
+        # suite would answer from whatever ~/.onit/config.yaml happens to say
+        # on the machine running it.
+        self.config = {"serving": {"host": "http://localhost:8000/v1",
+                                   "host2": "http://localhost:8001/v1"}}
+        monkeypatch.setattr(setup_mod, "_load_config", lambda: self.config)
         for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY"):
             monkeypatch.delenv(var, raising=False)
 
@@ -590,11 +598,185 @@ class TestKey:
         assert "persist" in await commands.cmd_key(agent, "")
 
     @pytest.mark.asyncio
+    async def test_a_key_for_an_unsaved_endpoint_is_flagged(self, agent):
+        """The key persists and the endpoint does not, so the next session
+        has a keychain entry for a URL nothing mentions and 'onit setup
+        --show' has no row to report it on."""
+        await commands.cmd_host(agent, "add http://gpu-9:8000/v1")
+        self._typed(agent, "sk-typed-1234")
+        out = await commands.cmd_key(agent, "http://gpu-9:8000/v1")
+        assert "not in the config file" in out
+        assert "\\save" in out
+
+    @pytest.mark.asyncio
+    async def test_a_saved_endpoint_is_not_flagged(self, agent):
+        self._typed(agent, "sk-typed-1234")
+        out = await commands.cmd_key(agent, "1")
+        assert "not in the config file" not in out
+
+    @pytest.mark.asyncio
     async def test_an_interface_that_cannot_mask_says_so(self, agent):
         agent.chat_ui = SimpleNamespace(model_name="")
         out = await commands.cmd_key(agent, "")
         assert "onit setup" in out
         assert self.store == {}
+
+
+# ── \save ──────────────────────────────────────────────────────────────────
+
+class TestSave:
+    """\\save is the one command that writes the config file, so what it puts
+    there — and what it refuses to put there — is the whole of its contract."""
+
+    @pytest.fixture(autouse=True)
+    def _config_file(self, tmp_path, monkeypatch):
+        from src import setup as setup_mod
+        self.path = tmp_path / "config.yaml"
+        monkeypatch.setattr(setup_mod, "CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(self.path))
+        monkeypatch.setattr(setup_mod, "get_secret", lambda k: None)
+        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    def _write(self, config):
+        import yaml
+        self.path.write_text(yaml.dump(config))
+
+    def _read(self):
+        import yaml
+        return yaml.safe_load(self.path.read_text()) or {}
+
+    def _saved_hosts(self):
+        from src import setup as setup_mod
+        config = self._read()
+        entries = (setup_mod._endpoint_list(config)
+                   or setup_mod._entries_from_host_pair(config))
+        return [e["host"] for e in entries]
+
+    @pytest.mark.asyncio
+    async def test_an_added_endpoint_reaches_the_file(self, agent):
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
+        await commands.cmd_host(agent, "add http://gpu-2:8000/v1")
+        commands.cmd_save(agent)
+        assert "http://gpu-2:8000/v1" in self._saved_hosts()
+
+    @pytest.mark.asyncio
+    async def test_a_removed_endpoint_leaves_the_file(self, agent):
+        self._write({"serving": {"host": "http://localhost:8000/v1",
+                                 "host2": "http://localhost:8001/v1"}})
+        await commands.cmd_host(agent, "rm 2")
+        commands.cmd_save(agent)
+        assert self._saved_hosts() == ["http://localhost:8000/v1"]
+
+    @pytest.mark.asyncio
+    async def test_the_next_session_rebuilds_what_was_saved(self, agent):
+        """The point of the command: what it writes has to come back through
+        the reader that actually builds a session's load balancer."""
+        from src.onit import OnIt
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
+        await commands.cmd_host(agent, "add http://gpu-2:8000/v1 Qwen3-32B")
+        commands.cmd_save(agent)
+
+        config = self._read()
+        rebuilt = (OnIt._parse_endpoint_list(config["serving"].get("endpoints"))
+                   or OnIt._legacy_endpoints(config["serving"]))
+        assert [ep.host for ep in rebuilt] == [ep.host for ep
+                                               in agent.load_balancer.endpoints]
+        assert [ep.model for ep in rebuilt] == [ep.model for ep
+                                                in agent.load_balancer.endpoints]
+
+    def test_a_key_the_launcher_resolved_is_never_written(self, agent):
+        """host_key can hold a secret read out of the OS keychain. Writing it
+        into config.yaml would copy it into the one file that is world-
+        readable and gets pasted into issues."""
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
+        agent.load_balancer.endpoints[0].host_key = "sk-from-the-keychain"
+        commands.cmd_save(agent)
+        assert "sk-from-the-keychain" not in self.path.read_text()
+
+    def test_a_key_written_into_the_yaml_by_hand_survives(self, agent):
+        """It is not a secret this command put there, and dropping it would
+        silently unauthenticate the endpoint."""
+        self._write({"serving": {"endpoints": [
+            {"host": "http://localhost:8000/v1", "api_key": "sk-in-yaml"},
+            {"host": "http://localhost:8001/v1"}]}})
+        commands.cmd_save(agent)
+        assert "sk-in-yaml" in self.path.read_text()
+
+    def test_settings_it_does_not_own_are_left_alone(self, agent):
+        self._write({"theme": "white", "web_port": 9100,
+                     "serving": {"host": "http://localhost:8000/v1",
+                                 "load_balancer": "round_robin"}})
+        commands.cmd_save(agent)
+        config = self._read()
+        assert config["theme"] == "white"
+        assert config["web_port"] == 9100
+        assert config["serving"]["load_balancer"] == "round_robin"
+
+    @pytest.mark.asyncio
+    async def test_the_share_override_is_saved_with_the_endpoints(self, agent):
+        """--share is a \\host flag, so it is one of the things this command
+        is responsible for keeping; without it the saved Ollama endpoint comes
+        back fallback-only and serves nothing."""
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
+        await commands.cmd_host(agent, "add https://api.ollama.com --share")
+        commands.cmd_save(agent)
+        assert self._read()["serving"]["ollama_fallback_only"] is False
+
+    def test_a_plain_pair_keeps_its_short_shape(self):
+        """A config written as serving.host / serving.host2 comes back with
+        'server1' and 'server2' labels nobody chose. Writing those back would
+        rewrite the file as an endpoint list on a save that changed nothing."""
+        plain = SimpleNamespace(
+            load_balancer=LoadBalancer(
+                [ServerEndpoint(host="http://localhost:8000/v1", name="server1"),
+                 ServerEndpoint(host="http://localhost:8001/v1", name="server2")],
+                "sticky"),
+            model_serving={}, session_id="sess-1",
+            chat_ui=SimpleNamespace(model_name=""))
+        self._write({"serving": {"host": "http://localhost:8000/v1",
+                                 "host2": "http://localhost:8001/v1"}})
+        commands.cmd_save(plain)
+        serving = self._read()["serving"]
+        assert serving["host"] == "http://localhost:8000/v1"
+        assert serving["host2"] == "http://localhost:8001/v1"
+        assert "endpoints" not in serving
+
+    def test_a_label_the_user_chose_is_kept(self, agent):
+        """The other half of that rule: a real label is worth the longer
+        shape, since it is what names the endpoint in the logs."""
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
+        commands.cmd_save(agent)
+        names = [e.get("name") for e in self._read()["serving"]["endpoints"]]
+        assert names == ["vllm-a", "vllm-b"]
+
+    @pytest.mark.asyncio
+    async def test_it_reports_what_changed(self, agent):
+        self._write({"serving": {"host": "http://localhost:8000/v1",
+                                 "host2": "http://localhost:8001/v1"}})
+        await commands.cmd_host(agent, "add http://gpu-2:8000/v1")
+        await commands.cmd_host(agent, "rm 2")
+        out = commands.cmd_save(agent)
+        assert "added" in out and "http://gpu-2:8000/v1" in out
+        assert "removed" in out and "http://localhost:8001/v1" in out
+
+    def test_saving_an_unchanged_list_says_so(self, agent):
+        self._write({"serving": {"host": "http://localhost:8000/v1",
+                                 "host2": "http://localhost:8001/v1"}})
+        assert "already saved" in commands.cmd_save(agent)
+
+    def test_it_writes_a_config_that_did_not_exist(self, agent):
+        assert not self.path.exists()
+        commands.cmd_save(agent)
+        assert sorted(self._saved_hosts()) == ["http://localhost:8000/v1",
+                                               "http://localhost:8001/v1"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_reachable_through_dispatch(self, agent):
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
+        out = await commands.dispatch(agent, "\\save")
+        assert "Saved" in out
+        assert self.path.exists()
 
 
 # ── \setup ──────────────────────────────────────────────────────────────────

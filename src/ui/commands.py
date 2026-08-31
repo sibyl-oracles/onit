@@ -29,6 +29,7 @@ answered with the nearest command rather than sent off to be answered.
 import asyncio
 import difflib
 import os
+import re
 from dataclasses import dataclass
 
 from ..model.serving.balancer import LoadBalancer, ServerEndpoint
@@ -67,6 +68,9 @@ COMMANDS = (
     Command("key", "[<n | url> | rm <n | url>]",
             "Set an endpoint's API key, typed without echo; bare, the one "
             "serving this session."),
+    Command("save", "",
+            "Write the session's endpoints to the config file so the next "
+            "one starts with them."),
     Command("bye", "", "End the session (also \\exit, \\quit, \\goodbye)."),
 )
 
@@ -306,11 +310,12 @@ def _mirror_model(agent, endpoint, model: str | None) -> None:
 
 _REMOVE_VERBS = ("rm", "remove", "delete", "del")
 
-# Closing note on every change: the config file is never written, and it is
+# Closing note on every change: the config file is not written, and it is
 # worth saying so every time rather than leaving a user to find out at the
 # next launch that the endpoint they added is gone.
 _NOT_PERSISTED = ("The change lasts until you quit — the config file is "
-                  "untouched. Run 'onit setup' to make it permanent.")
+                  "untouched. Run \\save to keep it, or 'onit setup' to edit "
+                  "the file directly.")
 
 
 def _valid_url(url: str) -> str | None:
@@ -578,6 +583,123 @@ async def cmd_key(agent, arg: str) -> str:
                   "one to take effect."]
     lines += ["", "The key is in the OS keychain, not the config file, and "
                   "unlike the rest of this session it does persist."]
+    if not _is_saved(endpoint.host):
+        # The key outlives the session; the endpoint it belongs to does not.
+        # Left there it is a keychain entry for a URL nothing mentions, which
+        # 'onit setup --show' has no row to report it on.
+        lines += ["",
+                  f"Note: {endpoint.host} is not in the config file, so the "
+                  f"next session will not know about it and 'onit setup "
+                  f"--show' will not list this key. Run \\save to keep the "
+                  f"endpoint too."]
+    return "\n".join(lines)
+
+
+# ── \save ───────────────────────────────────────────────────────────────────
+
+# Labels the code hands out when the user did not choose one: 'serverN' from
+# the config reader, 'manual' from \host. Writing them back would turn every
+# save into a named endpoint list, and a plain one- or two-host config would
+# never again fit the short serving.host / serving.host2 form it was written
+# in. A name the user actually typed is read from the file and kept.
+_GENERATED_NAME = re.compile(r"^(server\d+|manual\d*)$")
+
+
+def _saved_entries(config: dict) -> list[dict]:
+    """The endpoints the config file currently holds, in whichever shape."""
+    from .. import setup as onit_setup
+    return (onit_setup._endpoint_list(config)
+            or onit_setup._entries_from_host_pair(config))
+
+
+def _saved_by_host(config: dict) -> dict:
+    """Saved entries keyed by normalized URL, for looking one up by host."""
+    from .. import setup as onit_setup
+    return {onit_setup.normalize_host(e["host"]): e
+            for e in _saved_entries(config)}
+
+
+def _is_saved(host: str) -> bool:
+    """True when the config file already names this endpoint."""
+    from .. import setup as onit_setup
+    try:
+        return (onit_setup.normalize_host(host)
+                in _saved_by_host(onit_setup._load_config()))
+    except Exception:
+        return False
+
+
+def _entry_to_save(endpoint, saved: dict) -> dict:
+    """One endpoint as a config entry, carrying nothing secret.
+
+    The API key is taken from the saved entry, never from
+    ``ServerEndpoint.host_key``: that field may hold a key the launcher
+    resolved out of the OS keychain, and writing it here would copy a secret
+    into a file that is world-readable, gets pasted into issues, and is the
+    one place 'onit setup' deliberately keeps keys out of.
+    """
+    from .. import setup as onit_setup
+
+    previous = saved.get(onit_setup.normalize_host(endpoint.host), {})
+    entry = {"host": endpoint.host, "priority": endpoint.priority}
+    if endpoint.model:
+        entry["model"] = endpoint.model
+    name = previous.get("name") or endpoint.name
+    if name and not _GENERATED_NAME.match(name):
+        entry["name"] = name
+    literal = previous.get("api_key") or previous.get("host_key")
+    if literal and literal != "EMPTY":
+        entry["api_key"] = literal
+    return entry
+
+
+def cmd_save(agent) -> str:
+    """Write the session's endpoint list into the config file.
+
+    Only what a command in this session can change is written — the endpoints
+    and the Ollama fallback rule \\host --share turns off. Everything else in
+    the file is left exactly as it was found, including settings this session
+    was started with on the command line, which are an override for one run
+    and not an edit the user asked to keep.
+    """
+    from .. import setup as onit_setup
+
+    lb = agent.load_balancer
+    config = onit_setup._load_config()
+    saved = _saved_by_host(config)
+    before = set(saved)
+
+    entries = [_entry_to_save(ep, saved) for ep in lb.endpoints]
+    onit_setup._write_endpoints(config, entries)
+
+    serving = config.setdefault("serving", {})
+    fallback_changed = (lb.ollama_fallback_only
+                        != serving.get("ollama_fallback_only", True))
+    if fallback_changed:
+        serving["ollama_fallback_only"] = lb.ollama_fallback_only
+    onit_setup._save_config(config)
+
+    after = {onit_setup.normalize_host(ep.host) for ep in lb.endpoints}
+    added, removed = sorted(after - before), sorted(before - after)
+
+    n = len(entries)
+    lines = [f"Saved {n} endpoint{'' if n == 1 else 's'} to "
+             f"{onit_setup.CONFIG_PATH}."]
+    if added:
+        lines.append(f"  added    {', '.join(added)}")
+    if removed:
+        lines.append(f"  removed  {', '.join(removed)}")
+    if not added and not removed:
+        lines.append("  The same endpoints were already saved; their models, "
+                     "priorities and labels now match this session.")
+    if fallback_changed:
+        lines.append(f"  serving.ollama_fallback_only is now "
+                     f"{str(lb.ollama_fallback_only).lower()}")
+
+    lines += [""] + _endpoint_rows(agent)
+    lines += ["",
+              "API keys are not written here — they stay in the OS keychain, "
+              "where \\key puts them."]
     return "\n".join(lines)
 
 
@@ -609,6 +731,8 @@ async def dispatch(agent, text: str) -> str | None:
             return await cmd_host(agent, arg)
         if name == "key":
             return await cmd_key(agent, arg)
+        if name == "save":
+            return cmd_save(agent)
     except Exception as e:
         return f"\\{name} failed: {type(e).__name__}: {e}"
     return None
