@@ -8,7 +8,7 @@
 PY ?= python
 TASKS ?= all
 
-.PHONY: bench-smoke bench-sampled bench-full bench-test view report
+.PHONY: bench-smoke bench-sampled bench-full bench-baseline bench-test view report
 
 # CI gate: a few samples per benchmark.
 bench-smoke:
@@ -21,6 +21,11 @@ bench-sampled:
 # On-demand: full datasets, leaderboard-comparable.
 bench-full:
 	$(PY) -m benchmarks.run --tier full --tasks $(TASKS)
+
+# Pinned baseline set (bigcodebench, gsm8k, humaneval, mbpp) on the pinned
+# model. Produces logs/<tier>/summary.json for benchmarks/baselines/.
+bench-baseline:
+	$(PY) -m benchmarks.run --tier sampled --tasks baseline
 
 # Provider/harness unit tests (no model or network needed).
 bench-test:

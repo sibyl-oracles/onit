@@ -71,6 +71,8 @@ bench = [
     "inspect-evals",
     "datasets",
     "huggingface-hub",
+    "numpy",
+    "scikit-learn",
 ]
 swe_bench = [
     "onit[bench]",

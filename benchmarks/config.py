@@ -46,6 +46,13 @@ DEFAULT_TIER = "smoke"
 # Default eval target: Ollama cloud (see README "Default eval target").
 DEFAULT_HOST = "https://api.ollama.com"
 
+# Pinned benchmark model. RESULTS.md model-selection evidence: Qwen3.8-27B
+# (released Aug 2026) is the strongest open-weight ~27B coder available and
+# keeps every benchmark row on one comparable model. Override per run with
+# ONIT_BENCH_MODEL; the pin exists so unannotated runs land on a fixed target
+# and their rows stay comparable to the committed baseline.
+DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
+
 # Alias (CLI / Inspect task name) -> canonical benchmark display name + category.
 # The alias is what you pass to ``--tasks`` and what Inspect logs/reports show.
 BENCHMARKS: dict[str, tuple[str, str]] = {
@@ -55,6 +62,7 @@ BENCHMARKS: dict[str, tuple[str, str]] = {
     "bigcodebench": ("BigCodeBench", "coding"),
     "livecodebench": ("LiveCodeBench Pro", "coding"),
     "swe_bench": ("SWE-bench", "coding"),
+    "metr": ("METR Time Horizon", "long-horizon"),
 }
 
 
@@ -74,7 +82,7 @@ def resolve_serving() -> dict:
     host = os.environ.get("ONIT_BENCH_HOST") or os.environ.get("ONIT_HOST") or DEFAULT_HOST
     serving: dict = {"host": host, "think": _env_bool("ONIT_BENCH_THINK", False)}
 
-    model = os.environ.get("ONIT_BENCH_MODEL")
+    model = os.environ.get("ONIT_BENCH_MODEL") or DEFAULT_MODEL
     if model:
         serving["model"] = model
 

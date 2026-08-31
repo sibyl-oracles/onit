@@ -25,7 +25,7 @@ from inspect_ai import eval_retry as inspect_eval_retry
 # Importing the provider module registers the "onit" model provider.
 from . import config as bench_config
 from . import onit_provider  # noqa: F401 - import for side effect (registration)
-from .tasks import coding, reasoning
+from .tasks import coding, metr, reasoning
 
 # Registry of runnable benchmark tasks by name and category.
 TASKS = {
@@ -38,11 +38,18 @@ TASKS = {
     # the dedicated OnIt runner (swe_bench_runner). This stock inspect_evals entry
     # is kept only for direct comparison against Inspect's own tool-calling agent.
     "swe_bench": coding.swe_bench,
+    # METR time-horizon (long-horizon capability). Requires the `mtb` bridge
+    # package, Docker, and METR task images; see benchmarks/tasks/metr.py.
+    "metr": metr.metr,
 }
 CATEGORIES = {
     "reasoning": ["gsm8k"],
     # Provider-compatible coding tasks (all require a Docker daemon).
     "coding": ["humaneval", "mbpp", "bigcodebench", "livecodebench"],
+    # The pinned baseline set: the four tasks tracked in RESULTS.md and the
+    # regression gate. Run with `--tier sampled` (or full) to produce the
+    # summary.json that gets committed under benchmarks/baselines/.
+    "baseline": ["bigcodebench", "gsm8k", "humaneval", "mbpp"],
     # Everything wired and provider-compatible (excludes deferred swe_bench).
     "all": ["gsm8k", "humaneval", "mbpp", "bigcodebench", "livecodebench"],
 }

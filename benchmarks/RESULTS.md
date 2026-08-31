@@ -1,5 +1,10 @@
 # OnIt Benchmark Results
 
+Baseline model pin: **`Qwen/Qwen3.8-27B`** (set as `benchmarks/config.py`
+`DEFAULT_MODEL`, 2026-08-31). The table below is the model-selection evidence
+from earlier runs (Qwen3.**6**-27B on vLLM among them); the first pinned-model
+run will add its `summary.json` under `baselines/` and a row here.
+
 | Benchmark | Host | Model | Accuracy | Stderr |
 |---|---|---|---|---|
 | bigcodebench | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.518 | 0.015 |

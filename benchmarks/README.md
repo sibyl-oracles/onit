@@ -58,7 +58,7 @@ resuming that runner.)
 | Variable | Purpose | Default |
 |---|---|---|
 | `ONIT_BENCH_HOST` | LLM host URL (falls back to `ONIT_HOST`) | `https://api.ollama.com` (Ollama cloud) |
-| `ONIT_BENCH_MODEL` | Model id (required for Ollama cloud / OpenRouter) | auto-detected for vLLM |
+| `ONIT_BENCH_MODEL` | Model id (defaults to the pinned `Qwen/Qwen3.8-27B`) | pinned model |
 | `ONIT_BENCH_HOST_KEY` | Explicit API key | else `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` / keychain |
 | `ONIT_BENCH_THINK` | Enable thinking mode | `false` |
 
@@ -78,8 +78,11 @@ label shown in Inspect logs and the report table. List them any time with
 | `bigcodebench` | BigCodeBench | coding | provider + Docker (`inspect_evals`) |
 | `livecodebench` | LiveCodeBench Pro | coding | provider + Docker (`inspect_evals`) |
 | `swe_bench` | SWE-bench | coding | dedicated runner — see [SWE-bench](#swe-bench) |
+| `metr` | METR Time Horizon | long-horizon | METR bridge + Docker — see [METR time horizon](#metr-time-horizon) |
 
-Categories (`--tasks <category>`): `reasoning`, `coding`, `all`.
+Categories (`--tasks <category>`): `reasoning`, `coding`, `baseline`, `all`.
+`baseline` is the pinned four-task set (bigcodebench, gsm8k, humaneval, mbpp)
+that the regression gate tracks.
 
 ## Tiers
 
@@ -114,6 +117,37 @@ Categories (`--tasks <category>`): `reasoning`, `coding`, `all`.
 | | GPQA-Diamond, MMLU-Pro, MATH/AIME, BBH, DROP | Phase 3 |
 | Factuality | SimpleQA, TruthfulQA, FRAMES | Phase 3 scaffold (`tasks/factuality.py`) |
 | Agentic | GAIA, BFCL, tau-bench | Phase 4 scaffold (`tasks/agentic.py`, `onit_agent.py`) |
+
+## METR time horizon
+
+Long-horizon capability is measured with the [METR time-horizon
+methodology](https://arxiv.org/abs/2503.14499): run the agent on tasks with
+known human-expert completion times, fit P(success) vs log2(human-minutes),
+and report the **50%-time-horizon** — the task duration the agent succeeds at
+half the time.
+
+What is in the repo:
+
+* `tasks/metr.py` — the logistic fit (`horizon_summary`, `time_horizon_50`)
+  and the `metr` Inspect task; `test_metr.py` covers the fit offline.
+* `data/metr_human_minutes.json` — the 228-task human-time label map from
+  METR's Time Horizon v1.1 release (HCAST + RE-Bench + SWAA; 0.02–1800 min).
+
+Running a live task family (requires the METR bridge, Docker, and task
+images — see [METR/inspect-metr-task-bridge](https://github.com/METR/inspect-metr-task-bridge)):
+
+```bash
+pip install git+https://github.com/METR/inspect-metr-task-bridge
+python -m benchmarks.run --tier sampled --tasks metr \
+    -T image_tag=password_check-1.0.13
+```
+
+Samples are tagged with their family's median human time, so the task-level
+`time_horizon_50` metric lands in `summary.json` next to the accuracy metrics
+and flows through the regression gate like any other task. 14 of the labeled
+families (password_check, sadservers, make_web_server, symbolic_regression, …)
+are runnable today via the bridge; the rest of the labeled set exists only as
+recorded outcomes in METR's release.
 
 ## SWE-bench
 
