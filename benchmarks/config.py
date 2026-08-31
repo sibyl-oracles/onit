@@ -4,13 +4,15 @@ A *tier* is just a preset of (sample limit, concurrency). The benchmark task
 code is tier-agnostic; the tier is applied at run time by ``run.py``.
 
 The eval target (model/host) is resolved from environment variables so the same
-task code can run against Ollama cloud (default), OpenRouter, or a local vLLM
-endpoint without edits.
+task code can run against a local vLLM endpoint (the default — the agent's own
+serving setup), Ollama cloud, or OpenRouter without edits.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,14 +45,17 @@ TIERS: dict[str, Tier] = {
 
 DEFAULT_TIER = "smoke"
 
-# Default eval target: Ollama cloud (see README "Default eval target").
-DEFAULT_HOST = "https://api.ollama.com"
+# Default eval target: the agent's own vLLM serving setup (see
+# docs/RUN_A_MODEL_SERVER.md). Override for hosted endpoints.
+DEFAULT_HOST = "http://localhost:8000/v1"
 
 # Pinned benchmark model. RESULTS.md model-selection evidence: Qwen3.8-27B
 # (released Aug 2026) is the strongest open-weight ~27B coder available and
 # keeps every benchmark row on one comparable model. Override per run with
 # ONIT_BENCH_MODEL; the pin exists so unannotated runs land on a fixed target
-# and their rows stay comparable to the committed baseline.
+# and their rows stay comparable to the committed baseline. An empty value
+# ("") defers to the agent's auto-detection (first entry of /v1/models) —
+# use it when the server was launched with a different model than the pin.
 DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
 
 # Alias (CLI / Inspect task name) -> canonical benchmark display name + category.
@@ -73,15 +78,18 @@ def display_name(alias: str) -> str:
 def resolve_serving() -> dict:
     """Build OnIt's ``serving`` config block from environment variables.
 
-    Precedence mirrors OnIt itself: explicit env wins, else the Ollama-cloud
-    default host. ``ONIT_BENCH_MODEL`` pins the model (required for Ollama cloud
-    and OpenRouter; auto-detected for vLLM).
+    Precedence mirrors OnIt itself: explicit env wins, else the local-vLLM
+    default host. ``ONIT_BENCH_MODEL`` pins the model (required for Ollama
+    cloud and OpenRouter; for vLLM it is verified against the endpoint by
+    ``run.py``'s preflight, and auto-detection is the fallback when unset).
     """
     host = os.environ.get("ONIT_BENCH_HOST") or os.environ.get("ONIT_HOST") or DEFAULT_HOST
     serving: dict = {"host": host, "think": _env_bool("ONIT_BENCH_THINK", False)}
 
-    model = os.environ.get("ONIT_BENCH_MODEL") or DEFAULT_MODEL
-    if model:
+    model = os.environ.get("ONIT_BENCH_MODEL")
+    if model is None:
+        model = DEFAULT_MODEL
+    if model:  # empty string = defer to the agent's /v1/models auto-detection
         serving["model"] = model
 
     # host_key is optional; OnIt also reads OPENROUTER_API_KEY / OLLAMA_API_KEY
@@ -142,6 +150,75 @@ def bench_data_root() -> Path:
     SWE-bench per-instance workspaces) build them under this root.
     """
     return Path(tempfile.gettempdir()) / "onit-bench-data"
+
+
+def preflight_endpoint(timeout: float = 10.0) -> None:
+    """Fail fast when the eval endpoint is unreachable or serves the wrong model.
+
+    A benchmark run is long; discovering after an hour that the vLLM server was
+    never started (or was redeployed with a different model than the pin) wastes
+    all of it. This checks the endpoint's ``/v1/models`` before any samples run:
+
+    * connection refused / timeout -> exit with the launch command from
+      docs/RUN_A_MODEL_SERVER.md,
+    * pinned model not served -> exit naming what the endpoint *does* serve,
+      with the override to proceed anyway,
+    * no model configured (empty ``ONIT_BENCH_MODEL``) -> adopt the endpoint's
+      first model, mirroring the agent's own auto-detection.
+
+    Skipped entirely for hosted endpoints (anything not on localhost), where a
+    probe would spend a paid API call and 401 semantics differ per provider.
+    """
+    import urllib.error
+    import urllib.request
+
+    serving = resolve_serving()
+    host = serving["host"]
+    if "localhost" not in host and "127.0.0.1" not in host:
+        return
+
+    url = host.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    url += "/models"
+
+    request = urllib.request.Request(url)
+    api_key = os.environ.get("VLLM_API_KEY") or serving.get("host_key") or "EMPTY"
+    request.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        sys.exit(
+            f"[bench] eval endpoint {host} is unreachable: {e}\n"
+            f"[bench] start the vLLM server first (docs/RUN_A_MODEL_SERVER.md):\n"
+            f"[bench]   vllm serve {DEFAULT_MODEL} --port 8000 \\\n"
+            f"[bench]     --max-model-len 262144 --enable-auto-tool-choice \\\n"
+            f"[bench]     --tool-call-parser hermes --reasoning-parser qwen3 \\\n"
+            f"[bench]     --chat-template-content-format string \\\n"
+            f"[bench]     --enable-prefix-caching\n"
+            f"[bench] or point ONIT_BENCH_HOST at a running endpoint."
+        )
+
+    served = sorted(
+        str(m.get("id")) for m in payload.get("data", []) if m.get("id")
+    )
+    if not served:
+        sys.exit(f"[bench] endpoint {host} answered but serves no models.")
+
+    model = serving.get("model") or ""
+    if not model:
+        # Same rule as the agent: a single-model server needs no explicit name.
+        print(f"[bench] no model set; auto-detected {served[0]!r} from {host}")
+        os.environ["ONIT_BENCH_MODEL"] = served[0]
+        return
+    if model not in served:
+        sys.exit(
+            f"[bench] pinned model {model!r} is not served by {host}.\n"
+            f"[bench] served: {', '.join(served)}\n"
+            f"[bench] run the server for the pin, or override with "
+            f"ONIT_BENCH_MODEL (set it to \"\" to auto-detect)."
+        )
 
 
 def _env_bool(name: str, default: bool) -> bool:

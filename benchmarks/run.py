@@ -9,7 +9,7 @@ Thin wrapper over ``inspect_ai.eval`` that:
 Examples:
     python -m benchmarks.run --tier smoke --tasks gsm8k
     python -m benchmarks.run --tier sampled --tasks gsm8k humaneval
-    ONIT_BENCH_MODEL=glm-5.1:cloud python -m benchmarks.run --tier smoke --tasks gsm8k
+    ONIT_BENCH_HOST=http://localhost:8000/v1 python -m benchmarks.run --tier smoke --tasks gsm8k
 """
 
 from __future__ import annotations
@@ -146,6 +146,14 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     tier = bench_config.TIERS[args.tier]
+
+    # Fail fast on an unreachable/mismatched eval endpoint before any samples
+    # run (local endpoints only; hosted providers are not probed). Runs before
+    # the model label is resolved: on the auto-detect path (empty
+    # ONIT_BENCH_MODEL) the preflight adopts the endpoint's served model into
+    # the environment, so the label and resume-log matching use the real name.
+    bench_config.preflight_endpoint()
+
     model = f"onit/{bench_config.model_label()}"
     log_dir = f"{args.log_dir}/{tier.name}"
     task_names = _resolve_task_names(args.tasks)

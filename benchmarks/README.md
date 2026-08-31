@@ -15,9 +15,12 @@ See [RESULTS.md](RESULTS.md) for the curated table of `full`-tier benchmark scor
 ```bash
 pip install -e ".[bench]"          # inspect-ai + dataset deps
 
-# Eval target (defaults to Ollama cloud):
-export ONIT_BENCH_MODEL=glm-5.1:cloud
-export OLLAMA_API_KEY=...           # or OPENROUTER_API_KEY for OpenRouter
+# Eval target: the agent's own vLLM setup (http://localhost:8000/v1).
+# Start the server for the pinned model — see docs/RUN_A_MODEL_SERVER.md:
+vllm serve Qwen/Qwen3.8-27B --port 8000 \
+  --max-model-len 262144 --enable-auto-tool-choice --tool-call-parser hermes \
+  --reasoning-parser qwen3 --chat-template-content-format string \
+  --enable-prefix-caching
 
 make -C benchmarks bench-smoke      # a few samples per benchmark
 make -C benchmarks view             # browse traces in the Inspect viewer
@@ -55,14 +58,22 @@ resuming that runner.)
 
 ## Eval target (environment)
 
+The default target is the agent's own vLLM serving setup
+([RUN_A_MODEL_SERVER.md](../docs/RUN_A_MODEL_SERVER.md)): host
+`http://localhost:8000/v1`, model auto-detected from `/v1/models` unless pinned,
+no API key unless the server was started with `--api-key` (then `VLLM_API_KEY`).
+`run.py` probes a local endpoint before the first sample and fails fast if it
+is unreachable or does not serve the pinned model.
+
 | Variable | Purpose | Default |
 |---|---|---|
-| `ONIT_BENCH_HOST` | LLM host URL (falls back to `ONIT_HOST`) | `https://api.ollama.com` (Ollama cloud) |
-| `ONIT_BENCH_MODEL` | Model id (defaults to the pinned `Qwen/Qwen3.8-27B`) | pinned model |
-| `ONIT_BENCH_HOST_KEY` | Explicit API key | else `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` / keychain |
+| `ONIT_BENCH_HOST` | LLM host URL (falls back to `ONIT_HOST`) | `http://localhost:8000/v1` (local vLLM) |
+| `ONIT_BENCH_MODEL` | Model id (defaults to the pinned `Qwen/Qwen3.8-27B`; set to `""` to auto-detect from the endpoint) | pinned model |
+| `ONIT_BENCH_HOST_KEY` | Explicit API key | else `VLLM_API_KEY` / `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` / keychain |
 | `ONIT_BENCH_THINK` | Enable thinking mode | `false` |
 
-OpenRouter / local vLLM are selected just by changing `ONIT_BENCH_HOST`.
+Ollama cloud / OpenRouter are selected just by changing `ONIT_BENCH_HOST`
+(and `ONIT_BENCH_MODEL`, required there).
 
 ## Benchmark aliases
 
