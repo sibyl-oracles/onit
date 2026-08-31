@@ -9,6 +9,11 @@ see docs/RUN_A_MODEL_SERVER.md). The table below is the model-selection
 evidence from earlier runs (Qwen3.**6**-27B on vLLM among them); the first
 pinned-model run will add its `summary.json` under `baselines/` and a row here.
 
+Tier note: rows marked **full** ran the complete dataset (leaderboard-
+comparable); rows marked **sampled** ran the fixed seeded 100-sample subset
+(nightly tracked signal, used for the regression gate). Unmarked rows are from
+the earlier model-selection runs.
+
 Scope note (2026-08-31): SWE-bench and LiveCodeBench have been **removed** from
 the benchmark suite (runner, task wrappers, `swe_bench` extra, docs). The
 tracked set is bigcodebench, gsm8k, humaneval, mbpp, plus the METR
@@ -20,7 +25,8 @@ time-horizon layer for long-horizon capability.
 | gsm8k | https://api.ollama.com | glm-5.1:cloud | 0.978 | 0.004 |
 | gsm8k | https://api.ollama.com | gemma4:31b-cloud | 0.978 | 0.004 |
 | gsm8k | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.953 | 0.006 |
-| gsm8k | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | 0.980 | 0.014 |
+| gsm8k (full, 1,319) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.977** | 0.004 |
+| gsm8k (sampled, 100) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | 0.980 | 0.014 |
 | gsm8k | https://api.ollama.com | minimax-m3:cloud | 0.937 | 0.007 |
 | gsm8k | https://api.ollama.com | rnj-1:8b | 0.927 | 0.007 |
 | humaneval | https://api.ollama.com | minimax-m3:cloud | 0.921 | 0.021 |
