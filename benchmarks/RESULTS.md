@@ -1,12 +1,13 @@
 # OnIt Benchmark Results
 
 Baseline model pin: **`Qwen/Qwen3.8-27B`** (set as `benchmarks/config.py`
-`DEFAULT_MODEL`, 2026-08-31). Pinned runs target the agent's own vLLM serving
-setup (`http://localhost:8000/v1`, the `benchmarks/config.py` `DEFAULT_HOST` —
-same endpoint the agent uses, per docs/RUN_A_MODEL_SERVER.md). The table below
-is the model-selection evidence from earlier runs (Qwen3.**6**-27B on vLLM among
-them); the first pinned-model run will add its `summary.json` under `baselines/`
-and a row here.
+`DEFAULT_MODEL`, 2026-08-31). Pinned runs target the agent's own model serving
+setup: the preferred endpoint from `~/.onit/config.yaml` (the benchmark
+inherits the agent's serving config — host IP, model, and the keychain key —
+falling back to `http://localhost:8000/v1` only when no agent config exists;
+see docs/RUN_A_MODEL_SERVER.md). The table below is the model-selection
+evidence from earlier runs (Qwen3.**6**-27B on vLLM among them); the first
+pinned-model run will add its `summary.json` under `baselines/` and a row here.
 
 Scope note (2026-08-31): SWE-bench and LiveCodeBench have been **removed** from
 the benchmark suite (runner, task wrappers, `swe_bench` extra, docs). The

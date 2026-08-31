@@ -3,9 +3,13 @@
 A *tier* is just a preset of (sample limit, concurrency). The benchmark task
 code is tier-agnostic; the tier is applied at run time by ``run.py``.
 
-The eval target (model/host) is resolved from environment variables so the same
-task code can run against a local vLLM endpoint (the default — the agent's own
-serving setup), Ollama cloud, or OpenRouter without edits.
+The eval target (model/host) is resolved the same way the agent resolves its
+own: the benchmark env vars win, then the agent's ``~/.onit/config.yaml``
+(written by ``onit setup`` — its preferred endpoint, model, and the key it
+authenticates with from the OS keychain), then ``ONIT_HOST``, then the
+local-vLLM default. The same task code therefore benchmarks whatever endpoint
+the agent actually uses — local vLLM, a LAN host, Ollama cloud, or OpenRouter
+— without edits.
 """
 
 from __future__ import annotations
@@ -46,7 +50,9 @@ TIERS: dict[str, Tier] = {
 DEFAULT_TIER = "smoke"
 
 # Default eval target: the agent's own vLLM serving setup (see
-# docs/RUN_A_MODEL_SERVER.md). Override for hosted endpoints.
+# docs/RUN_A_MODEL_SERVER.md). Used only when neither the benchmark env vars
+# nor the agent's ~/.onit/config.yaml name an endpoint — resolve_serving()
+# falls back to the agent's config first.
 DEFAULT_HOST = "http://localhost:8000/v1"
 
 # Pinned benchmark model. RESULTS.md model-selection evidence: Qwen3.8-27B
@@ -76,19 +82,37 @@ def display_name(alias: str) -> str:
 
 
 def resolve_serving() -> dict:
-    """Build OnIt's ``serving`` config block from environment variables.
+    """Build OnIt's ``serving`` config block for the benchmark run.
 
-    Precedence mirrors OnIt itself: explicit env wins, else the local-vLLM
-    default host. ``ONIT_BENCH_MODEL`` pins the model (required for Ollama
-    cloud and OpenRouter; for vLLM it is verified against the endpoint by
-    ``run.py``'s preflight, and auto-detection is the fallback when unset).
+    Resolution order, mirroring how the agent resolves its own target:
+
+    1. Benchmark env vars — ``ONIT_BENCH_HOST`` (then ``ONIT_HOST``) and
+       ``ONIT_BENCH_MODEL``. Explicit env wins over everything, so a
+       benchmark can always be pointed at a different endpoint than the one
+       the agent chats through.
+    2. The agent's ``~/.onit/config.yaml`` (written by ``onit setup``) — its
+       preferred endpoint, model, and the key it authenticates with. The key
+       itself is *not* read here; the agent's chat layer resolves
+       ``host_key: EMPTY`` through the same keychain lookup it uses in
+       conversation, so a benchmark run authenticates exactly like the agent
+       does. Only the pin (``ONIT_BENCH_MODEL``) overrides the config's model,
+       keeping unannotated runs comparable.
+    3. The local-vLLM default host, with auto-detection from ``/v1/models``.
     """
-    host = os.environ.get("ONIT_BENCH_HOST") or os.environ.get("ONIT_HOST") or DEFAULT_HOST
+    host = (os.environ.get("ONIT_BENCH_HOST")
+            or _agent_config_serving().get("host")
+            or os.environ.get("ONIT_HOST")
+            or DEFAULT_HOST)
     serving: dict = {"host": host, "think": _env_bool("ONIT_BENCH_THINK", False)}
 
     model = os.environ.get("ONIT_BENCH_MODEL")
     if model is None:
-        model = DEFAULT_MODEL
+        # No explicit pin: keep the agent's own model choice if it has one,
+        # else fall back to the benchmark pin. The pin exists so unannotated
+        # runs land on a fixed, comparable target; the agent's config wins
+        # because the point of this resolution order is to benchmark the
+        # endpoint the agent actually uses, as configured.
+        model = _agent_config_serving().get("model") or DEFAULT_MODEL
     if model:  # empty string = defer to the agent's /v1/models auto-detection
         serving["model"] = model
 
@@ -99,6 +123,105 @@ def resolve_serving() -> dict:
         serving["host_key"] = host_key
 
     return serving
+
+
+def _agent_config_serving() -> dict:
+    """The ``serving`` block of the agent's own config, or {} when absent.
+
+    Reads ``~/.onit/config.yaml`` — the file ``onit setup`` writes — through
+    the agent's own loader so path handling and YAML quirks stay in one place.
+    When that config lists several endpoints, the preferred one is chosen by
+    the agent's real LoadBalancer rule (explicit priority, else non-Ollama
+    over fallback-only Ollama, else first listed), so the benchmark cannot
+    drift from the endpoint the agent would actually pick. Never raises: a
+    missing or unreadable config just means "no agent config to inherit".
+    """
+    global _AGENT_SERVING_CACHE
+    if _AGENT_SERVING_CACHE is not None:
+        return _AGENT_SERVING_CACHE
+    serving: dict = {}
+    try:
+        from src.setup import CONFIG_PATH, _load_config
+
+        config = _load_config() if os.path.isfile(CONFIG_PATH) else {}
+        block = config.get("serving") or {}
+        if isinstance(block, dict):
+            serving = block
+            entries = block.get("endpoints")
+            if isinstance(entries, list) and entries:
+                serving = dict(block)
+                chosen = _preferred_endpoint(entries, block)
+                if chosen:
+                    serving["host"] = chosen["host"]
+                    # The agent serves the chosen endpoint's own model when
+                    # the entry names one; a block-level model (legacy
+                    # single-server shape) would not survive the endpoints
+                    # list, so the entry is the faithful thing to inherit.
+                    if chosen.get("model"):
+                        serving["model"] = chosen["model"]
+    except Exception:
+        # No config, unreadable config, or agent modules unavailable (e.g.
+        # benchmarks vendored elsewhere): fall through to env/default target.
+        serving = {}
+    _AGENT_SERVING_CACHE = serving
+    return serving
+
+
+# Memoized agent-config serving block. The config file changes only when
+# `onit setup` runs, and re-reading it per resolve_serving() call would put a
+# keychain touch on every model_label(); tests reset this via the fixture.
+_AGENT_SERVING_CACHE: dict | None = None
+
+
+def _preferred_endpoint(entries: list, serving: dict) -> dict | None:
+    """The endpoint entry the agent's LoadBalancer would prefer.
+
+    Mirrors LoadBalancer.preferred (src/model/serving/balancer.py): explicit
+    priority (lower wins), else the first non-Ollama endpoint while the
+    implicit fallback-only rule is in effect, else the first entry. Reuses the
+    balancer itself where it is importable so the rule cannot drift; falls
+    back to a local copy of the rule only when src is not importable.
+    """
+    normalized: list[tuple[int, bool, dict]] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            entry = {"host": entry}
+        if not isinstance(entry, dict):
+            continue
+        host = str(entry.get("host") or "").strip()
+        if not host:
+            continue
+        try:
+            priority = int(entry.get("priority", 0))
+        except (TypeError, ValueError):
+            priority = 0
+        is_ollama = any(f in host for f in ("ollama.com", "ollama.ai", ":11434"))
+        normalized.append((priority, is_ollama, dict(entry, host=host)))
+    if not normalized:
+        return None
+    try:
+        from src.model.serving.balancer import LoadBalancer, ServerEndpoint
+
+        endpoints = [ServerEndpoint(host=h, priority=p) for p, _, h in normalized]
+        fallback_only = bool(serving.get("ollama_fallback_only", True))
+        preferred = LoadBalancer(
+            endpoints, serving.get("load_balancer", "sticky"),
+            ollama_fallback_only=fallback_only).preferred
+        for _, _, entry in normalized:
+            if entry["host"] == preferred.host:
+                return entry
+    except Exception:
+        pass
+    # Local copy of the rule (src not importable): explicit priority first,
+    # else non-Ollama while fallback-only, else first listed.
+    if any(p != 0 for p, _, _ in normalized):
+        return min(normalized, key=lambda t: t[0])[2]
+    if not serving.get("ollama_fallback_only", True) or all(o for _, o, _ in normalized):
+        return normalized[0][2]
+    for _, is_ollama, entry in normalized:
+        if not is_ollama:
+            return entry
+    return normalized[0][2]
 
 
 def model_label() -> str:
@@ -166,15 +289,23 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
     * no model configured (empty ``ONIT_BENCH_MODEL``) -> adopt the endpoint's
       first model, mirroring the agent's own auto-detection.
 
-    Skipped entirely for hosted endpoints (anything not on localhost), where a
+    Authentication mirrors the agent's own request path
+    (``src/model/serving/chat.py::_resolve_api_key``): the explicit benchmark
+    key, then the key stored for this endpoint's URL by ``onit setup`` (OS
+    keychain), then the provider-named legacy secret. A local vLLM started
+    without ``--api-key`` needs none of these.
+
+    Skipped for paid hosted endpoints (Ollama cloud, OpenRouter), where a
     probe would spend a paid API call and 401 semantics differ per provider.
+    Everything else — localhost or the agent's configured remote host — is
+    probed, since a probe of your own model server is free.
     """
     import urllib.error
     import urllib.request
 
     serving = resolve_serving()
     host = serving["host"]
-    if "localhost" not in host and "127.0.0.1" not in host:
+    if any(p in host for p in ("ollama.com", "ollama.ai", "openrouter.ai")):
         return
 
     url = host.rstrip("/")
@@ -183,7 +314,7 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
     url += "/models"
 
     request = urllib.request.Request(url)
-    api_key = os.environ.get("VLLM_API_KEY") or serving.get("host_key") or "EMPTY"
+    api_key = _endpoint_api_key(host, serving)
     request.add_header("Authorization", f"Bearer {api_key}")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -213,12 +344,47 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
         os.environ["ONIT_BENCH_MODEL"] = served[0]
         return
     if model not in served:
+        # The agent's config may name a model the endpoint no longer serves
+        # (redeployed server); the agent would auto-detect a fallback at
+        # request time, but a benchmark needs the target fixed before the run.
         sys.exit(
-            f"[bench] pinned model {model!r} is not served by {host}.\n"
+            f"[bench] model {model!r} is not served by {host}.\n"
             f"[bench] served: {', '.join(served)}\n"
             f"[bench] run the server for the pin, or override with "
             f"ONIT_BENCH_MODEL (set it to \"\" to auto-detect)."
         )
+
+
+def _endpoint_api_key(host: str, serving: dict) -> str:
+    """The key the agent itself would authenticate this endpoint with.
+
+    Mirrors ``src/model/serving/chat.py::_resolve_api_key``: explicit key,
+    then the per-endpoint key stored by ``onit setup`` (env-injected slug or
+    OS keychain), then the provider-named legacy secret its URL selects.
+    Returns "EMPTY" when nothing is stored — correct for a local vLLM started
+    without ``--api-key``, which accepts any bearer token.
+    """
+    explicit = serving.get("host_key") or os.environ.get("ONIT_BENCH_HOST_KEY")
+    if explicit:
+        return explicit
+    try:
+        from src.model.serving.chat import _resolve_api_key
+
+        return _resolve_api_key(host, "EMPTY")
+    except Exception:
+        pass
+    # Local copy of the rule (src not importable): per-endpoint key, then the
+    # provider-named secret. Order matches LEGACY_ENDPOINT_KEYS.
+    try:
+        from src.setup import get_endpoint_key, get_secret, legacy_key_for
+
+        key = get_endpoint_key(host)
+        if key:
+            return key
+        keyring_key, env_var, _, _ = legacy_key_for(host)
+        return (os.environ.get(env_var) or get_secret(keyring_key) or "EMPTY")
+    except Exception:
+        return "EMPTY"
 
 
 def _env_bool(name: str, default: bool) -> bool:

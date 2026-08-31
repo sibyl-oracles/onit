@@ -56,20 +56,31 @@ A task whose most recent log already finished (`success`), used a different
 model, or doesn't exist yet is run fresh. (See [SWE-bench](#swe-bench) for
 resuming that runner.)
 
-## Eval target (environment)
+## Eval target (agent config, keychain, environment)
 
-The default target is the agent's own vLLM serving setup
-([RUN_A_MODEL_SERVER.md](../docs/RUN_A_MODEL_SERVER.md)): host
-`http://localhost:8000/v1`, model auto-detected from `/v1/models` unless pinned,
-no API key unless the server was started with `--api-key` (then `VLLM_API_KEY`).
-`run.py` probes a local endpoint before the first sample and fails fast if it
-is unreachable or does not serve the pinned model.
+The benchmark targets the same model serving setup the agent itself uses.
+Resolution order:
+
+1. **Benchmark env vars** — `ONIT_BENCH_HOST` / `ONIT_BENCH_MODEL` win over
+   everything, so a run can always be pointed somewhere else.
+2. **The agent's own config** (`~/.onit/config.yaml`, written by `onit setup`)
+   — its preferred endpoint (same rule as the agent's load balancer: explicit
+   priority, else non-Ollama over fallback-only Ollama, else first listed) and
+   that entry's model. The endpoint's API key comes from the OS keychain via
+   the agent's own resolution, so a benchmark run authenticates exactly like
+   the agent does.
+3. **`ONIT_HOST`**, then the local-vLLM default (`http://localhost:8000/v1`)
+   with the pinned `Qwen/Qwen3.8-27B`.
+
+`run.py` probes the endpoint before the first sample — localhost *and* the
+agent's configured remote host, but not paid providers — and fails fast if it
+is unreachable or does not serve the target model.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `ONIT_BENCH_HOST` | LLM host URL (falls back to `ONIT_HOST`) | `http://localhost:8000/v1` (local vLLM) |
-| `ONIT_BENCH_MODEL` | Model id (defaults to the pinned `Qwen/Qwen3.8-27B`; set to `""` to auto-detect from the endpoint) | pinned model |
-| `ONIT_BENCH_HOST_KEY` | Explicit API key | else `VLLM_API_KEY` / `OLLAMA_API_KEY` / `OPENROUTER_API_KEY` / keychain |
+| `ONIT_BENCH_HOST` | LLM host URL (overrides the agent's config) | agent's preferred endpoint from `~/.onit/config.yaml` |
+| `ONIT_BENCH_MODEL` | Model id (overrides the agent's; set to `""` to auto-detect from the endpoint) | agent's entry model, else pinned `Qwen/Qwen3.8-27B` |
+| `ONIT_BENCH_HOST_KEY` | Explicit API key (else the agent's keychain key for the endpoint) | agent's key resolution |
 | `ONIT_BENCH_THINK` | Enable thinking mode | `false` |
 
 Ollama cloud / OpenRouter are selected just by changing `ONIT_BENCH_HOST`

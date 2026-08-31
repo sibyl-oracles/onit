@@ -1,11 +1,12 @@
 # OnIt benchmark suite. Run from the repo root: `make -C benchmarks bench-smoke`.
 #
-# Eval target is resolved from the environment (defaults to the agent's own
-# vLLM serving setup, http://localhost:8000/v1 — docs/RUN_A_MODEL_SERVER.md):
-#   ONIT_BENCH_HOST   (default http://localhost:8000/v1)
-#   ONIT_BENCH_MODEL  (default pinned Qwen/Qwen3.8-27B; required for
-#                      Ollama cloud / OpenRouter)
-#   VLLM_API_KEY      (only if the server was started with --api-key)
+# Eval target is resolved like the agent's own: benchmark env vars, then the
+# agent's ~/.onit/config.yaml (preferred endpoint + model, key from the OS
+# keychain), then ONIT_HOST, then the local-vLLM default:
+#   ONIT_BENCH_HOST   (overrides the agent's configured endpoint)
+#   ONIT_BENCH_MODEL  (overrides the agent's; default pinned Qwen/Qwen3.8-27B,
+#                      required for Ollama cloud / OpenRouter)
+#   ONIT_BENCH_HOST_KEY (else the agent's keychain key for the endpoint)
 
 PY ?= python
 TASKS ?= all
