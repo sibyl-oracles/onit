@@ -623,6 +623,9 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="Print one session's trajectory records as JSON.")
     learn_parser.add_argument("--json", action="store_true",
                               help="Print the summary as JSON instead of a table.")
+    learn_parser.add_argument("--events", action="store_true",
+                              help="Print the loop event log (tool lifecycle and "
+                                   "the like) instead of the task summary.")
 
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
@@ -1170,6 +1173,16 @@ def main():
             summary["ratings"] = dict(summary["ratings"])
             summary["totals"] = dict(summary["totals"])
             print(json.dumps(summary, indent=2))
+            return
+        if args.events:
+            from .learn.events import summarize_events, tool_timeline
+            events = summarize_events(config_data)
+            if not events["total"]:
+                print("No loop events recorded yet. They appear when the "
+                      "tool lifecycle starts emitting (registry loads, "
+                      "tool loads/updates/archives).")
+                return
+            print(json.dumps(events, indent=2))
             return
         print(format_status(config_data))
         return

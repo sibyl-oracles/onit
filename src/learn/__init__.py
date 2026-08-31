@@ -28,6 +28,8 @@ and every request is byte-for-byte what it would have been without this package.
 from .config import (OFF, OBSERVE, ADAPT, EXTEND, EVOLVE,
                      autonomy, level_name, recording_enabled,
                      redact_tool_args, trajectory_dir)
+from .events import (TOOL_EVENTS, iter_events, record_event,
+                     record_tool_event, summarize_events, tool_timeline)
 from .report import format_status, summarize
 from .trajectory import (SCHEMA_VERSION, append_rating, args_digest,
                          build_record, describe_tool_call, derive_signals,
@@ -36,10 +38,11 @@ from .trajectory import (SCHEMA_VERSION, append_rating, args_digest,
 
 __all__ = [
     "OFF", "OBSERVE", "ADAPT", "EXTEND", "EVOLVE",
-    "SCHEMA_VERSION",
+    "SCHEMA_VERSION", "TOOL_EVENTS",
     "append_rating", "args_digest", "autonomy", "build_record",
-    "describe_tool_call", "derive_signals", "format_status", "iter_records",
-    "level_name", "normalize_rating", "owner_hash", "read_session",
-    "record_task", "recording_enabled", "redact_tool_args", "session_file",
-    "summarize", "trajectory_dir",
+    "describe_tool_call", "derive_signals", "format_status", "iter_events",
+    "iter_records", "level_name", "normalize_rating", "owner_hash",
+    "read_session", "record_event", "record_task", "record_tool_event",
+    "recording_enabled", "redact_tool_args", "session_file", "summarize",
+    "summarize_events", "tool_timeline", "trajectory_dir",
 ]

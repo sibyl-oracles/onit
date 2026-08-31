@@ -50,6 +50,11 @@ SCHEMA_VERSION = 1
 # was produced without guessing from which keys happen to be present.
 KIND_TASK = "task"
 KIND_RATING = "rating"
+# Lifecycle events from the loops themselves — a tool registry loading, a skill
+# being proposed, a playbook bullet promoted.  Written into the same file as the
+# runs they belong to (docs/SELF_IMPROVEMENT.md §4.4: one event log, two loops)
+# and ignored by :func:`read_session`, which folds only ratings into tasks.
+KIND_EVENT = "event"
 
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 

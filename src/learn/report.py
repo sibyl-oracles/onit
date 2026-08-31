@@ -40,6 +40,11 @@ def summarize(config_data: dict | None = None) -> dict:
     turn_counts: list[int] = []
 
     for record in iter_records(config_data):
+        # Event records share these files (one event log, two loops —
+        # SELF_IMPROVEMENT.md §4.4); they are loop bookkeeping, not tasks, and
+        # counting them would inflate every number below.
+        if record.get("kind") not in (None, "task"):
+            continue
         tasks += 1
         sessions.add(record.get("session_id"))
         if record.get("model"):
@@ -119,6 +124,18 @@ def format_status(config_data: dict | None = None) -> str:
     if s["models"]:
         served = ", ".join(f"{name} ({n})" for name, n in s["models"].most_common(3))
         lines.append(f"Models       {served}")
+
+    # The loops' own bookkeeping, one line: lifecycle events written so far.
+    # Empty until the dynamic-tool loop starts emitting — the registry-load
+    # event from the harness is usually the first.
+    try:
+        from .events import summarize_events
+        ev = summarize_events(config_data)
+        if ev["total"]:
+            top = ", ".join(f"{name}×{n}" for name, n in ev["by_event"].items())
+            lines += ["", f"Events       {ev['total']} — {top}"]
+    except Exception:  # pragma: no cover - status is best-effort
+        pass
 
     if s["tools"]:
         lines += ["", "Tools (worst failure rate first)",

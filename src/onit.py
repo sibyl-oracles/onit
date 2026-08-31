@@ -1081,6 +1081,25 @@ class OnIt(BaseModel):
         for tool_name in self.tool_registry:
             print(f"  - {tool_name}")
         print(f"  Total: {len(self.tool_registry)} tools discovered")
+        # The first real emission into the event store: what toolset this
+        # session started with.  On its own it answers "was this capability
+        # even present when the run failed"; later, the dynamic-tool loop's
+        # loaded/updated/archived events land beside it, and drift between
+        # what a trajectory assumed and what was live becomes readable
+        # (docs/SELF_IMPROVEMENT.md §4.4 — one event log, two loops).
+        try:
+            from .learn.events import record_event
+            record_event(
+                event="tool.registry_loaded",
+                subject="registry",
+                session_id=self.session_id,
+                source="harness",
+                detail={"tools": sorted(self.tool_registry.tools),
+                        "count": len(self.tool_registry.tools)},
+                config_data=self.config_data,
+            )
+        except Exception as e:
+            logger.debug("registry event not recorded: %s", e)
 
     def _setup_model_serving(self) -> None:
         """Configure model serving host and related settings."""
