@@ -45,3 +45,6 @@ tmp/
 
 # Eval
 *.eval
+
+# Local search index artifacts
+local_search/

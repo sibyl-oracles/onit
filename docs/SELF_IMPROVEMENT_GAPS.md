@@ -1,9 +1,11 @@
 # Self-Improvement Gaps
 
-**Status as of commit `f1552ca` (main, Aug 31 2026).**
+**Status as of commit `a995876` (main, Aug 31 2026).**
 Companion to `docs/SELF_IMPROVEMENT.md` (the RFC). This file is the gap assessment: what the framework already has for self-improvement, what is missing, and the critical path to close the loop.
 
 **Updated Aug 31 2026** with the framework from [Recursive Self-Improvement](https://www.philschmid.de/recursive-self-improvement) (Philschmid, Aug 21 2026) — see *External lens* below. All code claims re-verified at `f1552ca`.
+
+**Updated again Aug 31 2026 at `a995876`:** the **event store has landed** (`f91554a`) — tool-lifecycle events (`proposed`/`loaded`/`rejected`/`archived` via `record_tool_event`, `src/learn/events.py`) now append to the same per-session JSONL as trajectories, giving Loop A memory and future tool-lifecycle decisions a single shared log. Gap numbering below predates this commit: the event store closes part of the Loop A substrate (recording half), so the remaining Loop A work is the retrieval/injection half only.
 
 ## Verdict
 
