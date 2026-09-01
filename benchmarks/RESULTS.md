@@ -19,7 +19,7 @@ the benchmark suite (runner, task wrappers, `swe_bench` extra, docs). The
 tracked set is bigcodebench, gsm8k, humaneval, mbpp, plus the METR
 time-horizon layer for long-horizon capability.
 
-**Correction (2026-09-01):** the earlier MBPP full row (0.856) was produced while the benchmark's MCP servers failed to start on macOS (a `multiprocessing.Pool`-from-daemon-thread bug plus a legacy `ToolsMCPServer` config entry with no module), so the agent discovered **0 tools** and every sample scored as a tool-intent miss. That number was a harness failure, not a model measurement. The 0.899 above is the first MBPP run with the agent's full tool set (14 tools) live; see commit `946ee30`.
+**Correction (2026-09-01):** the earlier MBPP (0.856), HumanEval (0.927), and BigCodeBench (0.121) full rows were all produced while the benchmark's MCP servers failed to start on macOS (a `multiprocessing.Pool`-from-daemon-thread bug plus a legacy `ToolsMCPServer` config entry with no module), so the agent discovered **0 tools** and every sample scored as a tool-intent miss. Those numbers were harness failures, not model measurements. The MBPP (0.899) and HumanEval (0.902) rows above are the first runs with the agent's full tool set (14 tools) live; see commit `946ee30`. A second fix (commit below) repaired a context-compaction crash (`AttributeError: 'ChatCompletionMessage' object has no attribute 'get'` in `_compact_context`) that killed the HumanEval run at sample 112 once a sample's context grew large enough to trigger compaction. BigCodeBench is being re-run with both fixes in place.
 
 | Benchmark | Host | Model | Accuracy | Stderr |
 |---|---|---|---|---|
@@ -31,7 +31,7 @@ time-horizon layer for long-horizon capability.
 | gsm8k (sampled, 100) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | 0.980 | 0.014 |
 | gsm8k | https://api.ollama.com | minimax-m3:cloud | 0.937 | 0.007 |
 | gsm8k | https://api.ollama.com | rnj-1:8b | 0.927 | 0.007 |
-| humaneval (full, 164) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.927** | 0.020 |
+| humaneval (full, 164) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.902** | 0.023 |
 | humaneval | https://api.ollama.com | minimax-m3:cloud | 0.921 | 0.021 |
 | humaneval | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.915 | 0.022 |
 | humaneval | https://api.ollama.com | gemma4:31b-cloud | 0.909 | 0.023 |

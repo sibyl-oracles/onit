@@ -2982,19 +2982,26 @@ async def _compact_context(
     if not messages_to_summarize:
         return messages
 
-    # Build plain-text conversation transcript for the summarization prompt
+    # Build plain-text conversation transcript for the summarization prompt.
+    # Messages may be plain dicts or OpenAI SDK objects (ChatCompletionMessage);
+    # read fields via an accessor that handles both.
+    def _field(m, key, default=None):
+        if isinstance(m, dict):
+            return m.get(key, default)
+        return getattr(m, key, default)
+
     parts: list[str] = []
     for msg in messages_to_summarize:
-        role = msg.get("role", "?")
-        content = msg.get("content") or ""
+        role = _field(msg, "role", "?")
+        content = _field(msg, "content") or ""
         if isinstance(content, list):
-            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+            content = " ".join(_field(p, "text", "") for p in content if isinstance(p, dict) or hasattr(p, "text"))
         content = str(content)
-        name = msg.get("name", "")
+        name = _field(msg, "name", "")
         if role == "user":
             parts.append(f"User: {content[:600]}")
         elif role == "assistant":
-            tcs = msg.get("tool_calls")
+            tcs = _field(msg, "tool_calls")
             if tcs:
                 tc_names = []
                 for tc in tcs:
