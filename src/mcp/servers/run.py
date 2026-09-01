@@ -372,6 +372,46 @@ def prepare_server_args(config, port_overrides: dict | None = None):
 
     return [tuple(args) for args in server_args]
 
+def _spawn_servers(server_args, log_level='INFO'):
+    """Start each server as its own child process and wait for them to stay up.
+
+    Uses ``multiprocessing.Process`` directly rather than a ``Pool``. A ``Pool``
+    created from a daemon thread (which is how the benchmark and the CLI start
+    these servers) fails on macOS/Python 3.12 with ``ValueError: bad value(s) in
+    fds_to_keep`` (or a bootstrap ``RuntimeError``), because the spawn start
+    method re-imports the main module inside the child. ``Process`` objects do
+    not have that constraint, so this works on every platform.
+    """
+    ctx = multiprocessing.get_context('spawn')
+    procs = []
+    for args in server_args:
+        name = args[0]
+        proc = ctx.Process(target=run_server, args=args, name=name, daemon=True)
+        proc.start()
+        procs.append((name, proc))
+        logger.info(f"Started {name} server (pid {proc.pid})")
+
+    try:
+        while True:
+            for name, proc in procs:
+                if proc.is_alive():
+                    continue
+                # Reap the exit code. A spawn child that dies before the
+                # bootstrap finishes (e.g. a port collision) exits non-zero.
+                code = proc.exitcode
+                if code is None:
+                    code = proc.join(timeout=0)
+                if code not in (0, None):
+                    logger.error(f"Server {name} exited with code {code}")
+            time.sleep(10)
+    except KeyboardInterrupt:
+        logger.info("Received KeyboardInterrupt, terminating all servers...")
+        for name, proc in procs:
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=5)
+
+
 def run_servers(config_path=None, log_level='INFO', port_overrides: dict | None = None):
     """Run MCP servers based on a configuration file.
 
@@ -398,23 +438,10 @@ def run_servers(config_path=None, log_level='INFO', port_overrides: dict | None 
             logger.warning("No enabled servers found in configuration")
             return
 
-        # Use 'spawn' on Linux to avoid fork-from-thread deadlocks
-        # when run_servers() is called from a daemon thread.
-        ctx = multiprocessing.get_context('spawn') if sys.platform != 'darwin' else multiprocessing
-        with ctx.Pool(processes=len(server_args)) as pool:
-            results = [pool.apply_async(run_server, args) for args in server_args]
-
-            logger.info(f"Starting {len(server_args)} servers...")
-
-            try:
-                while True:
-                    for i, result in enumerate(results):
-                        if result.ready() and not result.get():
-                            name = server_args[i][0]
-                            logger.error(f"Server {name} failed to start or crashed")
-                    time.sleep(10)
-            except KeyboardInterrupt:
-                logger.info("Received KeyboardInterrupt, terminating all servers...")
+        # Spawn each server as its own child process (no Pool) and wait for
+        # them to stay up. See _spawn_servers for why a Pool is not used here.
+        logger.info(f"Starting {len(server_args)} servers...")
+        _spawn_servers(server_args, log_level)
 
     except Exception as e:
         logger.error(f"Failed to start servers: {e}")

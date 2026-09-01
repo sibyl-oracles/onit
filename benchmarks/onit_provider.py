@@ -75,7 +75,18 @@ def base_config_data() -> dict[str, Any]:
             "servers": [
                 {"name": "PromptsMCPServer", "url": "http://127.0.0.1:18400/sse",
                  "enabled": True},
-                {"name": "ToolsMCPServer", "url": "http://127.0.0.1:18401/sse",
+                # The current split tools servers (with real modules), not the
+                # legacy combined "ToolsMCPServer" which has no module and so is
+                # never started by the runner. ToolsLocal is stdio (spawned by
+                # the MCP client); ToolsNet is socket-served (started by the
+                # pool). apply_default_mcp_servers() sees these names and adds
+                # nothing, so the list stays exactly as written. ToolsNet sits in
+                # the benchmark's port range (port_base 18400) alongside Prompts.
+                {"name": "ToolsLocalMCPServer", "transport": "stdio",
+                 "module": "tasks.tools", "options": {"profile": "local"},
+                 "enabled": True},
+                {"name": "ToolsNetMCPServer", "url": "http://127.0.0.1:18401/sse",
+                 "module": "tasks.tools", "options": {"profile": "net"},
                  "enabled": True},
             ]
         },
