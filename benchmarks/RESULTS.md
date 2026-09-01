@@ -19,6 +19,8 @@ the benchmark suite (runner, task wrappers, `swe_bench` extra, docs). The
 tracked set is bigcodebench, gsm8k, humaneval, mbpp, plus the METR
 time-horizon layer for long-horizon capability.
 
+**Correction (2026-09-01):** the earlier MBPP full row (0.856) was produced while the benchmark's MCP servers failed to start on macOS (a `multiprocessing.Pool`-from-daemon-thread bug plus a legacy `ToolsMCPServer` config entry with no module), so the agent discovered **0 tools** and every sample scored as a tool-intent miss. That number was a harness failure, not a model measurement. The 0.899 above is the first MBPP run with the agent's full tool set (14 tools) live; see commit `946ee30`.
+
 | Benchmark | Host | Model | Accuracy | Stderr |
 |---|---|---|---|---|
 | bigcodebench | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.518 | 0.015 |
@@ -35,7 +37,7 @@ time-horizon layer for long-horizon capability.
 | humaneval | https://api.ollama.com | gemma4:31b-cloud | 0.909 | 0.023 |
 | humaneval | https://api.ollama.com | glm-5.1:cloud | 0.890 | 0.031 |
 | humaneval | https://api.ollama.com | rnj-1:8b | 0.848 | 0.028 |
-| mbpp (full, 257) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.856** | 0.022 |
+| mbpp (full, 257) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.899** | 0.019 |
 | mbpp | https://api.ollama.com | glm-5.1:cloud | 0.957 | 0.013 |
 | mbpp | https://api.ollama.com | minimax-m3:cloud | 0.942 | 0.015 |
 | mbpp | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.922 | 0.017 |
