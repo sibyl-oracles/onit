@@ -46,35 +46,52 @@ pytest src/test/test_doctor.py -v        # Live self-check battery tests
 
 One battery, two front ends. `src/ui/doctor.py` holds the checks; the CLI
 subcommand and the text-UI command are thin wrappers that build (or reuse) a
-live agent and print the same report. Both run 13 checks against the live
-stack — config, backslash commands, load balancer, MCP server reachability,
-tool discovery, the shipped toolset, a real `bash` round trip, a
-`write_file`→`read_file`→`edit_file` round trip, the harness's note tools,
-prompt assembly, the model endpoint's model listing, session history, and
-trajectory recording — each time-boxed, each cleaning up after itself:
+live agent and print the same report. Both run 22 fast checks against the
+live stack — config, backslash commands, load balancer, MCP server
+reachability, tool discovery, the shipped toolset, then **one round trip
+per shipped tool** (bash echo; `write_file`→`read_file`→`edit_file`; grep
+over a planted marker; `search_document` pattern mode; `index_documents` +
+`local_search` over a dedicated probe corpus; `send_file` base64; a full
+`serve` start/status/stop cycle; a web search; a `fetch_content` of
+example.com; `get_weather` and `github_repo` when their credentials are
+present), plus the harness's note tools, prompt assembly, the model
+endpoint's model listing, session history, and trajectory recording — each
+time-boxed, each cleaning up after itself:
 
 ```
-Self-check (fast) — 13 passed in 1.2s
+Self-check (fast) — 22 passed in 4.4s
 
-  ✓ config           2 MCP server(s), endpoint http://localhost:8000/v1 (~/.onit/config.yaml)
-  ✓ commands         8 commands parse and list
-  ✓ load-balancer    2 endpoint(s), serving via vllm-a
-  ✓ mcp-servers      PromptsMCPServer:18200 up · ToolsNetMCPServer:18201 up
-  ✓ tool-registry    14 tools
-  ✓ default-tools    all 14 default tools discovered
-  ✓ tool-bash        echo round trip ok (onit-doctor-1788318200)
+  ✓ config                3 endpoint(s) from serving.endpoints, 3 MCP server(s) (~/.onit/config.yaml)
+  ✓ commands              8 commands parse and list
+  ✓ load-balancer         3 endpoint(s), serving via server3
+  ✓ mcp-servers           ToolsNetMCPServer:18203 up · ToolsLocalMCPServer: stdio spec ok · PromptsMCPServer:18204 up
+  ✓ tool-registry         14 tools
+  ✓ default-tools         all 14 default tools discovered
+  ✓ tool-bash             echo round trip ok (onit-doctor-1788338977)
+  ✓ tool-files            write/read/edit round trip ok (doctor-probe-8034-1788338978.txt)
+  ✓ tool-grep             grep found the planted marker (1 match)
+  ✓ tool-search-document  pattern search found the planted marker (1 match)
+  ✓ tool-local-search     index + local_search round trip ok (631 doc indexed, retrieved)
+  ✓ tool-send-file        base64 round trip ok (doctor-send-8034.txt)
+  ✓ tool-serve            start/status/stop cycle ok (pid 8046)
+  ✓ tool-search           web search returned 3 result(s)
+  ✓ tool-fetch-content    fetched example.com and found its known text
+  ✓ tool-weather          conditions for 東京都, 日本 came back
+  ✓ tool-github           listed 1 repo(s) for the token
   ...
 ```
 
 A check that cannot run here **skips** (`–`) rather than failing — no
-`data_path` means the file-tool probe has nowhere to run, which is a fact
-about the configuration, not evidence that the code broke.
+`data_path` means the file-tool probe has nowhere to run; no
+`OPENWEATHER_API_KEY` or `GITHUB_TOKEN` means the weather/GitHub probes
+cannot exercise their tools. Those are facts about the configuration, not
+evidence that the code broke.
 
 ### From the shell: `onit doctor`
 
 ```bash
-onit doctor            # the 13 fast checks, a few seconds
-onit doctor --deep     # + live model reply and a tool-calling turn (costs tokens)
+onit doctor            # the 22 fast checks, a few seconds
+onit doctor --deep     # + three live model turns (costs tokens)
 onit doctor --json     # machine-readable report (for scripts and CI)
 onit doctor --keep-session   # keep the throwaway session for reading a failure's details
 ```
@@ -101,7 +118,7 @@ servers) rather than crashing — that diagnosis is the point.
 
 ### In the text UI: `\doctor`
 
-Type `\doctor` in a running session. It runs the same 13 checks against that
+Type `\doctor` in a running session. It runs the same 22 checks against that
 session's own live stack — its MCP servers, its tool registry, its endpoint —
 so it answers "is *this* session healthy", including things the CLI run
 cannot see (a server that died mid-session, tools lost after a config
@@ -109,14 +126,16 @@ reload).
 
 ```
 \doctor          # the fast battery
-\doctor deep     # + live model reply and a tool-calling turn (costs tokens)
+\doctor deep     # + three live model turns (costs tokens)
 ```
 
-`deep` adds two checks that cost tokens: a live model reply through `chat()`
-(no tools, one plain turn) and a full tool-calling turn (the model must call
-`bash` and report its output). Use it when the fast battery passes but tasks
-still misbehave — that combination points at the model/loop layer rather
-than the wiring.
+`deep` adds three checks that cost tokens: a live model reply through
+`chat()` (no tools, one plain turn), a full tool-calling turn (the model
+must call `bash` and report its output), and a file-reading turn (the
+harness plants a probe file; the model must `read_file` it and echo its
+contents — the read half of the tool loop, the path every document task
+rides). Use it when the fast battery passes but tasks still misbehave —
+that combination points at the model/loop layer rather than the wiring.
 
 ### Which one, when
 

@@ -22,29 +22,43 @@ probe, and the harness's own tools work against this session's data path.
 It is the thing to run after pulling changes, before trusting the session
 with real work:
 
-    \\doctor          fast checks — servers, tools, prompts, endpoint.  No
-                      tokens spent, a few seconds.
-    \\doctor deep     everything above plus a live model reply and a full
-                      tool-calling turn.  Costs a few hundred tokens and
-                      up to a couple of minutes on a slow endpoint.
+    \\doctor          fast checks — servers, every shipped tool, prompts,
+                      endpoint.  No tokens spent, a few seconds.
+    \\doctor deep     everything above plus live model turns: a plain reply,
+                      a tool-calling turn, and a file-reading turn.  Costs a
+                      few hundred tokens and up to a couple of minutes on a
+                      slow endpoint.
 
 Design rules the checks follow:
 
 * **Each check is time-boxed.**  A hung MCP server costs its own timeout,
   never the session — the same bargain ``discover_tools`` strikes.
 * **A check that cannot run here is a skip, not a failure.**  No
-  ``data_path`` means the file-tool round trip has nowhere to run; that is
-  a fact about the configuration, not evidence that the code broke.
+  ``data_path`` means the file-tool round trip has nowhere to run; a tool
+  that needs an API key this machine does not have cannot be exercised.
+  Those are facts about the configuration, not evidence that the code
+  broke.
 * **Failures name the layer.**  "endpoint did not list models" and "bash
   tool returned an error" point at different halves of the stack, and a
   check that cannot tell them apart is a check that cannot be acted on.
-* **Probes clean up after themselves.**  Every file, note and result a
-  check writes is removed before the check returns, best effort.
+* **Probes clean up after themselves.**  Every file, note, index entry,
+  managed process and result a check writes is removed or stopped before
+  the check returns, best effort.  The one deliberate exception is the
+  local-search index file itself: it is the session's own index, so the
+  probe re-indexes the emptied corpus instead of deleting the file.
+* **Every shipped tool is exercised, not merely listed.**  Discovery
+  proves a tool's name arrived; a round trip proves it still works.  The
+  fast battery runs one against each of the fourteen, in the cheapest
+  safe form each supports — and the tools that would reach out to a
+  third party (weather, GitHub) skip cleanly when their key is absent
+  rather than counting a missing credential as a broken tool.
 """
 
 import asyncio
+import base64
 import json
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -67,8 +81,15 @@ from ..lib.tools import _wait_for_port
 FAST_TIMEOUT_S = 30.0
 PORT_TIMEOUT_S = 8.0
 TOOL_CALL_TIMEOUT_S = 45.0
+# The retrieval probes do real work \u2014 chunking, embedding dispatch, a
+# subprocess grep \u2014 so they get a wider box than a single tool call.
+RAG_TIMEOUT_S = 90.0
+SERVE_TIMEOUT_S = 60.0
+WEB_TIMEOUT_S = 60.0
+KEYED_TIMEOUT_S = 60.0
 MODEL_REPLY_TIMEOUT_S = 90.0
 MODEL_TOOL_TURN_TIMEOUT_S = 240.0
+MODEL_FILE_TURN_TIMEOUT_S = 120.0
 
 # The toolset the shipped servers serve between them (see the header of
 # src/mcp/servers/tasks/tools/mcp_server.py).  A session running a deliberately
@@ -90,6 +111,16 @@ TOOL_TURN_INSTRUCTION = (
     "This is an automated self-check. Use the bash tool to run exactly: "
     "echo DOCTOR-TOOL-OK — then reply with that command's exact output "
     "and nothing else."
+)
+
+# The deep file-reading turn: the harness writes a probe file, then asks the
+# model to read it with the read_file tool and echo its contents.  This is
+# the read half of the tool loop — check_model_tool_turn exercises the
+# bash half — and it is the path every document task rides.
+FILE_TURN_INSTRUCTION = (
+    "This is an automated self-check. Use the read_file tool to read the "
+    "file at the path given below, then reply with that file's exact "
+    "contents and nothing else.\nPath: {path}"
 )
 
 
@@ -231,27 +262,36 @@ async def check_default_tools(agent) -> CheckResult:
                    f"all {len(DEFAULT_TOOLS)} default tools discovered", start)
 
 
-async def _call_tool(registry, name: str, **kwargs):
+async def _call_tool(registry, tool: str, **kwargs):
     """One tool round trip through the live registry.
 
     The single funnel for the probe calls, so the tests can stand in for the
     network at one seam (``doctor._call_tool``) rather than one per tool.
+    The tool-name parameter is ``tool`` rather than ``name`` because several
+    tools take a ``name`` argument of their own (serve's process label) —
+    a colliding parameter would make every such probe a TypeError.
     """
-    handler = registry[name]
+    handler = registry[tool]
     if handler is None:
-        raise RuntimeError(f"tool {name!r} has no handler")
+        raise RuntimeError(f"tool {tool!r} has no handler")
     out = await handler(**kwargs)
     if out is None:
-        raise RuntimeError(f"tool {name!r} returned nothing")
+        raise RuntimeError(f"tool {tool!r} returned nothing")
     return out
 
 
 def _tool_json(out: str, name: str) -> dict:
-    """Parse a tool's JSON reply, or raise with the raw text attached."""
+    """Parse a tool's JSON reply, or raise with the raw text attached.
+
+    A bare JSON array — the web search tool's success shape — is wrapped as
+    ``{"results": [...]}`` so the checks can treat one payload shape.
+    """
     try:
         data = json.loads(out)
     except (TypeError, ValueError):
         raise RuntimeError(f"{name} returned non-JSON: {_short(out)}")
+    if isinstance(data, list):
+        return {"results": data}
     if not isinstance(data, dict):
         raise RuntimeError(f"{name} returned unexpected payload: {_short(out)}")
     return data
@@ -345,6 +385,345 @@ async def check_tool_files(agent) -> CheckResult:
             os.remove(os.path.join(data_path, probe))
         except OSError:
             pass
+
+
+# ── the remaining shipped tools: one probe each ────────────────────────────
+#
+# Discovery proves a tool's *name* arrived; these prove each tool still
+# *works*.  Each probe is the cheapest safe round trip the tool supports,
+# and each cleans up after itself.  A probe that cannot run here — the tool
+# was not discovered, or it needs a credential this machine does not have —
+# is a skip, not a failure: a missing key is a fact about the configuration,
+# not evidence that the code broke.
+
+
+def _reg_skip(agent, name: str, needed: tuple, start: float) -> CheckResult | None:
+    """The shared skip shape for the per-tool probes."""
+    reg = getattr(agent, "tool_registry", None)
+    if reg is None or not set(needed) <= reg.tools:
+        return _result(name, False, f"{', '.join(needed)} not discovered",
+                       start, skip=True)
+    return None
+
+
+async def check_tool_grep(agent) -> CheckResult:
+    """grep finds a planted marker in a planted file — the subprocess path."""
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-grep", ("grep",), start):
+        return early
+    reg = agent.tool_registry
+    data_path = getattr(agent, "data_path", "") or ""
+    if not data_path:
+        return _result("tool-grep", False,
+                       "no data_path this session — nowhere to probe", start,
+                       skip=True)
+    marker = f"DOCTOR-GREP-{os.getpid()}"
+    probe_dir = os.path.join(data_path, f".doctor-grep-{os.getpid()}")
+    os.makedirs(probe_dir, exist_ok=True)
+    try:
+        with open(os.path.join(probe_dir, "probe.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(f"line one\n{marker}\nline three\n")
+        out = _tool_json_safe(
+            await _call_tool(reg, "grep", path=probe_dir, pattern=marker,
+                             data_path=data_path),
+            "grep")
+        if out.get("total_matches", 0) < 1:
+            return _result("tool-grep", False,
+                           f"grep found the planted marker 0 times: "
+                           f"{_short(str(out))}", start)
+        return _result("tool-grep", True,
+                       f"grep found the planted marker ({out.get('total_matches')} "
+                       f"match)", start)
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
+async def check_tool_search_document(agent) -> CheckResult:
+    """search_document regex mode over a planted file — no index involved."""
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-search-document",
+                          ("search_document",), start):
+        return early
+    reg = agent.tool_registry
+    data_path = getattr(agent, "data_path", "") or ""
+    if not data_path:
+        return _result("tool-search-document", False,
+                       "no data_path this session — nowhere to probe", start,
+                       skip=True)
+    marker = f"DOCTOR-DOC-{os.getpid()}"
+    probe = os.path.join(data_path, f".doctor-doc-{os.getpid()}.md")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write(f"# probe\n\nThe {marker} token lives here.\n")
+        out = _tool_json_safe(
+            await _call_tool(reg, "search_document", path=probe,
+                             mode="pattern", pattern=marker,
+                             data_path=data_path),
+            "search_document")
+        if out.get("total_matches", 0) < 1:
+            return _result("tool-search-document", False,
+                           f"pattern search missed the planted marker: "
+                           f"{_short(str(out))}", start)
+        return _result("tool-search-document", True,
+                       f"pattern search found the planted marker "
+                       f"({out.get('total_matches')} match)", start)
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+
+
+async def check_tool_index_and_search(agent) -> CheckResult:
+    """index_documents then local_search over a dedicated probe corpus.
+
+    The probe corpus is its own directory under the data path, so the
+    session's real index is never touched.  The index it creates lives in
+    the corpus directory itself; the cleanup re-indexes the emptied
+    directory (dropping the probe's entries) before removing it.
+    """
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-local-search",
+                          ("index_documents", "local_search"), start):
+        return early
+    reg = agent.tool_registry
+    data_path = getattr(agent, "data_path", "") or ""
+    if not data_path:
+        return _result("tool-local-search", False,
+                       "no data_path this session — nowhere to probe", start,
+                       skip=True)
+    marker = f"quantum{os.getpid()}teapot"
+    # A plain (non-dot) directory: the corpus walk skips dot-components, so
+    # a hidden probe corpus would index zero documents and the search half
+    # of this probe would fail for a reason that has nothing to do with the
+    # tools under test.
+    probe_dir = os.path.join(data_path, f"doctor-corpus-{os.getpid()}")
+    os.makedirs(probe_dir, exist_ok=True)
+    try:
+        with open(os.path.join(probe_dir, "probe.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(f"# Probe\n\nThe secret passphrase is {marker}.\n")
+        idx = _tool_json_safe(
+            await _call_tool(reg, "index_documents", path=probe_dir,
+                             data_path=data_path),
+            "index_documents")
+        if idx.get("status") != "success":
+            return _result("tool-local-search", False,
+                           f"index_documents failed: {_short(str(idx))}", start)
+        if idx.get("total_documents", 0) < 1:
+            return _result("tool-local-search", False,
+                           f"index_documents indexed nothing: "
+                           f"{_short(str(idx))}", start)
+        found = _tool_json_safe(
+            await _call_tool(reg, "local_search", query=marker, top_k=3,
+                             method="bm25", path=probe_dir,
+                             data_path=data_path),
+            "local_search")
+        hits = json.dumps(found.get("results") or [])
+        if marker not in hits:
+            return _result("tool-local-search", False,
+                           f"local_search did not retrieve the planted "
+                           f"passphrase: {_short(hits)}", start)
+        return _result("tool-local-search", True,
+                       f"index + local_search round trip ok "
+                       f"({idx.get('total_documents')} doc indexed, "
+                       f"retrieved)", start)
+    finally:
+        # Drop the probe's entries from the index, then remove the corpus.
+        # method="bm25" keeps the probe off the embedding path; the re-index
+        # of an emptied directory is cheap by construction.
+        try:
+            await _call_tool(reg, "index_documents", path=probe_dir,
+                             data_path=data_path)
+        except Exception:
+            pass
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
+async def check_tool_send_file(agent) -> CheckResult:
+    """send_file returns the probe file's bytes — the base64, no-upload path."""
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-send-file", ("send_file",), start):
+        return early
+    reg = agent.tool_registry
+    data_path = getattr(agent, "data_path", "") or ""
+    if not data_path:
+        return _result("tool-send-file", False,
+                       "no data_path this session — nowhere to probe", start,
+                       skip=True)
+    probe = f"doctor-send-{os.getpid()}.txt"
+    payload = f"DOCTOR-SEND-{os.getpid()}-{int(time.time())}"
+    try:
+        with open(os.path.join(data_path, probe), "w", encoding="utf-8") as f:
+            f.write(payload)
+        out = _tool_json_safe(
+            await _call_tool(reg, "send_file", path=probe, data_path=data_path),
+            "send_file")
+        if out.get("status") != "success":
+            return _result("tool-send-file", False,
+                           f"send_file failed: {_short(str(out))}", start)
+        if base64.b64encode(payload.encode()).decode() != \
+                out.get("file_data_base64"):
+            return _result("tool-send-file", False,
+                           "send_file's base64 does not decode to the "
+                           "planted payload", start)
+        return _result("tool-send-file", True,
+                       f"base64 round trip ok ({probe})", start)
+    finally:
+        try:
+            os.remove(os.path.join(data_path, probe))
+        except OSError:
+            pass
+
+
+async def check_tool_serve(agent) -> CheckResult:
+    """serve starts, reports, and stops a managed process — the full cycle."""
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-serve", ("serve",), start):
+        return early
+    reg = agent.tool_registry
+    data_path = getattr(agent, "data_path", "") or ""
+    name = f"doctor-probe-{os.getpid()}"
+    try:
+        started = _tool_json_safe(
+            await _call_tool(reg, "serve", action="start",
+                             command="sleep 30", name=name,
+                             data_path=data_path),
+            "serve")
+        # "started" is the success shape; "already_running" is fine too —
+        # a leftover probe from a crashed run is not a broken serve.
+        if started.get("status") not in ("started", "already_running"):
+            return _result("tool-serve", False,
+                           f"serve start did not report started: "
+                           f"{_short(str(started))}", start)
+        status = _tool_json_safe(
+            await _call_tool(reg, "serve", action="status", name=name,
+                             data_path=data_path),
+            "serve")
+        if status.get("status") not in ("running", "already_running"):
+            return _result("tool-serve", False,
+                           f"serve status did not see the probe running: "
+                           f"{_short(str(status))}", start)
+        return _result("tool-serve", True,
+                       f"start/status/stop cycle ok (pid {started.get('pid')})",
+                       start)
+    finally:
+        try:
+            await _call_tool(reg, "serve", action="stop", name=name,
+                             data_path=data_path)
+        except Exception:
+            pass
+
+
+async def check_tool_search(agent) -> CheckResult:
+    """search reaches the web and returns results — one cheap query.
+
+    The web search path returns a bare JSON array of results (or an
+    ``{"error": ...}`` object) — there is no ``status`` key to check.
+    """
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-search", ("search",), start):
+        return early
+    out = _tool_json_safe(
+        await _call_tool(agent.tool_registry, "search",
+                         query="example domain", type="web", max_results=1),
+        "search")
+    if "error" in out:
+        return _result("tool-search", False,
+                       f"search failed: {_short(str(out))}", start)
+    results = out.get("results") if isinstance(out, dict) else out
+    if not results:
+        return _result("tool-search", False,
+                       "search returned no results", start)
+    return _result("tool-search", True,
+                   f"web search returned {len(results)} result(s)",
+                   start)
+
+
+async def check_tool_fetch_content(agent) -> CheckResult:
+    """fetch_content retrieves a known page — the network fetch path.
+
+    A successful fetch carries the page's known text; there is no
+    ``status`` key on the success shape, so the content is the verdict.
+    """
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-fetch-content", ("fetch_content",),
+                          start):
+        return early
+    out = _tool_json_safe(
+        await _call_tool(agent.tool_registry, "fetch_content",
+                         url="https://example.com", extract_media=False),
+        "fetch_content")
+    if "error" in out:
+        return _result("tool-fetch-content", False,
+                       f"fetch_content failed: {_short(str(out))}", start)
+    if "Example Domain" not in str(out.get("content") or ""):
+        return _result("tool-fetch-content", False,
+                       f"the page's known text did not come back: "
+                       f"{_short(str(out.get('content')))}", start)
+    return _result("tool-fetch-content", True,
+                   "fetched example.com and found its known text", start)
+
+
+def _keyed_skip(name: str, env: tuple, start: float) -> CheckResult | None:
+    """A tool whose probe needs a credential skips cleanly without one.
+
+    The same env names the tool's server checks (see the weather and GitHub
+    registrations in src/mcp/servers/tasks/tools/mcp_server.py), so a key
+    present for the server is present for the probe.
+    """
+    if any(os.environ.get(v) for v in env):
+        return None
+    return _result(name, False,
+                   f"no {' or '.join(env)} set — probe cannot run", start,
+                   skip=True)
+
+
+async def check_tool_weather(agent) -> CheckResult:
+    """get_weather answers for a known city — needs OPENWEATHER_API_KEY."""
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-weather", ("get_weather",), start):
+        return early
+    if early := _keyed_skip("tool-weather",
+                            ("OPENWEATHER_API_KEY", "OPENWEATHERMAP_API_KEY"),
+                            start):
+        return early
+    out = _tool_json_safe(
+        await _call_tool(agent.tool_registry, "get_weather",
+                         place="Tokyo, Japan"),
+        "get_weather")
+    if "error" in out:
+        return _result("tool-weather", False,
+                       f"get_weather failed: {_short(str(out))}", start)
+    # The success shape has no status key — the current conditions are the
+    # verdict.  The description is the one field every provider fills.
+    if not (out.get("current") or {}).get("description"):
+        return _result("tool-weather", False,
+                       f"no current conditions in the reply: "
+                       f"{_short(str(out))}", start)
+    return _result("tool-weather", True,
+                   f"conditions for {out.get('location', 'Tokyo')} came back",
+                   start)
+
+
+async def check_tool_github(agent) -> CheckResult:
+    """github_repo lists the token's repositories — the read-only action."""
+    start = time.monotonic()
+    if early := _reg_skip(agent, "tool-github", ("github_repo",), start):
+        return early
+    if early := _keyed_skip("tool-github", ("GITHUB_TOKEN",), start):
+        return early
+    out = _tool_json_safe(
+        await _call_tool(agent.tool_registry, "github_repo", action="list",
+                         per_page=1),
+        "github_repo")
+    if out.get("status") != "ok":
+        return _result("tool-github", False,
+                       f"github_repo list failed: {_short(str(out))}", start)
+    return _result("tool-github", True,
+                   f"listed {out.get('count', '?')} repo(s) for the token",
+                   start)
 
 
 async def check_harness_tools(agent) -> CheckResult:
@@ -631,6 +1010,68 @@ async def check_model_tool_turn(agent) -> CheckResult:
                    f"got: {_short(out or 'nothing')}", start)
 
 
+async def check_model_file_turn(agent) -> CheckResult:
+    """The read half of the tool loop: the model reads a file and reports it.
+
+    The harness plants a probe file through the write_file tool — the same
+    path a real task's documents ride — then asks the model to read_file it
+    and echo the contents.  ``check_model_tool_turn`` exercises the bash
+    half of the loop; this exercises the half every document task rides.
+    """
+    start = time.monotonic()
+    reg = getattr(agent, "tool_registry", None)
+    if reg is None or not {"write_file", "read_file"} <= reg.tools:
+        return _result("model-file-turn", False,
+                       "needs the file tools", start, skip=True)
+    lb = getattr(agent, "load_balancer", None)
+    ep = lb.assigned(getattr(agent, "session_id", None)) if lb is not None else None
+    if ep is None:
+        return _result("model-file-turn", False, "no endpoint assigned", start)
+    from ..model.serving.chat import chat
+    data_path = getattr(agent, "data_path", "") or ""
+    if not data_path:
+        return _result("model-file-turn", False,
+                       "no data_path this session — nowhere to plant the probe",
+                       start, skip=True)
+    probe = f"doctor-read-{os.getpid()}.txt"
+    marker = f"DOCTOR-READ-{os.getpid()}-{int(time.time())}"
+    try:
+        w = _tool_json_safe(
+            await _call_tool(reg, "write_file", path=probe, content=marker,
+                             data_path=data_path),
+            "write_file")
+        if w.get("status") != "success":
+            return _result("model-file-turn", False,
+                           f"planting the probe file failed: "
+                           f"{_short(str(w))}", start)
+        out = await chat(
+            host=ep.host, host_key=ep.host_key, model=ep.model,
+            instruction=FILE_TURN_INSTRUCTION.format(
+                path=os.path.join(data_path, probe)),
+            tool_registry=reg,
+            safety_queue=asyncio.Queue(),
+            chat_ui=None, verbose=False, stream=False,
+            think=bool((getattr(agent, "model_serving", {}) or {}).get("think", False)),
+            max_tokens=1024,
+            data_path=data_path,
+            verify_answers=False,
+            session_history=[],
+            session_id=f"doctor-{int(time.time())}",
+        )
+        if out and marker in out:
+            return _result("model-file-turn", True,
+                           "model read the probe file and echoed its contents",
+                           start)
+        return _result("model-file-turn", False,
+                       "the file-reading turn did not land the probe "
+                       f"contents — got: {_short(out or 'nothing')}", start)
+    finally:
+        try:
+            os.remove(os.path.join(data_path, probe))
+        except OSError:
+            pass
+
+
 # ── the runner and the report ────────────────────────────────────────────────
 
 # (name, check, timeout) in report order.  The names double as the row labels,
@@ -644,6 +1085,15 @@ CHECKS = (
     ("default-tools", check_default_tools, FAST_TIMEOUT_S),
     ("tool-bash", check_tool_bash, TOOL_CALL_TIMEOUT_S),
     ("tool-files", check_tool_files, TOOL_CALL_TIMEOUT_S),
+    ("tool-grep", check_tool_grep, TOOL_CALL_TIMEOUT_S),
+    ("tool-search-document", check_tool_search_document, TOOL_CALL_TIMEOUT_S),
+    ("tool-local-search", check_tool_index_and_search, RAG_TIMEOUT_S),
+    ("tool-send-file", check_tool_send_file, TOOL_CALL_TIMEOUT_S),
+    ("tool-serve", check_tool_serve, SERVE_TIMEOUT_S),
+    ("tool-search", check_tool_search, WEB_TIMEOUT_S),
+    ("tool-fetch-content", check_tool_fetch_content, WEB_TIMEOUT_S),
+    ("tool-weather", check_tool_weather, KEYED_TIMEOUT_S),
+    ("tool-github", check_tool_github, KEYED_TIMEOUT_S),
     ("harness-tools", check_harness_tools, FAST_TIMEOUT_S),
     ("prompts", check_prompts, FAST_TIMEOUT_S),
     ("endpoint", check_endpoint, FAST_TIMEOUT_S),
@@ -654,6 +1104,7 @@ CHECKS = (
 DEEP_CHECKS = (
     ("model-reply", check_model_reply, MODEL_REPLY_TIMEOUT_S),
     ("model-tool-turn", check_model_tool_turn, MODEL_TOOL_TURN_TIMEOUT_S),
+    ("model-file-turn", check_model_file_turn, MODEL_FILE_TURN_TIMEOUT_S),
 )
 
 
@@ -715,8 +1166,9 @@ def render_report(results: list[CheckResult], deep: bool = False) -> str:
     if failed:
         out += ["", f"{failed} check(s) failed. Fix, then run \\doctor again."]
         if not deep:
-            out.append("\\doctor deep also exercises a live model reply and a "
-                       "tool-calling turn (costs tokens).")
+            out.append("\\doctor deep also exercises a live model reply, a "
+                       "tool-calling turn, and a file-reading turn "
+                       "(costs tokens).")
     elif skipped:
         out += ["", "All checks that ran passed. Skipped ones could not run "
                 "here — see their lines above."]
