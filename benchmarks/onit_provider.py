@@ -30,16 +30,24 @@ from pathlib import Path
 from typing import Any
 
 # Must precede any import of the agent stack (see module docstring).
-# src/ is on sys.path by the time this module is imported (the package runs
-# from the repo root), so the local src/mcp package shadows the PyPI mcp SDK;
-# the pre-imports must happen before the shadow is in place.
-import sys
-sys.path.insert(0, ".")
-sys.path.insert(0, "src")
+# The PyPI mcp SDK and fastmcp must be imported BEFORE src/ is put on
+# sys.path: once "src" is on the path, the local src/mcp package shadows the
+# SDK, and fastmcp's lazy "import mcp.types" then resolves to the shadow
+# (which has no types module) and raises "FastMCP server support is not
+# installed".  Importing the SDK first pins the real modules in sys.modules,
+# so the shadow cannot bite anything imported afterwards.  This is safe for
+# the agent stack: it reaches the local package only through relative imports
+# (e.g. "from .mcp.prompts.prompts import ..."), which do not consult
+# sys.path, and its one bare SDK import (src/type/tools.py) wants the real
+# SDK anyway.
 import mcp.types  # noqa: F401
 import fastmcp.server.context  # noqa: F401
 import fastmcp.server  # noqa: F401
 import fastmcp.client  # noqa: F401
+
+import sys
+sys.path.insert(0, ".")
+sys.path.insert(0, "src")
 
 from inspect_ai.model import (
     ChatMessage,
