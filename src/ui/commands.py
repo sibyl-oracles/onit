@@ -58,6 +58,10 @@ class Command:
 
 COMMANDS = (
     Command("help", "", "Show this list."),
+    Command("doctor", "[deep]",
+            "Run the live self-check: servers, tools, prompts, endpoint. "
+            "'deep' adds a real model reply and a tool-calling turn "
+            "(costs tokens)."),
     Command("setup", "", "Show the endpoints, keys and paths this session is using."),
     Command("model", "[name | -]",
             "Switch model; bare, list what the endpoint serves; '-' for "
@@ -703,6 +707,37 @@ def cmd_save(agent) -> str:
     return "\n".join(lines)
 
 
+# ── \doctor ─────────────────────────────────────────────────────────────────────────────
+
+async def cmd_doctor(agent, arg: str) -> str:
+    """Run the live self-check battery and return the report.
+
+    Awaited, not spun onto its own loop: ``dispatch()`` runs inside the
+    session's event loop, and ``asyncio.run()`` from inside a running loop
+    is exactly the crash a self-check must not be.  The fast battery is a
+    few seconds; ``deep`` adds up to a couple of minutes on a slow endpoint,
+    which the command's help text warns about.
+    """
+    from .doctor import render_report, run_checks
+
+    deep = arg.strip().lower() == "deep"
+    if arg.strip() and not deep:
+        return ("\\doctor takes no argument, or 'deep'. "
+                "'deep' adds a live model reply and a tool-calling turn.")
+
+    # Progress goes through the UI's log panel rather than a spinner: the
+    # checks are individually quick, and a spinner that flashes one name per
+    # second reads as noise.  add_log is the one channel every front end has.
+    ui = getattr(agent, "chat_ui", None)
+
+    def _on_start(name: str) -> None:
+        if ui is not None and hasattr(ui, "add_log"):
+            ui.add_log(f"self-check: running {name}…", level="info")
+
+    results = await run_checks(agent, deep=deep, on_start=_on_start)
+    return render_report(results, deep=deep)
+
+
 # ── dispatch ────────────────────────────────────────────────────────────────
 
 async def dispatch(agent, text: str) -> str | None:
@@ -733,6 +768,8 @@ async def dispatch(agent, text: str) -> str | None:
             return await cmd_key(agent, arg)
         if name == "save":
             return cmd_save(agent)
+        if name == "doctor":
+            return await cmd_doctor(agent, arg)
     except Exception as e:
         return f"\\{name} failed: {type(e).__name__}: {e}"
     return None

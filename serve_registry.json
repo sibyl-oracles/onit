@@ -1,0 +1,10 @@
+{
+  "bench-gsm8k-smoke": {
+    "pid": 35137,
+    "command": "cd /Users/rowel/sandbox/onit && python -m benchmarks.run --tier smoke --tasks gsm8k; echo \"EXIT=$?\"",
+    "cwd": "/Users/rowel/sandbox/onit",
+    "started_at": "2026-08-31T21:23:43.372052",
+    "stdout_log": "/Users/rowel/sandbox/onit/serve_logs/bench-gsm8k-smoke/stdout.log",
+    "stderr_log": "/Users/rowel/sandbox/onit/serve_logs/bench-gsm8k-smoke/stderr.log"
+  }
+}

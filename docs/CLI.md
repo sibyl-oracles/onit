@@ -1,7 +1,8 @@
 # CLI Reference
 
 Every `onit` command and flag. The terminal chat is the default mode; the
-`serve` subcommands run OnIt as a server (web UI, A2A, chat gateways, timers).
+`serve` subcommands run OnIt as a server (web UI, A2A, chat gateways, timers),
+and `onit doctor` self-checks the stack.
 
 
 ## Interactive chat (default)
@@ -105,6 +106,41 @@ onit ask "write a script" --server http://192.168.1.10:9001
 | `--file PATH` | File to upload along with the task | — |
 | `--image PATH` | Image file for vision processing (model must be a VLM) | — |
 | `--server URL` | A2A server URL | `http://localhost:9001` |
+
+## `onit doctor`
+
+Run the live self-check battery from the shell — the same checks `\doctor`
+runs in the text UI, against a throwaway session that is deleted afterwards.
+Use it after pulling changes, in update scripts, or in CI: it exits **0 when
+every check passed and 1 when any check failed**, so it can gate a deploy.
+
+```bash
+onit doctor                 # 13 fast checks, a few seconds
+onit doctor --deep          # + live model reply and a tool-calling turn (costs tokens)
+onit doctor --json          # machine-readable report (stdout is pure JSON)
+onit doctor --keep-session  # keep the throwaway session for inspecting a failure
+```
+
+The battery starts this process's own MCP servers on freshly allocated ports,
+so it runs beside a live session without touching it, and it works on a
+machine that has never been set up — reporting *what is missing* (no
+`serving.host`, no MCP servers) instead of crashing. See
+[TESTING.md](TESTING.md) for what each check covers.
+
+```bash
+# after an update: is this checkout's stack sound?
+onit doctor || echo "self-check failed"
+
+# in a script: refuse to continue on a broken stack
+onit doctor --json > doctor.json || exit 1
+```
+
+| Argument / Flag | Description | Default |
+|-----------------|-------------|---------|
+| `--deep` | Also exercise a live model reply and a full tool-calling turn | off |
+| `--json` | Print the report as JSON instead of text | off |
+| `--keep-session` | Keep the throwaway session (visible in `onit sessions`) | off |
+| `--config`, `--host`, `--model`, `--data-path` | Shared flags, same meaning as the interactive run | — |
 
 ## `onit serve`
 

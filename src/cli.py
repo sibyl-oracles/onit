@@ -7,6 +7,7 @@ Usage:
     onit setup                                    # interactive setup wizard
     onit setup --show                             # show current configuration
     onit sessions                                 # list previous sessions
+    onit doctor [--deep]                          # run the live self-check battery
     onit resume [TAG_OR_ID]                       # resume a previous session
     onit ask "your question"                      # send a task to a remote A2A server
     onit serve a2a [--port 9001]                  # run as an A2A protocol server
@@ -628,6 +629,20 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="Print the loop event log (tool lifecycle and "
                                    "the like) instead of the task summary.")
 
+    # doctor: run the live self-check battery from the shell, no session needed
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Run the live self-check battery (same as \\doctor in the text UI).")
+    doctor_parser.add_argument("--deep", action="store_true", default=False,
+                               help="Also exercise a live model reply and a full "
+                                    "tool-calling turn (costs tokens, adds up to a "
+                                    "couple of minutes on a slow endpoint).")
+    doctor_parser.add_argument("--json", action="store_true", default=False,
+                               help="Print the report as JSON instead of text.")
+    doctor_parser.add_argument("--keep-session", action="store_true", default=False,
+                               help="Keep the throwaway session the check creates "
+                                    "(visible in 'onit sessions').")
+
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
     resume_parser.add_argument("session", nargs="?", default="last",
@@ -1085,6 +1100,75 @@ def _dispatch_mode(config_data: dict) -> None:
         asyncio.run(onit.run())
 
 
+def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
+    """Run the self-check battery against a throwaway session; return exit code.
+
+    The battery is written for a live session, so it needs a live agent: this
+    builds one exactly the way a real session would — MCP servers started,
+    tools discovered, a session registered — and deletes the session again
+    afterwards.  The checks then read the same attributes (config_data,
+    tool_registry, load_balancer, ...) they read in the text UI, which is
+    the point: a pass here means the same thing a pass in the session means.
+    """
+    from .sessions import delete_session
+    from .ui.doctor import render_report, run_checks
+
+    # A doctor run is a diagnostic, not a deployment: strip the mode keys so
+    # OnIt builds the plain terminal-chat shape (no web server, no loop) and
+    # never auto-resumes someone's last real session.
+    for key in ('web', 'a2a', 'gateway', 'loop', 'resume_session_id',
+                'web_require_auth'):
+        config_data.pop(key, None)
+    # The battery's own probes are allowlisted, but the deep tool-calling turn
+    # asks the model to run bash — give it the same standing a terminal chat
+    # would, so the check fails on a broken loop rather than on a refused
+    # approval nobody is there to answer.
+    os.environ['ONIT_APPROVAL_CHANNEL'] = '1'
+    os.environ['ONIT_AUTO_APPROVE'] = '1'
+
+    try:
+        # OnIt() prints the banner, the tool list and the balancer summary as
+        # it starts.  In --json mode those prints would sit in front of the
+        # JSON on stdout and make it unparseable, so they are captured and
+        # dropped there; text mode keeps them as the run's startup trail.
+        import contextlib
+        import io
+        sink = io.StringIO() if args.json else None
+        with contextlib.redirect_stdout(sink if sink is not None
+                                        else sys.__stdout__):
+            agent = OnIt(config=config_data)
+    except Exception as e:
+        print(f"Error: could not start the agent for self-check: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+    session_id = getattr(agent, "session_id", None)
+    sessions_dir = os.path.expanduser(
+        config_data.get('session_path', '~/.onit/sessions'))
+    try:
+        results = asyncio.run(run_checks(agent, deep=args.deep))
+    finally:
+        # The session existed only to give the battery something to check.
+        # Kept only under --keep-session, for reading a failure's details in
+        # the JSONL; the index entry goes with it either way.
+        if session_id and not args.keep_session:
+            delete_session(session_id, sessions_dir)
+
+    if args.json:
+        print(json.dumps({
+            "deep": args.deep,
+            "results": [vars(r) if not hasattr(r, "__dataclass_fields__")
+                        else {"name": r.name, "state": r.state,
+                              "detail": r.detail, "elapsed": r.elapsed}
+                        for r in results],
+        }, indent=2))
+    else:
+        print(render_report(results, deep=args.deep))
+
+    failed = sum(1 for r in results if r.state == "fail")
+    return 1 if failed else 0
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -1187,6 +1271,26 @@ def main():
             return
         print(format_status(config_data))
         return
+
+    # doctor: the live self-check battery, from the shell.  Runs the same
+    # checks as \doctor in the text UI against a throwaway session, prints
+    # the report and exits non-zero when anything failed, so it can gate a
+    # deploy or sit at the end of an update script.  The battery is the
+    # product here, not a conversation: nothing is dispatched to a mode.
+    if args.command == "doctor":
+        # A machine that has never been set up must still be diagnosable —
+        # "your config is missing serving.host" is exactly the kind of answer
+        # a self-check exists to give.  Resolution exits when the config is
+        # incomplete; catching that leaves an empty dict for the battery to
+        # report on instead of dying before it ran anything.
+        try:
+            config_data = _parse_and_resolve_config(args)
+        except SystemExit:
+            config_data = {}
+        # The servers are the thing under test: start this process's own
+        # before the battery polls their ports.
+        _setup_servers(config_data)
+        sys.exit(_run_doctor(args, config_data))
 
     # resume subcommand: translate to --resume flag and continue normal startup
     if args.command == "resume":

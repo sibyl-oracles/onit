@@ -14,6 +14,11 @@ Integration notes:
       thread (no running loop there) the first time it is needed.
     * The eval target (host/model) comes from the environment via
       :func:`benchmarks.config.resolve_serving`.
+    * The local ``src/mcp`` package shadows the PyPI ``mcp`` SDK whenever
+      ``src/`` is on sys.path, which breaks fastmcp's lazy imports (its
+      ``import mcp.types`` resolves to the local package and fails).  The
+      pre-imports below pin the real SDK modules in sys.modules before the
+      agent stack is loaded, so the shadow cannot bite.
 """
 
 from __future__ import annotations
@@ -23,6 +28,18 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
+
+# Must precede any import of the agent stack (see module docstring).
+# src/ is on sys.path by the time this module is imported (the package runs
+# from the repo root), so the local src/mcp package shadows the PyPI mcp SDK;
+# the pre-imports must happen before the shadow is in place.
+import sys
+sys.path.insert(0, ".")
+sys.path.insert(0, "src")
+import mcp.types  # noqa: F401
+import fastmcp.server.context  # noqa: F401
+import fastmcp.server  # noqa: F401
+import fastmcp.client  # noqa: F401
 
 from inspect_ai.model import (
     ChatMessage,
@@ -72,6 +89,13 @@ def base_config_data() -> dict[str, Any]:
             # agent's MCP servers, and the agent's servers never block the
             # benchmark's port allocation.
             "port_base": 18400,
+            # Names must match the split defaults in src/lib/tools.py
+            # (DEFAULT_MCP_SERVERS): apply_default_mcp_servers() adds any
+            # missing default server, and _assign_free_ports() rewrites every
+            # socket-served URL to a freshly allocated port. A name the agent
+            # no longer knows (the old combined "ToolsMCPServer") gets no
+            # rewrite, so it stays pointed at a port nothing listens on and
+            # discovery times out on it.
             "servers": [
                 {"name": "PromptsMCPServer", "url": "http://127.0.0.1:18400/sse",
                  "enabled": True},
