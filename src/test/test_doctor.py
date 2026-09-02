@@ -125,6 +125,39 @@ class TestConfigCheck:
         r = await doctor.check_config(agent)
         assert r.state == "fail" and "serving.host" in r.detail
 
+    async def test_endpoints_list_passes(self):
+        """/doctor must not flag the documented endpoints-list config shape."""
+        agent = _agent()
+        agent.config_data = {
+            "serving": {"endpoints": [
+                {"host": "http://a:8000/v1", "priority": 1},
+                {"host": "https://api.ollama.com", "model": "x:cloud"},
+            ]},
+            "mcp": {"servers": [{}]},
+        }
+        r = await doctor.check_config(agent)
+        assert r.state == "pass", r.detail
+        assert "2 endpoint(s) from serving.endpoints" in r.detail
+
+    async def test_endpoints_list_with_bare_url_strings_passes(self):
+        agent = _agent()
+        agent.config_data = {
+            "serving": {"endpoints": ["http://a:8000/v1"]},
+            "mcp": {"servers": [{}]},
+        }
+        r = await doctor.check_config(agent)
+        assert r.state == "pass", r.detail
+
+    async def test_endpoints_list_without_usable_host_fails(self):
+        agent = _agent()
+        agent.config_data = {
+            "serving": {"endpoints": [{"model": "x"}]},
+            "mcp": {"servers": [{}]},
+        }
+        r = await doctor.check_config(agent)
+        assert r.state == "fail"
+        assert "no entry has a host" in r.detail
+
 
 class TestMcpServersCheck:
     async def test_a_dead_port_fails_with_the_server_named(self):
@@ -364,6 +397,27 @@ class TestEndpointCheck:
         monkeypatch.setattr("src.model.serving.chat.list_models", fake)
         r = await doctor.check_endpoint(_agent())
         assert r.state == "fail" and "ConnectionError" in r.detail
+
+    async def test_ollama_cloud_suffix_passes_when_base_name_is_listed(self, monkeypatch):
+        """Ollama cloud lists 'x' but serves 'x:cloud' in a chat request."""
+        async def fake(host, host_key="EMPTY", timeout=15.0):
+            return ["glm-5.3-flash", "gemma4:31b"]
+        monkeypatch.setattr("src.model.serving.chat.list_models", fake)
+        agent = _agent()
+        agent.load_balancer = LoadBalancer(
+            [ServerEndpoint(host="https://api.ollama.com",
+                            model="glm-5.3-flash:cloud", name="ollama")],
+            "sticky")
+        r = await doctor.check_endpoint(agent)
+        assert r.state == "pass", r.detail
+
+    async def test_an_unknown_model_still_fails(self, monkeypatch):
+        """The :cloud equivalence must not loosen the check into a no-op."""
+        async def fake(host, host_key="EMPTY", timeout=15.0):
+            return ["other-model"]
+        monkeypatch.setattr("src.model.serving.chat.list_models", fake)
+        r = await doctor.check_endpoint(_agent())
+        assert r.state == "fail" and "Qwen3-30B" in r.detail
 
 
 class TestSessionHistoryCheck:

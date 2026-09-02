@@ -130,8 +130,23 @@ async def check_config(agent) -> CheckResult:
     if not isinstance(cfg, dict) or not cfg:
         return _result("config", False, "no config loaded", start)
     serving = cfg.get("serving") or {}
-    if not serving.get("host"):
-        return _result("config", False, "serving.host is not set", start)
+    # Two config shapes carry an endpoint: the endpoints list (one entry per
+    # server, with optional per-entry model/priority) and the legacy
+    # host/host2 pair.  A session works through either, so the check does.
+    endpoints = serving.get("endpoints") or []
+    if endpoints:
+        hosts = [e.get("host") if isinstance(e, dict) else e
+                 for e in endpoints if e]
+        hosts = [h for h in hosts if h]
+        if not hosts:
+            return _result("config", False,
+                           "serving.endpoints is set but no entry has a host",
+                           start)
+        detail = f"{len(hosts)} endpoint(s) from serving.endpoints"
+    else:
+        if not serving.get("host"):
+            return _result("config", False, "serving.host is not set", start)
+        detail = f"endpoint {serving['host']}"
     servers = (cfg.get("mcp") or {}).get("servers") or []
     if not servers:
         return _result("config", False, "no mcp.servers configured", start)
@@ -139,8 +154,7 @@ async def check_config(agent) -> CheckResult:
     path = onit_setup.CONFIG_PATH
     where = path if os.path.isfile(path) else "built-in defaults"
     return _result("config", True,
-                   f"{len(servers)} MCP server(s), endpoint {serving['host']} "
-                   f"({where})", start)
+                   f"{detail}, {len(servers)} MCP server(s) ({where})", start)
 
 
 async def check_mcp_servers(agent) -> CheckResult:
@@ -470,11 +484,17 @@ async def check_endpoint(agent) -> CheckResult:
     if not names:
         return _result("endpoint", False,
                        f"{ep.host} listed no models", start)
+    # Ollama cloud lists its models without the ":cloud" suffix but accepts
+    # the suffixed name in a chat request (verified against the live API), so
+    # a configured "x:cloud" is served when "x" is listed.  A verbatim
+    # comparison here would flag a working endpoint as broken.
     if ep.model and ep.model not in names:
-        shown = ", ".join(names[:5]) + ("…" if len(names) > 5 else "")
-        return _result("endpoint", False,
-                       f"{ep.host} does not serve configured model "
-                       f"{ep.model!r} (serves: {shown})", start)
+        bare = ep.model.removesuffix(":cloud")
+        if not (bare != ep.model and bare in names):
+            shown = ", ".join(names[:5]) + ("…" if len(names) > 5 else "")
+            return _result("endpoint", False,
+                           f"{ep.host} does not serve configured model "
+                           f"{ep.model!r} (serves: {shown})", start)
     detail = f"{ep.host} serves {len(names)} model(s)"
     if ep.model:
         detail += f", {ep.model} listed"
