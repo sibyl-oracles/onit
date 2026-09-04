@@ -35,6 +35,7 @@ def summarize(config_data: dict | None = None) -> dict:
     sessions: set[str] = set()
     models: Counter = Counter()
     ratings: Counter = Counter()
+    verifier: Counter = Counter()
     tasks = 0
     totals = Counter()
     turn_counts: list[int] = []
@@ -56,6 +57,14 @@ def summarize(config_data: dict | None = None) -> dict:
         verdict = signals.get("user_rating")
         if verdict:
             ratings["up" if verdict > 0 else "down"] += 1
+        # The weak label the fact-check left behind (§8 item 1).  None is
+        # counted too: a corpus where most runs are unlabeled is a different
+        # instrument from one where most are, and the loops need to see which.
+        check = signals.get("verifier")
+        if check in ("issues", "clean"):
+            verifier[check] += 1
+        else:
+            verifier["unchecked"] += 1
 
         metrics = record.get("metrics") or {}
         if metrics.get("turn_count"):
@@ -77,6 +86,7 @@ def summarize(config_data: dict | None = None) -> dict:
         "sessions": len(sessions),
         "models": models,
         "ratings": ratings,
+        "verifier": verifier,
         "totals": totals,
         "avg_turns": (sum(turn_counts) / len(turn_counts)) if turn_counts else 0.0,
         "tools": {name: {"calls": c["calls"], "errors": c["errors"],
@@ -121,6 +131,11 @@ def format_status(config_data: dict | None = None) -> str:
     if s["ratings"]:
         lines.append(f"Ratings      {s['ratings'].get('up', 0)} up, "
                      f"{s['ratings'].get('down', 0)} down")
+    v = s["verifier"]
+    if s["tasks"]:
+        lines.append(f"Verifier     {v.get('clean', 0)} clean, "
+                     f"{v.get('issues', 0)} with issue(s), "
+                     f"{v.get('unchecked', 0)} unchecked")
     if s["models"]:
         served = ", ".join(f"{name} ({n})" for name, n in s["models"].most_common(3))
         lines.append(f"Models       {served}")

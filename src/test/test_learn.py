@@ -137,6 +137,33 @@ class TestSignals:
         assert traj.derive_signals(None)["tool_errors"] == 0
 
 
+class TestVerifierSignal:
+    """§8 item 1: the fact-check's verdict, read off the metrics blob."""
+
+    def test_a_check_that_ran_clean_reads_clean(self):
+        metrics = _metrics(verify_s=1.2, verify_issues=0, verify_revisions=0)
+        assert traj.derive_signals(metrics)["verifier"] == "clean"
+
+    def test_corrected_claims_read_issues(self):
+        metrics = _metrics(verify_s=18.0, verify_issues=2, verify_revisions=1)
+        assert traj.derive_signals(metrics)["verifier"] == "issues"
+
+    def test_a_check_that_never_ran_stays_none(self):
+        """verify_s absent or zero means the checker was skipped — absence
+        of a finding is not a finding, so this is not "clean"."""
+        assert traj.derive_signals(_metrics())["verifier"] is None
+        assert traj.derive_signals(_metrics(verify_s=0.0))["verifier"] is None
+        assert traj.derive_signals(None)["verifier"] is None
+
+    def test_helper_matches_the_derived_field(self):
+        assert traj.verifier_signal(_metrics(verify_s=3.0, verify_issues=1)) == "issues"
+        assert traj.verifier_signal(_metrics(verify_s=3.0, verify_issues=0)) == "clean"
+        assert traj.verifier_signal({}) is None
+
+    def test_a_garbage_issue_count_does_not_raise(self):
+        assert traj.verifier_signal(_metrics(verify_s=1.0, verify_issues="many")) is None
+
+
 class TestRecord:
     """Shape of a task record."""
 
@@ -272,6 +299,24 @@ class TestReport:
         traj.append_rating(session_id="s1", turn=2, rating="down", config_data=cfg)
         s = summarize(cfg)
         assert s["ratings"] == {"up": 1, "down": 1}
+
+    def test_verifier_labels_are_counted(self, learn_config_data):
+        """The corpus is weakly labeled by the fact-check; the report shows
+        how much of it is usable and how it splits."""
+        from learn import summarize
+        cfg = learn_config_data
+        self._run(cfg, "s1", 1, [], verify_s=1.0, verify_issues=0)
+        self._run(cfg, "s1", 2, [], verify_s=2.0, verify_issues=1)
+        self._run(cfg, "s1", 3, [])  # check never ran
+        s = summarize(cfg)
+        assert s["verifier"] == {"clean": 1, "issues": 1, "unchecked": 1}
+
+    def test_status_line_carries_the_verifier_counts(self, learn_config_data):
+        from learn import format_status
+        cfg = learn_config_data
+        self._run(cfg, "s1", 1, [], verify_s=1.0, verify_issues=2)
+        text = format_status(cfg)
+        assert "Verifier" in text and "1 with issue(s)" in text
 
     def test_a_record_without_call_detail_invents_no_errors(self, learn_config_data):
         """Older records carry tool names only; counting those as failures

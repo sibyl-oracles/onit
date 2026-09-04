@@ -25,7 +25,7 @@ from inspect_ai import eval_retry as inspect_eval_retry
 # Importing the provider module registers the "onit" model provider.
 from . import config as bench_config
 from . import onit_provider  # noqa: F401 - import for side effect (registration)
-from .tasks import coding, metr, reasoning
+from .tasks import agentic, coding, factuality, metr, reasoning
 
 # Registry of runnable benchmark tasks by name and category.
 TASKS = {
@@ -33,6 +33,12 @@ TASKS = {
     "humaneval": coding.humaneval,
     "mbpp": coding.mbpp,
     "bigcodebench": coding.bigcodebench,
+    # SimpleQA: short-fact QA, model-graded correct/incorrect/not-attempted.
+    # Datasets download from the Hub on first use (no token needed).
+    "simpleqa": factuality.simpleqa,
+    # GAIA: general-assistant multi-step tool tasks, exact match. The dataset
+    # is gated — set HF_TOKEN before running (docs/SELF_IMPROVEMENT.md §8 item 2).
+    "gaia": agentic.gaia,
     # METR time-horizon (long-horizon capability). Requires the `mtb` bridge
     # package, Docker, and METR task images; see benchmarks/tasks/metr.py.
     "metr": metr.metr,
@@ -41,12 +47,16 @@ CATEGORIES = {
     "reasoning": ["gsm8k"],
     # Provider-compatible coding tasks (all require a Docker daemon).
     "coding": ["humaneval", "mbpp", "bigcodebench"],
+    # Factuality / hallucination (web tools left on; scored by LLM judge).
+    "factuality": ["simpleqa"],
+    # Agentic tool use (GAIA needs HF_TOKEN; see benchmarks/tasks/agentic.py).
+    "agentic": ["gaia"],
     # The pinned baseline set: the four tasks tracked in RESULTS.md and the
     # regression gate. Run with `--tier sampled` (or full) to produce the
     # summary.json that gets committed under benchmarks/baselines/.
     "baseline": ["bigcodebench", "gsm8k", "humaneval", "mbpp"],
     # Everything wired and provider-compatible.
-    "all": ["gsm8k", "humaneval", "mbpp", "bigcodebench"],
+    "all": ["gsm8k", "humaneval", "mbpp", "bigcodebench", "simpleqa", "gaia"],
 }
 
 

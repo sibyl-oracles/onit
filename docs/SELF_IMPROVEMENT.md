@@ -848,13 +848,17 @@ network-reachable self-modification surface.
 
 ## 8. Recommendation
 
-*Revised August 20, 2026. The destination is unchanged — Phase 2 is still the main event.
-What expired is the August 09 scheduling argument: Phase 0.5 is done, so the wait it was
-slotted into is over. What replaces it is a sharper problem. The instrument is now stable,
-and it is pointed at the wrong thing.*
+*Revised August 20, 2026; items 1–2 completed September 04, 2026. The destination is
+unchanged — Phase 2 is still the main event. What expired is the August 09 scheduling
+argument: Phase 0.5 is done, so the wait it was slotted into is over. What replaces it is a
+sharper problem. The instrument is now stable, and it is pointed at the wrong thing.*
 
 Phase 0 and Phase 0.5 are done. **Do the four items below — none longer than two days —
-then Phase 1, then Phase 2.**
+then Phase 1, then Phase 2.** Items 1 and 2 are done (September 04): the verifier label is
+derived and backfilled (395 records: 298 clean / 29 issues / 68 unchecked), and GAIA +
+SimpleQA are registered in `benchmarks/run.py` — neither has been *run* yet (GAIA needs
+`HF_TOKEN`; SimpleQA needs a first smoke run to validate the judge), so item 4's holdout
+still waits on that.
 
 The August 09 revision assumed the critical path was *data accrual* and filled the wait
 with harness work. That was right, and it worked. But the corpus it produced is thinner
@@ -869,10 +873,19 @@ blob of 151 records. `derive_signals()` writes `"verifier": None` next to them. 
 field instead. This is the highest ratio of unlocked capability to lines changed in the
 document: it converts an unlabeled corpus into a weakly-labeled one retroactively, across
 data already on disk. Ratings were never going to do this — 209 tasks produced zero.
+**Done September 04, 2026** — `verifier_signal()` in `src/learn/trajectory.py` derives
+`issues` / `clean` / None (None = the check never ran, which is not "clean"), reported in
+`learn report`; `scripts/backfill_verifier_signals.py` relabeled the corpus in place:
+395 records → 298 clean, 29 issues, 68 unchecked. The 29 issue-labeled records are the
+seed of Loop B's training set.
 
 **2. Register GAIA and SimpleQA** *(~hours)*. Written, unreachable, two lines (§3, gap 5).
 Until the suite holds one task whose score can *move* when the scaffold changes, §6's
 measurement panel is decorative and freezing a holdout would only formalize the mistake.
+**Registered September 04, 2026** — `simpleqa` and `gaia` in `benchmarks/run.py` TASKS +
+`factuality` / `agentic` categories; `python -m benchmarks.run --list` shows both. Not yet
+run: GAIA is gated (`HF_TOKEN` unset), and SimpleQA's judge path deserves a smoke tier
+before it enters the panel.
 
 **3. Add implicit outcome signals** *(~2 days)*. A same-session rephrase of a task ≈
 failure; a session that ends after an answer ≈ acceptance. Both are already latent in the

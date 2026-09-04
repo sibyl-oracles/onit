@@ -136,6 +136,30 @@ def _turn_view(turn: dict) -> dict:
     }
 
 
+def verifier_signal(metrics: dict | None) -> str | None:
+    """The fact-check's verdict as a weak outcome label, or None.
+
+    ``verify_issues`` counts the claims the checker corrected and
+    ``verify_s`` the time it took; both are written by
+    ``TurnMetrics.add_verification()`` (model/serving/chat.py) whenever the
+    check actually ran.  The distinction matters because a zero is two
+    different things: a check that ran and found nothing is evidence, a
+    check that never ran is nothing.  Only the first reads as "clean".
+
+    The label is deliberately coarse — issues/clean, not a score — because
+    the checker is itself a model and can be wrong.  Downstream loops should
+    rank episodes with it, not train on it as ground truth.
+    """
+    metrics = metrics or {}
+    if not metrics.get("verify_s"):
+        return None
+    try:
+        issues = int(metrics.get("verify_issues") or 0)
+    except (TypeError, ValueError):
+        return None
+    return "issues" if issues > 0 else "clean"
+
+
 def derive_signals(metrics: dict | None, stop_reason: str | None = None) -> dict:
     """Outcome signals that cost nothing, read off a finished run.
 
@@ -147,6 +171,14 @@ def derive_signals(metrics: dict | None, stop_reason: str | None = None) -> dict
     and is the one signal the metrics cannot supply: whether the loop finished
     or gave up.  It is read from that object rather than re-derived here, so
     the two records of how a run ended cannot drift apart.
+
+    ``verifier`` reads the fact-check that runs on every answer by default
+    (model/serving/verify.py), whose issue count is already in the metrics
+    blob.  It is a weak label, not a verdict: "issues" means the checker
+    found and corrected at least one claim, "clean" means it ran and found
+    nothing.  A run the checker never reached — short answer, no evidence
+    gathered, check skipped or timed out — stays None, because absence of a
+    finding is not a finding (docs/SELF_IMPROVEMENT.md §8 item 1).
     """
     metrics = metrics or {}
     turns = metrics.get("turns") or []
@@ -163,7 +195,9 @@ def derive_signals(metrics: dict | None, stop_reason: str | None = None) -> dict
         "compactions": int(metrics.get("compactions", 0) or 0),
         # Filled in later, by a person or a verifier, via append_rating().
         "user_rating": None,
-        "verifier": None,
+        # Read off the metrics rather than left blank: the fact-check already
+        # ran, so its verdict is free.  None when the check never ran.
+        "verifier": verifier_signal(metrics),
     }
 
 
