@@ -85,12 +85,6 @@ serving:
 verbose: false
 timeout: 600
 
-# Text UI only: fold each intermediate AI turn (the narration a model streams
-# before a tool call) into a one-line dim step marker, so the terminal shows
-# your question, the steps, then the final answer. Default: false (folding on).
-# Set true to see every intermediate turn in full, as before.
-# show_intermediate: false
-
 web_port: 9000
 a2a_port: 9001
 

@@ -890,9 +890,6 @@ class OnIt(BaseModel):
     prompt_in_process: bool = Field(default=True)
     timeout: int | None = Field(default=None)
     show_logs: bool = Field(default=False)
-    # Show every intermediate AI turn in the text UI instead of folding
-    # narration into one-line step markers (the web UI is unaffected).
-    show_intermediate: bool = Field(default=False)
     stream: bool = Field(default=True)
     loop: bool = Field(default=False)
     period: float = Field(default=10.0)
@@ -1015,9 +1012,7 @@ class OnIt(BaseModel):
                     banner = f"OnIt {self.gateway.capitalize()} Gateway"
                 else:
                     banner = "OnIt Chat Interface"
-                self.chat_ui = ChatUI(self.theme, show_logs=self.show_logs,
-                                     show_intermediate=self.show_intermediate,
-                                     banner_title=banner)
+                self.chat_ui = ChatUI(self.theme, show_logs=self.show_logs, banner_title=banner)
                 # When resuming a session, pre-populate input history for arrow-key nav
                 if self.config_data.get('resume_session_id'):
                     history = self.load_session_history(max_turns=100)
@@ -1343,7 +1338,6 @@ class OnIt(BaseModel):
         if self.timeout is not None and self.timeout < 0:
             self.timeout = None  # no timeout
         self.show_logs = self.config_data.get('show_logs', False)
-        self.show_intermediate = self.config_data.get('show_intermediate', False)
         self.stream = self.config_data.get('stream', True)
         self.loop = self.config_data.get('loop', False)
         self.period = float(self.config_data.get('period', 20.0))
