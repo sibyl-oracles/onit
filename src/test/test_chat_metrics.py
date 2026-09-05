@@ -480,6 +480,151 @@ class TestFirstTokenHook:
         assert calls == []
 
 
+# ── intermediate-turn fold (text UI) ─────────────────────────────────────
+
+
+class _FoldSpyUI:
+    """Records stream_fold calls; every other stream method is a no-op."""
+
+    def __init__(self):
+        self.folds = []
+
+    def stream_start(self):
+        pass
+
+    def stream_token(self, token):
+        pass
+
+    def stream_think_token(self, token):
+        pass
+
+    def stream_end(self, elapsed=""):
+        pass
+
+    def stream_fold(self, summary=""):
+        self.folds.append(summary)
+
+
+class TestFoldOnToolTurn:
+    """The first tool-call delta proves the prose before it was narration."""
+
+    @pytest.mark.asyncio
+    async def test_structured_tool_turn_folds_the_narration(self):
+        from model.serving.chat import _process_streaming_response
+
+        tc = MagicMock()
+        tc.index = 0
+        tc.id = "c1"
+        tc.function.name = "bash"
+        tc.function.arguments = "{}"
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content="The ninja PATH issue again. Fixing it."),
+                _chunk(tool_calls=[tc], finish_reason="tool_calls"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "ninja" in ui.folds[0]
+
+    @pytest.mark.asyncio
+    async def test_answer_turn_is_never_folded(self):
+        from model.serving.chat import _process_streaming_response
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content="The answer is 42."),
+                _chunk(content=" Done.", finish_reason="stop"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert ui.folds == []
+
+    @pytest.mark.asyncio
+    async def test_fold_fires_once_for_a_multi_tool_turn(self):
+        from model.serving.chat import _process_streaming_response
+
+        def _tc(idx):
+            tc = MagicMock()
+            tc.index = idx
+            tc.id = f"c{idx}"
+            tc.function.name = "bash"
+            tc.function.arguments = "{}"
+            return tc
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content="Working on it."),
+                _chunk(tool_calls=[_tc(0)], finish_reason=None),
+                _chunk(tool_calls=[_tc(1)], finish_reason="tool_calls"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert len(ui.folds) == 1
+
+    @pytest.mark.asyncio
+    async def test_raw_json_tool_turn_folds_at_stream_end(self):
+        """A raw-JSON tool call streams as ordinary content, so the fold can
+        only happen once the whole content is in -- but before stream_end()."""
+        from model.serving.chat import _process_streaming_response
+
+        raw = '{"name": "bash", "arguments": {"command": "ls"}}'
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content="Let me list the directory.\n"),
+                _chunk(content=raw, finish_reason="stop"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "directory" in ui.folds[0]
+
+    @pytest.mark.asyncio
+    async def test_raw_json_lookalike_that_is_not_a_tool_call_stays_visible(self):
+        """Content that mentions name/arguments inside prose sentences is not
+        folded -- _looks_like_raw_tool_call requires the JSON braces, and the
+        guard in _handle_raw_tool_call treats this as prose, so must the fold."""
+        from model.serving.chat import _process_streaming_response
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content='The tool schema {"name": "x"} needs "arguments" too.'),
+                _chunk(finish_reason="stop"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert ui.folds == []
+
+    @pytest.mark.asyncio
+    async def test_ollama_tool_turn_folds_the_narration(self):
+        """Ollama delivers tool calls whole in a later chunk than the prose,
+        so the fold fires on that chunk, after the narration has streamed."""
+        from model.serving.chat import _ollama_process_streaming_response
+
+        prose = MagicMock()
+        prose.message = MagicMock(content="Checking the audio pipeline.",
+                                  tool_calls=None, thinking=None)
+        prose.done_reason = None
+
+        calls = MagicMock()
+        calls.message = MagicMock(content="", tool_calls=[MagicMock()],
+                                  thinking=None)
+        calls.done_reason = "tool_calls"
+
+        ui = _FoldSpyUI()
+        await _ollama_process_streaming_response(
+            _aiter([prose, calls]), asyncio.Queue(), ui, think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "audio pipeline" in ui.folds[0]
+
+
 # ── reasoning budget across turns ───────────────────────────────────────────
 
 class TestThinkToolTurns:
