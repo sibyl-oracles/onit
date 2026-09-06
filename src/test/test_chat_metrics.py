@@ -989,3 +989,157 @@ class TestPrefixCacheProbe:
             report = await prefix_cache_report("http://h:8000/v1")
 
         assert "prefix is probably changing" in format_report("http://h", report)
+
+
+# ── intermediate-turn fold ─────────────────────────────────────────────────
+
+
+class _FoldSpyUI:
+    """Records stream_fold calls; safe to pass where chat.py expects a UI."""
+
+    def __init__(self):
+        self.folds = []
+        self.tokens = []
+
+    def stream_start(self):
+        pass
+
+    def stream_token(self, token):
+        self.tokens.append(token)
+
+    def stream_think_token(self, token):
+        self.tokens.append(token)
+
+    def stream_think_end(self):
+        pass
+
+    def stream_fold(self, summary=""):
+        self.folds.append(summary)
+
+    def stream_end(self, elapsed=""):
+        pass
+
+
+class TestFoldOnToolTurn:
+    """chat.py folds a turn the moment it is known to be intermediate."""
+
+    @pytest.mark.asyncio
+    async def test_structured_tool_call_folds_the_narration(self):
+        """The first tool-call delta proves everything streamed so far was
+        narration -- the fold fires immediately, with a summary of the prose."""
+        from model.serving.chat import _process_streaming_response
+
+        tc = MagicMock()
+        tc.index = 0
+        tc.id = "c1"
+        tc.function.name = "bash"
+        tc.function.arguments = '{"command": "ls"}'
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content="The ninja PATH issue again. Adding the venv to PATH:"),
+                _chunk(tool_calls=[tc], finish_reason="tool_calls"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "ninja PATH issue" in ui.folds[0]
+
+    @pytest.mark.asyncio
+    async def test_answer_turn_never_folds(self):
+        from model.serving.chat import _process_streaming_response
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content="## The final answer, with no tool calls."),
+                _chunk(finish_reason="stop"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert ui.folds == []
+
+    @pytest.mark.asyncio
+    async def test_raw_json_tool_call_folds_before_stream_end(self):
+        """A raw-JSON tool call streams as ordinary content, so the fold can
+        only happen once the full content is known -- at the chat() call site,
+        in the last moment before stream_end() persists the block."""
+        from model.serving.chat import _looks_like_raw_tool_call
+
+        raw = '{"name": "bash", "arguments": {"command": "ls"}}'
+        # The chat() call site folds exactly when this predicate fires and no
+        # structured tool calls arrived; pin both sides of that decision.
+        assert _looks_like_raw_tool_call(raw)
+        assert not _looks_like_raw_tool_call(
+            'The tool schema {"name": "x"} needs "arguments" too.')
+
+    @pytest.mark.asyncio
+    async def test_prose_mentioning_a_tool_schema_is_not_folded(self):
+        """A plain answer that quotes {"name": ...} in prose must survive."""
+        from model.serving.chat import _process_streaming_response
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter([
+                _chunk(content='The tool schema {"name": "x"} needs "arguments" too.'),
+                _chunk(finish_reason="stop"),
+            ]),
+            asyncio.Queue(), ui, think=False,
+        )
+        assert ui.folds == []
+
+    @pytest.mark.asyncio
+    async def test_ollama_tool_turn_folds_the_narration(self):
+        """Ollama delivers tool calls whole in a later chunk than the prose,
+        so the fold fires on that chunk, after the narration has streamed."""
+        from model.serving.chat import _ollama_process_streaming_response
+
+        prose = MagicMock()
+        prose.message = MagicMock(content="Checking the audio pipeline.",
+                                  tool_calls=None, thinking=None)
+        prose.done_reason = None
+
+        calls = MagicMock()
+        calls.message = MagicMock(content="", tool_calls=[MagicMock()],
+                                  thinking=None)
+        calls.done_reason = "tool_calls"
+
+        ui = _FoldSpyUI()
+        await _ollama_process_streaming_response(
+            _aiter([prose, calls]), asyncio.Queue(), ui, think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "Checking the audio pipeline" in ui.folds[0]
+
+    @pytest.mark.asyncio
+    async def test_ollama_answer_turn_never_folds(self):
+        from model.serving.chat import _ollama_process_streaming_response
+
+        chunk = MagicMock()
+        chunk.message = MagicMock(content="## Answer", tool_calls=None,
+                                  thinking=None)
+        chunk.done_reason = "stop"
+
+        ui = _FoldSpyUI()
+        await _ollama_process_streaming_response(
+            _aiter([chunk]), asyncio.Queue(), ui, think=False,
+        )
+        assert ui.folds == []
+
+    def test_step_summary_is_first_sentence_capped(self):
+        from model.serving.chat import _step_summary
+
+        long = ("First sentence does the work. " + "filler " * 60).strip()
+        s = _step_summary(long)
+        assert s.startswith("First sentence does the work.")
+        assert len(s) <= 121  # 120 + ellipsis
+
+    def test_step_summary_of_empty_prose_is_empty(self):
+        from model.serving.chat import _step_summary
+
+        assert _step_summary("") == ""
+        # A closed think block: what follows the tag is the speakable text.
+        assert _step_summary("</think>only thinking") == "only thinking"
+        # An unterminated think block means nothing was said out loud.
+        assert _step_summary("some prose then </think>") == ""

@@ -1731,6 +1731,7 @@ async def _process_streaming_response(
     full_reasoning = ""
     full_tool_calls: dict = {}  # index -> {id, name, arguments}
     ui_streaming = False
+    folded = False  # this turn's narration was retracted by stream_fold
     usage = None
     finish_reason: str | None = None
     in_think = think  # True if we expect <think>...</think> in delta.content
@@ -1759,6 +1760,11 @@ async def _process_streaming_response(
 
         # Accumulate structured tool-call deltas
         if delta.tool_calls:
+            # The first tool-call delta marks everything streamed so far as
+            # narration, not the answer -- fold it before it can read as one.
+            if chat_ui and not folded and hasattr(chat_ui, "stream_fold"):
+                folded = True
+                chat_ui.stream_fold(_step_summary(full_content))
             for tc in delta.tool_calls:
                 idx = tc.index
                 if idx not in full_tool_calls:
@@ -1823,6 +1829,30 @@ async def _process_streaming_response(
     return full_content, full_reasoning, full_tool_calls, ui_streaming, usage, finish_reason
 
 
+_STEP_MAX_CHARS = 120
+
+
+def _step_summary(full_content: str) -> str:
+    """One-line summary of a folded turn's narration, for the step marker.
+
+    The first sentence carries what the model was doing ("The ninja PATH
+    issue again -- adding the venv to PATH:"); the rest is detail the tool
+    calls and the final answer tell better.  Kept short because a marker
+    that runs to several lines is the intermediate block again by other
+    means.
+    """
+    text = _prose_alongside_tool_calls(full_content)
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    # First sentence, or the whole text when it is already short.
+    m = re.match(r"(.+?[.!?])(\s|$)", text)
+    summary = m.group(1) if m else text
+    if len(summary) > _STEP_MAX_CHARS:
+        summary = summary[:_STEP_MAX_CHARS].rstrip() + "…"
+    return summary
+
+
 async def _ollama_process_streaming_response(
     chat_completion,
     safety_queue: asyncio.Queue,
@@ -1847,6 +1877,7 @@ async def _ollama_process_streaming_response(
     full_thinking = ""
     tool_calls = None
     ui_streaming = False
+    folded = False  # this turn's narration was retracted by stream_fold
     prompt_eval_count = 0
     eval_count = 0
     done_reason = None
@@ -1871,6 +1902,12 @@ async def _ollama_process_streaming_response(
 
             # Tool calls arrive complete in the final chunk
             if chunk.message.tool_calls:
+                # Ollama delivers tool calls whole in the final chunk, so the
+                # fold happens here rather than per-delta -- same decision,
+                # only later, because that is all the earlier this path knows.
+                if chat_ui and not folded and hasattr(chat_ui, "stream_fold"):
+                    folded = True
+                    chat_ui.stream_fold(_step_summary(full_content))
                 tool_calls = chunk.message.tool_calls
 
             # Capture token counts from final chunk. prompt_eval_count drives
@@ -3854,6 +3891,17 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         # turn, and reads it from the metrics sink.
                         _m.end_api(state.last_prompt_tokens, _completion_tokens,
                                    _finish_reason)
+                        # A raw-JSON tool call streams as ordinary content, so
+                        # its narration reached the screen as if it were the
+                        # answer.  Fold it here, at the last moment before
+                        # stream_end() persists it -- the structured path
+                        # above folds on the tool-calls chunk; this is the
+                        # same decision made at the only point the raw
+                        # path can make it.
+                        if (not _ollama_tcs and _ui_was_streaming and chat_ui
+                                and hasattr(chat_ui, "stream_fold")
+                                and _looks_like_raw_tool_call(_full_content)):
+                            chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
                         if _finish_reason == "length":
@@ -3898,6 +3946,17 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         # turn, and reads it from the metrics sink.
                         _m.end_api(state.last_prompt_tokens, _completion_tokens,
                                    _finish_reason)
+                        # A raw-JSON tool call streams as ordinary content, so
+                        # its narration reached the screen as if it were the
+                        # answer.  Fold it here, at the last moment before
+                        # stream_end() persists it -- the structured path
+                        # above folds on the first tool-call delta; this is
+                        # the same decision made at the only point the raw
+                        # path can make it.
+                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
+                                and hasattr(chat_ui, "stream_fold")
+                                and _looks_like_raw_tool_call(_full_content)):
+                            chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
                         if _finish_reason == "length":

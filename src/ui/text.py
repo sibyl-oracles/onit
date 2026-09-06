@@ -96,6 +96,7 @@ class ChatUI:
         max_logs: int = 100,
         display_logs: int = 10,
         show_logs: bool = False,
+        show_intermediate: bool = False,
         banner_title: str = "OnIt Chat Interface"
     ) -> None:
         """
@@ -110,6 +111,8 @@ class ChatUI:
             max_logs: Maximum number of execution logs to keep in memory (default: 100)
             display_logs: Number of recent logs to display (default: 10)
             show_logs: Whether to show the execution logs panel (default: False)
+            show_intermediate: Show every intermediate AI turn in full instead of
+                folding narration into one-line step markers (default: False)
             banner_title: Title text shown in the startup banner (default: "OnIt Chat Interface")
         """
         self.banner_title = banner_title
@@ -127,6 +130,7 @@ class ChatUI:
         self.execution_logs: deque[dict] = deque(maxlen=max_logs)
         self.display_logs = display_logs
         self.show_logs = show_logs
+        self.show_intermediate = show_intermediate
         self.set_theme(theme)
         self.console = Console(theme=self.theme)
         self.status = Status(
@@ -165,6 +169,8 @@ class ChatUI:
         self._tag_buf = ""  # buffer for partial tag detection across tokens
         self._trail_buf = ""  # buffer whitespace-only tokens to suppress trailing blank lines
         self._stream_cursor_shown = False  # blinking block cursor during streaming
+        self._block_newlines = 0  # newlines emitted this streamed block = its height-1
+        self._fold_pending = False  # this turn was folded; stream_end() must not persist it
         self._link_buf = ""  # buffer for detecting markdown links during streaming
         self._url_buf = ""  # URL chars swallowed in state 3, kept to restore a non-link
         self._link_state = 0  # 0=normal, 1=in label [..., 2=after ](, eating URL
@@ -1117,6 +1123,82 @@ class ChatUI:
             sys.stdout.flush()
             self._stream_cursor_shown = False
 
+    # ── Intermediate-turn fold ───────────────────────────────────────────
+
+    # A streamed block is retracted only when it is short enough to do so
+    # safely: cursor movement is relative (ESC[<n>F), so a block taller than
+    # the screen, or one that scrolled, cannot be reliably erased.  Taller
+    # blocks are kept on screen but still unpersisted and marked superseded.
+    _FOLD_MAX_ROWS = 20
+
+    def _erase_streamed_block(self, lines_up: int) -> None:
+        """Retract the streamed block using relative cursor movement only.
+
+        Moves up ``lines_up`` lines to column 1 and clears to end of screen.
+        No cursor-position query (DSR 6) is involved: the earlier design
+        queried the terminal and read the reply from stdin, which blocked the
+        stream loop and echoed control bytes back to the screen (the slow,
+        beeping rendering this fold shipped with).  The line count comes from
+        _emit's newline tally instead -- pure software, zero round-trips.
+        """
+        sys.stdout.write(f"\033[{lines_up}F")  # up n lines, column 1
+        sys.stdout.write("\033[J")             # clear to end of screen
+        sys.stdout.flush()
+
+    def stream_fold(self, summary: str = "") -> None:
+        """Retract this turn's streamed narration, leaving a one-line step marker.
+
+        An agent turn that ends in a tool call streams its narration to the
+        screen as if it were the answer -- the stream consumer cannot tell
+        them apart while tokens arrive.  When the first tool-call delta
+        arrives, the narration's true nature is known, so chat.py folds the
+        turn: the block is erased (when it is short enough to do so safely),
+        a dim step line records what the model was doing, and the turn is
+        kept out of the history panel.  The final answer's turn never sees a
+        tool-call delta, so it streams and closes exactly as before.
+
+        ``show_intermediate = True`` restores the old show-every-turn
+        behavior for watching the full trace.
+        """
+        if self.show_intermediate:
+            return
+        self._fold_pending = True
+        if not self._stream_header_printed:
+            # Nothing visible streamed -- no block to erase, no marker to add.
+            self._streaming_content = ""
+            self._stream_pending = ""
+            self._trail_buf = ""
+            self._tag_buf = ""
+            self._link_buf = ""
+            self._url_buf = ""
+            self._link_state = 0
+            return
+        self._erase_stream_cursor()
+        think_open = self._stream_think_started
+        self.stream_think_end()  # close a think block the narration opened
+        # The think block printed its own two lines (header + footer rule).
+        lines_up = self._block_newlines + (2 if think_open else 0)
+        if 0 < lines_up <= self._FOLD_MAX_ROWS:
+            self._erase_streamed_block(lines_up)
+        else:
+            # Too tall to retract safely: keep the block but mark it as
+            # superseded so it still reads as a step.
+            print()
+        line = f"  · [{self.format_timestamp()}]"
+        if summary:
+            line += f" {summary}"
+        self.console.print(line, style="dim")
+        # Reset the stream state so the next turn's block starts clean; the
+        # fold flag is left set for stream_end() to consume.
+        self._streaming_content = ""
+        self._stream_pending = ""
+        self._trail_buf = ""
+        self._tag_buf = ""
+        self._link_buf = ""
+        self._url_buf = ""
+        self._link_state = 0
+        self._stream_header_printed = False
+        self._block_newlines = 0
     # ── Turn timing ───────────────────────────────────────────────
 
     def turn_start(self) -> None:
@@ -1170,6 +1252,8 @@ class ChatUI:
         self._link_buf = ""
         self._url_buf = ""
         self._link_state = 0
+        self._block_newlines = 0
+        self._fold_pending = False
         self._stream_start_time = time.monotonic()
 
     def stream_think_token(self, token: str) -> None:
@@ -1203,6 +1287,11 @@ class ChatUI:
         if not display:
             return
         self._erase_stream_cursor()
+        # Track the streamed block's height in software: the fold retracts the
+        # block by moving up this many lines.  Counted here, at the only place
+        # text actually reaches the screen, so no terminal round-trip is ever
+        # needed to know how tall the block is.
+        self._block_newlines += display.count("\n")
         if not self._stream_header_printed:
             self._stream_pending += display
             if self._stream_pending.strip():
@@ -1381,9 +1470,20 @@ class ChatUI:
                 f"  ⚠  Context window {self._context_pct:.0f}% full",
                 style="bold yellow",
             )
-        # Save to history so intermediate AI turns appear in the chat panel.
-        # Strip only known model wrapper tags — a generic <[^>]+> pattern would
-        # delete LaTeX/math content that happens to contain < and > characters.
+        # Save to history so the final answer appears in the chat panel.  A
+        # folded intermediate turn is absent on purpose: its narration was
+        # retracted on screen and replaced by a step marker, and persisting
+        # it here would put the full block back on the next re-render.
+        if self._fold_pending:
+            self._fold_pending = False
+            self._streaming_content = ""
+            self._stream_pending = ""
+            self._tag_buf = ""
+            self._link_buf = ""
+            self._url_buf = ""
+            self._link_state = 0
+            self._stream_header_printed = False
+            return
         content = re.sub(r"</?(?:answer|think|stop)>", "", self._streaming_content, flags=re.IGNORECASE).strip()
         if content:
             self.add_message("assistant", content)

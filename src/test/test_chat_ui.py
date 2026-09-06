@@ -612,3 +612,112 @@ class TestTokenBudgetLabel:
         chat_ui.set_token_budgets(max_output_tokens=131072)
         chat_ui.set_context_usage(80.0, max_tokens=262144)
         assert "max output toks: 131k" in chat_ui._fmt_ctx_label()
+
+
+# ── Intermediate-turn fold ─────────────────────────────────────────────────
+
+
+class TestIntermediateFold:
+    """stream_fold retracts a streamed narration block into a step marker.
+
+    The retraction uses relative cursor movement (ESC[<n>F + ESC[J) driven by
+    a software newline tally -- no cursor-position query, no stdin read: the
+    first implementation queried DSR 6 and blocked/echoed, which made the
+    text UI slow and beep.  These tests pin the no-query design.
+    """
+
+    @pytest.fixture
+    def ui(self):
+        with patch.object(ChatUI, "initialize"):
+            return ChatUI(theme="white", max_messages=5, max_logs=5)
+
+    def _stream_block(self, ui, text):
+        """Simulate a streamed block the way chat.py drives the UI."""
+        ui.stream_start()
+        ui.stream_token(text)
+        ui.stream_end()
+
+    def test_fold_erases_block_with_relative_movement_only(self, ui, capsys):
+        """The erase sequence is ESC[<n>F + ESC[J -- no DSR 6, no cursor save."""
+        ui.stream_start()
+        ui.stream_token("Checking the PATH issue.\nAdding the venv:")
+        ui.stream_fold("Checking the PATH issue.")
+        out = capsys.readouterr().out
+        assert "\x1b[6n" not in out, "fold must not query the cursor position"
+        assert "\x1b[s" not in out, "fold must not save/restore the cursor"
+        assert "\x1b[1F" in out  # up 1 line (the one newline that was emitted)
+        assert "\x1b[J" in out
+
+    def test_fold_prints_dim_step_marker(self, ui, capsys):
+        ui.stream_start()
+        ui.stream_token("The ninja PATH issue again -- adding the venv to PATH:")
+        ui.stream_fold("The ninja PATH issue again -- adding the venv to PATH:")
+        out = capsys.readouterr().out
+        assert "·" in out and "The ninja PATH issue again" in out
+
+    def test_fold_resets_stream_state_for_next_turn(self, ui):
+        ui.stream_start()
+        ui.stream_token("narration text\n")
+        ui.stream_fold()
+        assert ui._streaming_content == ""
+        assert ui._stream_header_printed is False
+        assert ui._block_newlines == 0
+        assert ui._fold_pending is True
+
+    def test_folded_turn_is_not_persisted_to_history(self, ui):
+        ui.stream_start()
+        ui.stream_token("intermediate narration that must vanish")
+        ui.stream_fold()
+        ui.stream_end()
+        roles = [m.role for m in ui.messages]
+        assert "assistant" not in roles
+
+    def test_final_answer_after_folds_is_persisted(self, ui):
+        ui.stream_start()
+        ui.stream_token("step narration")
+        ui.stream_fold()
+        ui.stream_start()
+        ui.stream_token("## The real answer")
+        ui.stream_end()
+        assistant_msgs = [m for m in ui.messages if m.role == "assistant"]
+        assert len(assistant_msgs) == 1
+        assert "The real answer" in assistant_msgs[0].content
+        assert "step narration" not in assistant_msgs[0].content
+
+    def test_tall_block_is_kept_but_marked(self, ui, capsys):
+        """A block taller than _FOLD_MAX_ROWS cannot be retracted safely;
+        it stays on screen, gets a marker, and is still unpersisted."""
+        ui.stream_start()
+        ui.stream_token("\n".join(f"line {i}" for i in range(ui._FOLD_MAX_ROWS + 5)))
+        ui.stream_fold("tall narration")
+        out = capsys.readouterr().out
+        assert "\x1b[J" not in out, "must not attempt a risky full-block erase"
+        assert "tall narration" in out
+        ui.stream_end()
+        assert "assistant" not in [m.role for m in ui.messages]
+
+    def test_fold_with_no_visible_stream_prints_nothing_extra(self, ui, capsys):
+        """A tool-call-only turn never opened a block: no marker, no erase."""
+        ui.stream_start()
+        ui.stream_fold()
+        out = capsys.readouterr().out
+        assert "·" not in out
+        assert ui._fold_pending is True
+
+    def test_show_intermediate_disables_folding(self, ui, capsys):
+        ui.show_intermediate = True
+        ui.stream_start()
+        ui.stream_token("narration")
+        ui.stream_fold("narration")
+        out = capsys.readouterr().out
+        assert "·" not in out, "show_intermediate must restore the old behavior"
+        assert ui._fold_pending is False
+
+    def test_no_terminal_query_anywhere_in_the_stream_path(self, ui, capsys):
+        """Regression pin: streaming a whole block must never emit DSR 6."""
+        ui.stream_start()
+        for ch in "answer text\nsecond line\n":
+            ui.stream_token(ch)
+        ui.stream_end()
+        out = capsys.readouterr().out
+        assert "\x1b[6n" not in out
