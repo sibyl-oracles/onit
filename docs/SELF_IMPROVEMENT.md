@@ -883,9 +883,12 @@ seed of Loop B's training set.
 Until the suite holds one task whose score can *move* when the scaffold changes, §6's
 measurement panel is decorative and freezing a holdout would only formalize the mistake.
 **Registered September 04, 2026** — `simpleqa` and `gaia` in `benchmarks/run.py` TASKS +
-`factuality` / `agentic` categories; `python -m benchmarks.run --list` shows both. Not yet
-run: GAIA is gated (`HF_TOKEN` unset), and SimpleQA's judge path deserves a smoke tier
-before it enters the panel.
+`factuality` / `agentic` categories; `python -m benchmarks.run --list` shows both.
+**First run September 05, 2026** — SimpleQA smoke: 1.000 (5/5), judge path validated,
+judge-rotation regrade agreed 5/5 (see item 4's progress log). GAIA still not run:
+`GatedRepoError 401` without `HF_TOKEN` (accept the dataset terms, then `hf auth login`
+or export `HF_TOKEN`); its wrapper's `trust=True` was also removed — datasets 5.x
+rejects it, and the hub repo is Parquet-backed since October 2025.
 
 **3. Add implicit outcome signals** *(~2 days)*. A same-session rephrase of a task ≈
 failure; a session that ends after an answer ≈ acceptance. Both are already latent in the
@@ -896,6 +899,40 @@ records into a usable training set for Loop B's Reflector without waiting for ne
 gap 7), stamped with `code_execution` and a harness era (§5). Draw the tasks from real
 sessions but **re-run them under the current harness to score them**, which sidesteps Gate
 1's thinness without waiting weeks for it to resolve on its own.
+**Partially done September 05, 2026** — `benchmarks/baselines/full.json` pins the two
+verifiable full-tier rows (gsm8k 0.977/1,319; bigcodebench 0.564/486 recorded) with a
+provenance block naming the harness era. humaneval/mbpp are deliberately absent: their
+only surviving logs are 0-tool harness-failure runs and their superseding runs left no
+logs — re-run them before they enter the pin. The holdout split itself is still not
+drawn; it waits on the first SimpleQA sampled/full run (judge path now validated) and a
+GAIA run (blocked on `HF_TOKEN`).
+
+**Progress log (September 05, 2026):** item 2's runs started. SimpleQA smoke: **1.000**
+(5/5, model-judged, 14 tools live, 2 m 43 s) — the judge path is validated and the task
+enters the measurement panel. Judge rotation (glm-5.1:cloud regrade) agreed 5/5. The
+session also fixed a benchmark-harness bug found by the run: MCP server *spawn children*
+crash-looped (`ModuleNotFoundError: mcp.types`) because they inherit the runner's
+`sys.path` with `src/` first — the `55b7d0e` fix pinned the SDK in the parent's
+`sys.modules` only, and spawn children start with a fresh module table. Fixed by
+demoting the `src/` path entry before the SDK imports in `benchmarks/onit_provider.py`
+and, as defense in depth, at module import in `src/mcp/servers/run.py`. GAIA attempted
+and documented: `GatedRepoError 401` without `HF_TOKEN`; also fixed the task wrapper's
+`trust=True`, which datasets 5.x rejects outright (the hub repo has been
+Parquet-backed since October 2025, so no `trust` flag is needed).
+
+**Progress log (September 06, 2026):** item 2's sampled-tier runs **completed** —
+simpleqa **0.940** (94 C / 6 I / 0 not-attempted, stderr 0.024), humaneval **0.970**
+(stderr 0.017), mbpp **0.990** (stderr 0.010), all on the agent's own preferred endpoint
+(`onit/glm-5.3-flash:cloud`, 14 tools live, learn off). The humaneval/mbpp exclusion
+from the pin now has a fix in flight: these sampled rows are the first verifiable
+verbatim-dataset measurements for both tasks. GAIA's token blocker is **bypassed for
+cached configs**: the dataset was cached locally on 2026-09-06 (validation 165 rows),
+and the task loads offline with `HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1` — no token
+needed for a config already in `~/.cache/huggingface/`. GAIA smoke run started; scope
+caveat: the task wrapper ignores `file_path`, so GAIA runs are text-only by
+construction. SimpleQA full-tier run (4,472 samples) started in the background.
+Remaining for item 4: consolidate the sampled rows into the pin (per-tier), draw the
+holdout split, and complete the GAIA + SimpleQA-full runs.
 
 Only then Phase 1, then Phase 2. Phase 2 still carries low risk and still captures the
 majority of the literature's demonstrated scaffold gains — ACE reports double-digit

@@ -32,10 +32,12 @@ class _StubAgent:
 
 @pytest.fixture(autouse=True)
 def _reset_agent():
-    """Ensure each test controls the shared agent singleton."""
+    """Ensure each test controls the shared agent singleton and the cap."""
     onit_provider._agent = None
+    onit_provider._concurrency_sem = None
     yield
     onit_provider._agent = None
+    onit_provider._concurrency_sem = None
 
 
 def test_messages_to_task_flattens_system_and_user():
@@ -58,6 +60,67 @@ async def test_generate_returns_agent_answer():
     model = get_model("onit/stub")
     out = await model.generate("ignored")
     assert "42" in out.completion
+
+
+@pytest.mark.asyncio
+async def test_generate_caps_concurrency_when_env_set(monkeypatch):
+    """ONIT_BENCH_MAX_CONNECTIONS caps agent requests in flight."""
+    import asyncio
+
+    monkeypatch.setenv("ONIT_BENCH_MAX_CONNECTIONS", "1")
+
+    class _SlowAgent(_StubAgent):
+        def __init__(self):
+            super().__init__("ok")
+            self.in_flight = 0
+            self.max_in_flight = 0
+
+        async def process_task(self, task: str, **kwargs) -> str:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            await asyncio.sleep(0.05)
+            self.in_flight -= 1
+            return self.answer
+
+    agent = _SlowAgent()
+    onit_provider._agent = agent
+    model = get_model("onit/stub")
+    # Fire 3 concurrent generations; the cap of 1 must serialize them.
+    results = await asyncio.gather(
+        model.generate("a"), model.generate("b"), model.generate("c")
+    )
+    assert all("ok" in r.completion for r in results)
+    assert agent.max_in_flight == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_no_cap_when_env_unset(monkeypatch):
+    """Without the env var, generations run fully concurrent."""
+    import asyncio
+
+    monkeypatch.delenv("ONIT_BENCH_MAX_CONNECTIONS", raising=False)
+
+    class _SlowAgent(_StubAgent):
+        def __init__(self):
+            super().__init__("ok")
+            self.in_flight = 0
+            self.max_in_flight = 0
+
+        async def process_task(self, task: str, **kwargs) -> str:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            await asyncio.sleep(0.05)
+            self.in_flight -= 1
+            return self.answer
+
+    agent = _SlowAgent()
+    onit_provider._agent = agent
+    model = get_model("onit/stub")
+    results = await asyncio.gather(
+        model.generate("a"), model.generate("b"), model.generate("c")
+    )
+    assert all("ok" in r.completion for r in results)
+    assert agent.max_in_flight == 3
 
 
 def test_eval_pipeline_scores_correct_answer():

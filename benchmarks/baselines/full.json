@@ -1,0 +1,30 @@
+{
+  "model": "onit/Qwen/Qwen3.8-27B",
+  "tier": "full",
+  "learn": "off",
+  "created": "2026-09-05",
+  "provenance": {
+    "note": "Numbers come from logs on disk that are verifiable now. The humaneval/mbpp full logs on disk are 0-tool harness-failure era runs (0.927/0.856); their superseding RESULTS.md rows (0.902/0.899) cite runs whose logs were not kept, so those tasks are absent from this pin until re-run.",
+    "harness_era": "post-55b7d0e (mcp sys.path fix) for bigcodebench; gsm8k predates it but is tool-free by design",
+    "code_execution": "none (provider mode, sandboxed bash only)"
+  },
+  "results": {
+    "gsm8k": {
+      "model": "onit/Qwen/Qwen3.8-27B",
+      "samples": 1319,
+      "metrics": {
+        "match/accuracy": 0.9772554965883244
+      },
+      "source_log": "logs/full/2026-08-31T13-39-51-00-00_gsm8k_dNiQ44iC75dWVBug4Spuz4.eval"
+    },
+    "bigcodebench": {
+      "model": "onit/Qwen/Qwen3.8-27B",
+      "samples": 486,
+      "samples_note": "interrupted run: 486 of 1,140 recorded (low-id prefix)",
+      "metrics": {
+        "verify/accuracy": 0.5637860082304527
+      },
+      "source_log": "logs/full/2026-09-02T12-09-39-00-00_bigcodebench_8qUhiif6wHGLjCuUVWRjBA.eval"
+    }
+  }
+}

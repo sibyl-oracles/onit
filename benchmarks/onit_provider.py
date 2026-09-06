@@ -24,6 +24,8 @@ Integration notes:
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -40,12 +42,28 @@ from typing import Any
 # (e.g. "from .mcp.prompts.prompts import ..."), which do not consult
 # sys.path, and its one bare SDK import (src/type/tools.py) wants the real
 # SDK anyway.
+#
+# The SDK-first import alone is not enough in multiprocessing spawn children:
+# they re-import this module with the parent's sys.path *already* containing
+# "src" (it was inserted before the servers were spawned), so the very
+# `import mcp.types` below would resolve to the shadow and every MCP server
+# child crash-loops (observed 2026-09-05). Demote the src entry to the tail
+# first: absolute `src.*` imports still resolve (the entry is present, just
+# not first), and the bare-SDK import below then finds the PyPI package.
+import os as _os
+
+_src_dir = _os.path.realpath(
+    _os.path.join(_os.path.dirname(__file__), _os.pardir, "src"))
+_demoted = [p for p in sys.path if p and _os.path.realpath(p) == _src_dir]
+for _p in _demoted:
+    sys.path.remove(_p)
+sys.path.extend(_demoted)
+
 import mcp.types  # noqa: F401
 import fastmcp.server.context  # noqa: F401
 import fastmcp.server  # noqa: F401
 import fastmcp.client  # noqa: F401
 
-import sys
 sys.path.insert(0, ".")
 sys.path.insert(0, "src")
 
@@ -63,6 +81,8 @@ from . import config as bench_config
 # Shared OnIt instance, built once on first use.
 _agent: Any | None = None
 _agent_lock: asyncio.Lock | None = None
+# Cross-sample concurrency cap (see generate()); None = no cap.
+_concurrency_sem: asyncio.Semaphore | None = None
 
 
 def base_config_data() -> dict[str, Any]:
@@ -207,12 +227,35 @@ class OnItAPI(ModelAPI):
         data_dir.mkdir(parents=True, exist_ok=True)
 
         stats: dict[str, Any] = {}
-        answer = await agent.process_task(
-            task,
-            session_path=str(sessions_dir / f"{run_id}.jsonl"),
-            data_path=str(data_dir),
-            safety_queue=asyncio.Queue(),
-            stats=stats,
-        )
+        # Cloud endpoints rate-limit concurrent requests (Ollama cloud
+        # answers 429 "too many concurrent requests" when the tier's
+        # max_connections samples hit it at once, each sample's tool loop
+        # firing several requests). A module-level semaphore caps the
+        # agent requests in flight across the whole run; the cap is
+        # ONIT_BENCH_MAX_CONNECTIONS (0 = no cap, the default, which is
+        # what local vLLM endpoints want). Set it to 1 or 2 for cloud
+        # endpoints.
+        global _concurrency_sem
+        if _concurrency_sem is None:
+            max_conc = int(os.environ.get("ONIT_BENCH_MAX_CONNECTIONS", "0") or 0)
+            _concurrency_sem = asyncio.Semaphore(max_conc) if max_conc > 0 else None
+        sem = _concurrency_sem
+        if sem is not None:
+            async with sem:
+                answer = await agent.process_task(
+                    task,
+                    session_path=str(sessions_dir / f"{run_id}.jsonl"),
+                    data_path=str(data_dir),
+                    safety_queue=asyncio.Queue(),
+                    stats=stats,
+                )
+        else:
+            answer = await agent.process_task(
+                task,
+                session_path=str(sessions_dir / f"{run_id}.jsonl"),
+                data_path=str(data_dir),
+                safety_queue=asyncio.Queue(),
+                stats=stats,
+            )
 
         return ModelOutput.from_content(model=self.model_name, content=answer or "")

@@ -22,6 +22,47 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 
+def _demote_src_on_syspath() -> None:
+    """Move any sys.path entry pointing at this repo's src/ to the tail.
+
+    Spawn children (``_spawn_servers`` uses the spawn start method) inherit the
+    parent's mutated sys.path. When the parent is the benchmark runner,
+    ``benchmarks/onit_provider.py`` has put "src" at position 0 so its absolute
+    ``src.*`` imports resolve — and in the child that makes the local
+    ``src/mcp`` package shadow the PyPI ``mcp`` SDK: fastmcp's lazy
+    ``import mcp.types`` then raises ModuleNotFoundError and the server
+    crash-loops (observed 2026-09-05: Prompts/ToolsNet/VLMTools exited code 1
+    every 10 s for the whole run). The ``55b7d0e`` pre-import fix pins the SDK
+    in the parent's sys.modules only; a spawn child starts with a fresh module
+    table but the same poisoned path, so the fix must live here, where every
+    child executes it.
+
+    Demoting rather than deleting keeps the bare-import fallbacks working
+    (``src/lib/tools.py`` and ``src/mcp/prompts/prompts.py`` resolve ``lib.*`` /
+    ``type.*`` / ``mcp.*`` without a package prefix when run outside the
+    package) — they only need the entry present, not first. In a parent that
+    imports this module the demotion is harmless: package imports are relative
+    and anything needing the bare names appends the entry itself.
+    """
+    src_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    demoted = [p for p in sys.path if p and os.path.realpath(p) == src_dir]
+    for p in demoted:
+        sys.path.remove(p)
+    sys.path.extend(demoted)
+
+
+_demote_src_on_syspath()
+
+# Pin the real SDK modules before any server module is imported. After the
+# demotion a bare ``import mcp`` resolves to the PyPI SDK in a poisoned child;
+# pinning here also covers parents where some other path entry still shadows.
+try:
+    import mcp.types  # noqa: F401
+    import fastmcp.server  # noqa: F401
+except ImportError:  # pragma: no cover - SDK extras genuinely absent
+    pass  # servers that need them will fail with their own honest error
+
+
 # Where the search for a free port starts. Every OnIt process on a shared
 # machine allocates its own ports from here upward, so two users never contend
 # for a fixed number.

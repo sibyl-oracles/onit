@@ -38,10 +38,62 @@ the recorded sample ids are the low-id prefix (0–487), so 0.564 is the score
 over recorded samples, not a full-dataset estimate; a completed 1,140-sample
 run (~7 h at this run's pace) is needed for a leaderboard-comparable number.
 
+**Correction (2026-09-05):** the SimpleQA smoke run (5 samples,
+`logs/smoke/2026-09-05T12-33-04-…simpleqa_PVy4Ynunzbijvc67rJ6qJU.eval`) is the
+first run of the task registered in §8 item 2: **1.000** accuracy
+(model-graded C on all 5), 14 tools live, 2 m 43 s. The judge path
+(`onit_judge` → `model_graded_qa`) is validated; a judge-rotation regrade of
+the same 5 submissions with `glm-5.1:cloud` agreed (5×C), so self-judging bias
+is not visible at this sample size. The same session also fixed the MCP
+spawn-child crash-loop (`sys.path` shadow in `multiprocessing` spawn children;
+the `55b7d0e` fix pinned the SDK in the parent only): Prompts/ToolsNet/
+VLMTools servers exited code 1 every 10 s for the whole first smoke attempt.
+GAIA remains unrun: the dataset is gated (`GatedRepoError 401` without a
+token) and its task wrapper passed `trust=True`, which datasets 5.x rejects —
+wrapper fixed (no `trust` flag; the hub repo is Parquet-backed since
+October 2025), but a run still needs `HF_TOKEN` after accepting the dataset's
+terms. The baseline pin (`baselines/full.json`) now exists with the two
+verifiable full-tier rows (gsm8k 0.977/1,319; bigcodebench 0.564/486);
+humaneval/mbpp are excluded until re-run because their only surviving logs
+are the 0-tool harness-failure era (0.927/0.856) and the runs that superseded
+them (0.902/0.899) left no logs.
+
+**Correction (2026-09-06):** first **sampled-tier** runs of the newly
+registered tasks, all on the agent's own preferred endpoint
+(`onit/glm-5.3-flash:cloud`, 14 tools live, learn off, `run_meta.json` in
+`logs/sampled/`):
+
+* **simpleqa (sampled, 100): 0.940** (94 C / 6 I / 0 not-attempted; stderr
+  0.024; log `logs/sampled/2026-09-06T00-33-31-…JridUjXJGZ6jWVB2Y28e4a.eval`).
+  The agent never abstained — every sample was graded C or I, so the
+  not-attempted bucket the SimpleQA metric normally reports is empty here.
+  Two earlier partial attempts of the same run (resumed by `eval_retry`)
+  finished at 0.93/0.95 before the final 0.940 — run-to-run noise at n=100 is
+  ±0.02–0.03, consistent with the stderr.
+* **humaneval (sampled, 100): 0.970** (stderr 0.017; log
+  `2026-09-06T00-44-21-…66anSTB6REe3hSRZVb26NY.eval`) and **mbpp (sampled,
+  100): 0.990** (stderr 0.010; log `2026-09-06T00-51-09-…iJzq65qhSwQ9toB2Grv7tm.eval`).
+  These are the first verifiable verbatim-dataset rows for both tasks (the
+  full-tier 0.902/0.899 rows below predate the surviving-log problem and stay
+  excluded from the pin). A duplicate-log quirk (two `.eval` files per task,
+  agreeing within 0.01) is noted for the runner to consolidate.
+* GAIA: the dataset was cached locally on 2026-09-06 (validation 165 rows +
+  test 83 rows, parquet snapshots under `~/.cache/huggingface/`), so the task
+  now loads **offline** (`HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1`) without a
+  token — the gated-repo blocker is bypassed for cached configs. Caveat: the
+  task wrapper passes only `Question`/`Final answer` and ignores
+  `file_path`, so GAIA runs are **text-only by construction** (attachment
+  tasks are unanswerable as specified) — a known scope limit to fix in a
+  later pass.
+
 | Benchmark | Host | Model | Accuracy | Stderr |
 |---|---|---|---|---|
 | bigcodebench (full, 486/1,140 recorded) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | **0.564** | 0.022 |
 | bigcodebench (full, 1,140) | vLLM (agent endpoint) | Qwen/Qwen3.8-27B | ~~0.025~~ superseded 2026-09-03 | — |
+| simpleqa (smoke, 5) | https://api.ollama.com | glm-5.3-flash:cloud | 1.000 | 0.000 |
+| simpleqa (sampled, 100) | https://api.ollama.com | glm-5.3-flash:cloud | **0.940** | 0.024 |
+| humaneval (sampled, 100) | https://api.ollama.com | glm-5.3-flash:cloud | **0.970** | 0.017 |
+| mbpp (sampled, 100) | https://api.ollama.com | glm-5.3-flash:cloud | **0.990** | 0.010 |
 | bigcodebench | vLLM (private endpoint) | Qwen/Qwen3.6-27B | 0.518 | 0.015 |
 | gsm8k | https://api.ollama.com | glm-5.1:cloud | 0.978 | 0.004 |
 | gsm8k | https://api.ollama.com | gemma4:31b-cloud | 0.978 | 0.004 |

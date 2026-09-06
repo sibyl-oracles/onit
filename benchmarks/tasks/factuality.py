@@ -13,7 +13,10 @@ from __future__ import annotations
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample, hf_dataset
 
-from ..scorers import onit_judge
+try:  # package import (benchmarks.run) — the normal path
+    from ..scorers import onit_judge
+except ImportError:  # file import (inspect eval-retry loads task files standalone)
+    from benchmarks.scorers import onit_judge
 
 
 def _simpleqa_record_to_sample(record: dict) -> Sample:

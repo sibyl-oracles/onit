@@ -30,12 +30,19 @@ def _gaia_record_to_sample(record: dict) -> Sample:
 
 @task
 def gaia(subset: str = "2023_all", split: str = "validation") -> Task:
-    """GAIA general-assistant tasks (exact match). Requires HF_TOKEN."""
+    """GAIA general-assistant tasks (exact match). Requires HF_TOKEN.
+
+    The dataset is gated: accept the terms at
+    https://huggingface.co/datasets/gaia-benchmark/GAIA, then either
+    ``hf auth login`` or export ``HF_TOKEN``. Since the hub switched the
+    repo to Parquet-backed configs (October 2025), no ``trust`` flag is
+    needed — and datasets 5.x *rejects* ``trust_remote_code``, so passing
+    ``trust=True`` here would fail even with a valid token.
+    """
     dataset = hf_dataset(
         path="gaia-benchmark/GAIA",
         name=subset,
         split=split,
         sample_fields=_gaia_record_to_sample,
-        trust=True,
     )
     return Task(dataset=dataset, scorer=match(location="any"))
