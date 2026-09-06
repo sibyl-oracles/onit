@@ -42,6 +42,8 @@ htmlcov/
 # Session artifacts
 tmp/
 .onit/
+serve_registry.json
+serve_logs/
 
 # Eval
 *.eval
