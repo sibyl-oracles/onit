@@ -1043,6 +1043,59 @@ def _strip_old_images(messages: list) -> None:
                 msg["content"] = text + "\n[image omitted — already analyzed]"
 
 
+def _ollama_image(payload: str):
+    """Wrap a base64 payload in the image type this client expects."""
+    if _ollama_Image is not None:
+        return _ollama_Image(value=payload)
+    return payload
+
+
+try:
+    from ollama import Image as _ollama_Image
+except ImportError:  # pragma: no cover - ollama optional at import time
+    _ollama_Image = None
+
+
+def _adapt_messages_for_ollama(messages: list) -> list:
+    """Convert OpenAI-style messages to the shape Ollama's client accepts.
+
+    Ollama's pydantic Message requires ``content`` to be a plain string and
+    carries images in a separate ``images`` list of base64 payloads.  This
+    harness builds OpenAI-style part lists in two places - image-bearing tool
+    results and sub-agent instructions - and both crash the Ollama path with
+    ``ValidationError: content - Input should be a valid string``.
+
+    Returns a new list; the caller's history is left untouched.  A data-URL
+    part (``data:<mime>;base64,<payload>``) is unwrapped to the bare base64
+    the Ollama API expects; a bare base64 string passes through as-is.
+    Images are wrapped in ``ollama.Image`` when the installed client provides
+    it (newer clients type ``images`` as a sequence of Image models); older
+    clients that take raw base64 strings get strings.
+    """
+    adapted = []
+    for msg in messages:
+        if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+            adapted.append(msg)
+            continue
+        text_parts, images = [], []
+        for part in msg["content"]:
+            if not isinstance(part, dict):
+                text_parts.append(str(part))
+                continue
+            if part.get("type") == "text":
+                text_parts.append(part.get("text", ""))
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                payload = url.split("base64,", 1)[1] if "base64," in url else url
+                if payload:
+                    images.append(payload)
+        new_msg = {**msg, "content": "\n".join(text_parts)}
+        if images:
+            new_msg["images"] = [_ollama_image(p) for p in images]
+        adapted.append(new_msg)
+    return adapted
+
+
 # ── Human-in-the-loop approvals ──────────────────────────────────────────
 #
 # A tool that will not decide alone answers with a needs_approval payload
@@ -3439,7 +3492,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         that runs behind a finished answer into a wait the user notices.
         """
         if is_ollama:
-            _kw: dict = dict(model=model, messages=msgs, stream=False,
+            _kw: dict = dict(model=model, messages=_adapt_messages_for_ollama(msgs), stream=False,
                              think=False,
                              options={"temperature": 0.0, "num_ctx": num_ctx,
                                       "num_predict": max_tokens})
@@ -3790,7 +3843,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if is_ollama:
                     ollama_kwargs = dict(
                         model=model,
-                        messages=messages,
+                        messages=_adapt_messages_for_ollama(messages),
                         stream=stream,
                         options={
                             "temperature": temperature,
