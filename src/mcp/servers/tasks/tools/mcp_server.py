@@ -38,6 +38,7 @@ document search, and GitHub repository management into a single MCP server.
 
 import json
 import os
+import inspect
 import tempfile
 from typing import Annotated, Optional
 
@@ -558,6 +559,38 @@ NET_TOOLS = frozenset({"search", "get_weather"})
 PROFILE_LOCAL, PROFILE_NET, PROFILE_ALL = "local", "net", "all"
 
 
+def _registered_tool_names() -> list[str]:
+    """Names of every tool registered on the aggregate server.
+
+    Enumerated through whichever API the installed fastmcp exposes: 3.x
+    moved listing onto the server (``list_tools``, async), while 2.x kept
+    it on the tool manager (``get_tools``).  Resolving this at call time
+    keeps the stdio child bootable on either major version -- the RPi
+    environment resolves an older fastmcp where ``mcp.list_tools`` does
+    not exist, which previously killed the child at startup with
+    ``AttributeError``.
+    """
+    import asyncio
+
+    async def _names() -> list[str]:
+        lister = getattr(mcp, "list_tools", None)
+        if lister is not None:
+            return [t.name for t in await lister()]
+        getter = getattr(mcp, "get_tools", None)
+        if getter is not None:
+            return [t.name for t in await getter()]
+        manager = getattr(mcp, "_tool_manager", None)
+        sync_lister = getattr(manager, "list_tools", None) if manager else None
+        if sync_lister is not None:
+            return [t.name for t in sync_lister()]
+        raise RuntimeError(
+            "Cannot enumerate registered tools: installed fastmcp exposes "
+            "neither list_tools() nor get_tools(); check the fastmcp version."
+        )
+
+    return asyncio.run(_names())
+
+
 def _apply_profile(profile: str) -> list[str]:
     """Drop the tools that belong to the other profile. Returns what is left.
 
@@ -568,8 +601,7 @@ def _apply_profile(profile: str) -> list[str]:
     if profile == PROFILE_ALL:
         return []
 
-    import asyncio
-    registered = [t.name for t in asyncio.run(mcp.list_tools())]
+    registered = _registered_tool_names()
     if profile == PROFILE_LOCAL:
         drop = [n for n in registered if n in NET_TOOLS]
     elif profile == PROFILE_NET:
@@ -630,7 +662,13 @@ def run(
 
     if transport == 'stdio':
         # stdout carries the protocol here, so no uvicorn and no banner.
-        mcp.run(transport='stdio', show_banner=False)
+        # show_banner arrived in fastmcp 3.x; on 2.x the banner goes to
+        # stderr, which the parent already captures to its own log file,
+        # so dropping the kwarg there is safe.
+        run_kwargs = {'show_banner': False}
+        if 'show_banner' not in inspect.signature(mcp.run).parameters:
+            run_kwargs.pop('show_banner')
+        mcp.run(transport='stdio', **run_kwargs)
         return
 
     if not verbose:

@@ -276,3 +276,34 @@ class TestToolProfiles:
         mod = importlib.reload(mod)
         with pytest.raises(ValueError, match="Unknown tool profile"):
             mod._apply_profile("sideways")
+
+    def test_tool_enumeration_survives_old_fastmcp(self, monkeypatch):
+        """The stdio child must boot on fastmcp 2.x, where FastMCP has no
+        list_tools(); enumeration falls back to get_tools() and then to
+        the tool manager.  An AttributeError here killed the child at
+        startup on the RPi environment (mcp_ToolsLocalMCPServer_0.log:
+        "'FastMCP' object has no attribute 'list_tools'")."""
+        import importlib
+        import src.mcp.servers.tasks.tools.mcp_server as mod
+        mod = importlib.reload(mod)
+
+        class OldFastMCP:
+            """The fastmcp 2.x surface: enumeration via get_tools()."""
+
+            async def get_tools(self):
+                return [type("T", (), {"name": "bash"})(),
+                        type("T", (), {"name": "grep"})()]
+
+        monkeypatch.setattr(mod, "mcp", OldFastMCP())
+        assert mod._registered_tool_names() == ["bash", "grep"]
+
+        class AncientFastMCP:
+            """A pre-2.x surface: only the private tool manager."""
+
+            def __init__(self):
+                self._tool_manager = type("TM", (), {
+                    "list_tools": lambda self: [
+                        type("T", (), {"name": "serve"})()]})()
+
+        monkeypatch.setattr(mod, "mcp", AncientFastMCP())
+        assert mod._registered_tool_names() == ["serve"]
