@@ -9,8 +9,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Ensure src/ is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Pin the PyPI ``mcp`` SDK in sys.modules before any test module's sys.path
+# insert can shadow it with the local ``src/mcp`` package. fastmcp imports
+# ``mcp.types`` lazily; when the shadow wins that resolution, fastmcp raises
+# "server support is not installed" at collection. The eager
+# ``from .onit import OnIt`` in ``src/__init__.py`` used to pin the SDK as a
+# side effect of the first ``import src``; that import is lazy now (PEP 562),
+# so the pin has to be explicit. Harmless when the SDK is genuinely absent.
+try:
+    import mcp.types  # noqa: F401
+except ImportError:  # pragma: no cover - SDK extras genuinely absent
+    pass
+
+# Ensure src/ is importable for the bare-import fallbacks (``lib.*``/``type.*``/
+# ``mcp.*`` without a package prefix, used when server modules run outside the
+# package). Appended, not inserted: putting this directory at position 0 lets
+# the local ``src/mcp`` package shadow the PyPI ``mcp`` SDK. The eager
+# ``from .onit import OnIt`` in ``src/__init__.py`` used to pin the SDK in
+# ``sys.modules`` before this insert ran, hiding the hazard; since that import
+# became lazy (PEP 562), the first fastmcp import now happens after it and
+# resolves ``mcp.types`` to the shadow — fastmcp then raises "server support
+# not installed" at collection. Appending keeps the fallbacks working while
+# site-packages keeps priority for the SDK.
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ---------------------------------------------------------------------------
