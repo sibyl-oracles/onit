@@ -554,6 +554,56 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
               file=sys.stderr)
 
 
+# What the web UI serves with, over and above the shared ``serving:`` block.
+# A browser turn is a chat: one iteration, no tool loop to amortise a reasoning
+# pass over, and someone watching the composer while a 27B model deliberates —
+# so the reasoning is the whole wait.  The terminal is where runs are long
+# enough for thinking to earn its latency, and it keeps it.  Sampling moves
+# with the switch because thinking and instruct mode want different numbers
+# (see the table in docs/MODEL_SERVING.md); leaving the thinking-mode values on
+# a model told not to think is the wrong half of the pair.
+WEB_SERVING_DEFAULTS = {
+    'think': False,
+    'temperature': 0.7,
+    'top_p': 0.8,
+}
+
+
+def _apply_web_serving_defaults(config_data: dict, is_web: bool,
+                                force_think: bool = False):
+    """Layer :data:`WEB_SERVING_DEFAULTS` over ``serving:`` for a web run.
+
+    These beat a plain ``serving.think`` rather than filling in for it: one
+    config serves both UIs, so a ``serving:`` block that turns reasoning on
+    for the terminal would otherwise turn it on for the browser too, and the
+    split would never take effect for anyone who had asked for thinking at
+    all.  ``serving.web`` is the way back — any key set there wins over the
+    default beside it, so ``serving.web.think: true`` restores reasoning in
+    the browser and leaves the terminal alone.
+
+    The defaults land as one trade rather than three independent settings:
+    thinking off, and the sampling an instruct-mode turn wants.  Put the
+    reasoning back — through ``serving.web`` or a ``--think`` on the command
+    line, which *force_think* reports — and the sampling half goes with it,
+    falling through to ``serving:``, which is already tuned for a model that
+    thinks.  Sampling named explicitly under ``serving.web`` applies either
+    way; it is a stated preference, not half of a default.
+
+    The ``serving.web`` block is consumed here on every run, web or not, so
+    that a terminal session never carries it into chat().
+    """
+    serving_cfg = config_data.get('serving')
+    web_cfg = (serving_cfg.pop('web', None)
+               if isinstance(serving_cfg, dict) else None)
+    if not is_web:
+        return
+    web_cfg = dict(web_cfg) if isinstance(web_cfg, dict) else {}
+    overrides = ({} if (force_think or web_cfg.get('think'))
+                 else dict(WEB_SERVING_DEFAULTS))
+    overrides.update(web_cfg)
+    config_data.setdefault('serving', {}).update(overrides)
+
+
 def _merge_base(override: dict, base: dict):
     """Recursively merge *override* into *base* (in-place).
 
@@ -904,6 +954,13 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
             config_data['task'] = args.task
             if getattr(args, 'period', None) is not None:
                 config_data['period'] = args.period
+
+    # Keyed off the resolved flag, not the subcommand, so a config file that
+    # says ``web: true`` gets the same treatment as ``onit serve web``.  The
+    # --think flag is only read here to keep the sampling consistent with it;
+    # the flag itself is applied below, so it still wins outright.
+    _apply_web_serving_defaults(config_data, bool(config_data.get('web')),
+                                bool(getattr(args, 'think', False)))
 
     # --no-stream explicitly disables streaming (default is True)
     if args.no_stream:

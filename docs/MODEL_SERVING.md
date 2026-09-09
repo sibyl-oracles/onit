@@ -268,3 +268,7 @@ Sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty
 
 Set `repetition_penalty: 1.0` in all cases.
 
+The web UI serves with the instruct-mode row regardless of what is set here —
+one turn in a browser is not where reasoning pays for itself. See
+[Thinking in the browser](CONFIGURATION.md#thinking-in-the-browser).
+

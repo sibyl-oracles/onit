@@ -590,6 +590,119 @@ class TestTokenLimitOverrides:
         assert "num_ctx" not in resolved["serving"]
 
 
+# ── web-only serving defaults ───────────────────────────────────────────────
+
+class TestWebServingDefaults:
+    """One config serves both UIs, and they want different latency trades.
+
+    A browser turn is a single iteration with no tool loop behind it, so a
+    reasoning pass is the entire wait; a terminal run is long enough for the
+    deliberation to pay for itself. The split has to beat a plain
+    ``serving.think`` rather than fill in for it — anyone who turned thinking
+    on at all would otherwise never see it.
+    """
+
+    _CFG = {"serving": {"host": "http://vllm:8000/v1",
+                        "think": True,
+                        "temperature": 0.6,
+                        "top_p": 0.95}}
+
+    def _resolve(self, tmp_path, monkeypatch, cfg, cli_args):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(cfg))
+        args = _build_parser().parse_args(["--config", str(path)] + cli_args)
+        return _parse_and_resolve_config(args)
+
+    def test_web_run_drops_thinking_and_moves_sampling(self, tmp_path, monkeypatch):
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                ["serve", "web"])["serving"]
+        assert serving["think"] is False
+        assert serving["temperature"] == 0.7
+        assert serving["top_p"] == 0.8
+
+    def test_terminal_run_keeps_the_configured_values(self, tmp_path, monkeypatch):
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG, [])["serving"]
+        assert serving["think"] is True
+        assert serving["temperature"] == 0.6
+        assert serving["top_p"] == 0.95
+
+    def test_other_serve_modes_are_not_web(self, tmp_path, monkeypatch):
+        """a2a and the gateway are not someone watching a composer."""
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                ["serve", "a2a"])["serving"]
+        assert serving["think"] is True
+        assert serving["temperature"] == 0.6
+
+    def test_config_web_flag_gets_the_same_treatment(self, tmp_path, monkeypatch):
+        """``web: true`` in the file launches the same UI as the subcommand."""
+        cfg = dict(self._CFG, web=True)
+        serving = self._resolve(tmp_path, monkeypatch, cfg, [])["serving"]
+        assert serving["think"] is False
+        assert serving["temperature"] == 0.7
+
+    def test_serving_web_block_overrides_the_default(self, tmp_path, monkeypatch):
+        cfg = {"serving": dict(self._CFG["serving"], web={"top_p": 0.9})}
+        serving = self._resolve(tmp_path, monkeypatch, cfg,
+                                ["serve", "web"])["serving"]
+        assert serving["top_p"] == 0.9
+        # Keys it does not name still take the built-in web value.
+        assert serving["think"] is False
+        assert serving["temperature"] == 0.7
+
+    def test_reasoning_back_on_takes_its_sampling_with_it(self, tmp_path, monkeypatch):
+        """The default is one trade, not three settings.
+
+        A browser session told to think wants the thinking-mode sampling, and
+        that is what ``serving:`` already holds — the instruct numbers are
+        half of a default that no longer applies.
+        """
+        cfg = {"serving": dict(self._CFG["serving"], web={"think": True})}
+        serving = self._resolve(tmp_path, monkeypatch, cfg,
+                                ["serve", "web"])["serving"]
+        assert serving["think"] is True
+        assert serving["temperature"] == 0.6
+        assert serving["top_p"] == 0.95
+
+    def test_sampling_named_under_web_survives_thinking(self, tmp_path, monkeypatch):
+        """Stated explicitly, it is a preference rather than half a default."""
+        cfg = {"serving": dict(self._CFG["serving"],
+                               web={"think": True, "temperature": 1.0})}
+        serving = self._resolve(tmp_path, monkeypatch, cfg,
+                                ["serve", "web"])["serving"]
+        assert serving["think"] is True
+        assert serving["temperature"] == 1.0
+        assert serving["top_p"] == 0.95
+
+    def test_serving_web_block_never_reaches_chat(self, tmp_path, monkeypatch):
+        """It is a config layer, not a serving parameter."""
+        cfg = {"serving": dict(self._CFG["serving"], web={"think": True})}
+        for cli_args in ([], ["serve", "web"]):
+            serving = self._resolve(tmp_path, monkeypatch, cfg, cli_args)["serving"]
+            assert "web" not in serving
+
+    def test_explicit_think_flag_wins_over_the_web_default(self, tmp_path, monkeypatch):
+        """Asking for reasoning by hand is not a default to be overridden —
+        and it brings the configured sampling back with it."""
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                ["--think", "serve", "web"])["serving"]
+        assert serving["think"] is True
+        assert serving["temperature"] == 0.6
+        assert serving["top_p"] == 0.95
+
+    def test_web_defaults_apply_to_a_bare_serving_block(self, tmp_path, monkeypatch):
+        """Nothing to override — the web values are still the ones that apply."""
+        cfg = {"serving": {"host": "http://vllm:8000/v1"}}
+        serving = self._resolve(tmp_path, monkeypatch, cfg,
+                                ["serve", "web"])["serving"]
+        assert serving["think"] is False
+        assert serving["top_p"] == 0.8
+
+
 # ── onit learn ──────────────────────────────────────────────────────────────
 
 class TestLearnCommand:

@@ -10,6 +10,16 @@ serving:
   # the opening turn, where the approach is decided, and drop it for the rest
   # of the loop — the final answer included. Latency for deliberation.
   think_tool_turns: false
+  # Serving keys the web UI uses instead of the ones above. A browser turn is
+  # one iteration with no tool loop to amortise a reasoning pass over, so the
+  # thinking *is* the wait; the terminal keeps `think` as set above. These are
+  # the built-in web values — uncomment a key to change one, e.g. `think: true`
+  # to put reasoning back in the browser. An explicit `--think` on the command
+  # line still wins over everything here.
+  # web:
+  #   think: false        # reasoning off in the browser
+  #   temperature: 0.7    # instruct-mode sampling, to match (MODEL_SERVING.md)
+  #   top_p: 0.8
   # Max output tokens per response. 32768 fits any single answer and keeps the
   # context-compaction threshold healthy (~90%) on large-context models.
   max_tokens: 32768
