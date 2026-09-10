@@ -502,6 +502,9 @@ DEFAULT_ALLOWED_COMMANDS = frozenset({
     "sha256sum", "sha512sum", "b2sum", "cksum", "base64", "base32",
     # data / network clients (curl|sh piping is blocked separately)
     "jq", "curl", "wget", "openssl", "sqlite3", "pandoc",
+    # document text extraction (poppler): read-only converters that grant no
+    # authority `strings` and `pandoc` did not already grant.
+    "pdftotext",
     # dev toolchain
     "git", "git-lfs", "gh", "python", "pip", "node", "npm", "npx", "pnpm",
     "yarn", "uv", "pipx", "gem", "cargo", "rustc", "go", "gofmt", "ruby",
