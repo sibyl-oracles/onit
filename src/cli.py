@@ -1028,21 +1028,25 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     endpoints_configured = bool(serving.get('endpoints'))
 
     # Resolve host_key from keyring if not set via config/env. Only for
-    # OpenRouter hosts — the stored host_key is an OpenRouter key, and
-    # injecting it into serving.host_key for a vLLM host would shadow
-    # VLLM_API_KEY / the vllm_api_key keychain entry with the wrong key.
+    # OpenRouter/OpenAI hosts — the stored legacy key is a key for that
+    # provider, and injecting it into serving.host_key for a vLLM host would
+    # shadow VLLM_API_KEY / the vllm_api_key keychain entry with the wrong key.
     #
     # A key stored for this endpoint's own URL is more specific than the
     # provider-wide one, and chat() will find it; injecting the legacy key
     # here would put it in front and authenticate as the wrong account.
-    from src.setup import endpoint_key_source
+    from src.setup import endpoint_key_source, legacy_key_for
     endpoint_key = bool(host) and endpoint_key_source(host) == 'endpoint'
-    if (not host_key or host_key == 'EMPTY') and not endpoint_key \
-            and 'openrouter' in (host or '').lower():
-        kr_key = resolve_credential(None, 'OPENROUTER_API_KEY', 'host_key')
-        if kr_key:
-            host_key = kr_key
-            config_data.setdefault('serving', {})['host_key'] = host_key
+    if (not host_key or host_key == 'EMPTY') and not endpoint_key and host:
+        _keyring_key, _env_var, _label, _required = legacy_key_for(host)
+        # Ollama and vLLM keys are not serving credentials in the same sense:
+        # Ollama's doubles as the web-search key, and a vLLM host wants no
+        # key at all — neither must land in serving.host_key.
+        if _label not in ('Ollama cloud', 'vLLM'):
+            kr_key = resolve_credential(None, _env_var, _keyring_key)
+            if kr_key:
+                host_key = kr_key
+                config_data.setdefault('serving', {})['host_key'] = host_key
 
     missing = []
     if not host and not endpoints_configured:
@@ -1050,6 +1054,9 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     elif 'openrouter' in (host or '').lower():
         if not host_key and not endpoint_key:
             missing.append('OPENROUTER_API_KEY (or run: onit setup)')
+    elif 'api.openai.com' in (host or '').lower():
+        if not host_key and not endpoint_key:
+            missing.append('OPENAI_API_KEY (or run: onit setup)')
 
     if missing:
         print("Error: missing required configuration:", file=sys.stderr)

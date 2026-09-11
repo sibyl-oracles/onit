@@ -445,6 +445,59 @@ class TestOpenRouterKeyResolution:
         assert serving["host"] == host
 
 
+class TestOpenAIKeyResolution:
+    """The OpenAI legacy key follows the same bargain as OpenRouter's: the
+    endpoint's own key wins, the legacy one is injected only in its place,
+    and a missing key is a startup error rather than a mid-task 401."""
+
+    def _resolve(self, tmp_path, monkeypatch, host, secrets):
+        import yaml
+        from src import setup as setup_mod
+        from src.cli import _build_parser, _parse_and_resolve_config
+        monkeypatch.setattr(setup_mod, "get_secret", lambda k: secrets.get(k))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH",
+                            str(tmp_path / "no-setup.yaml"))
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({"serving": {"host": host}}))
+        args = _build_parser().parse_args(["--config", str(path)])
+        return _parse_and_resolve_config(args)["serving"]
+
+    def test_an_endpoint_key_is_left_for_chat_to_find(self, tmp_path,
+                                                      monkeypatch):
+        from src import setup as setup_mod
+        host = "https://api.openai.com/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host, {
+            setup_mod.endpoint_secret_name(host): "sk-endpoint",
+            "openai_api_key": "sk-legacy",
+        })
+        assert "host_key" not in serving
+
+    def test_the_legacy_key_is_still_injected_without_one(self, tmp_path,
+                                                          monkeypatch):
+        host = "https://api.openai.com/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host,
+                                {"openai_api_key": "sk-legacy"})
+        assert serving["host_key"] == "sk-legacy"
+
+    def test_an_endpoint_key_satisfies_the_missing_key_check(self, tmp_path,
+                                                             monkeypatch):
+        from src import setup as setup_mod
+        host = "https://api.openai.com/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host, {
+            setup_mod.endpoint_secret_name(host): "sk-endpoint"})
+        assert serving["host"] == host
+
+    def test_a_vllm_host_never_receives_the_openai_key(self, tmp_path,
+                                                       monkeypatch):
+        """The generalized injection must not shadow VLLM_API_KEY."""
+        host = "http://localhost:8000/v1"
+        serving = self._resolve(tmp_path, monkeypatch, host,
+                                {"openai_api_key": "sk-openai"})
+        assert "host_key" not in serving
+
+
 class TestHostOverrides:
     """An explicit --host without --host2 must yield a single endpoint: any
     host2 left over from config or env would keep the load balancer routing

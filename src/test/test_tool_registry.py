@@ -382,8 +382,7 @@ class TestConnectionHygiene:
     """
 
     def test_client_gives_up_a_connection_before_any_server_does(self):
-        import httpx
-        from type.tools import _http_client_factory, _KEEPALIVE_EXPIRY
+        from type.tools import _HTTPX, _http_client_factory, _KEEPALIVE_EXPIRY
 
         with patch("type.tools._StreamingReadTimeoutClient") as ctor:
             _http_client_factory()
@@ -391,7 +390,42 @@ class TestConnectionHygiene:
         limits = ctor.call_args.kwargs["limits"]
         assert limits.keepalive_expiry == _KEEPALIVE_EXPIRY
         # uvicorn's default idle close is 5s; ours has to land clear of it.
-        assert limits.keepalive_expiry < httpx._config.DEFAULT_LIMITS.keepalive_expiry
+        assert limits.keepalive_expiry < _HTTPX._config.DEFAULT_LIMITS.keepalive_expiry
+
+    @pytest.mark.asyncio
+    async def test_client_speaks_the_timeout_type_the_sdk_hands_it(self):
+        """The client must be built on the httpx the MCP SDK itself imported.
+
+        The SDK moved to the ``httpx2`` distribution, and both it and the old
+        ``httpx`` can be installed at once.  A transport passes the client a
+        ``Timeout`` of the SDK's httpx; built on the other one, that object is
+        not recognised as a timeout config and is stored whole as the
+        connect/read/write values, so the pool's ``now + timeout`` blows up
+        before any connection is made — every server discovered as
+        "Client failed to connect: unsupported operand type(s) for +:
+        'float' and 'Timeout'", and its tools simply absent.
+        """
+        from mcp.shared._httpx_utils import create_mcp_http_client
+        from type.tools import _http_client_factory
+
+        # Taken from the SDK's own client rather than named outright: the
+        # requirement is that the two agree, not which distribution wins.
+        sdk_client = create_mcp_http_client()
+        try:
+            assert isinstance(_http_client_factory(), type(sdk_client))
+            timeout_cls = type(sdk_client.timeout)
+        finally:
+            await sdk_client.aclose()
+
+        # A transport hands the factory a Timeout of that httpx; it has to
+        # land as the client's own timeouts, not as an opaque value the pool
+        # will later try to add to a float.
+        client = _http_client_factory(timeout=timeout_cls(30.0, read=300.0))
+        try:
+            assert client.timeout.connect == 30.0
+            assert client.timeout.read == 300.0
+        finally:
+            await client.aclose()
 
     def test_server_holds_connections_longer_than_the_client_reuses_them(self):
         """The two timers that used to collide, checked against each other."""
@@ -520,19 +554,18 @@ class TestConnectionHygiene:
         responses get their own, far longer, read timeout; POSTs keep the short
         one so a wedged server still fails fast.
         """
-        import httpx
         from mcp.client.sse import sse_client  # for its default read timeout
-        from type.tools import _http_client_factory, _STREAM_READ_TIMEOUT
+        from type.tools import _HTTPX, _http_client_factory, _STREAM_READ_TIMEOUT
 
         sdk_default = inspect.signature(sse_client).parameters[
             "sse_read_timeout"].default
         assert _STREAM_READ_TIMEOUT > sdk_default
 
-        client = _http_client_factory(timeout=httpx.Timeout(30.0, read=300.0))
+        client = _http_client_factory(timeout=_HTTPX.Timeout(30.0, read=300.0))
         try:
             streamed = client.build_request("GET", "http://127.0.0.1/sse")
             posted = client.build_request("POST", "http://127.0.0.1/messages/")
-            with patch.object(httpx.AsyncClient, "send", new=AsyncMock()):
+            with patch.object(_HTTPX.AsyncClient, "send", new=AsyncMock()):
                 await client.send(streamed, stream=True)
                 await client.send(posted)
         finally:

@@ -54,7 +54,8 @@ Resolution order for an endpoint's key:
    `http://gpu-2:8000/v1` → `ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1`. Used where
    the keychain is unreachable; `onit --container` sets it for you.
 4. the legacy provider-named secret the URL selects — `VLLM_API_KEY`,
-   `OPENROUTER_API_KEY` for `openrouter.ai`, `OLLAMA_API_KEY` for Ollama cloud
+   `OPENROUTER_API_KEY` for `openrouter.ai`, `OPENAI_API_KEY` for
+   `api.openai.com`, `OLLAMA_API_KEY` for Ollama cloud
 
 Step 4 is what an install predating per-endpoint keys runs on; nothing writes
 those any more, and `onit setup --show` lists them separately once one is in
@@ -151,6 +152,50 @@ onit --host https://openrouter.ai/api/v1
 ```
 
 Browse available models at [openrouter.ai/models](https://openrouter.ai/models).
+
+## OpenAI
+
+OnIt talks to OpenAI's first-party Chat Completions endpoint
+(`https://api.openai.com/v1/chat/completions`) through the same OpenAI SDK it
+uses for vLLM — the `/v1` suffix is required, and the SDK appends
+`/chat/completions` to it.
+
+**The host must be the base URL ending in `/v1`** — not the full endpoint URL.
+The SDK appends `/chat/completions` itself, so a host configured as
+`https://api.openai.com/v1/chat/completions` would double the path
+(`POST /v1/chat/completions/chat/completions`) and 404 on every call. OnIt
+normalizes a full endpoint URL back to the base with a warning, but configure
+the base URL directly.
+
+```bash
+export OPENAI_API_KEY=sk-...   # or: onit setup
+onit --host https://api.openai.com/v1 --model gpt-4o
+```
+
+What is different from a vLLM host:
+
+- **An explicit model name is required.** `/v1/models` returns a large list in
+  an arbitrary order, so auto-detection would pick an arbitrary model.
+- **No vLLM sampling extensions are sent.** OpenAI rejects unknown body
+  parameters with a 400, so `top_k`, `min_p`, `repetition_penalty` and the
+  `chat_template_kwargs` thinking switch are not sent. `temperature`, `top_p`
+  and `presence_penalty` still are — unless the model refuses them
+  (o-series, gpt-5 take only defaults), in which case OnIt drops them for the
+  rest of the run and logs it.
+- **The output budget is sent as `max_completion_tokens`.** `max_tokens` is
+  deprecated on OpenAI and the reasoning models refuse it outright.
+- **`think` has no effect.** There is no chat-template thinking switch to
+  address.
+- **`reasoning_effort` is pinned to `"none"`.** On `/v1/chat/completions` a
+  reasoning model defaults its effort to non-none, and that endpoint refuses
+  function tools under any non-none effort — which breaks the whole agent
+  loop, so OnIt sends `"none"` explicitly. A model that does not take the
+  parameter at all gets it dropped for the rest of the run. Reasoning itself
+  is only addressable through the separate `/v1/responses` endpoint, which
+  OnIt does not speak.
+- **Set `serving.max_context_tokens` yourself** — OpenAI publishes no
+  `max_model_len` to probe (128000 is a safe value for gpt-4o-class models,
+  400000 for gpt-5). Without it the assumed fallback of 262,144 applies.
 
 ## Ollama Cloud
 

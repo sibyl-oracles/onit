@@ -59,6 +59,14 @@ class TestProviderNotes:
         assert any("OpenRouter endpoint but no" in n for n in notes)
         assert any("explicit model name" in n for n in notes)
 
+    def test_openai_missing_key_and_model(self, monkeypatch):
+        _patch_secrets(monkeypatch, set())
+        config = {"serving": {"host": "https://api.openai.com/v1"}}
+        notes = _provider_notes(config)
+        assert any("OpenAI endpoint but no" in n for n in notes)
+        assert any("explicit model name" in n for n in notes)
+        assert any("gpt-4o" in n for n in notes)
+
     def test_openrouter_host2_falls_back_to_host_key(self, monkeypatch):
         _patch_secrets(monkeypatch, {"host_key"})
         config = {"serving": {"host": "http://localhost:8000/v1",
@@ -133,7 +141,8 @@ class TestSectionGrouping:
         """An endpoint's key is stored per endpoint now; what is left here is
         read for backwards compatibility and never written."""
         keys = {k for k, _, _ in setup_mod.LEGACY_SERVING_SECRETS}
-        assert keys == {"host_key", "vllm_api_key", "host2_key"}
+        assert keys == {"host_key", "openai_api_key", "vllm_api_key",
+                        "host2_key"}
 
     def test_the_ollama_key_stayed_prompted(self):
         """It gates the web search tool as well as Ollama endpoints, so it is
@@ -201,8 +210,8 @@ class TestEndpointKeys:
     @pytest.fixture(autouse=True)
     def _no_keychain(self, monkeypatch):
         self.store = _fake_keystore(monkeypatch)
-        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY",
-                    "ONIT_HOST2_KEY"):
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY",
+                    "VLLM_API_KEY", "ONIT_HOST2_KEY"):
             monkeypatch.delenv(var, raising=False)
 
     def test_a_key_is_addressed_by_its_url(self):
@@ -257,11 +266,13 @@ class TestLegacyKeyFallback:
     @pytest.fixture(autouse=True)
     def _no_keychain(self, monkeypatch):
         self.store = _fake_keystore(monkeypatch)
-        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY"):
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY",
+                    "VLLM_API_KEY"):
             monkeypatch.delenv(var, raising=False)
 
     @pytest.mark.parametrize("host,expected", [
         ("https://openrouter.ai/api/v1", "host_key"),
+        ("https://api.openai.com/v1", "openai_api_key"),
         ("https://ollama.com", "ollama_api_key"),
         ("https://ollama.ai", "ollama_api_key"),
         ("http://localhost:8000/v1", "vllm_api_key"),
@@ -272,6 +283,7 @@ class TestLegacyKeyFallback:
 
     @pytest.mark.parametrize("host,required", [
         ("https://openrouter.ai/api/v1", True),
+        ("https://api.openai.com/v1", True),
         ("https://ollama.com", True),
         ("http://localhost:8000/v1", False),
     ])

@@ -26,7 +26,6 @@ import base64
 import mimetypes
 import wave
 import random
-import httpx
 from fastmcp import Client
 from abc import ABC, abstractmethod
 from mcp.types import ImageContent, TextContent, AudioContent
@@ -165,7 +164,54 @@ _HEALTH_INTERVAL = 15.0
 _STREAM_READ_TIMEOUT = 86400.0
 
 
-class _StreamingReadTimeoutClient(httpx.AsyncClient):
+def _sdk_httpx():
+    """The httpx the installed MCP SDK builds its own clients from.
+
+    There are two of them in the wild: the SDK moved from ``httpx`` to the
+    ``httpx2`` distribution (mcp 2.x), and both can be installed side by side
+    because other packages still want the old one.  Which one is ours is not a
+    matter of taste — a transport hands the client it is given a ``Timeout``
+    object of the SDK's httpx, and the *other* httpx does not recognise the
+    type, so it stores the whole object as the connect/read/write values.  The
+    connection pool then does ``deadline = now + timeout`` on it and every
+    connection attempt dies before a byte moves:
+
+        Client failed to connect: unsupported operand type(s) for +:
+        'float' and 'Timeout'
+
+    which is discovery exhausting its retries and the server's tools going
+    missing.  Resolving the module the SDK itself imported keeps the two ends
+    of that handshake on one type, whichever distribution the host resolved.
+    """
+    import importlib
+    import inspect
+
+    try:
+        from mcp.shared import _httpx_utils
+        # What the SDK's own client factory is annotated to return names the
+        # module outright, so ask it before guessing by name.
+        returns = inspect.signature(
+            _httpx_utils.create_mcp_http_client).return_annotation
+        root = getattr(returns, "__module__", "").split(".")[0]
+        if root:
+            return importlib.import_module(root)
+        # A stringized annotation tells us nothing; fall back to whichever
+        # httpx that module imported.
+        for name in ("httpx2", "httpx"):
+            module = getattr(_httpx_utils, name, None)
+            if module is not None:
+                return module
+    except Exception:  # pragma: no cover — SDK layout changed
+        logger.debug("cannot locate the MCP SDK's httpx", exc_info=True)
+
+    import httpx
+    return httpx
+
+
+_HTTPX = _sdk_httpx()
+
+
+class _StreamingReadTimeoutClient(_HTTPX.AsyncClient):
     """An httpx client that lets streamed responses stay quiet far longer.
 
     One client serves both halves of an MCP HTTP transport: short POSTs that
@@ -175,8 +221,8 @@ class _StreamingReadTimeoutClient(httpx.AsyncClient):
     its own via the per-request extension.
     """
 
-    async def send(self, request: httpx.Request, *, stream: bool = False,
-                   **kwargs: object) -> httpx.Response:
+    async def send(self, request: Any, *, stream: bool = False,
+                   **kwargs: object) -> Any:
         if stream:
             timeout = dict(request.extensions.get("timeout") or {})
             timeout["read"] = _STREAM_READ_TIMEOUT
@@ -186,10 +232,13 @@ class _StreamingReadTimeoutClient(httpx.AsyncClient):
 
 def _http_client_factory(
     headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
-) -> httpx.AsyncClient:
+    timeout: Any | None = None,
+    auth: Any | None = None,
+) -> Any:
     """The httpx client MCP transports use, with connection reuse bounded.
+
+    Built on whichever httpx the SDK imported (see _sdk_httpx), since the
+    ``timeout`` handed in here is that httpx's own type.
 
     Mirrors the SDK's own defaults (redirects followed, 30s connect / 300s
     read) and adds two things the defaults get wrong for a pooled session: the
@@ -199,11 +248,11 @@ def _http_client_factory(
     """
     return _StreamingReadTimeoutClient(
         follow_redirects=True,
-        timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+        timeout=timeout if timeout is not None else _HTTPX.Timeout(30.0, read=300.0),
         headers=headers or {},
         auth=auth,
-        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20,
-                            keepalive_expiry=_KEEPALIVE_EXPIRY),
+        limits=_HTTPX.Limits(max_connections=100, max_keepalive_connections=20,
+                             keepalive_expiry=_KEEPALIVE_EXPIRY),
     )
 
 
@@ -438,6 +487,27 @@ class _PooledClient:
                 logger.debug("closing stdio transport for %s failed",
                              self.url, exc_info=True)
 
+    @staticmethod
+    def _ping_unsupported(exc: Exception) -> bool:
+        """Whether ``exc`` is the server declining ping, not the pipe failing.
+
+        The 2026-07-28 protocol revision removed the client->server ping, so
+        a server speaking it answers a health ping with JSON-RPC -32601
+        "Method not found".  That reply proves the stream is alive — the
+        server had to read the request to answer it — so the watchdog reads
+        it as a heartbeat, not a death.  ``str()`` of the SDK's MCPError
+        carries only the message ("Method not found"); the code and the
+        echoed method name live on the exception's attributes, so both are
+        read here, with the text as a fallback for wrapped copies.
+        """
+        code = getattr(exc, "code", None)
+        if code == -32601:
+            data = getattr(exc, "data", None)
+            if data is None or str(data) == "ping":
+                return True
+        text = str(exc)
+        return ("-32601" in text or "Method not found" in text) and "ping" in text
+
     async def _watch_session(self, client: Client, call: asyncio.Future) -> None:
         """Ping until ``call`` finishes, raising once the session is unwritable.
 
@@ -447,12 +517,29 @@ class _PooledClient:
         cheapest thing that has to travel that stream: it raises immediately
         once the stream is closed, and on a server that is merely busy it just
         never answers, which leaves the call alone as it should.
+
+        A ping that comes back with -32601 "Method not found" is the opposite
+        of dead: it is a reply the server had to read off the pipe to send,
+        so the round trip worked.  The 2026-07-28 protocol revision removed
+        client->server ping (it is server->client only there), and a server
+        speaking that revision answers every health ping with exactly that
+        error — fastmcp 4.x clients negotiate it.  Treating the reply as a
+        failure killed every in-flight call against such a server within one
+        _HEALTH_INTERVAL, so the error is read as a liveness confirmation
+        here.  Anything else — a closed stream, a timeout, a connection
+        reset — still fails the watchdog, which is the case this loop exists
+        to catch.
         """
         while not call.done():
             await asyncio.sleep(_HEALTH_INTERVAL)
             if call.done():
                 return
-            await client.ping()
+            try:
+                await client.ping()
+            except Exception as exc:  # noqa: BLE001 - re-raised below
+                if self._ping_unsupported(exc):
+                    continue  # reply arrived: the stream is alive
+                raise
 
     async def _call_watched(self, client: Client, name: str, arguments: dict):
         """Run one tool call, failing it as soon as its session stops working."""

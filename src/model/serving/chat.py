@@ -357,6 +357,259 @@ def _is_ollama_host(host: str) -> bool:
     return "ollama.com" in host or "ollama.ai" in host
 
 
+def _is_openai_host(host: str) -> bool:
+    """True when host is OpenAI's first-party chat completions endpoint.
+
+    OpenAI validates its request body strictly and rejects unknown
+    parameters with a 400, so the vLLM extensions OnIt sends by default
+    (``top_k``, ``min_p``, ``repetition_penalty``,
+    ``chat_template_kwargs``) must not go out to it.  Output budget is
+    spelled ``max_completion_tokens`` there — ``max_tokens`` is deprecated
+    and the reasoning models refuse it outright.
+    """
+    return "api.openai.com" in host
+
+
+def _normalize_openai_base_url(host: str) -> str:
+    """Collapse a full chat-completions URL to the SDK base URL.
+
+    The SDK appends ``/chat/completions`` to ``base_url`` itself, so a host
+    configured as ``.../v1/chat/completions`` would otherwise double the path
+    (``POST /v1/chat/completions/chat/completions``) and 404 on every call.
+    """
+    if not host or "api.openai.com" not in host:
+        return host
+    base = host.rstrip("/")
+    for suffix in ("/chat/completions", "/completions"):
+        if base.lower().endswith(suffix):
+            base = base[:-len(suffix)]
+            logger.warning("Host %s looks like a full endpoint URL; "
+                           "using base URL %s.", host, base)
+            break
+    return base
+
+
+def _is_openai_reasoning_model(model: str) -> bool:
+    """Whether a model id names one of OpenAI's reasoning families.
+
+    The o-series, gpt-5.x and gpt-6.x reason by default, and on
+    /v1/chat/completions a reasoning model either refuses function tools
+    under any non-none effort or refuses "none" itself — so no effort is
+    sent to one until its own 400 asks for a value.  Everything else
+    (gpt-4o and friends) takes "none" without complaint, and sending it
+    keeps a chatty default from burning the output budget on thinking
+    the request never asked for.
+    """
+    name = (model or "").lower()
+    if re.match(r"^o[134](-|$)", name) or name.startswith("o4"):
+        return True
+    return bool(re.match(r"^gpt-[56](\b|[.\-])", name))
+
+
+def _is_openai_responses_model(model: str) -> bool:
+    """Whether a model id must be served over /v1/responses.
+
+    The gpt-6 family reasons by default, and /v1/chat/completions has no
+    request it will accept from one that carries function tools: any non-none
+    effort is refused ("Function tools with reasoning_effort are not
+    supported"), and the "none" that error suggests is refused in its turn
+    ("does not support 'none' with this model" — low/medium/high/xhigh only).
+    The Responses API is the endpoint that serves this family at all, which
+    is the advice the 400 itself gives, and it is also where the reasoning
+    arrives in a field OnIt can stream.
+    """
+    name = (model or "").lower()
+    return bool(re.match(r"^gpt-6(\b|[.\-])", name))
+
+
+def _responses_text_of(content) -> str:
+    """The plain text of a message content, string or part list alike."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(part.get("text", "") for part in content
+                         if isinstance(part, dict) and part.get("type") == "text")
+    return str(content)
+
+
+def _openai_responses_input(messages: list) -> list:
+    """Project chat-completions messages onto Responses-API input items.
+
+    The loop's history stays in chat-completions shape — every other provider
+    reads it as-is — so this conversion runs per request, the same bargain
+    _adapt_messages_for_ollama strikes for Ollama.  Three shapes matter:
+
+    - plain messages become EasyInputMessage items (role + content), which
+      accept every role including assistant and take a bare string;
+    - an assistant message carrying tool_calls becomes one function_call item
+      per call (arguments as the JSON string the API wants, whether the
+      history kept it as a string or already parsed it to a dict), with any
+      prose written alongside it kept as its own message item — the model
+      needs its own narration to know what it already said;
+    - a tool message becomes the function_call_output its call_id asks for.
+
+    Reasoning items are deliberately not replayed: with store=False the calls
+    are self-contained (arguments + call_id + name), and the model re-reasons
+    from the transcript rather than from a summary it cannot see.
+    """
+    items: list = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            # An SDK ChatCompletionMessage kept as history by the non-streaming
+            # path: read the same fields the dicts carry.
+            msg = {
+                "role": getattr(msg, "role", "assistant"),
+                "content": getattr(msg, "content", None),
+                "tool_calls": [
+                    {"id": tc.id,
+                     "function": {"name": tc.function.name,
+                                  "arguments": tc.function.arguments}}
+                    for tc in (getattr(msg, "tool_calls", None) or [])
+                ],
+            }
+        role = msg.get("role", "user")
+        content = msg.get("content")
+        if role == "tool":
+            output: Any = _responses_text_of(content)
+            if isinstance(content, list):
+                # A vision tool result: text plus image parts, both of which
+                # the output field accepts as content items.
+                parts = [{"type": "input_text", "text": _responses_text_of(content)}]
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url = (part.get("image_url") or {}).get("url", "")
+                        if url:
+                            parts.append({"type": "input_image", "image_url": url})
+                output = parts
+            items.append({"type": "function_call_output",
+                          "call_id": msg.get("tool_call_id", ""),
+                          "output": output})
+            continue
+        tool_calls = msg.get("tool_calls")
+        if role == "assistant" and tool_calls:
+            prose = _responses_text_of(content)
+            if prose.strip():
+                items.append({"type": "message", "role": "assistant",
+                              "content": prose})
+            for tc in tool_calls:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                args = fn.get("arguments", "{}")
+                items.append({
+                    "type": "function_call",
+                    "call_id": tc.get("id", "") if isinstance(tc, dict) else "",
+                    "name": fn.get("name", "") if isinstance(tc, dict) else "",
+                    "arguments": args if isinstance(args, str) else json.dumps(args),
+                })
+            continue
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    parts.append({"type": "input_text", "text": part.get("text", "")})
+                elif part.get("type") == "image_url":
+                    url = (part.get("image_url") or {}).get("url", "")
+                    if url:
+                        parts.append({"type": "input_image", "image_url": url})
+            if parts:
+                items.append({"type": "message", "role": role, "content": parts})
+            continue
+        text = _responses_text_of(content)
+        if text.strip():
+            items.append({"type": "message", "role": role, "content": text})
+    return items
+
+
+def _openai_responses_tools(tools: list) -> list:
+    """Flatten chat-completions tool records into Responses-API function tools.
+
+    The Responses API carries name/description/parameters at the top level
+    rather than under ``function``, and its ``strict`` flag asks for a
+    schema-perfect definition OnIt's registry does not promise — every tool
+    goes out with strict False rather than have one loose schema refuse the
+    whole request.  Anything not in chat-completions shape passes through
+    untouched: test doubles hand this whatever they please, and a payload
+    builder is the wrong place to start rejecting things.
+    """
+    out = []
+    for t in tools or []:
+        if isinstance(t, dict) and isinstance(t.get("function"), dict):
+            fn = t["function"]
+            out.append({
+                "type": "function",
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters")
+                or {"type": "object", "properties": {}},
+                "strict": False,
+            })
+        else:
+            out.append(t)
+    return out
+
+
+def _openai_responses_reasoning_effort(think: bool) -> str:
+    """The reasoning effort a turn asks for, on the Responses API.
+
+    Thinking on is a medium pass — enough to plan a multi-step task.  Off is
+    still "low" rather than "none": the turn is choosing which tool to call
+    next, and zero reasoning turns that choice into a guess.
+    """
+    return "medium" if think else "low"
+
+
+def _openai_responses_result(response) -> tuple:
+    """Flatten a completed Response into the variables the loop already reads.
+
+    Returns (content, reasoning, tool_calls, finish_reason, usage), with
+    tool_calls as chat-completions-shaped SimpleNamespace objects (id +
+    function.name + function.arguments) and usage carrying
+    prompt_tokens/completion_tokens — the two shapes every consumer after the
+    retry loop already reads, so the loop's tool dispatch, continuation
+    accounting and context tracking need no second path.
+    """
+    content = ""
+    reasoning = ""
+    tool_calls = []
+    for item in getattr(response, "output", None) or []:
+        kind = getattr(item, "type", None)
+        if kind == "message":
+            for part in getattr(item, "content", None) or []:
+                if getattr(part, "type", "") in ("output_text", "refusal"):
+                    content += getattr(part, "text", "") or ""
+        elif kind == "reasoning":
+            for part in getattr(item, "summary", None) or []:
+                reasoning += getattr(part, "text", "") or ""
+            for part in getattr(item, "content", None) or []:
+                reasoning += getattr(part, "text", "") or ""
+        elif kind == "function_call":
+            tool_calls.append(types.SimpleNamespace(
+                id=getattr(item, "call_id", "") or f"call_{uuid.uuid4().hex[:24]}",
+                function=types.SimpleNamespace(
+                    name=getattr(item, "name", ""),
+                    arguments=getattr(item, "arguments", "") or "{}",
+                ),
+            ))
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        reason = getattr(getattr(response, "incomplete_details", None),
+                         "reason", None)
+        finish_reason = "length" if reason == "max_output_tokens" else "stop"
+    else:
+        finish_reason = "tool_calls" if tool_calls else "stop"
+    usage = None
+    u = getattr(response, "usage", None)
+    if u is not None:
+        usage = types.SimpleNamespace(
+            prompt_tokens=int(getattr(u, "input_tokens", 0) or 0),
+            completion_tokens=int(getattr(u, "output_tokens", 0) or 0),
+        )
+    return content, reasoning, (tool_calls or None), finish_reason, usage
+
+
 def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     """The API key an endpoint is authenticated with.
 
@@ -452,6 +705,8 @@ _NO_TEMPLATE_KWARGS_TTL = 1800.0    # seconds; a re-deploy gets a fresh hearing
 _TEMPLATE_KWARGS_REJECTED = (
     "chat_template_kwargs", "enable_thinking", "extra_body",
     "unexpected keyword", "unrecognized", "not permitted", "unknown field",
+    "unknown parameter", "unsupported value", "unsupported parameter",
+    "invalid parameter", "does not support", "not supported",
 )
 
 
@@ -557,6 +812,7 @@ async def list_models(host: str, host_key: str = "EMPTY",
     Raises whatever the client raises — the caller reports it to the user.
     """
     api_key = _resolve_api_key(host, host_key)
+    host = _normalize_openai_base_url(host)
     if _is_ollama_host(host):
         client = _create_ollama_client(host, api_key, timeout, stream=False)
         resp = await client.list()
@@ -585,6 +841,14 @@ async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
                     else await _resolve_model_id(client, host))
     except Exception as e:
         logger.error("Model fallback auto-detection failed for %s: %s", host, e)
+        return None
+    if detected and _is_openai_host(host) and not detected.startswith("gpt-"):
+        # OpenAI's /v1/models is a huge arbitrary-ordered list that includes
+        # non-chat endpoints (whisper-1, tts-1, ...); data[0] may be anything.
+        # A silent fallback onto a non-chat model would fail differently and
+        # more confusingly than the 404 that triggered detection.
+        logger.error("OpenAI auto-detection picked non-chat model %s; "
+                     "set an explicit chat model instead.", detected)
         return None
     return detected if detected != current_model else None
 
@@ -1790,7 +2054,7 @@ async def _process_streaming_response(
     in_think = think  # True if we expect <think>...</think> in delta.content
 
     async for chunk in chat_completion:
-        if not safety_queue.empty():
+        if safety_queue is not None and not safety_queue.empty():
             if ui_streaming and chat_ui:
                 chat_ui.stream_end()
             return None
@@ -1885,6 +2149,139 @@ async def _process_streaming_response(
 _STEP_MAX_CHARS = 120
 
 
+async def _process_responses_streaming_response(
+    events, safety_queue: asyncio.Queue,
+    chat_ui, on_first_token=None,
+) -> tuple[str, str, dict, bool, Any, str | None] | None:
+    """Consume a Responses-API event stream and return accumulated results.
+
+    Same return contract as _process_streaming_response — (full_content,
+    full_reasoning, full_tool_calls dict, ui_was_streaming, usage,
+    finish_reason) — so the caller's post-stream handling reads both paths
+    the same way.  The events differ from chat-completions chunks: reasoning
+    arrives on its own item (text deltas, plus summary deltas for the
+    models that summarize rather than expose raw thinking), tool calls are
+    keyed by output_index rather than a tool index, and the turn's usage and
+    stop reason ride the final response.completed event.
+    """
+    full_content = ""
+    full_reasoning = ""
+    full_tool_calls: dict = {}  # output_index -> {id, name, arguments}
+    ui_streaming = False
+    folded = False
+    usage = None
+    finish_reason: str | None = None
+
+    async for event in _responses_events(events, safety_queue):
+        if event is None:
+            return None
+        etype = getattr(event, "type", "")
+        if on_first_token and etype in (
+                "response.output_text.delta", "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
+                "response.function_call_arguments.delta"):
+            on_first_token()
+            on_first_token = None
+        if etype == "response.output_text.delta":
+            full_content += event.delta
+            if chat_ui:
+                if not ui_streaming:
+                    chat_ui.stream_start()
+                    ui_streaming = True
+                chat_ui.stream_token(event.delta)
+        elif etype in ("response.reasoning_text.delta",
+                       "response.reasoning_summary_text.delta"):
+            if not full_tool_calls:
+                full_reasoning += event.delta
+                if chat_ui:
+                    if not ui_streaming:
+                        chat_ui.stream_start()
+                        ui_streaming = True
+                    chat_ui.stream_think_token(event.delta)
+        elif etype == "response.function_call_arguments.delta":
+            idx = event.output_index
+            if idx not in full_tool_calls:
+                full_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+            full_tool_calls[idx]["arguments"] += event.delta
+            if chat_ui and not folded and hasattr(chat_ui, "stream_fold"):
+                folded = True
+                chat_ui.stream_fold(_step_summary(full_content))
+        elif etype == "response.function_call_arguments.done":
+            idx = event.output_index
+            entry = full_tool_calls.setdefault(
+                idx, {"id": "", "name": "", "arguments": ""})
+            if event.arguments:
+                entry["arguments"] = event.arguments
+            if getattr(event, "name", None):
+                entry["name"] = event.name
+            if getattr(event, "call_id", None):
+                entry["id"] = event.call_id
+        elif etype == "response.output_item.added":
+            item = event.item
+            if getattr(item, "type", "") == "function_call":
+                entry = full_tool_calls.setdefault(
+                    event.output_index,
+                    {"id": "", "name": "", "arguments": ""})
+                if getattr(item, "call_id", None):
+                    entry["id"] = item.call_id
+                if getattr(item, "name", None):
+                    entry["name"] = item.name
+        elif etype == "response.completed":
+            response = event.response
+            u = getattr(response, "usage", None)
+            if u is not None:
+                usage = types.SimpleNamespace(
+                    prompt_tokens=int(getattr(u, "input_tokens", 0) or 0),
+                    completion_tokens=int(getattr(u, "output_tokens", 0) or 0),
+                )
+            finish_reason = ("tool_calls" if full_tool_calls
+                             else _responses_finish_reason(response))
+        elif etype == "response.incomplete":
+            response = event.response
+            finish_reason = _responses_finish_reason(response)
+            u = getattr(response, "usage", None)
+            if u is not None:
+                usage = types.SimpleNamespace(
+                    prompt_tokens=int(getattr(u, "input_tokens", 0) or 0),
+                    completion_tokens=int(getattr(u, "output_tokens", 0) or 0),
+                )
+        elif etype == "response.failed":
+            response = event.response
+            error = getattr(response, "error", None)
+            detail = getattr(error, "message", "") if error else ""
+            logger.error("Responses stream failed: %s", detail or response)
+            finish_reason = "error"
+    return full_content, full_reasoning, full_tool_calls, ui_streaming, usage, finish_reason
+
+
+async def _responses_events(events, safety_queue: asyncio.Queue):
+    """Iterate a Responses-API event source, honouring the safety queue.
+
+    Yields the events; yields None once and stops when the queue fires, so
+    the caller returns the same None _process_streaming_response does.  The
+    SDK's own stream manager is an async iterator already — this only adds
+    the stop check, which the raw event iterator has no hook for.
+    """
+    try:
+        async for event in events:
+            if safety_queue is not None and not safety_queue.empty():
+                yield None
+                return
+            yield event
+    except Exception as e:  # noqa: BLE001 — a mid-stream disconnect ends the turn
+        logging.getLogger(__name__).warning("Responses stream interrupted: %s", e)
+
+
+def _responses_finish_reason(response) -> str:
+    """The chat-completions stop reason a Response status maps to."""
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        reason = getattr(getattr(response, "incomplete_details", None),
+                         "reason", None)
+        return "length" if reason == "max_output_tokens" else "stop"
+    return "stop"
+
+
 def _step_summary(full_content: str) -> str:
     """One-line summary of a folded turn's narration, for the step marker.
 
@@ -1937,7 +2334,7 @@ async def _ollama_process_streaming_response(
 
     try:
         async for chunk in chat_completion:
-            if not safety_queue.empty():
+            if safety_queue is not None and not safety_queue.empty():
                 if ui_streaming and chat_ui:
                     chat_ui.stream_end()
                 return None
@@ -2871,7 +3268,7 @@ async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float
             done, _ = await asyncio.wait({task}, timeout=poll)
             if done:
                 return task.result()
-            if not safety_queue.empty():
+            if safety_queue is not None and not safety_queue.empty():
                 task.cancel()
                 try:
                     await task
@@ -3022,7 +3419,7 @@ async def _handle_structured_tool_calls(
 
     for function_name, function_arguments, call_id in calls:
         await asyncio.sleep(0.1)
-        if not safety_queue.empty():
+        if safety_queue is not None and not safety_queue.empty():
             if verbose:
                 print("Safety queue triggered, exiting chat loop.")
             return _SAFETY_ABORT
@@ -3042,6 +3439,7 @@ async def _compact_context(
     messages: list, client, model: str,
     max_tokens: int, chat_ui, verbose: bool,
     is_ollama: bool = False,
+    is_openai: bool = False,
     instruction: str = "",
     harness_note: str = "",
 ) -> list:
@@ -3121,11 +3519,16 @@ async def _compact_context(
             )
             summary = (resp.message.content or "").strip()
         else:
+            # OpenAI takes the output budget as max_completion_tokens; the
+            # reasoning models reject max_tokens outright.
+            _budget_kw = ({"max_completion_tokens": min(2048, max_tokens)}
+                          if is_openai else
+                          {"max_tokens": min(2048, max_tokens)})
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": compaction_prompt}],
-                max_tokens=min(2048, max_tokens),
                 stream=False,
+                **_budget_kw,
             )
             summary = (resp.choices[0].message.content or "").strip()
     except Exception as e:
@@ -3297,6 +3700,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                system_rules=system_rules)
 
     api_key = _resolve_api_key(host, host_key)
+    host = _normalize_openai_base_url(host)
     # Explicit positive timeout applies to the whole request; -1/None means no
     # overall limit but connect and per-chunk stall timeouts still apply (see
     # _build_client_timeout) so a wedged server can't hang the loop forever.
@@ -3334,7 +3738,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
     # Query vLLM for the model's maximum context window if not provided in config.
     # Skip for OpenRouter and Ollama (neither exposes max_model_len via vLLM endpoint).
-    if max_context_tokens is None and "openrouter.ai" not in host and not is_ollama:
+    if (max_context_tokens is None and "openrouter.ai" not in host
+            and "api.openai.com" not in host and not is_ollama):
         max_context_tokens = await _get_model_max_context(host, api_key, model)
         if max_context_tokens:
             _log_to_ui_or_verbose(
@@ -3454,7 +3859,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         out = await _compact_context(
             msgs, ollama_client if is_ollama else client,
             model, max_tokens, chat_ui, verbose,
-            is_ollama=is_ollama, instruction=task_instruction,
+            is_ollama=is_ollama, is_openai=_is_openai_host(host),
+            instruction=task_instruction,
             harness_note=COMPACTION_NOTICE if harness.enabled else "",
         )
         _m.add_compaction(time.monotonic() - _t0)
@@ -3505,8 +3911,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             _raw = getattr(_msg, "tool_calls", None)
             return (_verify_content(_msg),
                     _adapt_ollama_tool_calls(_raw) if _raw else None)
-        _kw = dict(model=model, messages=msgs, max_tokens=max_tokens,
-                   temperature=0.0, stream=False)
+        _kw = dict(model=model, messages=msgs, temperature=0.0, stream=False)
+        if _is_openai_host(host):
+            # The same OpenAI-only spelling for the output budget.  The
+            # effort is deliberately NOT pinned here: models disagree on
+            # what they accept (gpt-6 class rejects "none" outright), and
+            # the checker is offered tools only when the caller has them —
+            # a model that refuses tools under its default effort 400s the
+            # same way the main loop does, and the caller's own retry with
+            # reasoning_effort "none" covers it.
+            _kw["max_completion_tokens"] = max_tokens
+        else:
+            _kw["max_tokens"] = max_tokens
         if tools:
             _kw["tools"] = tools
         # Asked of the chat template, which is where a hybrid model's thinking
@@ -3517,7 +3933,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # without the switch would answer a transient error by permanently
         # buying two orders of magnitude more latency per check.
         _no_think = {"chat_template_kwargs": {"enable_thinking": False}}
-        for _attempt in (_no_think, {}):
+        # OpenAI rejects the unknown body parameter outright — and its
+        # models have no chat-template thinking switch to address — so the
+        # attempt list collapses to the plain call.
+        _attempts = ({},) if _is_openai_host(host) else (_no_think, {})
+        for _attempt in _attempts:
             if _attempt and _template_kwargs_unsupported(host):
                 continue
             try:
@@ -3595,7 +4015,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         """
         if not verify_answers or not answer or not needs_verification(answer):
             return answer
-        if not safety_queue.empty():
+        if safety_queue is not None and not safety_queue.empty():
             return answer
         if chat_ui and hasattr(chat_ui, "verification_start"):
             chat_ui.verification_start()
@@ -3700,7 +4120,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # same answer round again would re-report what the user is already
             # looking at.
             return
-        if not safety_queue.empty():
+        if safety_queue is not None and not safety_queue.empty():
             return
         try:
             background_verify(_deep_check(answer, list(msgs)))
@@ -3819,10 +4239,25 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         # Retry loop for transient API errors — preserves accumulated messages/tool history
         api_error = None
+        # Reasoning-model sampling rejection, remembered for the rest of the
+        # run: once OpenAI refuses temperature/top_p the same refusal would
+        # repeat every turn (see the OpenAI branch above).
+        _openai_strip_sampling = False
+        # Same memory for a model that does not take reasoning_effort at all
+        # (a non-reasoning model): the branch stops sending it.
+        _openai_strip_reasoning = False
+        # Set when a reasoning model refuses function tools under its
+        # default effort: the retry goes out with reasoning_effort "none",
+        # the only value that keeps tools reachable on this endpoint.
+        _openai_effort_400 = False
+        # The Responses path's effort, run-scoped like the flags above: a
+        # model that refuses an effort is retried one step down, then never
+        # asked above what it takes.  None means the parameter is omitted.
+        _responses_effort = _openai_responses_reasoning_effort(_turn_think)
         for api_attempt in range(1, MAX_API_RETRIES + 1):
             api_error = None
             try:
-                if not safety_queue.empty():
+                if safety_queue is not None and not safety_queue.empty():
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
                     return None
 
@@ -3870,6 +4305,154 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     if chat_completion is _SAFETY_ABORT:
                         logger.warning("Safety queue triggered during API call, exiting chat loop.")
                         return None
+                elif _is_openai_host(host) and _is_openai_responses_model(model):
+                    # The gpt-6 family is served by /v1/responses —
+                    # /v1/chat/completions refuses every reasoning_effort a
+                    # tool-carrying request can name (see
+                    # _is_openai_responses_model).  The history stays in
+                    # chat-completions shape and is converted per request;
+                    # the reply is flattened back into the same variables
+                    # the chat-completions paths fill, so the rest of the
+                    # loop reads one shape.
+                    _responses_kwargs: dict = dict(
+                        model=model,
+                        input=_openai_responses_input(messages),
+                        max_output_tokens=_api_max_tokens,
+                        store=False,
+                    )
+                    if _responses_effort:
+                        _responses_kwargs["reasoning"] = {"effort": _responses_effort}
+                    if tools:
+                        _responses_kwargs["tools"] = _openai_responses_tools(tools)
+                        _responses_kwargs["tool_choice"] = (
+                            "required" if state.force_tool_call else "auto")
+                    if stream:
+                        _responses_stream = client.responses.stream(
+                            **_responses_kwargs)
+                        _stream_entered = False
+                        try:
+                            # The SDK's stream() returns a manager whose
+                            # __aenter__ yields the event iterator itself —
+                            # the manager is not the iterator, so enter it
+                            # and hand the iterator to the processor.
+                            _responses_events_iter = await _await_with_safety(
+                                _responses_stream.__aenter__(), safety_queue)
+                            _stream_entered = True
+                            (_full_content, _full_reasoning, _full_tool_calls,
+                             _ui_was_streaming, _stream_usage, _finish_reason
+                             ) = await _process_responses_streaming_response(
+                                _responses_events_iter, safety_queue, chat_ui,
+                                on_first_token=_m.first_token,
+                            )
+                        finally:
+                            if _stream_entered:
+                                await _responses_stream.__aexit__(None, None, None)
+                        if _full_content is None and _full_tool_calls is None:
+                            # Safety queue fired mid-stream: the processor
+                            # returned None through the tuple contract.
+                            return None
+                        if _stream_usage is not None:
+                            state.last_prompt_tokens = _stream_usage.prompt_tokens
+                            _completion_tokens = _stream_usage.completion_tokens
+                            if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
+                                   _finish_reason)
+                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
+                                and hasattr(chat_ui, "stream_fold")
+                                and _looks_like_raw_tool_call(_full_content)):
+                            chat_ui.stream_fold(_step_summary(_full_content))
+                        if _ui_was_streaming and chat_ui:
+                            chat_ui.stream_end()
+                        if _finish_reason == "length":
+                            _log_to_ui_or_verbose(
+                                "Model response truncated (finish_reason=length). "
+                                "Consider increasing max_tokens.",
+                                chat_ui, verbose, level="warning",
+                            )
+                            state.force_compact = True
+                        elif _finish_reason == "tool_calls" and not _full_tool_calls:
+                            _log_to_ui_or_verbose(
+                                f"Model signaled finish_reason=tool_calls but no tool calls received "
+                                f"(model={model}). Checking content for raw tool calls.",
+                                chat_ui, verbose, level="warning",
+                            )
+                        _content, _tool_calls, _message_for_history = _unify_streaming_result(
+                            _full_content, _full_tool_calls,
+                        )
+                        await asyncio.sleep(0.1)
+                        if safety_queue is not None and not safety_queue.empty():
+                            logger.warning("Safety queue triggered after API call, exiting chat loop.")
+                            return None
+                        break  # success — exit retry loop
+                    _response = await _await_with_safety(
+                        client.responses.create(**_responses_kwargs), safety_queue)
+                    if _response is _SAFETY_ABORT:
+                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
+                        return None
+                    (_content, _full_reasoning, _tool_calls, _finish_reason,
+                     _usage) = _openai_responses_result(_response)
+                    _full_content = _content
+                    _message_for_history = {
+                        "role": "assistant",
+                        "content": _content or None,
+                        "tool_calls": [
+                            {"id": tc.id, "type": "function",
+                             "function": {"name": tc.function.name,
+                                          "arguments": tc.function.arguments}}
+                            for tc in (_tool_calls or [])
+                        ] if _tool_calls else None,
+                    } if _tool_calls else {"role": "assistant", "content": _content}
+                    if _usage is not None:
+                        state.last_prompt_tokens = _usage.prompt_tokens
+                        _completion_tokens = _usage.completion_tokens
+                        if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                            chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                    if _finish_reason == "length":
+                        _log_to_ui_or_verbose(
+                            "Model response truncated (finish_reason=length). "
+                            "Consider increasing max_tokens.",
+                            chat_ui, verbose, level="warning",
+                        )
+                        state.force_compact = True
+                    await asyncio.sleep(0.1)
+                    if safety_queue is not None and not safety_queue.empty():
+                        logger.warning("Safety queue triggered after API call, exiting chat loop.")
+                        return None
+                    break  # success — exit retry loop
+                elif _is_openai_host(host):
+                    # OpenAI rejects unknown body params: no vLLM extensions
+                    # here, and no chat-template thinking switch.  Output
+                    # budget goes out as max_completion_tokens — the spelling
+                    # every OpenAI chat model takes (max_tokens is deprecated
+                    # and reasoning models refuse it outright).
+                    completion_kwargs = dict(
+                        model=model, messages=messages, stream=stream,
+                        max_completion_tokens=_api_max_tokens,
+                    )
+                    # Reasoning and function tools don't mix on
+                    # /v1/chat/completions — but only for models that
+                    # actually refuse the combination ("Function tools with
+                    # reasoning_effort are not supported").  Others reject
+                    # the parameter outright, or reject "none" specifically
+                    # ("does not support 'none' with this model", gpt-6
+                    # class: supported values low/medium/high/xhigh).  No
+                    # single value works everywhere, so nothing is sent
+                    # until the model itself asks for it: the tools+effort
+                    # 400 is retried with effort "none", and any other
+                    # reasoning_effort rejection drops the parameter for the
+                    # rest of the run (handler below).  The send itself
+                    # happens where tools are attached, further below, so
+                    # the flag and the tools list are read at the same
+                    # point.
+                    # Reasoning models (o-series, gpt-5) take only default
+                    # sampling; a rejection names the parameter and the
+                    # handler below drops these for the rest of the run.
+                    if not _openai_strip_sampling:
+                        completion_kwargs["temperature"] = temperature
+                        completion_kwargs["top_p"] = top_p
+                        if presence_penalty:
+                            completion_kwargs["presence_penalty"] = presence_penalty
                 else:
                     _extra_body = {
                         "top_k": top_k,          # vLLM extension, important for Qwen3
@@ -3910,11 +4493,34 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         max_tokens=_api_max_tokens,
                         extra_body=_extra_body,
                     )
+                # Shared by the OpenAI and vLLM branches: the request goes
+                # out here, after each branch has built its kwargs.  The
+                # Ollama branch above already sent its own request and set
+                # chat_completion itself.
+                if not is_ollama:
                     if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
                         completion_kwargs["tools"] = tools
-                        # vLLM rejects tool_choice when tools is unset, so only
-                        # send it alongside tools.
+                        # vLLM rejects tool_choice when tools is unset, so
+                        # only send it alongside tools.
                         completion_kwargs["tool_choice"] = "required" if state.force_tool_call else "auto"
+                    # A reasoning model that refused function tools under
+                    # its default effort: the retry goes out with
+                    # reasoning_effort "none", the only value that keeps
+                    # the tool loop reachable on this endpoint.  A
+                    # non-reasoning model (gpt-4o class) takes "none"
+                    # from the first call, which keeps a chatty default
+                    # effort from spending the output budget on thinking
+                    # nobody asked for.  A reasoning model gets nothing
+                    # until its own 400 asks — gpt-6 class refuses "none"
+                    # outright, and the others refuse it alongside tools.
+                    # A model that refuses the parameter itself stops
+                    # being asked for it (handler below).
+                    if (_is_openai_host(host)
+                            and not _openai_strip_reasoning
+                            and (_openai_effort_400
+                                 or (not tools
+                                     and not _is_openai_reasoning_model(model)))):
+                        completion_kwargs["reasoning_effort"] = "none"
                     if stream:
                         completion_kwargs["stream_options"] = {"include_usage": True}
                     chat_completion = await _await_with_safety(
@@ -4030,7 +4636,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         )
 
                 await asyncio.sleep(0.1)
-                if not safety_queue.empty():
+                if safety_queue is not None and not safety_queue.empty():
                     logger.warning("Safety queue triggered after API call, exiting chat loop.")
                     return None
                 break  # success — exit retry loop
@@ -4072,6 +4678,57 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
                     logger.info("Host %s rejected chat_template_kwargs (%s); "
                                 "retrying without the thinking switch.", host, e)
+                # OpenAI names the offending parameter in the rejection:
+                # o-series and gpt-5 take only default sampling, so drop
+                # temperature/top_p/presence_penalty for the rest of the run.
+                if (_is_openai_host(host) and _is_parameter_rejection(e)
+                        and any(p in str(e).lower() for p in
+                                ("temperature", "top_p", "presence_penalty"))):
+                    _openai_strip_sampling = True
+                    logger.info("OpenAI rejected a sampling parameter (%s); "
+                                "retrying with provider defaults.", e)
+                # A reasoning model that refuses function tools under its
+                # default effort: remember it and let the retry above go
+                # out with reasoning_effort "none" — the only value that
+                # keeps the tool loop reachable on this endpoint.  The
+                # error's own wording ("function tools") is the evidence;
+                # `tools` is not required here, because a run whose tools
+                # list is empty this turn can still grow one next turn.
+                if (_is_openai_host(host) and _is_parameter_rejection(e)
+                        and "reasoning_effort" in str(e).lower()
+                        and "function tools" in str(e).lower()):
+                    _openai_effort_400 = True
+                    logger.info("OpenAI refused function tools under the "
+                                "default reasoning effort (%s); retrying "
+                                "with reasoning_effort='none'.", e)
+                # And a model that takes no reasoning_effort at all (a
+                # non-reasoning model): stop sending it, for the rest of
+                # the run.  A model that takes the parameter but refuses
+                # "none" specifically (gpt-6 class: low/medium/high/xhigh
+                # only) is handled the same way — the parameter is not
+                # sent again, because with tools the request would just
+                # 400 the other way ("Function tools with reasoning_effort
+                # are not supported").
+                if (_is_openai_host(host) and _is_parameter_rejection(e)
+                        and "reasoning_effort" in str(e).lower()
+                        and "function tools" not in str(e).lower()):
+                    _openai_strip_reasoning = True
+                    logger.info("OpenAI rejected reasoning_effort (%s); "
+                                "retrying without it.", e)
+                # The Responses path names its effort in the error too
+                # ("Unsupported value: 'effort' ... supported values are").
+                # One step down and remember it for the rest of the run —
+                # a model that refuses "medium" is asked for "low" once and
+                # then never above what it takes.
+                if (_is_openai_host(host) and _is_openai_responses_model(model)
+                        and _is_parameter_rejection(e)
+                        and ("effort" in str(e).lower()
+                             or "reasoning" in str(e).lower())):
+                    _responses_effort = ("low"
+                                         if _responses_effort == "medium" else None)
+                    logger.info("OpenAI refused reasoning effort (%s); "
+                                "retrying with effort %s.",
+                                e, _responses_effort or "omitted")
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
@@ -4094,7 +4751,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
         # Non-streaming: extract from response object into unified variables
         if not stream:
-            if is_ollama:
+            if _is_openai_host(host) and _is_openai_responses_model(model):
+                # The Responses path already extracted everything the
+                # non-streaming branch below reads out of a chat completion;
+                # it set these variables inside the retry loop and broke out
+                # with them.
+                pass
+            elif is_ollama:
                 _msg = chat_completion.message
                 _content = _msg.content
                 _full_reasoning = _reasoning_text(_msg)  # Ollama: .thinking

@@ -25,16 +25,26 @@ from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _output_unaccounted, _log_to_ui_or_verbose,
                                 _reasoning_text, _is_reasoning_only,
                                 _stitch_continuation,
-                                _execute_tool, _compact_context, chat)
+                                _execute_tool, _compact_context, chat,
+                                _normalize_openai_base_url)
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
+
+def _make_openai_error(message: str):
+    """A 400 the way the OpenAI SDK raises it, status_code attached."""
+    from openai import BadRequestError
+    response = MagicMock()
+    response.status_code = 400
+    return BadRequestError(message, response=response, body=None)
+
 
 class TestResolveApiKey:
     @pytest.fixture(autouse=True)
     def _isolate_credentials(self, monkeypatch):
         """Keep tests hermetic: ignore real env vars and the OS keychain."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("VLLM_API_KEY", raising=False)
         import src.setup
@@ -61,6 +71,18 @@ class TestResolveApiKey:
     def test_openrouter_missing_key_raises(self):
         with pytest.raises(ValueError, match="OpenRouter requires"):
             _resolve_api_key("https://openrouter.ai/api/v1")
+
+    def test_openai_with_host_key(self):
+        assert _resolve_api_key("https://api.openai.com/v1", "sk-openai") \
+            == "sk-openai"
+
+    def test_openai_from_env(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai")
+        assert _resolve_api_key("https://api.openai.com/v1") == "sk-env-openai"
+
+    def test_openai_missing_key_raises(self):
+        with pytest.raises(ValueError, match="OpenAI requires"):
+            _resolve_api_key("https://api.openai.com/v1")
 
     def test_ollama_cloud_missing_key_raises(self):
         with pytest.raises(ValueError, match="Ollama cloud requires"):
@@ -177,6 +199,264 @@ def _mock_tool_call(name="search", arguments='{"query": "test"}', call_id="call_
     tc.function.arguments = arguments
     tc.id = call_id
     return tc
+
+
+class TestOpenAIRequestShaping:
+    """The OpenAI branch of the main request path.
+
+    OpenAI validates its body strictly: any vLLM extension (top_k, min_p,
+    repetition_penalty, chat_template_kwargs) is a 400, and the output
+    budget must be spelled max_completion_tokens.
+    """
+
+    @staticmethod
+    def _registry(names=("search",)):
+        """A minimal tool registry: one tool, so the request carries tools."""
+        registry = MagicMock()
+        registry.tools = set(names)
+        registry.get_tool_items.return_value = [
+            {"type": "function",
+             "function": {"name": n, "description": "d",
+                          "parameters": {"type": "object", "properties": {}}}}
+            for n in names]
+        registry.tool_accepts_param.return_value = False
+        registry.blank_required_args.return_value = []
+        registry.parameters_schema.return_value = {}
+        return registry
+
+    @staticmethod
+    async def _capture(host="https://api.openai.com/v1", **kw):
+        """Run one chat() turn and return the kwargs the client received."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion("ok")
+        )
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-4o"), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            await chat(host=host, instruction="Reply with one word.",
+                       tool_registry=kw.pop("tool_registry", None),
+                       safety_queue=asyncio.Queue(), **kw)
+        return mock_client.chat.completions.create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_no_vllm_extensions_reach_openai(self):
+        kw = await self._capture(temperature=0.6, top_p=0.95, top_k=20,
+                                 min_p=0.05, repetition_penalty=1.05)
+        assert "extra_body" not in kw
+        assert "top_k" not in kw
+        assert "min_p" not in kw
+        assert "repetition_penalty" not in kw
+        assert "chat_template_kwargs" not in kw
+
+    @pytest.mark.asyncio
+    async def test_output_budget_spelled_max_completion_tokens(self):
+        kw = await self._capture(max_tokens=512)
+        assert kw["max_completion_tokens"] == 512
+        assert "max_tokens" not in kw
+
+    @pytest.mark.asyncio
+    async def test_sampling_params_sent_for_chat_models(self):
+        kw = await self._capture(temperature=0.3, top_p=0.8)
+        assert kw["temperature"] == 0.3
+        assert kw["top_p"] == 0.8
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_absent_by_default(self):
+        """No effort is sent until the model itself asks for one: gpt-6
+        class models reject "none" outright ("Unsupported value:
+        'reasoning_effort' does not support 'none' with this model"), so a
+        hardcoded value would 400 every turn on them."""
+        kw = await self._capture(tool_registry=self._registry())
+        assert "reasoning_effort" not in kw
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_none_after_tools_400(self):
+        """A reasoning model that refuses function tools under its default
+        effort ("Function tools with reasoning_effort are not supported ...
+        set reasoning_effort to 'none'") is retried with effort "none" —
+        the only value that keeps the tool loop reachable."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _make_openai_error(
+                    "Function tools with reasoning_effort are not supported "
+                    "for gpt-5 in /v1/chat/completions. To use function "
+                    "tools, use /v1/responses or set reasoning_effort to "
+                    "'none'."),
+                _mock_completion("ok"),
+            ]
+        )
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-5"), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            result = await chat(host="https://api.openai.com/v1",
+                                instruction="hi", harness_tools=False,
+                                safety_queue=asyncio.Queue())
+        assert result == "ok"
+        _first, _second = mock_client.chat.completions.create.call_args_list
+        assert "reasoning_effort" not in _first.kwargs
+        assert _second.kwargs.get("reasoning_effort") == "none"
+
+    @pytest.mark.asyncio
+    async def test_gpt6_routes_to_responses_not_chat_completions(self):
+        """gpt-6 class never reaches /v1/chat/completions.
+
+        That endpoint refuses every reasoning_effort a tool-carrying request
+        can name for this family (any non-none effort: "Function tools with
+        reasoning_effort are not supported"; "none": "does not support
+        'none' with this model"), so the retry ladder the old test exercised
+        has nothing to climb.  The model is served by /v1/responses, where
+        tools and reasoning coexist (see TestResponsesPath).
+        """
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=AssertionError(
+                "gpt-6-astra must not be sent to /v1/chat/completions"))
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            result = await chat(host="https://api.openai.com/v1",
+                                instruction="hi", harness_tools=False,
+                                safety_queue=asyncio.Queue())
+        assert result == ""  # the responses mock returns nothing usable
+        mock_client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_dropped_after_rejection(self):
+        """A non-reasoning model that refuses reasoning_effort is not asked
+        for it again for the rest of the run."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _make_openai_error("Unknown parameter: 'reasoning_effort'."),
+                _mock_completion("ok"),
+            ]
+        )
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-4o"), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            result = await chat(host="https://api.openai.com/v1",
+                                instruction="hi", harness_tools=False,
+                                safety_queue=asyncio.Queue())
+        assert result == "ok"
+        _first, _second = mock_client.chat.completions.create.call_args_list
+        assert "reasoning_effort" in _first.kwargs
+        assert "reasoning_effort" not in _second.kwargs
+
+    @pytest.mark.asyncio
+    async def test_vllm_host_keeps_extra_body(self):
+        kw = await self._capture(host="http://localhost:8000/v1")
+        assert kw["extra_body"]["top_k"] == 20
+        assert kw["max_tokens"] == kw["max_completion_tokens"] if \
+            "max_completion_tokens" in kw else True
+        assert "max_tokens" in kw
+
+    @pytest.mark.asyncio
+    async def test_no_context_probe_against_openai(self):
+        """OpenAI's /models carries no max_model_len; the probe is a
+        wasted roundtrip."""
+        with patch("model.serving.chat._get_model_max_context",
+                   new_callable=AsyncMock) as probe, \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            mock_client = AsyncMock()
+            mock_client.chat.completions.create = AsyncMock(
+                return_value=_mock_completion("ok")
+            )
+            with patch("model.serving.chat.AsyncOpenAI",
+                       return_value=mock_client), \
+                 patch("model.serving.chat._resolve_model_id",
+                       new_callable=AsyncMock, return_value="gpt-4o"):
+                await chat(host="https://api.openai.com/v1",
+                           instruction="hi",
+                           safety_queue=asyncio.Queue())
+        probe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_endpoint_url_normalized_to_base(self):
+        """A host pasted as the full endpoint URL still reaches OpenAI.
+
+        The SDK appends /chat/completions to base_url itself; without
+        normalization the request goes to
+        /v1/chat/completions/chat/completions and 404s on every call.
+        """
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion("ok")
+        )
+        with patch("model.serving.chat.AsyncOpenAI",
+                   return_value=mock_client) as mock_ctor, \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-4o"), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            await chat(host="https://api.openai.com/v1/chat/completions",
+                       instruction="hi",
+                       safety_queue=asyncio.Queue())
+        base_url = mock_ctor.call_args.kwargs["base_url"]
+        assert str(base_url).rstrip("/") == "https://api.openai.com/v1"
+
+    @pytest.mark.asyncio
+    async def test_completions_suffix_also_normalized(self):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion("ok")
+        )
+        with patch("model.serving.chat.AsyncOpenAI",
+                   return_value=mock_client) as mock_ctor, \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-4o"), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            await chat(host="https://api.openai.com/v1/completions",
+                       instruction="hi",
+                       safety_queue=asyncio.Queue())
+        base_url = mock_ctor.call_args.kwargs["base_url"]
+        assert str(base_url).rstrip("/") == "https://api.openai.com/v1"
+
+
+class TestNormalizeOpenAIBaseUrl:
+    """_normalize_openai_base_url collapses full endpoint URLs to the base."""
+
+    def test_full_chat_completions_url(self):
+        assert (_normalize_openai_base_url(
+            "https://api.openai.com/v1/chat/completions")
+            == "https://api.openai.com/v1")
+
+    def test_full_completions_url(self):
+        assert (_normalize_openai_base_url(
+            "https://api.openai.com/v1/completions")
+            == "https://api.openai.com/v1")
+
+    def test_trailing_slash(self):
+        assert (_normalize_openai_base_url("https://api.openai.com/v1/")
+            == "https://api.openai.com/v1")
+
+    def test_base_url_untouched(self):
+        assert (_normalize_openai_base_url("https://api.openai.com/v1")
+            == "https://api.openai.com/v1")
+
+    def test_non_openai_host_untouched(self):
+        assert (_normalize_openai_base_url(
+            "http://localhost:8000/v1/chat/completions")
+            == "http://localhost:8000/v1/chat/completions")
+
+    def test_empty_host(self):
+        assert _normalize_openai_base_url("") == ""
+
+    def test_case_insensitive_suffix(self):
+        assert (_normalize_openai_base_url(
+            "https://api.openai.com/v1/Chat/Completions")
+            == "https://api.openai.com/v1")
 
 
 class TestChat:
@@ -1227,6 +1507,43 @@ class TestCompactContext:
             max_tokens=1024, chat_ui=None, verbose=False,
         )
         assert COMPACTION_NOTICE not in "\n".join(m["content"] for m in out)
+
+    @pytest.mark.asyncio
+    async def test_openai_compaction_uses_max_completion_tokens(self):
+        """OpenAI takes the output budget as max_completion_tokens; the
+        reasoning models reject max_tokens outright."""
+        client = self._client()
+        await _compact_context(
+            self._messages(), client, "gpt-4o",
+            max_tokens=1024, chat_ui=None, verbose=False,
+            is_openai=True,
+        )
+        _kw = client.chat.completions.create.call_args.kwargs
+        assert _kw["max_completion_tokens"] == 1024
+        assert "max_tokens" not in _kw
+
+    @pytest.mark.asyncio
+    async def test_openai_compaction_omits_max_tokens(self):
+        """The vLLM spelling must not ride along with the OpenAI one."""
+        client = self._client()
+        await _compact_context(
+            self._messages(), client, "gpt-4o",
+            max_tokens=1024, chat_ui=None, verbose=False,
+            is_openai=True,
+        )
+        _kw = client.chat.completions.create.call_args.kwargs
+        assert "max_tokens" not in _kw
+
+    @pytest.mark.asyncio
+    async def test_vllm_compaction_keeps_max_tokens(self):
+        client = self._client()
+        await _compact_context(
+            self._messages(), client, "test-model",
+            max_tokens=1024, chat_ui=None, verbose=False,
+        )
+        _kw = client.chat.completions.create.call_args.kwargs
+        assert _kw["max_tokens"] == 1024
+        assert "max_completion_tokens" not in _kw
 
     @pytest.mark.asyncio
     async def test_failed_summarization_returns_original_messages(self):
@@ -3197,3 +3514,453 @@ class TestDefaultTokenBudgets:
         kwargs = await self._first_call_kwargs(tmp_path, detected=None,
                                                max_tokens=4096)
         assert kwargs["max_tokens"] == 4096
+
+
+# ── the /v1/responses path (gpt-6 family) ──────────────────────────────────
+
+def _mock_response(content="The answer.", reasoning=None, function_calls=None,
+                   status="completed", incomplete_reason=None,
+                   input_tokens=100, output_tokens=50):
+    """A mock Responses-API Response object."""
+    output = []
+    if reasoning:
+        output.append(SimpleNamespace(
+            type="reasoning",
+            summary=[SimpleNamespace(text=reasoning)], content=None))
+    if function_calls:
+        for fc in function_calls:
+            output.append(SimpleNamespace(
+                type="function_call", call_id=fc.get("call_id", "call_1"),
+                name=fc["name"], arguments=fc.get("arguments", "{}")))
+    if content is not None:
+        output.append(SimpleNamespace(
+            type="message", role="assistant",
+            content=[SimpleNamespace(type="output_text", text=content)]))
+    resp = SimpleNamespace(output=output, status=status,
+                           incomplete_details=SimpleNamespace(
+                               reason=incomplete_reason) if incomplete_reason else None,
+                           usage=SimpleNamespace(
+                               input_tokens=input_tokens,
+                               output_tokens=output_tokens,
+                               total_tokens=input_tokens + output_tokens))
+    return resp
+
+
+def _responses_event(etype, **kw):
+    return SimpleNamespace(type=etype, **kw)
+
+
+class _FakeResponsesStream:
+    """An async-iterator stand-in for the SDK's AsyncResponseStream."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __aiter__(self):
+        return self._agen()
+
+    async def _agen(self):
+        for e in self._events:
+            yield e
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class TestOpenAIResponsesPath:
+    """The /v1/responses branch: gpt-6-class models served where their
+    reasoning and function tools are both accepted."""
+
+    @staticmethod
+    def _registry(names=("search",)):
+        registry = MagicMock()
+        registry.tools = set(names)
+        registry.get_tool_items.return_value = [
+            {"type": "function",
+             "function": {"name": n, "description": "d",
+                          "parameters": {"type": "object", "properties": {}}}}
+            for n in names]
+        registry.tool_accepts_param.return_value = False
+        registry.blank_required_args.return_value = []
+        registry.parameters_schema.return_value = {}
+        return registry
+
+    @staticmethod
+    async def _run(host="https://api.openai.com/v1", model="gpt-6-astra",
+                   responses_create=None, responses_stream=None, **kw):
+        """One chat() turn against a mocked responses resource."""
+        mock_client = AsyncMock()
+        if responses_create is not None:
+            mock_client.responses.create = AsyncMock(return_value=responses_create)
+        if responses_stream is not None:
+            mock_client.responses.stream = MagicMock(
+                return_value=_FakeResponsesStream(responses_stream))
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value=model), \
+             patch("model.serving.chat._resolve_api_key",
+                   return_value="sk-test"):
+            result = await chat(host=host, instruction="hi",
+                                tool_registry=kw.pop("tool_registry", None),
+                                verify_answers=False,
+                                safety_queue=kw.pop("safety_queue",
+                                                    asyncio.Queue()), **kw)
+        return result, mock_client
+
+    @pytest.mark.asyncio
+    async def test_gpt6_goes_to_responses_not_chat_completions(self):
+        resp = _mock_response(content="ok")
+        result, client = await self._run(responses_create=resp)
+        assert result == "ok"
+        client.responses.create.assert_awaited_once()
+        client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_gpt6_models_still_use_chat_completions(self):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion("ok"))
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-4o"), \
+             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
+            result = await chat(host="https://api.openai.com/v1", instruction="hi",
+                                verify_answers=False, safety_queue=asyncio.Queue())
+        assert result == "ok"
+        mock_client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_request_shape(self):
+        """store off, output budget as max_output_tokens, no sampling params."""
+        resp = _mock_response(content="ok")
+        _, client = await self._run(responses_create=resp, max_tokens=2048)
+        kw = client.responses.create.call_args.kwargs
+        assert kw["max_output_tokens"] == 2048
+        assert kw["store"] is False
+        assert "temperature" not in kw and "top_p" not in kw
+        assert "top_k" not in kw and "extra_body" not in kw
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_low_when_not_thinking(self):
+        resp = _mock_response(content="ok")
+        _, client = await self._run(responses_create=resp, think=False)
+        assert client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_medium_when_thinking(self):
+        resp = _mock_response(content="ok")
+        _, client = await self._run(responses_create=resp, think=True)
+        assert client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "medium"}
+
+    @pytest.mark.asyncio
+    async def test_tools_flattened_and_tool_choice_auto(self):
+        resp = _mock_response(content="ok")
+        _, client = await self._run(responses_create=resp,
+                                    tool_registry=self._registry(),
+                                    harness_tools=False)
+        kw = client.responses.create.call_args.kwargs
+        assert kw["tools"] == [{"type": "function", "name": "search",
+                                "description": "d",
+                                "parameters": {"type": "object", "properties": {}},
+                                "strict": False}]
+        assert kw["tool_choice"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_round_trip(self):
+        """A function_call item is dispatched and its output replayed."""
+        first = _mock_response(content=None, function_calls=[
+            {"call_id": "call_abc", "name": "search",
+             "arguments": '{"query": "weather"}'}])
+        second = _mock_response(content="It's sunny!")
+        handler = AsyncMock(return_value="Weather: sunny, 25C")
+        registry = self._registry()
+        registry.__getitem__ = MagicMock(return_value=handler)
+        mock_client = AsyncMock()
+        mock_client.responses.create = AsyncMock(side_effect=[first, second])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
+             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
+            result = await chat(host="https://api.openai.com/v1",
+                                instruction="What is the weather?",
+                                tool_registry=registry, verify_answers=False,
+                                safety_queue=asyncio.Queue())
+        assert result == "It's sunny!"
+        handler.assert_awaited_once()
+        replayed = mock_client.responses.create.call_args_list[1].kwargs["input"]
+        outputs = [i for i in replayed if i.get("type") == "function_call_output"]
+        assert outputs and outputs[0]["call_id"] == "call_abc"
+        assert "sunny" in outputs[0]["output"]
+        calls = [i for i in replayed if i.get("type") == "function_call"]
+        assert calls and calls[0]["name"] == "search"
+
+    @pytest.mark.asyncio
+    async def test_effort_stepped_down_after_rejection(self):
+        """A model that refuses an effort is retried one step lower."""
+        from model.serving.chat import reset_endpoint_caches
+        reset_endpoint_caches()
+        first = _mock_response(content="ok")
+        mock_client = AsyncMock()
+        mock_client.responses.create = AsyncMock(side_effect=[
+            _make_openai_error(
+                "Unsupported value: 'effort' is not supported for this model. "
+                "Supported values are: 'low', 'high'."),
+            first,
+        ])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
+             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
+            result = await chat(host="https://api.openai.com/v1", instruction="hi",
+                                think=True, verify_answers=False,
+                                safety_queue=asyncio.Queue())
+        assert result == "ok"
+        _first, _second = mock_client.responses.create.call_args_list
+        assert _first.kwargs["reasoning"] == {"effort": "medium"}
+        assert _second.kwargs["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_streaming_text(self):
+        events = [
+            _responses_event("response.output_text.delta", delta="Hel"),
+            _responses_event("response.output_text.delta", delta="lo"),
+            _responses_event("response.completed",
+                             response=_mock_response(content="Hello")),
+        ]
+        result, client = await self._run(responses_stream=events, stream=True)
+        assert result == "Hello"
+        client.responses.stream.assert_called_once()
+        kw = client.responses.stream.call_args.kwargs
+        assert kw["store"] is False and "max_output_tokens" in kw
+
+    @pytest.mark.asyncio
+    async def test_streaming_tool_call_finishes_as_tool_calls(self):
+        """A streamed function_call is dispatched and its output replayed.
+
+        The stream mock hands back the tool-call turn first, then a plain
+        answer turn — the same two-turn bargain the non-streaming round-trip
+        test strikes with side_effect, because a stream that repeats the same
+        call forever is a model stuck, and the loop is right to bail on it.
+        """
+        def _tool_call_stream():
+            return _FakeResponsesStream([
+                _responses_event("response.output_item.added", output_index=0,
+                                 item=SimpleNamespace(type="function_call",
+                                                      call_id="call_x",
+                                                      name="bash")),
+                _responses_event("response.function_call_arguments.delta",
+                                 output_index=0, delta='{"command": '),
+                _responses_event("response.function_call_arguments.delta",
+                                 output_index=0, delta='"ls"}'),
+                _responses_event("response.function_call_arguments.done",
+                                 output_index=0, arguments='{"command": "ls"}',
+                                 name="bash", call_id="call_9"),
+                _responses_event("response.completed",
+                                 response=_mock_response(content="")),
+            ])
+        answer_stream = _FakeResponsesStream([
+            _responses_event("response.output_text.delta", delta="file list"),
+            _responses_event("response.completed",
+                             response=_mock_response(content="file list")),
+        ])
+        handler = AsyncMock(return_value="file list")
+        registry = self._registry(("bash",))
+        registry.__getitem__ = MagicMock(return_value=handler)
+        mock_client = AsyncMock()
+        mock_client.responses.stream = MagicMock(
+            side_effect=[_tool_call_stream(), answer_stream])
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
+             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
+            from model.serving.chat import reset_endpoint_caches
+            reset_endpoint_caches()
+            result = await chat(host="https://api.openai.com/v1",
+                                instruction="hi", tool_registry=registry,
+                                verify_answers=False,
+                                safety_queue=asyncio.Queue(), stream=True,
+                                max_repeated_tool_calls=5)
+        assert result == "file list"
+        handler.assert_awaited_once()
+        # The second request replays the call and its output under the id the
+        # stream's done event carried.
+        replayed = mock_client.responses.stream.call_args_list[1].kwargs["input"]
+        outputs = [i for i in replayed if i.get("type") == "function_call_output"]
+        assert outputs and outputs[0]["call_id"] == "call_9"
+        assert outputs[0]["output"] == "file list"
+        calls = [i for i in replayed if i.get("type") == "function_call"]
+        assert calls and calls[0]["call_id"] == "call_9"
+
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_reaches_think_channel(self):
+        events = [
+            _responses_event("response.reasoning_text.delta", delta="pondering"),
+            _responses_event("response.output_text.delta", delta="Answer"),
+            _responses_event("response.completed",
+                             response=_mock_response(content="Answer")),
+        ]
+        result, client = await self._run(responses_stream=events, stream=True)
+        assert result == "Answer"
+
+    @pytest.mark.asyncio
+    async def test_streaming_incomplete_maps_to_length(self):
+        events = [
+            _responses_event("response.output_text.delta", delta="partial an"),
+            _responses_event("response.incomplete",
+                             response=_mock_response(
+                                 content="", status="incomplete",
+                                 incomplete_reason="max_output_tokens")),
+        ]
+        result, client = await self._run(responses_stream=events, stream=True)
+        # The answer was cut off; the loop resumes it rather than returning
+        # the partial, and the final stitched text contains what arrived.
+        assert result and "partial an" in result
+
+    @pytest.mark.asyncio
+    async def test_safety_queue_stops_before_the_call(self):
+        sq = asyncio.Queue()
+        sq.put_nowait("stop")
+        resp = _mock_response(content="should not reach")
+        result, client = await self._run(responses_create=resp, safety_queue=sq)
+        assert result is None
+        client.responses.create.assert_not_called()
+
+
+# ── converters, unit-tested ────────────────────────────────────────────────
+
+class TestOpenAIResponsesInput:
+    def test_plain_messages(self):
+        from model.serving.chat import _openai_responses_input
+        items = _openai_responses_input([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done"},
+        ])
+        assert items == [
+            {"type": "message", "role": "system", "content": "sys"},
+            {"type": "message", "role": "user", "content": "hi"},
+            {"type": "message", "role": "assistant", "content": "done"},
+        ]
+
+    def test_tool_calls_become_function_call_items(self):
+        from model.serving.chat import _openai_responses_input
+        items = _openai_responses_input([
+            {"role": "assistant", "content": "Let me look.",
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "search",
+                                          "arguments": '{"q": 1}'}}]},
+            {"role": "tool", "content": "found it", "tool_call_id": "c1"},
+        ])
+        assert items[0] == {"type": "message", "role": "assistant",
+                            "content": "Let me look."}
+        assert items[1] == {"type": "function_call", "call_id": "c1",
+                            "name": "search", "arguments": '{"q": 1}'}
+        assert items[2] == {"type": "function_call_output", "call_id": "c1",
+                            "output": "found it"}
+
+    def test_dict_arguments_are_reserialized(self):
+        """Ollama-shaped history keeps arguments as a dict; the API wants a
+        JSON string."""
+        from model.serving.chat import _openai_responses_input
+        items = _openai_responses_input([
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "search",
+                                          "arguments": {"q": 1}}}]},
+        ])
+        assert items[0]["arguments"] == '{"q": 1}'
+
+    def test_image_parts_survive(self):
+        from model.serving.chat import _openai_responses_input
+        items = _openai_responses_input([
+            {"role": "user", "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+        ])
+        assert items[0]["content"] == [
+            {"type": "input_text", "text": "look"},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+        ]
+
+    def test_sdk_message_objects_are_read(self):
+        """The non-streaming path keeps the SDK message object as history."""
+        from model.serving.chat import _openai_responses_input
+        msg = SimpleNamespace(role="assistant", content="plain", tool_calls=None)
+        items = _openai_responses_input([msg])
+        assert items == [{"type": "message", "role": "assistant",
+                          "content": "plain"}]
+
+
+class TestOpenAIResponsesTools:
+    def test_flat_shape_and_strict_false(self):
+        from model.serving.chat import _openai_responses_tools
+        out = _openai_responses_tools([
+            {"type": "function",
+             "function": {"name": "search", "description": "d",
+                          "parameters": {"type": "object", "properties": {}}}},
+        ])
+        assert out == [{"type": "function", "name": "search",
+                        "description": "d",
+                        "parameters": {"type": "object", "properties": {}},
+                        "strict": False}]
+
+    def test_missing_schema_gets_an_empty_object(self):
+        from model.serving.chat import _openai_responses_tools
+        out = _openai_responses_tools([
+            {"type": "function", "function": {"name": "n", "description": "d"}},
+        ])
+        assert out[0]["parameters"] == {"type": "object", "properties": {}}
+
+    def test_passthrough_of_unrecognized_shapes(self):
+        from model.serving.chat import _openai_responses_tools
+        assert _openai_responses_tools(["raw"]) == ["raw"]
+
+
+class TestOpenAIResponsesResult:
+    def test_full_mapping(self):
+        from model.serving.chat import _openai_responses_result
+        resp = _mock_response(content="The answer.", reasoning="thinking",
+                              function_calls=[{"call_id": "c9", "name": "bash",
+                                               "arguments": '{"command": "ls"}'}],
+                              status="completed")
+        content, reasoning, tcs, finish, usage = _openai_responses_result(resp)
+        assert content == "The answer."
+        assert reasoning == "thinking"
+        assert [(t.id, t.function.name, t.function.arguments) for t in tcs] == [
+            ("c9", "bash", '{"command": "ls"}')]
+        assert finish == "tool_calls"
+        assert usage.prompt_tokens == 100 and usage.completion_tokens == 50
+
+    def test_incomplete_max_output_tokens_maps_to_length(self):
+        from model.serving.chat import _openai_responses_result
+        resp = _mock_response(content="partial", status="incomplete",
+                              incomplete_reason="max_output_tokens")
+        _, _, _, finish, _ = _openai_responses_result(resp)
+        assert finish == "length"
+
+    def test_no_tool_calls_is_stop(self):
+        from model.serving.chat import _openai_responses_result
+        resp = _mock_response(content="done")
+        content, _, tcs, finish, _ = _openai_responses_result(resp)
+        assert content == "done" and tcs is None and finish == "stop"
+
+
+class TestIsOpenAIResponsesModel:
+    def test_gpt6_family(self):
+        from model.serving.chat import _is_openai_responses_model
+        assert _is_openai_responses_model("gpt-6-astra")
+        assert _is_openai_responses_model("gpt-6")
+        assert _is_openai_responses_model("gpt-6.2-mini")
+
+    def test_other_models_not(self):
+        from model.serving.chat import _is_openai_responses_model
+        assert not _is_openai_responses_model("gpt-5")
+        assert not _is_openai_responses_model("gpt-4o")
+        assert not _is_openai_responses_model("o3")
+        assert not _is_openai_responses_model("")

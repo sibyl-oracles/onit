@@ -45,6 +45,8 @@ _SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.yaml")
 LEGACY_SERVING_SECRETS = [
     ("host_key",               "OpenRouter API key (legacy fallback)",
      "OPENROUTER_API_KEY"),
+    ("openai_api_key",         "OpenAI API key (legacy fallback)",
+     "OPENAI_API_KEY"),
     ("vllm_api_key",           "vLLM API key (legacy fallback)",
      "VLLM_API_KEY"),
     ("host2_key",              "Second model server key (legacy fallback)",
@@ -123,7 +125,8 @@ ENDPOINT_EXAMPLES = (
     "vLLM: http://localhost:8000/v1  |  "
     "Ollama cloud: https://api.ollama.com  |  "
     "Ollama local: http://localhost:11434/v1  |  "
-    "OpenRouter: https://openrouter.ai/api/v1"
+    "OpenRouter: https://openrouter.ai/api/v1  |  "
+    "OpenAI: https://api.openai.com/v1"
 )
 
 
@@ -256,6 +259,7 @@ _ENDPOINT_SECRET_PREFIX = "endpoint_key:"
 # attempt.
 LEGACY_ENDPOINT_KEYS = (
     (("openrouter.ai",), "host_key", "OPENROUTER_API_KEY", "OpenRouter", True),
+    (("api.openai.com",), "openai_api_key", "OPENAI_API_KEY", "OpenAI", True),
     (("ollama.com", "ollama.ai"), "ollama_api_key", "OLLAMA_API_KEY",
      "Ollama cloud", True),
     ((), "vllm_api_key", "VLLM_API_KEY", "vLLM", False),
@@ -535,9 +539,11 @@ def _provider_notes(config: dict) -> list[str]:
                          f"{label} endpoint but no API key is set (rerun "
                          f"'onit setup' or export {env_var}).")
         if not model:
-            if label == "OpenRouter":
-                notes.append(f"Note: OpenRouter requires an explicit model name — set "
-                             f"{model_path} (e.g. google/gemini-2.5-pro).")
+            if label in ("OpenRouter", "OpenAI"):
+                _example = ("google/gemini-2.5-pro" if label == "OpenRouter"
+                            else "gpt-4o")
+                notes.append(f"Note: {label} requires an explicit model name — set "
+                             f"{model_path} (e.g. {_example}).")
             else:
                 notes.append(f"Note: {model_path} is not set — the first model available at "
                              f"{host} will be used. Set it to choose (e.g. glm-5.3:cloud).")
@@ -868,7 +874,8 @@ def run_setup(show_only: bool = False):
     print("  " + "─" * 50)
     print(f"  Endpoint examples — {ENDPOINT_EXAMPLES}")
     print("  Model examples — vLLM/local: auto-detect; "
-          "Ollama cloud: glm-5.3:cloud; OpenRouter: google/gemini-2.5-pro")
+          "Ollama cloud: glm-5.3:cloud; OpenRouter: google/gemini-2.5-pro; "
+          "OpenAI: gpt-4o")
     print("  Each endpoint takes its own API key; leave it blank where the "
           "server wants none.")
     _edit_endpoints(config)

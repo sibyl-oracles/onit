@@ -36,11 +36,11 @@ Install from the latest source — not the PyPI wheel, which lags behind:
 
 ```bash
 git clone https://github.com/sibyl-oracles/onit.git
-cd onit && pip install -e ".[all]"
+cd onit && pip install -U --upgrade-strategy eager -e '.[all]'
 ```
 
 Activate the environment again in every new shell before running `onit`. To pick up
-newer commits later: `git pull && pip install -e '.[all]' -U --upgrade-strategy eager` —
+newer commits later: `git pull && pip install -U --upgrade-strategy eager -e '.[all]'` —
 and if dependencies ever end up conflicting, recreate the environment from scratch.
 
 ### 2. Run
