@@ -367,16 +367,29 @@ def _rebuild(agent, endpoints: list,
 
 
 def _resolve_endpoint(lb, token: str):
-    """The endpoint a row number or URL names, or None."""
+    """The endpoint a row number, URL, or label names — and why not, if not.
+
+    Returns ``(endpoint, None)`` on a single match, else ``(None, message)``
+    with something the user can act on. A URL that addresses more than one
+    endpoint — one Ollama cloud host carrying several models — is not a
+    resolution: it is a question about which model, and a row number answers
+    it.
+    """
     if token.isdigit():
         row = int(token)
         if 1 <= row <= len(lb.endpoints):
-            return lb.endpoints[row - 1]
-        return None
-    for ep in lb.endpoints:
-        if ep.host == token or ep.name == token:
-            return ep
-    return None
+            return lb.endpoints[row - 1], None
+        return None, (f"No endpoint matches row {row} — run \\host for the "
+                      f"row numbers and URLs.")
+    matches = [ep for ep in lb.endpoints
+               if ep.host == token or ep.name == token]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, (f"{token} is in the rotation {len(matches)} times — "
+                      f"name the row instead, e.g. '\\host rm 2'.")
+    return None, (f"No endpoint matches {token!r} — run \\host for the row "
+                  f"numbers and URLs.")
 
 
 def _host_add(agent, args: list[str]) -> str:
@@ -392,10 +405,12 @@ def _host_add(agent, args: list[str]) -> str:
     bad = _valid_url(url)
     if bad:
         return bad
-    existing = next((ep for ep in lb.endpoints if ep.host == url), None)
+    existing = next((ep for ep in lb.endpoints
+                     if ep.host == url and ep.model == model), None)
     if existing is not None:
         if not share:
-            return (f"{url} is already in the rotation. Change its model with "
+            return (f"{url} is already in the rotation with model "
+                    f"{model or 'auto-detect'}. Change its model with "
                     f"\\model, or drop it with \\host rm {url}.")
         # The message on a held-back add tells the user to type this exact
         # line; refusing it because the endpoint is already there would send
@@ -411,6 +426,14 @@ def _host_add(agent, args: list[str]) -> str:
                   "session, so every Ollama endpoint in the list is affected.",
                   "", _NOT_PERSISTED]
         return "\n".join(lines)
+
+    # A second model on a host already in the rotation is a new endpoint, not
+    # a duplicate: Ollama cloud is one host serving many models. Only the
+    # exact same (host, model) pair is refused above.
+    if any(ep.host == url for ep in lb.endpoints) and not model:
+        return (f"{url} is already in the rotation. Name the model to add "
+                f"another one on the same host, e.g. \\host add {url} "
+                f"qwen3:cloud.")
 
     # Joins the endpoint that is currently preferred rather than starting a
     # tier of its own: "also use this one" means share the traffic, not sit
@@ -461,10 +484,9 @@ def _host_remove(agent, args: list[str]) -> str:
         return ("That is the only endpoint left; there would be nothing to "
                 "send the next task to. Point the session elsewhere with "
                 "\\host <url> instead.")
-    endpoint = _resolve_endpoint(lb, args[0])
+    endpoint, why = _resolve_endpoint(lb, args[0])
     if endpoint is None:
-        return (f"No endpoint matches {args[0]!r} — run \\host for the row "
-                f"numbers and URLs.")
+        return why
 
     _rebuild(agent, [ep for ep in lb.endpoints if ep is not endpoint])
     lines = [f"Dropped {endpoint.host} from the rotation."]
@@ -550,10 +572,9 @@ async def cmd_key(agent, arg: str) -> str:
                 "history. Run \\key " + parts[0] + " on its own.")
 
     if parts:
-        endpoint = _resolve_endpoint(lb, parts[0])
+        endpoint, why = _resolve_endpoint(lb, parts[0])
         if endpoint is None:
-            return (f"No endpoint matches {parts[0]!r} — run \\host for the "
-                    f"row numbers and URLs.")
+            return why
     else:
         endpoint = lb.assigned(getattr(agent, "session_id", None))
     where = f"{endpoint.name or 'endpoint'} ({endpoint.host})"
@@ -587,7 +608,7 @@ async def cmd_key(agent, arg: str) -> str:
                   "one to take effect."]
     lines += ["", "The key is in the OS keychain, not the config file, and "
                   "unlike the rest of this session it does persist."]
-    if not _is_saved(endpoint.host):
+    if not _is_saved(endpoint.host, endpoint.model):
         # The key outlives the session; the endpoint it belongs to does not.
         # Left there it is a keychain entry for a URL nothing mentions, which
         # 'onit setup --show' has no row to report it on.
@@ -609,6 +630,12 @@ async def cmd_key(agent, arg: str) -> str:
 _GENERATED_NAME = re.compile(r"^(server\d+|manual\d*)$")
 
 
+def _identity_label(identity: tuple[str, str]) -> str:
+    """A (URL, model) identity as one readable string for a save report."""
+    host, model = identity
+    return f"{host} ({model})" if model else host
+
+
 def _saved_entries(config: dict) -> list[dict]:
     """The endpoints the config file currently holds, in whichever shape."""
     from .. import setup as onit_setup
@@ -616,24 +643,46 @@ def _saved_entries(config: dict) -> list[dict]:
             or onit_setup._entries_from_host_pair(config))
 
 
-def _saved_by_host(config: dict) -> dict:
-    """Saved entries keyed by normalized URL, for looking one up by host."""
+def _saved_by_identity(config: dict) -> dict:
+    """Saved entries keyed by (URL, model), for looking one up.
+
+    Keyed by the pair rather than the URL alone: one Ollama cloud host can
+    hold several models, and a URL-keyed map would let the last one read win
+    and hand its label and key to the others.
+    """
     from .. import setup as onit_setup
-    return {onit_setup.normalize_host(e["host"]): e
-            for e in _saved_entries(config)}
+    return {onit_setup.entry_identity(e): e for e in _saved_entries(config)}
 
 
-def _is_saved(host: str) -> bool:
-    """True when the config file already names this endpoint."""
+def _saved_by_host(config: dict) -> dict:
+    """Saved entries grouped by normalized URL, for a fallback lookup."""
+    from .. import setup as onit_setup
+    grouped: dict[str, list[dict]] = {}
+    for e in _saved_entries(config):
+        grouped.setdefault(onit_setup.normalize_host(e["host"]), []).append(e)
+    return grouped
+
+
+def _is_saved(host: str, model: str | None = None) -> bool:
+    """True when the config file already names this endpoint.
+
+    An exact (URL, model) match, or a URL the file holds exactly once: a
+    model changed in this session still belongs to an endpoint that is saved,
+    and ``\\save`` would update it rather than add anything.
+    """
     from .. import setup as onit_setup
     try:
-        return (onit_setup.normalize_host(host)
-                in _saved_by_host(onit_setup._load_config()))
+        config = onit_setup._load_config()
+        if onit_setup.endpoint_identity(host, model) in _saved_by_identity(config):
+            return True
+        same_host = _saved_by_host(config).get(
+            onit_setup.normalize_host(host), [])
+        return len(same_host) == 1
     except Exception:
         return False
 
 
-def _entry_to_save(endpoint, saved: dict) -> dict:
+def _entry_to_save(endpoint, saved: dict, by_host: dict) -> dict:
     """One endpoint as a config entry, carrying nothing secret.
 
     The API key is taken from the saved entry, never from
@@ -644,7 +693,14 @@ def _entry_to_save(endpoint, saved: dict) -> dict:
     """
     from .. import setup as onit_setup
 
-    previous = saved.get(onit_setup.normalize_host(endpoint.host), {})
+    identity = onit_setup.endpoint_identity(endpoint.host, endpoint.model)
+    previous = saved.get(identity)
+    if previous is None:
+        # A model changed in this session still belongs to the same saved
+        # endpoint, so its label and any key written into the YAML are kept.
+        # Only unambiguous when the host holds a single saved entry.
+        same_host = by_host.get(onit_setup.normalize_host(endpoint.host), [])
+        previous = same_host[0] if len(same_host) == 1 else {}
     entry = {"host": endpoint.host, "priority": endpoint.priority}
     if endpoint.model:
         entry["model"] = endpoint.model
@@ -670,10 +726,11 @@ def cmd_save(agent) -> str:
 
     lb = agent.load_balancer
     config = onit_setup._load_config()
-    saved = _saved_by_host(config)
-    before = set(saved)
+    saved = _saved_by_identity(config)
+    by_host = _saved_by_host(config)
+    before = {onit_setup.entry_identity(e) for e in _saved_entries(config)}
 
-    entries = [_entry_to_save(ep, saved) for ep in lb.endpoints]
+    entries = [_entry_to_save(ep, saved, by_host) for ep in lb.endpoints]
     onit_setup._write_endpoints(config, entries)
 
     serving = config.setdefault("serving", {})
@@ -683,8 +740,12 @@ def cmd_save(agent) -> str:
         serving["ollama_fallback_only"] = lb.ollama_fallback_only
     onit_setup._save_config(config)
 
-    after = {onit_setup.normalize_host(ep.host) for ep in lb.endpoints}
-    added, removed = sorted(after - before), sorted(before - after)
+    # Identity is the (URL, model) pair, so a second model added on a host
+    # already saved reports as added rather than as "the same endpoints".
+    after = {onit_setup.endpoint_identity(ep.host, ep.model)
+             for ep in lb.endpoints}
+    added = sorted(_identity_label(i) for i in after - before)
+    removed = sorted(_identity_label(i) for i in before - after)
 
     n = len(entries)
     lines = [f"Saved {n} endpoint{'' if n == 1 else 's'} to "

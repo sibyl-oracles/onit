@@ -84,8 +84,9 @@ serving:
   # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
   # (or pass --no-ollama-fallback-only) to load-balance across them equally:
   # ollama_fallback_only: true
-  # For more than two servers, or to rank them explicitly, use an endpoints
-  # list instead of host/host2 — see MODEL_SERVING.md.
+  # For more than two servers, to rank them explicitly, or to run several
+  # models on one host (e.g. two Ollama cloud models), use an endpoints list
+  # instead of host/host2 — see MODEL_SERVING.md.
 
 verbose: false
 timeout: 600

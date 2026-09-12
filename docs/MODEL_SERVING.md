@@ -277,8 +277,25 @@ Explicit priorities override `ollama_fallback_only`, so ranking an Ollama
 endpoint first is honored rather than silently demoted.
 
 Entries may be bare URL strings (`- http://10.0.0.1:8000/v1`) when you need
-nothing but the host. Entries without a `host`, and duplicates of a host already
-listed, are skipped with a warning.
+nothing but the host. Entries without a `host` are skipped with a warning, as is
+an entry that repeats another's `host` **and** `model`. A repeated host carrying
+a *different* model is not a duplicate — Ollama cloud is one host serving many
+models, so this is how you put several of them in the rotation:
+
+```yaml
+serving:
+  endpoints:
+    - host: https://ollama.com
+      model: glm-5.3:cloud
+    - host: https://ollama.com
+      model: qwen3:cloud               # same host, second model
+```
+
+Two models on one host always need an explicit `model`; a second entry for the
+same URL with no model would just auto-detect the same model again. Because the
+legacy `host`/`host2` pair reads `host2` as a second server only while it
+differs from `host`, a list like the above is always written in the `endpoints`
+shape.
 
 **Editing endpoints.** `onit setup` opens a small editor for this list — you
 don't have to write the YAML by hand:
@@ -296,7 +313,14 @@ Rows are listed best-first, but the number identifies the endpoint and doesn't
 move when you re-rank. The wizard writes back whichever shape fits: a plain one-
 or two-server config with no priorities stays as `serving.host` / `serving.host2`,
 and it promotes to an `endpoints` list as soon as you add a third server, set a
-priority, or name an endpoint.
+priority, name an endpoint, or add a second model on a host already listed.
+
+Adding a model on a host that is already in the list is accepted — give the
+model name at the prompt and the entry is added alongside the first. Only the
+same URL *and* the same model is refused as a repeat. While the list holds both
+Ollama and non-Ollama endpoints with no priorities set, the table says so: the
+Ollama rows are fallback-only and will not serve until the others fail (see
+`serving.ollama_fallback_only` in [CONFIGURATION.md](CONFIGURATION.md)).
 
 ## Sampling parameters
 

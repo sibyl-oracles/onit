@@ -1184,10 +1184,12 @@ class OnIt(BaseModel):
     def _parse_endpoint_list(raw) -> list:
         """Build ServerEndpoints from a ``serving.endpoints`` config list.
 
-        Entries without a ``host`` are skipped, as is any host already claimed
-        by an earlier entry — a duplicate would otherwise take a second share
-        of the rotation. Returns [] when no list is configured, which sends
-        the caller to the legacy host/host2 path.
+        Entries without a ``host`` are skipped, as is any (host, model) pair
+        already claimed by an earlier entry — a duplicate would otherwise
+        take a second share of the rotation. A repeated host carrying a
+        different model is not a duplicate: Ollama cloud is one host serving
+        many models. Returns [] when no list is configured, which sends the
+        caller to the legacy host/host2 path.
         """
         if not isinstance(raw, list):
             return []
@@ -1203,11 +1205,16 @@ class OnIt(BaseModel):
             if not host:
                 logger.warning("Ignoring serving.endpoints[%d]: no host", i)
                 continue
-            if host in seen:
+            # Identity is the URL *and* the model on it. Ollama cloud is one
+            # host serving many models, so keying on the URL alone dropped
+            # every model after the first.
+            identity = (host, str(entry.get('model') or '').strip())
+            if identity in seen:
                 logger.warning("Ignoring serving.endpoints[%d]: duplicate "
-                               "host %s", i, host)
+                               "endpoint %s (%s)", i, host,
+                               identity[1] or 'auto-detect')
                 continue
-            seen.add(host)
+            seen.add(identity)
             try:
                 priority = int(entry.get('priority', DEFAULT_PRIORITY))
             except (TypeError, ValueError):

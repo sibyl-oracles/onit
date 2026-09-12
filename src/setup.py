@@ -276,6 +276,48 @@ def normalize_host(host: str) -> str:
     return (host or "").strip().rstrip("/")
 
 
+def endpoint_identity(host: str, model: str | None = None) -> tuple[str, str]:
+    """What tells two endpoints apart: its URL and the model served on it.
+
+    A URL alone is not an identity. Ollama cloud is a single host serving
+    many models, so ``https://ollama.com`` with ``glm-5.3:cloud`` and the
+    same URL with ``qwen3:cloud`` are two endpoints, not one repeated -- and
+    treating them as one is what silently dropped every model after the
+    first. The model is compared as written (model ids are case-sensitive),
+    with only surrounding space ignored, so a blank model -- auto-detect --
+    is its own identity, distinct from any named one.
+    """
+    return (normalize_host(host), str(model or "").strip())
+
+
+def entry_identity(entry: dict) -> tuple[str, str]:
+    """``endpoint_identity`` for a config entry."""
+    return endpoint_identity(entry.get("host", ""), entry.get("model"))
+
+
+def entry_label(entry: dict) -> str:
+    """How a config entry is named in a note or a table.
+
+    Its label when it has one, otherwise its URL and model: one Ollama cloud
+    host can carry several models, and the URL alone would name all of them.
+    """
+    name = entry.get("name")
+    if name:
+        return str(name)
+    model = entry.get("model")
+    return f"{entry['host']} ({model})" if model else str(entry["host"])
+
+
+def is_ollama_host(host: str) -> bool:
+    """True for Ollama endpoints: cloud (ollama.com/.ai) or local (:11434).
+
+    Mirrors ``balancer._is_ollama_host``; kept here so the wizard can warn
+    about the fallback rule without importing the serving stack.
+    """
+    host = host or ""
+    return "ollama.com" in host or "ollama.ai" in host or ":11434" in host
+
+
 def endpoint_secret_name(host: str) -> str:
     """Keychain entry name holding the API key for ``host``."""
     return f"{_ENDPOINT_SECRET_PREFIX}{normalize_host(host)}"
@@ -441,8 +483,15 @@ def _fits_host_pair(entries: list[dict]) -> bool:
 
     Keeps a plain one- or two-server config in its short, familiar form
     instead of rewriting it as a list the moment the wizard is run.
+
+    The two hosts must also differ. ``serving.host2`` is read as a second
+    server only while it names a different URL from ``serving.host`` (see
+    OnIt._legacy_endpoints), so two models on one Ollama cloud host would be
+    written in the pair shape and then silently collapse to one on load.
     """
+    hosts = [normalize_host(e.get("host", "")) for e in entries]
     return (len(entries) <= 2
+            and len(set(hosts)) == len(hosts)
             and all(_entry_priority(e) == 0 and not e.get("name")
                     for e in entries))
 
@@ -496,8 +545,9 @@ def _configured_endpoints(config: dict) -> list[tuple]:
     entries = _endpoint_list(config)
     if entries:
         # Label by the entry's name (or host) rather than a list index — it
-        # survives reordering and is what the user recognizes.
-        return [(f"endpoint '{e.get('name') or e['host']}'",
+        # survives reordering and is what the user recognizes. Two models on
+        # one host share a URL, so the model is named alongside it.
+        return [(f"endpoint '{entry_label(e)}'",
                  "its 'model' key", str(e["host"]), e.get("model"),
                  ("api_key" in e or "host_key" in e), ())
                 for e in entries]
@@ -584,6 +634,16 @@ def _print_endpoint_table(entries: list[dict], indent: str = "  ") -> None:
     if len(entries) > 1 and all(_entry_priority(e) == 0 for e in entries):
         print(f"{indent}All endpoints share one tier — requests are spread "
               f"across them. Use 'p N' to rank one ahead.")
+        if (any(is_ollama_host(e.get("host", "")) for e in entries)
+                and any(not is_ollama_host(e.get("host", ""))
+                        for e in entries)):
+            # The line above is not true for the Ollama rows while this rule
+            # is on, and saying nothing is how a configured endpoint ends up
+            # serving nothing.
+            print(f"{indent}Ollama endpoints are fallback-only while a "
+                  f"non-Ollama endpoint is healthy")
+            print(f"{indent}(set serving.ollama_fallback_only: false, or give "
+                  f"one a priority, to change that).")
 
 
 def entry_key_label(entry: dict) -> str:
@@ -701,8 +761,11 @@ def _edit_endpoints(config: dict) -> None:
             new = _prompt_entry(None, is_first=not entries)
             if not new:
                 continue
-            if any(e["host"] == new["host"] for e in entries):
-                print(f"  {new['host']} is already configured.")
+            # Same URL *and* same model is a repeat; the same URL with a
+            # different model is a second endpoint, which is how one Ollama
+            # cloud host serves several models.
+            if any(entry_identity(e) == entry_identity(new) for e in entries):
+                print(f"  {entry_label(new)} is already configured.")
                 continue
             entries.append(new)
         elif cmd in ("e", "edit"):

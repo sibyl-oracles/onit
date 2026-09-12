@@ -389,10 +389,60 @@ class TestEndpointEditor:
         assert by_host["http://a2:8000/v1"]["priority"] == 5
 
     def test_duplicate_host_rejected(self, capsys):
+        """Same URL *and* same model is the same endpoint twice."""
         cfg = {"serving": {"host": "http://a:8000/v1"}}
         _drive_editor(cfg, ["a", "http://a:8000/v1", "", "", "", ""])
         assert "already configured" in capsys.readouterr().out
         assert "endpoints" not in cfg["serving"]
+
+    def test_a_second_model_on_one_ollama_host_is_accepted(self, capsys):
+        """Ollama cloud is one host serving many models. Adding a second
+        model on the same URL used to be refused as a duplicate and silently
+        dropped, so only the first model was ever saved."""
+        cfg = {"serving": {"endpoints": [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        _drive_editor(cfg, ["a", "https://ollama.com", "qwen3:cloud",
+                            "cloud2", "", ""])
+        assert "already configured" not in capsys.readouterr().out
+        assert cfg["serving"]["endpoints"] == [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud",
+             "priority": 0},
+            {"name": "cloud2", "host": "https://ollama.com",
+             "model": "qwen3:cloud", "priority": 0},
+        ]
+
+    def test_two_models_on_one_host_do_not_fit_the_host_pair(self):
+        """The legacy host/host2 shape reads host2 as a second server only
+        while it differs from host, so writing two models on one URL there
+        would collapse them back to one on load."""
+        entries = [{"host": "https://ollama.com", "model": "glm-5.3:cloud"},
+                   {"host": "https://ollama.com", "model": "qwen3:cloud"}]
+        assert setup_mod._fits_host_pair(entries) is False
+        # Two genuinely different hosts still keep the short form.
+        assert setup_mod._fits_host_pair(
+            [{"host": "http://a:8000/v1"}, {"host": "http://b:8000/v1"}])
+
+    def test_the_same_model_twice_is_still_refused(self, capsys):
+        cfg = {"serving": {"endpoints": [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.3:cloud",
+                            "", "", ""])
+        assert "already configured" in capsys.readouterr().out
+        # Still one endpoint, written back in the short single-host shape.
+        assert cfg["serving"]["host"] == "https://ollama.com"
+        assert cfg["serving"]["model"] == "glm-5.3:cloud"
+        assert "endpoints" not in cfg["serving"]
+
+    def test_the_fallback_note_names_the_ollama_rule(self, capsys):
+        """The table says requests are spread across all endpoints, which is
+        not true of the Ollama rows while the implicit rule is on."""
+        cfg = {"serving": {"endpoints": [
+            {"host": "http://a:8000/v1"},
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        _drive_editor(cfg, [""])
+        out = capsys.readouterr().out
+        assert "fallback-only" in out
+        assert "ollama_fallback_only" in out
 
     def test_add_with_no_url_is_cancelled(self, capsys):
         cfg = {"serving": {"host": "http://a:8000/v1"}}

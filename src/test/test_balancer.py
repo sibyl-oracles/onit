@@ -25,6 +25,14 @@ def _vllm_and_ollama():
                        model="qwen3", name="server2"),
     ]
 
+def _two_ollama():
+    return [
+        ServerEndpoint(host="https://ollama.com", host_key="key1",
+                       model="glm-5.3:cloud", name="cloud"),
+        ServerEndpoint(host="http://localhost:11434/v1", host_key="key2",
+                       model="llama3", name="local"),
+    ]
+
 
 class TestLoadBalancerConstruction:
     def test_requires_endpoints(self):
@@ -283,6 +291,37 @@ class TestOllamaFallback:
         ep = ServerEndpoint(host="https://ollama.com", model="qwen3")
         lb = LoadBalancer([ep])
         assert lb.acquire() is ep
+
+    def test_two_ollama_endpoints_both_serve(self):
+        """The implicit Ollama rule demotes Ollama only against a non-Ollama
+        peer; with no non-Ollama endpoint to outrank, both Ollama endpoints
+        enter rotation and load-balance against each other."""
+        eps = _two_ollama()
+        lb = LoadBalancer(eps, algorithm="round_robin")
+        seen = set()
+        for _ in range(4):
+            ep = lb.acquire()
+            seen.add(ep.name)
+            lb.release(ep, success=True)
+        assert seen == {"cloud", "local"}
+
+    def test_two_ollama_sticky_sessions_spread(self):
+        eps = _two_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky")
+        seen = set()
+        for i in range(20):
+            ep = lb.acquire(key=f"session-{i}")
+            seen.add(ep.name)
+            lb.release(ep, success=True)
+        assert seen == {"cloud", "local"}
+
+    def test_two_ollama_failover_between_them(self):
+        eps = _two_ollama()
+        lb = LoadBalancer(eps, algorithm="sticky")
+        first = lb.acquire(key="a")
+        lb.release(first, success=False)
+        failover = lb.acquire(key="a")
+        assert failover is not first
 
 
 class TestOllamaFallbackDisabled:

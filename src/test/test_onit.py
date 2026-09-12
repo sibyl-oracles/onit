@@ -503,6 +503,33 @@ class TestOnItInitialize:
         assert onit.load_balancer.hosts == ["http://gpu-a:8000/v1",
                                             "http://gpu-b:8000/v1"]
 
+    def test_two_models_on_one_host_are_two_endpoints(self, tmp_path):
+        """Ollama cloud is one host serving many models, so a repeated URL
+        with a different model is not a duplicate. Keying on the URL alone
+        dropped every model after the first."""
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"},
+            {"host": "https://ollama.com", "model": "qwen3:cloud"},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.load_balancer.hosts == ["https://ollama.com"] * 2
+        assert [ep.model for ep in onit.load_balancer.endpoints] == [
+            "glm-5.3:cloud", "qwen3:cloud"]
+
+    def test_the_same_model_twice_on_one_host_is_still_dropped(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        del cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"},
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"},
+        ]
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert len(onit.load_balancer.endpoints) == 1
+
     def test_endpoints_list_takes_precedence_over_host_pair(self, tmp_path):
         cfg = _make_config(tmp_path)
         cfg["serving"]["host2"] = "http://legacy2:8000/v1"

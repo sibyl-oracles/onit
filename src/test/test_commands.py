@@ -298,6 +298,34 @@ class TestHostAdd:
         assert len(agent.load_balancer.endpoints) == 2
 
     @pytest.mark.asyncio
+    async def test_a_second_model_on_one_host_is_added(self, agent):
+        """One Ollama cloud host serves many models. A second model on a URL
+        already in the rotation is a new endpoint, not a duplicate."""
+        out = await commands.cmd_host(
+            agent, "add http://localhost:8000/v1 Qwen3-8B")
+        assert "already in the rotation" not in out
+        assert len(agent.load_balancer.endpoints) == 3
+        assert agent.load_balancer.endpoints[-1].model == "Qwen3-8B"
+
+    @pytest.mark.asyncio
+    async def test_a_second_model_without_a_name_says_which_to_give(self, agent):
+        """The same URL with no model is genuinely ambiguous — auto-detect
+        would just repeat the first endpoint's model."""
+        out = await commands.cmd_host(agent, "add http://localhost:8000/v1")
+        assert "Name the model" in out
+        assert len(agent.load_balancer.endpoints) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_url_shared_by_two_models_is_ambiguous_to_remove(self, agent):
+        await commands.cmd_host(agent, "add http://localhost:8000/v1 Qwen3-8B")
+        out = await commands.cmd_host(agent, "rm http://localhost:8000/v1")
+        assert "2 times" in out
+        assert len(agent.load_balancer.endpoints) == 3
+        # A row number still resolves it.
+        await commands.cmd_host(agent, "rm 3")
+        assert len(agent.load_balancer.endpoints) == 2
+
+    @pytest.mark.asyncio
     async def test_a_bare_hostname_is_rejected(self, agent):
         out = await commands.cmd_host(agent, "add gpu-3:8000")
         assert "http://" in out
@@ -761,9 +789,43 @@ class TestSave:
         assert "removed" in out and "http://localhost:8001/v1" in out
 
     def test_saving_an_unchanged_list_says_so(self, agent):
-        self._write({"serving": {"host": "http://localhost:8000/v1",
-                                 "host2": "http://localhost:8001/v1"}})
+        """The file already records what the session is running, models
+        included — a model is part of an endpoint's identity, so a file that
+        names the host but not the model is not the same list."""
+        self._write({"serving": {"endpoints": [
+            {"host": "http://localhost:8000/v1", "model": "Qwen3-30B"},
+            {"host": "http://localhost:8001/v1"}]}})
         assert "already saved" in commands.cmd_save(agent)
+
+    def test_a_second_model_on_one_host_is_saved_and_reported(self, agent):
+        """One Ollama cloud host serves many models. The second one is a new
+        endpoint, not a repeat of the first, and \\save has to record it."""
+        self._write({"serving": {"endpoints": [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}})
+        agent.load_balancer = LoadBalancer([
+            ServerEndpoint(host="https://ollama.com", model="glm-5.3:cloud"),
+            ServerEndpoint(host="https://ollama.com", model="qwen3:cloud"),
+        ], "sticky")
+        out = commands.cmd_save(agent)
+        assert "qwen3:cloud" in out and "added" in out
+        saved = self._read()["serving"]["endpoints"]
+        assert [e["model"] for e in saved] == ["glm-5.3:cloud", "qwen3:cloud"]
+
+    def test_two_models_on_one_host_keep_their_own_keys(self, agent):
+        """A URL-keyed lookup would let the last entry read win and hand its
+        api_key to the other model on the same host."""
+        self._write({"serving": {"endpoints": [
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud",
+             "api_key": "sk-first"},
+            {"host": "https://ollama.com", "model": "qwen3:cloud",
+             "api_key": "sk-second"}]}})
+        agent.load_balancer = LoadBalancer([
+            ServerEndpoint(host="https://ollama.com", model="glm-5.3:cloud"),
+            ServerEndpoint(host="https://ollama.com", model="qwen3:cloud"),
+        ], "sticky")
+        commands.cmd_save(agent)
+        saved = self._read()["serving"]["endpoints"]
+        assert [e.get("api_key") for e in saved] == ["sk-first", "sk-second"]
 
     def test_it_writes_a_config_that_did_not_exist(self, agent):
         assert not self.path.exists()
