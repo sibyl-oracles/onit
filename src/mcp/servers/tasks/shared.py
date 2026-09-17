@@ -33,7 +33,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Default constants (servers may override via their own module-level values)
-MAX_OUTPUT_SIZE = 100000  # 100KB max output
+# 32k chars ≈ 8k tokens; the result store holds the rest behind a handle.
+MAX_OUTPUT_SIZE = 32000
 
 # How long a server holds an idle keep-alive connection open before closing it.
 #
@@ -270,7 +271,7 @@ def search_document_impl(
             "format": file_format,
             "truncated": len(matches) >= max_matches,
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -328,7 +329,12 @@ def search_directory_impl(
                         results.append({
                             "file": parts[0],
                             "line_number": int(parts[1]) if parts[1].isdigit() else parts[1],
-                            "content": parts[2].strip()
+                            # Clip the match line: a minified bundle or a
+                            # data blob matched by a loose pattern can carry
+                            # a megabyte on one line, and grep results are
+                            # re-read, not quoted.  300 chars is a full
+                            # sentence of context; the file is one read away.
+                            "content": parts[2].strip()[:300]
                         })
 
         return json.dumps({
@@ -339,7 +345,7 @@ def search_directory_impl(
             "file_pattern": file_pattern,
             "truncated": len(results) >= max_results,
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -424,7 +430,7 @@ def extract_tables_impl(
             "file": file_path,
             "format": ext.lstrip('.'),
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -530,7 +536,7 @@ def find_files_impl(
             "pattern": name_pattern,
             "truncated": len(files) >= max_results,
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -610,7 +616,7 @@ def transform_text_impl(
             "operation": operation,
             "expression": expression,
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -729,7 +735,7 @@ def get_document_context_impl(
             "file": file_path,
             "format": file_format,
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -849,7 +855,7 @@ def extract_pdf_images_impl(
             "images": extracted_images,
             "image_count": len(extracted_images),
             "status": "success" if extracted_images else "no images found"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -876,12 +882,12 @@ Args:
   - "text"   : Return file content. Supports text files and PDFs; binary files return metadata.
   - "tables" : Extract tables from PDF or markdown. Returns structured rows/headers.
   - "images" : Extract embedded images from a PDF and save them locally.
-- encoding: Text encoding for "text" mode (default: utf-8)
-- max_chars: Max characters for "text" mode (default: 100000)
+- encoding: Text encoding for "text" mode
+- max_chars: Max characters for "text" mode
 - table_index: For "tables" — specific table to return (1-based, default: all)
-- output_format: For "tables" — "json" or "markdown" (default: "json")
-- output_dir: For "images" — directory to save extracted images (default: data_path/pdf_images)
-- min_size: For "images" — minimum image dimension in pixels to extract (default: 100)
+- output_format: For "tables" — "json" or "markdown"
+- output_dir: For "images" — directory to save extracted images
+- min_size: For "images" — minimum image dimension in pixels to extract
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 There is no offset/limit paging: use max_chars to bound a large file.
@@ -892,6 +898,67 @@ Returns JSON, varying by mode:
   images: {pdf_path, output_dir, images, image_count, status}"""
 
 READ_FILE_MODES = ("text", "tables", "images")
+
+# The single description for the serve tool.  Both servers that offer serve
+# register the same name with the same signature, so per-server text would be
+# the same tool-name collision READ_FILE_DESCRIPTION exists to prevent.
+SERVE_DESCRIPTION = """Run anything that takes longer than a few minutes, in the background.
+
+USE THIS INSTEAD OF bash for any command that may run past bash's 300-second
+timeout — installs, builds, full test suites, training runs, data downloads,
+migrations — and for web servers and daemons, which never exit on their own.
+A process started here has no time limit: it is detached, so it keeps running
+between tool calls. Start it, then poll with "status" and "logs" while you do
+other work. Running such a command through bash instead just burns the timeout
+and gets the command killed partway through.
+
+Actions:
+- start   : Launch a command as a background process. Returns name, pid, and log paths.
+- stop    : Stop a running process by name or pid.
+- status  : Check if a process is running (name or pid).
+- logs    : Tail stdout/stderr logs for a process (name or pid).
+- list    : List all managed processes with running/stopped status.
+- restart : Stop then re-start a named process using its saved command.
+
+Args:
+- action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
+- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080", "pytest -q")
+- name    : Human-readable label for the process. Used to reference it later.
+- pid     : Process ID — alternative to name for stop/status/logs
+- cwd     : Working directory for the process. Can be any accessible directory.
+- lines   : Number of log lines to return for "logs" action
+- data_path : Session working directory — set automatically by the harness; leave unset.
+
+Returns JSON with process details and, for "logs", stdout/stderr tail.
+
+A command that finishes on its own reports status "stopped" — that means done,
+not failed, and the exit code is not recorded. When you need to know whether it
+succeeded, append it to the command: "pytest -q; echo EXIT=$?", then read the
+tail of the log once status is "stopped"."""
+
+GITHUB_REPO_DESCRIPTION = """Create, get, list, fork, or delete GitHub repositories via the GitHub API.
+
+Requires GITHUB_TOKEN environment variable (personal access token with repo scope).
+
+Actions:
+- create : Create a new repository (user or org). Returns repo details.
+- get    : Get info about an existing repository.
+- list   : List repositories for the authenticated user or an org.
+- fork   : Fork an existing repository into the authenticated user's account or an org.
+- delete : Delete a repository (requires admin access).
+
+Args:
+- action      : One of "create", "get", "list", "fork", "delete" (required)
+- name        : Repository name — required for create, get (owner/repo), fork (owner/repo), delete (owner/repo)
+- description : Repository description (create only, optional)
+- private     : Make repo private (create only)
+- auto_init   : Initialize with a README (create only)
+- gitignore_template : e.g. "Python", "Node" (create only, optional)
+- license_template   : e.g. "mit", "apache-2.0" (create only, optional)
+- org         : Organization name — if set for create/list, targets the org instead of the user
+- per_page    : Results per page for list (max: 100)
+
+Returns JSON: repo details for create/get/fork; list of repos for list; status for delete."""
 
 
 def read_file_impl(
@@ -944,11 +1011,11 @@ Args:
 - pattern: Regex to match (required for mode="pattern", e.g., "error.*timeout")
 - query: Question or topic (required for mode="context", e.g., "what is the conclusion?")
 - keywords: Extra keywords for mode="context" (comma-separated)
-- case_sensitive: Case-sensitive matching for mode="pattern" (default: false)
-- context_lines: Lines of context around each match for mode="pattern" (default: 3)
-- max_matches: Max matches for mode="pattern" (default: 50)
-- context_chars: Characters of context per section for mode="context" (default: 500)
-- max_sections: Max sections for mode="context" (default: 5)
+- case_sensitive: Case-sensitive matching for mode="pattern"
+- context_lines: Lines of context around each match for mode="pattern"
+- max_matches: Max matches for mode="pattern"
+- context_chars: Characters of context per section for mode="context"
+- max_sections: Max sections for mode="context"
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON:

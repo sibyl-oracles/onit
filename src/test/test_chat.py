@@ -1072,8 +1072,12 @@ class TestSchemaValidationOnDispatch:
         assert messages[-1]["content"] == "results"
 
     def test_coerced_value_is_what_the_history_records(self):
+        """The tool message keeps only content/name/tool_call_id — arguments
+        are already in the preceding assistant tool_call and would otherwise
+        be duplicated into every later turn (token-usage fix)."""
         _, messages = self._run({"query": "cats", "depth": "3"})
-        assert messages[-1]["parameters"]["depth"] == 3
+        assert "parameters" not in messages[-1]
+        assert messages[-1]["content"] == "results"
 
     def test_multiple_problems_are_reported_together(self):
         _, messages = self._run({"query": 5, "mode": "medium"})
@@ -3494,10 +3498,11 @@ class TestDefaultTokenBudgets:
 
     @pytest.mark.asyncio
     async def test_unreported_window_falls_back_to_the_default(self, tmp_path):
-        """262144 assumed, so the 131072 output default still fits under it."""
+        """262144 assumed; the 16384 output default reserves ~6% of it, so the
+        compaction threshold sits near 0.89 rather than clamping to 0.50."""
         from model.serving.chat import (DEFAULT_MAX_TOKENS,
                                         DEFAULT_MAX_CONTEXT_TOKENS)
-        assert DEFAULT_MAX_TOKENS == 131072
+        assert DEFAULT_MAX_TOKENS == 16384
         assert DEFAULT_MAX_CONTEXT_TOKENS == 262144
         kwargs = await self._first_call_kwargs(tmp_path, detected=None)
         assert kwargs["max_tokens"] == DEFAULT_MAX_TOKENS

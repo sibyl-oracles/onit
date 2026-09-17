@@ -209,7 +209,7 @@ def _read_pdf(url: str) -> str:
         pdf_file = BytesIO(response.content)
         reader = PdfReader(pdf_file)
         text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        return text.strip()[:50000]
+        return text.strip()[:24000]
     except Exception as e:
         return f"Error reading PDF: {str(e)}"
 
@@ -401,7 +401,7 @@ def _search_impl(
                     "source": r.get('source', ''),
                     "url": r.get('url', '')
                 })
-            return json.dumps(formatted, indent=2)
+            return json.dumps(formatted)
         else:
             # Use the existing WebSearch for general queries
             search_tool = WebSearch()
@@ -419,16 +419,13 @@ local_search tool is available, call local_search first and use web search
 only for information the local documents cannot answer (news, public facts,
 verification of local results).
 
-Choosing `type`: "web" results carry NO date, so they cannot establish how current
-a fact is. When the answer depends on recency — a current figure, a latest version,
-who currently holds a position, anything that changes — use type="news", whose
-results carry a `date`, or fetch the page and read its date. Use "web" for facts
-that do not move.
+Choosing `type`: "web" results carry NO date — use "news" (results carry a
+`date`) whenever the answer depends on recency; use "web" for facts that do not move.
 
 Args:
 - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")
-- type: "news" for dated, recent items, "web" for general undated search (default: "web")
-- max_results: Number of results (default: 5, max: 10)
+- type: "news" for dated, recent items, "web" for general undated search
+- max_results: Number of results (max: 10)
 
 Returns JSON: [{title, snippet, url, source}] for "web";
 [{title, snippet, url, source, date}] for "news"."""
@@ -457,10 +454,10 @@ else:
 
 Args:
 - url: Webpage URL to fetch (e.g., "https://example.com/article")
-- extract_media: Extract image/video URLs (default: True)
-- download_media: Download media files locally (default: False)
-- output_dir: Save location for downloads within data_path folder (default: data_path/media)
-- media_limit: Max files to download (default: 10)
+- extract_media: Extract image/video URLs
+- download_media: Download media files locally
+- output_dir: Save location for downloads within data_path folder
+- media_limit: Max files to download
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {title, url, content, images, videos, downloaded}"""
@@ -493,7 +490,7 @@ def fetch_content(
                 "url": url,
                 "content": pdf_text,
                 "content_type": "application/pdf"
-            }, indent=2)
+            })
 
         # Fetch the page
         session = _get_session()
@@ -572,7 +569,7 @@ def fetch_content(
         result = {
             "title": title,
             "url": url,
-            "content": content[:50000],  # Limit content length
+            "content": content[:24000],  # Limit content length
         }
 
         if extract_media:
@@ -593,7 +590,7 @@ def fetch_content(
             result["downloaded"] = downloaded
             result["download_dir"] = output_path
 
-        return json.dumps(result, indent=2)
+        return json.dumps(result)
 
     except Exception as e:
         return json.dumps({"error": str(e), "url": url})
@@ -677,7 +674,7 @@ def _get_weather_impl(
                     })
                 result["forecast_5day"] = forecast_list
 
-        return json.dumps(result, indent=2)
+        return json.dumps(result)
 
     except Exception as e:
         return json.dumps({"error": f"Weather fetch failed: {str(e)}"})
@@ -691,7 +688,7 @@ if not os.environ.get('ONIT_DISABLE_WEATHER'):
 
     Args:
     - place: City or location (e.g., "Tokyo, Japan"). Auto-detects from IP if omitted
-    - forecast: Include 5-day forecast (default: False)
+    - forecast: Include 5-day forecast
 
     Returns JSON: {location, current: {description, temperature_c, humidity_percent, wind_speed_ms, sunrise, sunset}, forecast_5day}
 
@@ -714,8 +711,8 @@ else:
 
 Args:
 - pdf_path: Path to PDF file within data_path folder or URL (required)
-- output_dir: Directory within data_path folder to save extracted images (default: data_path/pdf_images)
-- min_size: Minimum image dimension in pixels to extract (default: 100)
+- output_dir: Directory within data_path folder to save extracted images
+- min_size: Minimum image dimension in pixels to extract
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}"""

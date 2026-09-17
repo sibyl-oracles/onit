@@ -64,6 +64,8 @@ from src.mcp.servers.tasks.shared import (
     validate_required as _validate_required,
     READ_FILE_DESCRIPTION,
     SEARCH_DOCUMENT_DESCRIPTION,
+    GITHUB_REPO_DESCRIPTION,
+    SERVE_DESCRIPTION,
 )
 
 
@@ -129,10 +131,10 @@ if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
 
 Args:
 - url: Webpage URL to fetch (e.g., "https://example.com/article")
-- extract_media: Extract image/video URLs (default: True)
-- download_media: Download media files locally (default: False)
-- output_dir: Save location for downloads within data_path folder (default: data_path/media)
-- media_limit: Max files to download (default: 10)
+- extract_media: Extract image/video URLs
+- download_media: Download media files locally
+- output_dir: Save location for downloads within data_path folder
+- media_limit: Max files to download
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {title, url, content, images, videos, downloaded}"""
@@ -164,7 +166,7 @@ if not os.environ.get('ONIT_DISABLE_WEATHER'):
 
     Args:
     - place: City or location (e.g., "Tokyo, Japan"). Auto-detects from IP if omitted
-    - forecast: Include 5-day forecast (default: False)
+    - forecast: Include 5-day forecast
 
     Returns JSON: {location, current: {description, temperature_c, humidity_percent, wind_speed_ms, sunrise, sunset}, forecast_5day}
 
@@ -200,8 +202,8 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
 
 Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
-- cwd: Working directory — must be within data_path (default: data_path)
-- timeout: Max seconds to wait (default: 300, and 300 is also the hard ceiling)
+- cwd: Working directory — must be within data_path
+- timeout: Max seconds to wait (300 is the hard ceiling)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
@@ -254,8 +256,8 @@ Files are created within the working directory with owner-only access.
 Args:
 - path: FULL absolute file path (e.g., "data_path/output.txt"). Always use the complete working directory path — never use relative paths.
 - content: Text content to write (required)
-- mode: "write" (overwrite) or "append" (add to end) (default: "write")
-- encoding: Text encoding (default: utf-8)
+- mode: "write" (overwrite) or "append" (add to end)
+- encoding: Text encoding
 
 Returns JSON: {path, size_bytes, mode, status}"""
 )
@@ -281,7 +283,7 @@ Args:
 - old_string: The exact string to find and replace (must exist in the file)
 - new_string: The replacement string
 - replace_all: Replace every occurrence of old_string (default: false, replaces first only)
-- encoding: Text encoding (default: utf-8)
+- encoding: Text encoding
 
 Returns JSON: {path, replacements, status}"""
 )
@@ -300,38 +302,7 @@ def edit_file(
 
 @mcp.tool(
     title="Serve",
-    description="""Run anything that takes longer than a few minutes, in the background.
-
-USE THIS INSTEAD OF bash for any command that may run past bash's 300-second
-timeout — installs, builds, full test suites, training runs, data downloads,
-migrations — and for web servers and daemons, which never exit on their own.
-A process started here has no time limit: it is detached, so it keeps running
-between tool calls. Start it, then poll with "status" and "logs" while you do
-other work. Running such a command through bash instead just burns the timeout
-and gets the command killed partway through.
-
-Actions:
-- start   : Launch a command as a background process. Returns name, pid, and log paths.
-- stop    : Stop a running process by name or pid.
-- status  : Check if a process is running (name or pid).
-- logs    : Tail stdout/stderr logs for a process (name or pid).
-- list    : List all managed processes with running/stopped status.
-- restart : Stop then re-start a named process using its saved command.
-
-Args:
-- action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
-- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080", "pytest -q")
-- name    : Human-readable label for the process (default: auto-generated)
-- pid     : Process ID — alternative to name for stop/status/logs
-- cwd     : Working directory for the process. Can be any accessible directory.
-- lines   : Number of log lines to return for "logs" action (default: 50)
-
-Returns JSON with process details and, for "logs", stdout/stderr tail.
-
-A command that finishes on its own reports status "stopped" — that means done,
-not failed, and the exit code is not recorded. When you need to know whether it
-succeeded, append it to the command: "pytest -q; echo EXIT=$?", then read the
-tail of the log once status is "stopped"."""
+    description=SERVE_DESCRIPTION
 )
 def serve(
     action: Optional[str] = None,
@@ -358,9 +329,9 @@ Args:
 - path: Directory to search in (required)
 - pattern: Regex search pattern (required, e.g., "def train", "TODO", "import.*torch")
 - file_pattern: Glob to filter files (default: "*" for all, e.g., "*.py", "*.md")
-- case_sensitive: Case-sensitive matching (default: false)
-- include_hidden: Include hidden files/directories (default: false)
-- max_results: Maximum matches to return (default: 100)
+- case_sensitive: Case-sensitive matching
+- include_hidden: Include hidden files/directories
+- max_results: Maximum matches to return
 
 Returns JSON: {results, total_matches, pattern, directory, file_pattern, status}
 Each result includes: {file, line_number, content}"""
@@ -412,29 +383,7 @@ from src.mcp.servers.tasks.github.mcp_server import (
 
 @mcp.tool(
     title="GitHub Repository",
-    description="""Create, get, list, fork, or delete GitHub repositories via the GitHub API.
-
-Requires GITHUB_TOKEN environment variable (personal access token with repo scope).
-
-Actions:
-- create : Create a new repository (user or org). Returns repo details.
-- get    : Get info about an existing repository.
-- list   : List repositories for the authenticated user or an org.
-- fork   : Fork an existing repository into the authenticated user's account or an org.
-- delete : Delete a repository (requires admin access).
-
-Args:
-- action      : One of "create", "get", "list", "fork", "delete" (required)
-- name        : Repository name — required for create, get (owner/repo), fork (owner/repo), delete (owner/repo)
-- description : Repository description (create only, optional)
-- private     : Make repo private (create only, default: false)
-- auto_init   : Initialize with a README (create only, default: true)
-- gitignore_template : e.g. "Python", "Node" (create only, optional)
-- license_template   : e.g. "mit", "apache-2.0" (create only, optional)
-- org         : Organization name — if set for create/list, targets the org instead of the user
-- per_page    : Results per page for list (default: 30, max: 100)
-
-Returns JSON: repo details for create/get/fork; list of repos for list; status for delete."""
+    description=GITHUB_REPO_DESCRIPTION
 )
 def github_repo(
     action: Optional[str] = None,

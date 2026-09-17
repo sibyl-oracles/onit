@@ -883,8 +883,10 @@ class OnIt(BaseModel):
     # the list short of what local_search put in front of the model.
     max_documents: int = Field(default=DEFAULT_MAX_DOCUMENTS)
     # Prior task/response pairs replayed into each request. They are re-sent
-    # every turn, so a long tail costs prompt tokens on all of them.
-    history_turns: int = Field(default=10)
+    # every turn, so a long tail costs prompt tokens on all of them.  6 rather
+    # than 10: the thread of the last six exchanges carries the working
+    # context; older ones are what compaction summaries are for.
+    history_turns: int = Field(default=6)
     # Build the instruction by calling the prompt function directly instead of
     # reaching PromptsMCPServer over the network. Set false when that server
     # runs a customized prompt rather than the one shipped here.
@@ -1345,7 +1347,7 @@ class OnIt(BaseModel):
         self.topic = self.config_data.get('topic', None)
         self.prompt_intro = self.config_data.get('prompt_intro', None)
         self.max_documents = int(self.config_data.get('max_documents', DEFAULT_MAX_DOCUMENTS))
-        self.history_turns = int(self.config_data.get('history_turns', 10))
+        self.history_turns = int(self.config_data.get('history_turns', 6))
         self.prompt_in_process = bool(self.config_data.get('prompt_in_process', True))
         self.timeout = self.config_data.get('timeout', None)  # default timeout 300 seconds
         if self.timeout is not None and self.timeout < 0:

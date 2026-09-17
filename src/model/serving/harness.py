@@ -420,7 +420,7 @@ class HarnessTools:
         elif status["pct_used"] >= 70:
             status["detail"] = ("Context is filling. Save anything you still need with "
                                 "note_write now — a summarization will drop the detail.")
-        return json.dumps(status, indent=2)
+        return json.dumps(status)
 
     def note_write(self, key: str, text: str) -> str:
         if not isinstance(key, str) or not _KEY_RE.match(key):
@@ -454,7 +454,7 @@ class HarnessTools:
             "chars": len(text),
             "replaced": key in existing,
             "notes_saved": self.note_keys(),
-        }, indent=2)
+        })
 
     def note_read(self, key: str) -> str:
         if not isinstance(key, str) or not _KEY_RE.match(key):

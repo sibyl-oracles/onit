@@ -475,7 +475,7 @@ def _index_documents_impl(
         base = _session_base(data_path)
 
         if status_only:
-            return json.dumps({**_combined_status(base), "status": "success"}, indent=2)
+            return json.dumps({**_combined_status(base), "status": "success"})
 
         corpus = _validate_corpus_path(path, base=base) if path else _default_corpus(base)
         if not corpus or not os.path.isdir(corpus):
@@ -506,7 +506,7 @@ def _index_documents_impl(
         _LAST_REFRESH[corpus] = time.monotonic()
 
         scope = "shared" if shared else "session"
-        return json.dumps({**result, "scope": scope, "status": "success"}, indent=2)
+        return json.dumps({**result, "scope": scope, "status": "success"})
 
     except Exception as e:
         return json.dumps({"error": str(e), "path": path, "status": "error"})
@@ -641,7 +641,7 @@ def _local_search_impl(
             "total_documents": sum(len(i.documents) for i in indexes),
             "total_chunks": sum(len(i.chunks) for i in indexes),
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({"error": str(e), "query": query, "status": "error"})
@@ -661,11 +661,11 @@ Supported formats: pdf, md, txt, csv, docx, xlsx
 
 Args:
 - path: Directory to index (default: documents_path, else data_path)
-- recursive: Recurse into subdirectories (default: true)
-- rebuild: Discard the existing index and re-ingest everything (default: false)
-- chunk_size: Characters per chunk (default: 1600)
-- chunk_overlap: Character overlap between chunks (default: 200)
-- status_only: Only report index statistics without ingesting (default: false)
+- recursive: Recurse into subdirectories
+- rebuild: Discard the existing index and re-ingest everything
+- chunk_size: Characters per chunk
+- chunk_overlap: Character overlap between chunks
+- status_only: Only report index statistics without ingesting
 
 Returns JSON: {directory, indexed, skipped_unchanged, removed, errors,
 total_documents, total_chunks, embedding_model, scope, status}"""
@@ -678,7 +678,7 @@ web search.
 
 Args:
 - query: Natural-language query or keywords (required)
-- top_k: Number of results (default: 5, max: 20)
+- top_k: Number of results (max: 20)
 - method: "hybrid" (default; BM25 + embeddings fused), "bm25" (lexical only),
   or "dense" (embeddings only — requires ONIT_EMBEDDING_HOST/MODEL)
 - path: Optional corpus directory to (re)index before searching
@@ -688,23 +688,14 @@ results: [{rank, score, file, location, text}],
 documents: [{file, best_rank, matched_at, opening, num_chunks}],
 total_results, total_documents, total_chunks, status}
 
-Read `documents` first. One entry per document behind the results, carrying
+Read `documents` first: one entry per document behind the results, carrying
 that document's opening — its title and usually the summary under it — which
 is what identifies the document and what its matched excerpts routinely do
-not show. `results` are the individual matched chunks, ranked; one long
-document can fill several slots, so repeated hits there measure document
-length, not relevance.
-
-The opening plus the matched excerpts answer most questions outright. When
-they do not, do not read the whole file: call `search_document` with
-mode="context" and the question as `query` to pull the relevant passages out
-of it. Reserve `read_file` for short documents, or when the passages you got
-back point at something specific you still need.
-
-A README or other index file names every topic in the corpus and so ranks
-high on any query; follow it to the document it points at instead of
-answering from it. If every top hit comes from the same document and none of
-them answer the question, re-query with different terms."""
+not show. `results` are the individual matched chunks, ranked; repeated hits
+on one long document measure document length, not relevance. When openings
+plus excerpts do not answer the question, call `search_document` with
+mode="context" to pull the relevant passages out of a specific file; reserve
+`read_file` for short documents."""
 
 
 # Register as MCP tools only when local search is not disabled

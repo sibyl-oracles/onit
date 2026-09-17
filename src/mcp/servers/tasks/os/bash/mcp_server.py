@@ -72,6 +72,7 @@ from src.mcp.servers.tasks.shared import (
     search_document_dispatch_impl,
     READ_FILE_DESCRIPTION,
     SEARCH_DOCUMENT_DESCRIPTION,
+    SERVE_DESCRIPTION,
 )
 from src.mcp.servers.tasks.os.bash.command_policy import (
     ALLOW,
@@ -123,7 +124,9 @@ mcp = FastMCP("Bash MCP Server")
 
 # Constants
 DEFAULT_TIMEOUT = 300
-MAX_OUTPUT_SIZE = 100000  # 100KB max output
+# 32k chars ≈ 8k tokens: past this the result store holds the whole
+# output behind a handle, and the head is what the model reads first.
+MAX_OUTPUT_SIZE = 32000
 
 # Data path for file creation (set via options['data_path'] in run())
 # All file writes are confined to this directory. Never use home folder.
@@ -1514,31 +1517,23 @@ def _validate_bash_command(command: str, base: str | None = None) -> str | None:
 
 Args:
 - command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
-- cwd: FULL absolute path to working directory. Always use the complete working directory path from your system prompt (e.g., "/tmp/onit/data/<session_id>") - never use relative paths.
-- timeout: Max seconds to wait (default: 300, and 300 is also the hard ceiling)
+- cwd: FULL absolute path to working directory — never relative.
+- timeout: Max seconds to wait (300 is the hard ceiling)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
 
 Every path the command names must resolve inside that working directory — the
 check covers reads and traversal, not just writes. Root searches at the working
-directory (`find <cwd> -name ...`), never at `/` or `$HOME`, and drop fallbacks
-like `cd <cwd> || cd ~`: one path outside the directory blocks the whole
-command and puts a question in front of the user, so the fallback costs you the
-command it was meant to save.
+directory, never at `/` or `$HOME`.
 
 A command needing a person's approval returns {status: "needs_approval"} and does
 NOT run. The harness handles that exchange and returns either the command's
 output or a refusal — do not re-issue the call yourself.
 
 For work that may take longer than 300 seconds — installs, builds, full test
-suites, training runs — use the serve tool instead. It runs the command in the
-background with no time limit and lets you poll its logs. Raising this timeout
-cannot get you past 300; the command is killed there regardless. Servers and
-daemons likewise belong in serve: run in the foreground here they burn the whole
-timeout and are then killed.
-
-Container mode (ONIT_CONTAINER=1): heavy ML packages (torch, transformers, accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, phonemizer) are NOT preinstalled. Install them on demand with `onit-install-ml [torch|hf|extras|all]` — it picks CUDA vs CPU wheels automatically and writes to the persistent data volume, so the install happens once per host."""
+suites, training runs — use the serve tool instead. Servers and daemons
+likewise belong in serve."""
 )
 async def bash(
     command: Optional[str] = None,
@@ -1613,6 +1608,18 @@ async def bash(
         if not stdout and not stderr and returncode == 0:
             stdout = "Command completed successfully (no output)"
 
+        # Container-only hint, shown only when it can help: a missing ML
+        # package inside ONIT_CONTAINER is fixed by onit-install-ml.  Kept out
+        # of the tool description so it is not re-sent on every request.
+        if (os.environ.get("ONIT_CONTAINER") == "1" and returncode != 0
+                and re.search(r"ModuleNotFoundError|No module named|ImportError", stderr or "")):
+            stdout = (stdout or "") + (
+                "\n[Hint] Container mode: heavy ML packages (torch, transformers, "
+                "accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, "
+                "phonemizer) are not preinstalled. Install with "
+                "`onit-install-ml [torch|hf|extras|all]` — picks CUDA vs CPU wheels "
+                "automatically and writes to the persistent data volume.")
+
         return json.dumps({
             "stdout": stdout,
             "stderr": stderr if stderr else None,
@@ -1620,7 +1627,7 @@ async def bash(
             "cwd": work_dir,
             "command": command,
             "status": "success" if returncode == 0 else "failed"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -1758,7 +1765,7 @@ def _read_binary(file_path: str, file_size: int, file_ext: str) -> str:
         "type": file_type,
         "note": f"Binary file ({file_type}). Content not returned.",
         "status": "success"
-    }, indent=2)
+    })
 
 
 def _read_pdf(file_path: str, file_size: int, max_chars: int) -> str:
@@ -1790,7 +1797,7 @@ def _read_pdf(file_path: str, file_size: int, max_chars: int) -> str:
             "format": "pdf",
             "pages": len(reader.pages),
             "status": "success"
-        }, indent=2)
+        })
 
     except ImportError:
         return json.dumps({
@@ -1852,7 +1859,7 @@ def _read_text(file_path: str, file_size: int, file_ext: str, encoding: str, max
             result["truncated"] = True
             result["truncated_at"] = max_chars
 
-        return json.dumps(result, indent=2)
+        return json.dumps(result)
 
     except UnicodeDecodeError:
         # Try with latin-1 as fallback
@@ -1881,8 +1888,8 @@ Files are created within the working directory with owner-only access.
 Args:
 - path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/output.txt"). Always use the complete working directory path from your system prompt - never use relative paths.
 - content: Text content to write (required)
-- mode: "write" (overwrite) or "append" (add to end) (default: "write")
-- encoding: Text encoding (default: utf-8)
+- mode: "write" (overwrite) or "append" (add to end)
+- encoding: Text encoding
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {path, size_bytes, mode, status}"""
@@ -1922,7 +1929,7 @@ def write_file(
             "mode": mode,
             "encoding": encoding,
             "status": "success"
-        }, indent=2)
+        })
 
     except Exception as e:
         return json.dumps({
@@ -1983,7 +1990,7 @@ Args:
 - old_string: The exact string to find and replace (must be unique in the file, or use replace_all)
 - new_string: The replacement string
 - replace_all: Replace every occurrence of old_string (default: false, replaces first occurrence only)
-- encoding: Text encoding (default: utf-8)
+- encoding: Text encoding
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON: {path, replacements, status}"""
@@ -2025,7 +2032,7 @@ def edit_file(
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(new_content)
 
-        return json.dumps({"path": file_path, "replacements": replacements, "status": "success"}, indent=2)
+        return json.dumps({"path": file_path, "replacements": replacements, "status": "success"})
 
     except Exception as e:
         return json.dumps({"error": str(e), "path": path, "status": "error"})
@@ -2094,8 +2101,13 @@ def _process_running(pid: int) -> bool:
         return True
 
 
-def _tail_file(path: str, lines: int) -> str:
-    """Return last `lines` lines of a file without loading it all into memory."""
+def _tail_file(path: str, lines: int, max_chars: int = 8000) -> str:
+    """Return last `lines` lines of a file without loading it all into memory.
+
+    max_chars bounds the tail as well: a process that logs a stack trace or a
+    progress bar every 50ms produces very long lines, and `lines` alone does
+    not bound the bytes.  8k chars ≈ 2k tokens is enough to see what a process
+    is doing; the log file itself stays on disk for a targeted read."""
     if not os.path.isfile(path):
         return ""
     try:
@@ -2115,46 +2127,22 @@ def _tail_file(path: str, lines: int) -> str:
                 chunk = f.read(read_size)
                 buf = chunk + buf
                 newlines_found += chunk.count(b"\n")
-        return b"\n".join(buf.split(b"\n")[-(lines + 1):]).decode("utf-8", errors="replace")
+                if len(buf) >= max_chars * 2:
+                    # Enough buffer to cover the requested line count even
+                    # with long lines; the final slice below applies the cap.
+                    break
+        text = b"\n".join(buf.split(b"\n")[-(lines + 1):]).decode("utf-8", errors="replace")
+        if len(text) > max_chars:
+            text = ("... [older log lines omitted — full log at "
+                    + str(path) + "]\n") + text[-max_chars:]
+        return text
     except Exception:
         return ""
 
 
 @mcp.tool(
     title="Serve",
-    description="""Run anything that takes longer than a few minutes, in the background.
-
-USE THIS INSTEAD OF bash for any command that may run past bash's 300-second
-timeout — installs, builds, full test suites, training runs, data downloads,
-migrations — and for web servers and daemons, which never exit on their own.
-A process started here has no time limit: it is detached, so it keeps running
-between tool calls. Start it, then poll with "status" and "logs" while you do
-other work. Running such a command through bash instead just burns the timeout
-and gets the command killed partway through.
-
-Actions:
-- start   : Launch a command as a background process. Returns name, pid, and log paths.
-- stop    : Stop a running process by name or pid.
-- status  : Check if a process is running (name or pid).
-- logs    : Tail stdout/stderr logs for a process (name or pid).
-- list    : List all managed processes with running/stopped status.
-- restart : Stop then re-start a named process using its saved command.
-
-Args:
-- action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
-- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080", "pytest -q")
-- name    : Human-readable label for the process (default: auto-generated). Used to reference it later.
-- pid     : Process ID — alternative to name for stop/status/logs
-- cwd     : Working directory for the process (default: DATA_PATH). Can be any accessible directory.
-- lines   : Number of log lines to return for "logs" action (default: 50)
-- data_path : Session working directory — set automatically by the harness; leave unset.
-
-Returns JSON with process details and, for "logs", stdout/stderr tail.
-
-A command that finishes on its own reports status "stopped" — that means done,
-not failed, and the exit code is not recorded. When you need to know whether it
-succeeded, append it to the command: "pytest -q; echo EXIT=$?", then read the
-tail of the log once status is "stopped"."""
+    description=SERVE_DESCRIPTION
 )
 def serve(
     action: Optional[str] = None,
@@ -2259,7 +2247,7 @@ def serve(
                 "stdout_log": stdout_log,
                 "stderr_log": stderr_log,
                 "status": "started",
-            }, indent=2)
+            })
 
         except Exception as e:
             return json.dumps({"error": str(e), "name": name, "status": "error"})
@@ -2288,7 +2276,7 @@ def serve(
             if _process_running(target_pid):
                 return json.dumps({"error": str(e), "name": name, "pid": target_pid, "status": "error"})
 
-        return json.dumps({"name": name, "pid": target_pid, "status": "stopped"}, indent=2)
+        return json.dumps({"name": name, "pid": target_pid, "status": "stopped"})
 
     # ── STATUS ─────────────────────────────────────────────────────────
     elif action == "status":
@@ -2314,7 +2302,7 @@ def serve(
             "stdout_log": entry["stdout_log"],
             "stderr_log": entry["stderr_log"],
             "status": "running" if running else "stopped",
-        }, indent=2)
+        })
 
     # ── LOGS ───────────────────────────────────────────────────────────
     elif action == "logs":
@@ -2340,7 +2328,7 @@ def serve(
             "status": "running" if running else "stopped",
             "stdout": stdout_tail or "(empty)",
             "stderr": stderr_tail or "(empty)",
-        }, indent=2)
+        })
 
     # ── LIST ───────────────────────────────────────────────────────────
     elif action == "list":
@@ -2367,7 +2355,7 @@ def serve(
         if dirty:
             _save_serve_registry(registry, base)
 
-        return json.dumps({"processes": processes, "total": len(processes), "status": "ok"}, indent=2)
+        return json.dumps({"processes": processes, "total": len(processes), "status": "ok"})
 
     # ── RESTART ────────────────────────────────────────────────────────
     elif action == "restart":
@@ -2466,7 +2454,7 @@ def send_file(
                     "size_bytes": file_size,
                     "download_url": f"{cb}/{filename}",
                     "status": "uploaded"
-                }, indent=2)
+                })
             except Exception as e:
                 return json.dumps({
                     "error": f"Upload failed: {str(e)}",
@@ -2587,9 +2575,9 @@ Args:
 - directory: FULL absolute directory path (e.g., "/tmp/onit/data/<session_id>"). Always use the complete working directory path from your system prompt — never use relative paths.
 - pattern: Search pattern (regex with -E flag)
 - file_pattern: File glob pattern (default: "*" for all files)
-- case_sensitive: Case-sensitive search (default: false)
-- include_hidden: Include hidden files (default: false)
-- max_results: Maximum results to return (default: 100)
+- case_sensitive: Case-sensitive search
+- include_hidden: Include hidden files
+- max_results: Maximum results to return
 
 Returns JSON: {results, total_files, total_matches, status}
 Each result includes: {file, line_number, content}"""
@@ -2627,7 +2615,7 @@ Tables are returned in a structured format with headers and rows.
 Args:
 - path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/report.pdf"). Always use the complete working directory path from your system prompt — never use relative paths.
 - table_index: Specific table index to extract (1-based, default: all)
-- output_format: Output format - "json" or "markdown" (default: "json")
+- output_format: Output format - "json" or "markdown"
 
 Returns JSON: {tables, total_tables, file, format, status}
 Each table includes: {headers, rows, row_count, page (for PDF)}"""
@@ -2658,10 +2646,10 @@ Args:
 - directory: FULL absolute directory path (e.g., "/tmp/onit/data/<session_id>"). Always use the complete working directory path from your system prompt — never use relative paths.
 - name_pattern: File name pattern (glob, e.g., "*.py", "test_*")
 - file_type: Type filter - "f" (file), "d" (directory), or None (all)
-- max_depth: Maximum directory depth (default: unlimited)
+- max_depth: Maximum directory depth
 - size_filter: Size filter (e.g., "+1M", "-100k", "50k")
 - modified_days: Modified within N days (e.g., 7 for last week)
-- max_results: Maximum results (default: 100)
+- max_results: Maximum results
 
 Returns JSON: {files, total_files, directory, status}"""
 )
@@ -2699,7 +2687,7 @@ Useful for extracting, replacing, or reformatting text content.
 
 Args:
 - input_text: Text to transform (or path to file if is_file=true)
-- is_file: If true, input_text is treated as a file path (default: false)
+- is_file: If true, input_text is treated as a file path
 - operation: Transformation type - "sed", "awk", or "tr"
 - expression: The sed/awk/tr expression to apply
   - sed: e.g., "s/old/new/g", "/pattern/d"
@@ -2744,8 +2732,8 @@ Args:
 - path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/document.pdf"). Always use the complete working directory path — never use relative paths.
 - query: The question or topic to find context for
 - keywords: Additional keywords to search (comma-separated)
-- context_chars: Characters of context around matches (default: 500)
-- max_sections: Maximum context sections to return (default: 5)
+- context_chars: Characters of context around matches
+- max_sections: Maximum context sections to return
 
 Returns JSON: {sections, query, file, status}
 Each section includes: {content, relevance_keywords, position}"""

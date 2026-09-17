@@ -109,10 +109,16 @@ class TestPut:
         for _ in range(MAX_STORED_RESULTS + 5):
             store.put("bash", "x" * 50000)
         stored = store.stored()
-        assert len(stored) == MAX_STORED_RESULTS
-        # The most recent survive; the first handles are what went.
-        assert stored[-1]["handle"] == f"{MAX_STORED_RESULTS + 5:04d}"
-        assert "0001" not in [r["handle"] for r in stored]
+        # stored() lists the newest 20 for discovery and condenses the rest —
+        # the pruning cap itself is on files, not on the listing.
+        listed = [r for r in stored if "handle" in r]
+        assert len(listed) == 20
+        assert listed[-1]["handle"] == f"{MAX_STORED_RESULTS + 5:04d}"
+        assert "0001" not in [r["handle"] for r in listed]
+        omitted = [r for r in stored if "omitted" in r]
+        assert len(omitted) == 1
+        # 205 puts, pruned to MAX_STORED_RESULTS files, of which 20 are listed.
+        assert omitted[0]["omitted"] == MAX_STORED_RESULTS - 20
 
 
 # ── read ────────────────────────────────────────────────────────────────────

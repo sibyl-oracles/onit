@@ -185,7 +185,7 @@ class WebSearch:
 
         # Return results or error
         if results:
-            return json.dumps(results, indent=2, ensure_ascii=False)
+            return json.dumps(results, ensure_ascii=False)
         else:
             return json.dumps({
                 "error": "Search failed - no results from any provider",

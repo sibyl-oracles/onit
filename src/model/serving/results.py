@@ -59,11 +59,11 @@ RESULT_SUFFIX = ".txt"
 # result seen from the other end, so it must clear the same bar.
 RESULT_PREVIEW_CHARS = 6000
 
-# Below this, a result is passed through untouched.  The preview would save at
-# most 2,000 characters, which does not pay for a file, a handle line in every
-# later turn, and a possible extra tool call to read back what would otherwise
-# have been in front of the model already.
-RESULT_STORE_THRESHOLD = 8000
+# Below this, a result is passed through untouched.  5,000 rather than 8,000:
+# a 5k result stored whole costs ~1.2k tokens on every later turn it is
+# replayed in, and the handle line plus one read-back call is cheaper than
+# that the moment the result is consulted twice.
+RESULT_STORE_THRESHOLD = 5000
 
 # One window of a stored result.  Large enough to be worth the round trip,
 # small enough that a model reading a 200k file cannot pull it all into the
@@ -231,10 +231,16 @@ class ResultStore:
     # ── what the model sees ─────────────────────────────────────────────────
 
     def stored(self) -> list[dict]:
-        """One record per stored result: handle, tool, size.  For discovery —
-        ``context_status`` reports it, so finding a handle costs no extra tool."""
+        """Records for the newest stored results: handle, tool, size.  For
+        discovery — ``context_status`` reports it, so finding a handle costs
+        no extra tool.  Capped at the newest 20 with a count of the rest: a
+        long run stores hundreds of results, and listing them all re-sent
+        every ``context_status`` call would outweigh the discovery it exists
+        for.  Older handles are still on disk and still readable."""
         out = []
-        for path in self._stored_files():
+        files = self._stored_files()
+        _omitted = max(0, len(files) - 20)
+        for path in files[-20:]:
             handle, _, rest = path.name.partition("-")
             try:
                 size = path.stat().st_size
@@ -243,6 +249,10 @@ class ResultStore:
             out.append({"handle": handle,
                         "tool": rest[:-len(RESULT_SUFFIX)] or "unknown",
                         "chars": size})
+        if _omitted:
+            out.append({"omitted": _omitted,
+                        "note": "older stored results not listed; handles are on disk "
+                                f"under {RESULTS_SUBDIR}"})
         return out
 
     def put(self, tool: str, text: str) -> str | None:

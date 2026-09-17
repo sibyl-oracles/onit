@@ -32,7 +32,8 @@ from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
-from .verify import (DEFAULT_TRUSTED_DOMAINS, THINKING_VERDICT_MAX_TOKENS,
+from .verify import (DEFAULT_TRUSTED_DOMAINS, REVISION_MAX_TOKENS,
+                     THINKING_VERDICT_MAX_TOKENS,
                      VERDICT_MAX_TOKENS, needs_verification, verify_answer)
 
 from .harness import COMPACTION_NOTICE, HarnessTools
@@ -69,7 +70,14 @@ MAX_TOOL_RESPONSE = 16000
 # answer on a modern long-context model; a request is still clamped down to
 # what is left of the context window before it goes out, so this is a ceiling
 # rather than a reservation.
-DEFAULT_MAX_TOKENS = 131072
+# Ceiling on the output token budget when the caller does not set one.  This
+# is what is *reserved* against the context window when the compaction
+# threshold is computed, so an inflated default does not reserve an inflated
+# share of the window — it silently halves how full the context may get before
+# compaction fires (with 131072 the threshold clamped to 0.50; with 16384 it
+# sits near 0.89 on a 128k window).  A caller that genuinely needs a very
+# large single response sets serving.max_tokens explicitly.
+DEFAULT_MAX_TOKENS = 16384
 
 # Context window assumed when the size of the real one cannot be established:
 # the endpoint does not publish it (OpenRouter) or the query for it failed.
@@ -1138,7 +1146,7 @@ def _resolve_sandbox_download_locally(args: dict, data_path: str) -> str | None:
         "filename": os.path.basename(relative),
         "dest": local_path,
         "size_bytes": size_bytes,
-    }, indent=2)
+    })
 
 
 def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str | None, str | None]:
@@ -1196,15 +1204,20 @@ def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str |
 
 
 # Tool results kept at full length; older ones are trimmed to their opening.
-TOOL_RESULT_KEEP_FULL = 3
+# 2 rather than 3: older results already carry a handle (or a re-call path),
+# so the third full copy was the most expensive of the three and the least
+# likely to be read again.
+TOOL_RESULT_KEEP_FULL = 2
 # Enough for the head of a search page to be evidence rather than just a table
 # of contents: a chunk is DEFAULT_CHUNK_SIZE (1600) characters, so this holds
 # the top three ranked passages once JSON escaping is paid for. At 1500 the
 # surviving head of a local_search result was its document summaries alone —
 # every matched passage fell outside it, leaving the model a list of titles and
 # no quotes, which is the one thing worse than dropping the result entirely.
-# Still trims a maximum-size (MAX_TOOL_RESPONSE) result to ~37%.
-TOOL_RESULT_DECAY_CHARS = 6000
+# Still trims a maximum-size (MAX_TOOL_RESPONSE) result to ~37%.  4,000
+# rather than 6,000: local_search now puts the ranking and document openings
+# first, so the head no longer needs three full passages to stay evidence.
+TOOL_RESULT_DECAY_CHARS = 4000
 # What a decayed result says when there is no handle behind it — a run with no
 # result store, or a result that was small enough to pass through whole.  The
 # instruction it gives is a network round trip; the handle-bearing version
@@ -1222,6 +1235,15 @@ _DECAY_MARKER = (CONTINUATION_PREFIX
 # being discarded, it is being addressed instead of copied.  This is where the
 # quadratic prompt growth of a six-document research loop actually goes.
 TOOL_RESULT_STORED_DECAY_CHARS = 1200
+
+# Compaction-transcript caps: the summarizer sees the newest window in full
+# (bounded by both message count and total chars) and everything older as
+# one-line mentions.  60k chars ≈ 15k tokens — comfortably inside a 128k
+# window even with the standing prompt and the output budget on top, so the
+# compaction call cannot fail *because* the context is full.
+MAX_TRANSCRIPT_CHARS = 60000
+MAX_TRANSCRIPT_MESSAGES = 150
+MAX_TRANSCRIPT_MENTIONS = 30
 
 
 def _decay_old_tool_results(messages: list,
@@ -1639,7 +1661,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                 chat_ui.add_tool_call(function_name, function_arguments)
                 chat_ui.show_tool_start(function_name, function_arguments)
             tool_message = {'role': 'tool', 'content': result, 'name': function_name,
-                            'parameters': function_arguments, "tool_call_id": tool_call_id}
+                            "tool_call_id": tool_call_id}
             messages.append(tool_message)
             if chat_ui:
                 chat_ui.add_tool_result(function_name, result)
@@ -1718,7 +1740,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         harness_result = await harness.adispatch(function_name, function_arguments)
         _ok = not harness_result.startswith("Error:")
         tool_message = {'role': 'tool', 'content': harness_result, 'name': function_name,
-                        'parameters': function_arguments, "tool_call_id": tool_call_id}
+                        "tool_call_id": tool_call_id}
         messages.append(tool_message)
         if chat_ui:
             chat_ui.add_tool_result(function_name, harness_result)
@@ -1730,7 +1752,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         _log(_ok, len(harness_result))
     elif not tool_registry or function_name not in tool_registry.tools:
         tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found',
-                        'name': function_name, 'parameters': function_arguments,
+                        'name': function_name,
                         "tool_call_id": tool_call_id}
         messages.append(tool_message)
         _log(False, 0)
@@ -1745,7 +1767,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             chat_ui, verbose, level="warning",
         )
         tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
-                        'parameters': function_arguments, "tool_call_id": tool_call_id}
+                        "tool_call_id": tool_call_id}
         messages.append(tool_message)
         if chat_ui:
             chat_ui.add_tool_result(function_name, _error)
@@ -1765,7 +1787,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             chat_ui, verbose, level="warning",
         )
         tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
-                        'parameters': function_arguments, "tool_call_id": tool_call_id}
+                        "tool_call_id": tool_call_id}
         messages.append(tool_message)
         if chat_ui:
             chat_ui.add_tool_result(function_name, _error)
@@ -1846,7 +1868,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             else:
                 tool_content = tool_response
             tool_message = {'role': 'tool', 'content': tool_content, 'name': function_name,
-                            'parameters': function_arguments, "tool_call_id": tool_call_id}
+                            "tool_call_id": tool_call_id}
             messages.append(tool_message)
             if chat_ui:
                 chat_ui.add_tool_result(function_name, tool_response)
@@ -1865,7 +1887,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                     chat_ui.show_tool_done(function_name, str(e), success=False)
             _log_to_ui_or_verbose(f"{function_name} error: {e}", chat_ui, verbose, level="error")
             tool_message = {'role': 'tool', 'content': f'Error: {e}', 'name': function_name,
-                            'parameters': function_arguments, "tool_call_id": tool_call_id}
+                            "tool_call_id": tool_call_id}
             messages.append(tool_message)
             _log(False, 0)
 
@@ -1907,7 +1929,9 @@ def _load_images(images: List[str] | str | None, chat_ui, verbose: bool) -> list
 # what was asked, and roughly what came back.  Its opening carries that; the
 # body and the references list do not, and they are the bulk of it.
 HISTORY_KEEP_FULL = 3
-HISTORY_DECAY_CHARS = 1200
+# 800 rather than 1200: the opening plus the first lines of the body carry
+# the thread; the extra 400 chars were mid-answer prose.
+HISTORY_DECAY_CHARS = 800
 
 
 def _trim_history(session_history: list,
@@ -3665,6 +3689,9 @@ async def _compact_context(
     is_openai: bool = False,
     instruction: str = "",
     harness_note: str = "",
+    max_transcript_chars: int = MAX_TRANSCRIPT_CHARS,
+    max_transcript_messages: int = MAX_TRANSCRIPT_MESSAGES,
+    max_transcript_mentions: int = MAX_TRANSCRIPT_MENTIONS,
 ) -> list:
     """Summarize the conversation and return a compacted messages list.
 
@@ -3702,7 +3729,16 @@ async def _compact_context(
         return getattr(m, key, default)
 
     parts: list[str] = []
-    for msg in messages_to_summarize:
+    # The transcript feeds an LLM call made while the context is already near
+    # the compaction threshold, so it must not reproduce the problem it exists
+    # to solve: unbounded, a 200-message run hands the summarizer ~100k chars
+    # and the call can fail *because* the context is full.  Render the newest
+    # window in full (bounded by message count and total chars); compress
+    # everything older to one-line mentions, and drop mentions past a cap.
+    _full_budget = max_transcript_chars
+    _older: list[str] = []
+    _omitted = 0
+    for msg in reversed(messages_to_summarize):
         role = _field(msg, "role", "?")
         content = _field(msg, "content") or ""
         if isinstance(content, list):
@@ -3710,7 +3746,7 @@ async def _compact_context(
         content = str(content)
         name = _field(msg, "name", "")
         if role == "user":
-            parts.append(f"User: {content[:600]}")
+            line = f"User: {content[:600]}"
         elif role == "assistant":
             tcs = _field(msg, "tool_calls")
             if tcs:
@@ -3720,11 +3756,29 @@ async def _compact_context(
                         tc_names.append(tc.get("function", {}).get("name", "?"))
                     else:
                         tc_names.append(getattr(getattr(tc, "function", None), "name", "?"))
-                parts.append(f"Assistant called tools: {', '.join(tc_names)}")
+                line = f"Assistant called tools: {', '.join(tc_names)}"
             elif content:
-                parts.append(f"Assistant: {content[:600]}")
+                line = f"Assistant: {content[:600]}"
+            else:
+                continue
         elif role == "tool":
-            parts.append(f"Tool({name}): {content[:400]}")
+            line = f"Tool({name}): {content[:400]}"
+        else:
+            continue
+        if len(parts) < max_transcript_messages and len(line) <= _full_budget:
+            parts.append(line)
+            _full_budget -= len(line)
+        elif len(_older) < max_transcript_mentions:
+            _older.append(f"{role}: {content[:100]}")
+        else:
+            _omitted += 1
+    parts.reverse()
+    _older.reverse()
+    if _older:
+        _head = (f"[{_omitted + len(_older)} earlier messages condensed]"
+                 if _omitted else
+                 f"[{len(_older)} earlier messages condensed]")
+        parts = [_head] + _older + parts
 
     compaction_prompt = (
         "Summarize the following agent conversation. Include: the original task, "
@@ -3892,9 +3946,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # times to produce N pieces of JSON.  Turning this off keeps thinking for
     # the opening turn — where the approach is actually decided — and drops it
     # for the rest of the loop, the final answer included.  That last part is
-    # the cost: it is a trade of answer deliberation for latency, which is why
-    # it is opt-in.
-    think_tool_turns = kwargs.get('think_tool_turns', True)
+    # the cost: it trades answer deliberation for latency and a large token
+    # saving, which is why it is a dial.  The default is the cheap side: a
+    # deployment that wants per-tool-turn reasoning sets it explicitly.
+    think_tool_turns = kwargs.get('think_tool_turns', False)
     # Fact-checking the finished answer (see verify.py).  On by default, and
     # split in two so that being careful and being quick stop competing.
     #
@@ -4037,6 +4092,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     MAX_REPEATED_TOOL_CALLS = kwargs.get('max_repeated_tool_calls', 30)
     MAX_API_RETRIES = kwargs.get('max_api_retries', 3)
     MAX_PLANNING_CONTINUATIONS = kwargs.get('max_planning_continuations', 2)
+    # Compaction-transcript caps live at module level (MAX_TRANSCRIPT_*); the
+    # builder is a module function and the caps are _compact_context params,
+    # overridable per call for tests.
     # Max times to push past a content-free acknowledgment before accepting the
     # reply as-is.  Bounded low: a model that keeps acknowledging is stuck, and
     # looping on it burns the context that compaction just freed.
@@ -4302,7 +4360,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 tools=_verify_tools,
                 max_tool_turns=verify_max_tool_turns,
                 verdict_max_tokens=_verdict_budget(),
-                revision_max_tokens=max_tokens,
+                # The rewrite is the answer again, not a fresh answer — cap it
+                # at the verify module's own budget instead of the whole
+                # response budget (which with the default max_tokens reserved
+                # 128k tokens of context for a rewrite).
+                revision_max_tokens=min(max_tokens, REVISION_MAX_TOKENS),
                 allow_revision=True,
                 trusted_domains=verify_trusted_domains,
                 log=_verify_log,

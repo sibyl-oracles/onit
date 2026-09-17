@@ -38,6 +38,7 @@ from fastmcp import FastMCP
 
 from src.mcp.servers.tasks.shared import validate_required as _validate_required
 from src.mcp.servers.tasks.shared import uvicorn_config
+from src.mcp.servers.tasks.shared import GITHUB_REPO_DESCRIPTION
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -87,29 +88,7 @@ def _repo_summary(repo: dict) -> dict:
 
 @mcp.tool(
     title="GitHub Repository",
-    description="""Create, get, list, fork, or delete GitHub repositories via the GitHub API.
-
-Requires GITHUB_TOKEN environment variable (personal access token with repo scope).
-
-Actions:
-- create : Create a new repository (user or org). Returns repo details.
-- get    : Get info about an existing repository.
-- list   : List repositories for the authenticated user or an org.
-- fork   : Fork an existing repository into the authenticated user's account or an org.
-- delete : Delete a repository (requires admin access).
-
-Args:
-- action      : One of "create", "get", "list", "fork", "delete" (required)
-- name        : Repository name — required for create, get, fork (owner/repo), delete (owner/repo)
-- description : Repository description (create only, optional)
-- private     : Make repo private (create only, default: false)
-- auto_init   : Initialize with a README (create only, default: true)
-- gitignore_template : e.g. "Python", "Node" (create only, optional)
-- license_template   : e.g. "mit", "apache-2.0" (create only, optional)
-- org         : Organization name — if set for create/list, targets the org instead of the user
-- per_page    : Results per page for list (default: 30, max: 100)
-
-Returns JSON: repo details for create/get/fork; list of repos for list; status for delete."""
+    description=GITHUB_REPO_DESCRIPTION
 )
 def github_repo(
     action: Optional[str] = None,
