@@ -3141,6 +3141,106 @@ def _repetition_span(text: str) -> tuple:
     return best
 
 
+# ── sentence-level loop detection ───────────────────────────────────────────
+#
+# The periodicity scan above has a structural blind spot: a loop whose unit is
+# long relative to the text can never reach the copies its period class
+# requires.  A 118-character unit repeated twice is 236 characters, the scan
+# caps the period at half the text (117), so the true period is never tried —
+# and even if it were, a long period needs three copies and only two exist.
+# deepseek-v4.1-flash:cloud produced exactly this: an eleven-sentence
+# planning chant ("Go. (Producing.) Let me write. …") repeated twice, budget
+# cut mid-second-copy, and every guard let it through to the user.
+#
+# This detector works at sentence granularity instead.  It asks whether the
+# tail of the reply — a run of sentences — appears verbatim earlier in the
+# reply, which a two-copy loop satisfies no matter how long the unit is.  A
+# single repeated sentence (rhetorical emphasis) stays below the window floor,
+# and a repeated block shorter than _SENT_LOOP_MIN_CHARS is too small to be a
+# degenerate loop rather than a deliberate echo.
+_SENT_LOOP_MIN_SENTENCES = 3   # shortest window that can be a loop, in sentences
+_SENT_LOOP_MIN_CHARS = 40      # a window shorter than this is an echo, not a loop
+
+
+def _split_sentences(text: str) -> list:
+    """The reply split into sentences, whitespace-collapsed.
+
+    Splits after ``.``/``!``/``?`` at a space or the end of text.  A sentence
+    is whatever stands between two enders, so "(Producing.) Let me write." is
+    one sentence when the period sits inside the parenthesis — close enough
+    for loop detection, which compares whole runs, not grammar.
+    """
+    collapsed = _collapse_ws(text)
+    parts = re.split(r"(?<=[.!?])\s+", collapsed)
+    return [p for p in parts if p.strip()]
+
+
+def _sentence_loop_span(text: str) -> tuple:
+    """The longest repeated tail of ``text``, at sentence granularity.
+
+    ``(sentences, copies, first)`` — the window size in sentences, how many
+    times the window repeats, and the index the first copy starts at.
+    ``(0, 0, 0)`` when there is no loop.  Scanned largest-window-first so the
+    eleven-sentence block is reported rather than the two-sentence chant
+    running inside it: the trim that consumes the result keeps the most
+    original text this way.
+
+    The tail window must reappear ending before the tail copy starts, so the
+    two copies do not overlap; overlapping matches are how a single repeated
+    sentence ("very very very") masquerades as a loop.  The second copy may sit
+    one sentence off the aligned position — a loop whose last sentence bleeds
+    into the start of the next copy shifts the phase — so the extension also
+    accepts a reoccurrence at ``first + window ± 1`` and counts the off-by-one
+    copy.  What it must not accept is a second occurrence far from the tail:
+    two appearances of a window anywhere in the text is ordinary structure
+    (a plan restated in the summary), not a loop.
+    """
+    sents = _split_sentences(text)
+    n = len(sents)
+    if n < 2 * _SENT_LOOP_MIN_SENTENCES:
+        return (0, 0, 0)
+    for window in range(n // 2, _SENT_LOOP_MIN_SENTENCES - 1, -1):
+        tail = sents[-window:]
+        first = -1
+        for i in range(0, n - window + 1):
+            if sents[i:i + window] == tail:
+                first = i
+                break
+        if first == -1 or first + window > n - window:
+            continue
+        copies = 1
+        pos = first + window
+        while pos + window <= n and sents[pos:pos + window] == tail:
+            copies += 1
+            pos += window
+        if copies == 1:
+            # Phase-shifted reoccurrence: the loop unit ends with a sentence
+            # that opens the next copy, so copy two starts one sentence early.
+            for shift in (-1, 1):
+                p = first + window + shift
+                if (p >= 0 and p + window <= n
+                        and sents[p:p + window] == tail):
+                    copies = 2
+                    break
+        if sum(len(s) for s in tail) >= _SENT_LOOP_MIN_CHARS:
+            return (window, copies, first)
+    return (0, 0, 0)
+
+
+def _trim_sentence_loop(text: str) -> str:
+    """``text`` cut back to the first copy of its sentence-level loop.
+
+    Everything before the second copy starts is kept.  The cut lands on a
+    sentence boundary by construction, so the kept text ends on a complete
+    sentence.  ``text`` returned unchanged when there is no loop.
+    """
+    window, copies, first = _sentence_loop_span(text)
+    if not window or copies < 2:
+        return text
+    sents = _split_sentences(text)
+    return " ".join(sents[:first + window]).strip() or text
+
+
 def _trim_repetition(text: str) -> str:
     """``text`` cut back to the first copy of its repeated tail.
 
@@ -4988,10 +5088,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # it has to run before the resume logic below — a loop is not a
             # truncated answer, and resuming one just generates more of it.
             _repeat_period, _repeat_copies, _ = _repetition_span(_partial)
+            # The sentence-level fallback: a loop whose unit is long relative
+            # to the reply never reaches the copy count the periodicity scan
+            # requires — two copies of a 118-character unit are invisible to
+            # it.  See _sentence_loop_span for why this second detector exists.
+            if not _repeat_period:
+                _sent_window, _sent_copies, _sent_first = _sentence_loop_span(_partial)
+                if _sent_window and _sent_copies >= 2:
+                    _repeat_period, _repeat_copies = _sent_window, _sent_copies
+                    _sent_loop = True
+                else:
+                    _sent_loop = False
+            else:
+                _sent_loop = False
             if (_repeat_period and state.repetition_continuation_count
                     < MAX_REPETITION_CONTINUATIONS):
                 state.repetition_continuation_count += 1
-                _trimmed = _trim_repetition(_partial)
+                _trimmed = (_trim_sentence_loop(_partial) if _sent_loop
+                            else _trim_repetition(_partial))
                 state.force_compact = False
                 state.active_max_tokens = max_tokens
                 _log_to_ui_or_verbose(
@@ -5194,8 +5308,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # back the first copy of the span rather than the whole thing: the
             # user asked for an answer, not for the loop.  The stop reason says
             # which failure this was, so it is not read as a finished answer.
-            if _repetition_span(_final)[0]:
+            # Both detectors run — the periodicity scan for short-period loops,
+            # the sentence scan for the two-copy long-unit loop neither the
+            # scan cap nor the copy threshold can reach.
+            _char_loop = _repetition_span(_final)[0]
+            _sent_window, _sent_copies, _sent_first = _sentence_loop_span(_final)
+            if _char_loop:
                 _final = _trim_repetition(_final)
+            elif _sent_window and _sent_copies >= 2:
+                _final = _trim_sentence_loop(_final)
+            if _char_loop or (_sent_window and _sent_copies >= 2):
                 state.stop_reason = STOP_REPETITION_LOOP
                 _log_to_ui_or_verbose(
                     "The model kept repeating the same text after "
