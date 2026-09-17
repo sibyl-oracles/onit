@@ -504,7 +504,7 @@ DEFAULT_ALLOWED_COMMANDS = frozenset({
     "jq", "curl", "wget", "openssl", "sqlite3", "pandoc",
     # document text extraction (poppler): read-only converters that grant no
     # authority `strings` and `pandoc` did not already grant.
-    "pdftotext",
+    "pdftotext", "pdfinfo",
     # dev toolchain
     "git", "git-lfs", "gh", "python", "pip", "node", "npm", "npx", "pnpm",
     "yarn", "uv", "pipx", "gem", "cargo", "rustc", "go", "gofmt", "ruby",
