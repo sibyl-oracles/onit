@@ -76,6 +76,7 @@ STOP_ANSWERED = "answered"
 STOP_TURN_LIMIT = "turn_limit"
 STOP_REPEATED_TOOL_CALL = "repeated_tool_call"
 STOP_PLANNING_EXHAUSTED = "planning_exhausted"
+STOP_REPETITION_LOOP = "repetition_loop"
 STOP_SAFETY_ABORT = "safety_abort"
 
 _STOP_PHRASES = {
@@ -83,6 +84,7 @@ _STOP_PHRASES = {
     STOP_TURN_LIMIT: "it hit the turn limit before finishing",
     STOP_REPEATED_TOOL_CALL: "it kept making the same tool call and was stopped",
     STOP_PLANNING_EXHAUSTED: "it described a plan but never called a tool",
+    STOP_REPETITION_LOOP: "it repeated the same text and was stopped",
     STOP_SAFETY_ABORT: "it was stopped by the user",
 }
 
@@ -104,6 +106,7 @@ class RunState:
     planning_continuation_count: int = 0
     ack_continuation_count: int = 0
     final_continuation_count: int = 0
+    repetition_continuation_count: int = 0
 
     # ── the shape of the next API call ──────────────────────────────────────
     force_tool_call: bool = False
@@ -187,6 +190,7 @@ class RunState:
         self.planning_continuation_count = other.planning_continuation_count
         self.ack_continuation_count = other.ack_continuation_count
         self.final_continuation_count = other.final_continuation_count
+        self.repetition_continuation_count = other.repetition_continuation_count
         self.stop_reason = other.stop_reason
         self.total_turns += other.iteration_count
         self.task_count += 1
@@ -205,6 +209,7 @@ class RunState:
             "planning_continuation_count": self.planning_continuation_count,
             "ack_continuation_count": self.ack_continuation_count,
             "final_continuation_count": self.final_continuation_count,
+            "repetition_continuation_count": self.repetition_continuation_count,
             "stop_reason": self.stop_reason,
             "task_count": self.task_count,
             "total_turns": self.total_turns,
@@ -220,6 +225,7 @@ class RunState:
             return state
         for name in ("iteration_count", "planning_continuation_count",
                      "ack_continuation_count", "final_continuation_count",
+                     "repetition_continuation_count",
                      "task_count", "total_turns"):
             try:
                 setattr(state, name, int(data.get(name, 0) or 0))

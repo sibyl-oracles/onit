@@ -73,6 +73,7 @@ SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penal
                        'max_chat_iterations', 'max_repeated_tool_calls',
                        'max_api_retries', 'max_planning_continuations',
                        'max_ack_continuations', 'max_final_continuations',
+                       'max_repetition_continuations',
                        # Fact-checking the finished answer.  Defaults live in
                        # chat(): `verify_answers: false` turns it off,
                        # `verify_timeout_s` caps what the user waits for, and

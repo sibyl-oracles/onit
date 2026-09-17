@@ -39,7 +39,8 @@ from .harness import COMPACTION_NOTICE, HarnessTools
 from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
 from .interpreter import DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT
 from .state import (RunState, STOP_ANSWERED, STOP_PLANNING_EXHAUSTED,
-                    STOP_REPEATED_TOOL_CALL, STOP_SAFETY_ABORT,
+                    STOP_REPEATED_TOOL_CALL, STOP_REPETITION_LOOP,
+                    STOP_SAFETY_ABORT,
                     STOP_TURN_LIMIT)
 
 try:
@@ -2919,6 +2920,16 @@ _ACK_CONTINUATION_PROMPT = (
     "the next tool you need, or give the final answer if the task is already done."
 )
 
+# Prompt used to break a verbatim repetition loop inside a single turn — the
+# model re-emitting a short span ("Go. OK. Writing.") that feeds itself back as
+# context.  It names the failure because the model cannot see it: from inside
+# the loop, each copy looks like the next thing to say.
+_REPETITION_CONTINUATION_PROMPT = (
+    "You are repeating the same text over and over. Stop. Do not repeat any of "
+    "the text above. Say something new, or if the task is finished, give the "
+    "final answer once and stop."
+)
+
 # Prompt for the one retry given to a turn that reasoned and never answered.
 # Paired with thinking switched off for that turn — the prompt asks and the
 # switch enforces, because a model that just spent a whole budget thinking will
@@ -3053,6 +3064,118 @@ def _stitch_continuation(prefix: str, partial: str) -> str:
         # re-wrote a paragraph from the middle of the answer.
         return prefix
     return prefix + trimmed
+
+
+# ── verbatim degeneration inside one turn ────────────────────────────────────
+#
+# The failure this catches is not the loop above: it is a single turn that
+# re-emits the same short span until the output budget runs out — "Go. OK.
+# Writing. Let me output." over and over.  Nothing in the loop keys on it,
+# because every other guard counts turns or tool calls and this is neither.
+#
+# The span is contiguous and sits at the tail, which is what makes it cheap to
+# find: only the end of the reply has to be scanned, and the period is bounded
+# by the window.  A period is a candidate when it repeats enough times to be
+# degenerate rather than emphatic — "very very very" is a period of 5 and is
+# left alone, while a repeated sentence is not.
+_MIN_REPEAT_UNIT = 4          # shortest period that can be a loop, in chars
+_MIN_REPEAT_COPIES = 3        # copies of a long period that make it degenerate
+_LONG_REPEAT_UNIT = 16        # a period this long needs only _MIN_REPEAT_COPIES
+_SHORT_REPEAT_COPIES = 6      # a short period needs this many to be degenerate
+_REPEAT_WINDOW = 600          # only this much of the tail is scanned
+
+
+def _collapse_ws(text: str) -> str:
+    """Whitespace-normalized view, for comparing spans that differ only in it."""
+    return " ".join(text.split())
+
+
+def _copies_required(period: int) -> int:
+    """How many contiguous copies of ``period`` make a loop, not emphasis."""
+    return _MIN_REPEAT_COPIES if period >= _LONG_REPEAT_UNIT else _SHORT_REPEAT_COPIES
+
+
+def _repetition_span(text: str) -> tuple:
+    """The repeated tail of ``text``, as ``(period, copies, start)``.
+
+    ``(0, 0, 0)`` when there is no loop.  Whitespace is collapsed first, so a
+    loop that varies its spacing still reads as one span.
+
+    The period is found by periodicity, not by tiling from the end: ``p`` is a
+    period of a suffix when ``tail[i] == tail[i - p]`` for every ``i`` past the
+    start of that suffix.  Tiling from the end would fail on the very case this
+    exists for — a loop cut off mid-copy by the output budget, whose last
+    "unit" is a truncated fragment that matches nothing.  Periodicity does not
+    care: a truncated final copy is still periodic.
+
+    ``start`` is where the periodic suffix begins in the collapsed text, so the
+    caller can keep everything before the loop and the first copy of it.
+    """
+    collapsed = _collapse_ws(text)
+    if len(collapsed) < _MIN_REPEAT_UNIT * _MIN_REPEAT_COPIES:
+        return (0, 0, 0)
+    tail = collapsed[-_REPEAT_WINDOW:]
+    n = len(tail)
+    best = (0, 0, 0)
+    # A period longer than half the tail cannot repeat even twice, so the
+    # search stops there.  It must not stop at n // copies: the last copy is
+    # usually the truncated one, and capping here is what would hide the loop.
+    for period in range(_MIN_REPEAT_UNIT, n // 2 + 1):
+        # The earliest a periodic suffix can start: one past the last position
+        # where the period fails to hold.
+        start = 0
+        for i in range(period, n):
+            if tail[i] != tail[i - period]:
+                start = i - period + 1
+        # A truncated final copy still counts when it is at least half a unit:
+        # a loop cut off by the output budget is the case this exists for, and
+        # its last copy is the one the budget cut.  A one-character tail is not
+        # a copy of anything.
+        span = n - start
+        copies = span // period
+        if span % period >= period // 2:
+            copies += 1
+        if (copies >= _copies_required(period)
+                and period * copies > best[0] * best[1]):
+            best = (period, copies, start)
+    return best
+
+
+def _trim_repetition(text: str) -> str:
+    """``text`` cut back to the first copy of its repeated tail.
+
+    Everything before the loop is kept, plus one copy of it.  The index comes
+    from the whitespace-collapsed view, so it is mapped back onto the original
+    by walking it — the user's spacing survives in what is kept.  A word
+    boundary is preferred, so the answer does not end mid-word.
+    """
+    period, copies, start = _repetition_span(text)
+    if not period or copies < 2:
+        return text
+    keep_collapsed = start + period
+    # Walk the original, counting collapsed characters, to find the cut.
+    seen = 0
+    cut = len(text)
+    prev_space = True
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not prev_space:
+                seen += 1
+            prev_space = True
+        else:
+            seen += 1
+            prev_space = False
+        if seen >= keep_collapsed:
+            cut = i + 1
+            break
+    trimmed = text[:cut].rstrip()
+    # Snap back to a word boundary when one is close by, so the kept text does
+    # not end on half a word.
+    if trimmed and not text[cut:cut + 1].isspace() and cut < len(text):
+        space = trimmed.rfind(" ")
+        if space > len(trimmed) - 40:
+            trimmed = trimmed[:space]
+    return trimmed or text
 
 
 # Delimiters that come in pairs.  An answer holding one of these open on its
@@ -3818,6 +3941,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # reply as-is.  Bounded low: a model that keeps acknowledging is stuck, and
     # looping on it burns the context that compaction just freed.
     MAX_ACK_CONTINUATIONS = kwargs.get('max_ack_continuations', 2)
+    # Max times to break a verbatim repetition loop inside one turn before
+    # accepting the trimmed reply.  Bounded low: a model that loops once will
+    # loop again, and each attempt costs a full generation.
+    MAX_REPETITION_CONTINUATIONS = kwargs.get('max_repetition_continuations', 2)
     # Max times to resume a final answer that was cut off by the output token
     # budget (finish_reason=length).  Each resume grants another max_tokens of
     # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
@@ -4855,6 +4982,29 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # that does not match the text, and the only trace left is a sentence
             # that ends mid-word — see _looks_incomplete.
             _partial = _extract_final_response(_content, _full_reasoning, _full_content)
+            # Verbatim degeneration inside this one turn: the model re-emitted a
+            # short span until the budget ran out.  Every other guard counts
+            # turns or tool calls, so this is the only one that can see it, and
+            # it has to run before the resume logic below — a loop is not a
+            # truncated answer, and resuming one just generates more of it.
+            _repeat_period, _repeat_copies, _ = _repetition_span(_partial)
+            if (_repeat_period and state.repetition_continuation_count
+                    < MAX_REPETITION_CONTINUATIONS):
+                state.repetition_continuation_count += 1
+                _trimmed = _trim_repetition(_partial)
+                state.force_compact = False
+                state.active_max_tokens = max_tokens
+                _log_to_ui_or_verbose(
+                    f"Model repeated the same text {_repeat_copies} times "
+                    f"(continuation {state.repetition_continuation_count}/"
+                    f"{MAX_REPETITION_CONTINUATIONS}); asking it to continue.",
+                    chat_ui, verbose, level="info", notify=True,
+                )
+                if _trimmed.strip():
+                    messages.append({"role": "assistant", "content": _trimmed})
+                messages.append({"role": "user",
+                                 "content": _REPETITION_CONTINUATION_PROMPT})
+                continue
             # Judged on the whole answer so far, not on this piece: a resumed
             # turn opens mid-sentence by design, and a continuation that closes
             # a bold marker opened before the cut would otherwise read as one
@@ -5040,11 +5190,25 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # resumed, dropping whatever this turn repeated of them.
             if state.final_answer_prefix:
                 _final = _stitch_continuation(state.final_answer_prefix, _final)
+            # The loop budget is spent and the model is still looping.  Hand
+            # back the first copy of the span rather than the whole thing: the
+            # user asked for an answer, not for the loop.  The stop reason says
+            # which failure this was, so it is not read as a finished answer.
+            if _repetition_span(_final)[0]:
+                _final = _trim_repetition(_final)
+                state.stop_reason = STOP_REPETITION_LOOP
+                _log_to_ui_or_verbose(
+                    "The model kept repeating the same text after "
+                    f"{MAX_REPETITION_CONTINUATIONS} attempts; returning the "
+                    "reply with the repetition trimmed.",
+                    chat_ui, verbose, level="warning", notify=True,
+                )
+            else:
+                state.stop_reason = STOP_ANSWERED
             # The one exit that hands back an answer about the world.  Every
             # other return above is the loop reporting on itself — a limit hit,
             # a model that cannot call tools — and there is nothing in those to
             # check against evidence.
-            state.stop_reason = STOP_ANSWERED
             return await _fact_check(
                 _recover_dropped_answer(_final, state.prose_before_tools), messages)
 
@@ -5081,6 +5245,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # advanced, and refreshing its budget here lets it do that forever.
             state.planning_continuation_count = 0
             state.ack_continuation_count = 0
+            state.repetition_continuation_count = 0
         _t_tools = time.monotonic()
         _tool_log = []
         bail = await _handle_structured_tool_calls(
