@@ -337,7 +337,12 @@ class ResultStore:
                 f"({total:,} chars). Read from an offset below that.")
         window = text[offset:offset + limit]
         end = offset + len(window)
-        header = (f"[result:{handle} · {total:,} chars · "
+        # The origin tool rides in the header: a result recovered through a
+        # handle arrived with name="result_read" — untrusted by the verifier —
+        # even when the bytes came from a trusted read. Surfacing the origin
+        # lets trusted_evidence credit the figures it already saw.
+        origin = self._origin_tool(handle)
+        header = (f"[result:{handle} · origin={origin} · {total:,} chars · "
                   f"showing {offset:,}–{end:,}]")
         if end < total:
             return (f"{header}\n{window}\n"
@@ -367,7 +372,8 @@ class ResultStore:
         lines = text.splitlines()
         hits = [i for i, line in enumerate(lines) if regex.search(line)]
         if not hits:
-            return (f"[result:{handle} · no line matches {pattern!r}. "
+            return (f"[result:{handle} · origin={self._origin_tool(handle)} · "
+                    f"no line matches {pattern!r}. "
                     f'Read it instead: result_read("{handle}")]')
 
         # Overlapping context windows are merged, so a cluster of matches reads
@@ -393,6 +399,18 @@ class ResultStore:
             out.append(block)
             chars += len(block)
         return "\n--\n".join(out)
+
+    def _origin_tool(self, handle: str) -> str:
+        """The tool that produced the stored result, from the filename.
+
+        ``put`` names each file ``<handle>-<tool>.txt``, so the origin is
+        recoverable without opening the file.  Unknown tool or unreadable
+        directory degrades to "unknown" — never an error."""
+        path = self._path_for(handle)
+        if path is None:
+            return "unknown"
+        _, _, rest = path.name.partition("-")
+        return rest[:-len(RESULT_SUFFIX)] or "unknown"
 
     def _text(self, handle: str):
         """The stored text, or an error string naming what does exist."""

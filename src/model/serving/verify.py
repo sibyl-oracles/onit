@@ -139,18 +139,25 @@ def has_tool_evidence(messages: list) -> bool:
     decides whether the *fast* pass has anything to be fast about.
 
     User-supplied material counts: the user's own file or paste is exactly the
-    kind of source the free pass checks figures against.
+    kind of source the free pass checks figures against.  The opening task
+    instruction is not evidence (the answer usually restates it); any later
+    non-empty user message — a paste, a correction with data, an attached
+    file's contents — is.
     """
-    for msg in reversed(messages or []):
+    seen_user = False
+    for msg in messages or []:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
         if role == "tool":
             return True
-        if role == "user" and msg.get("content") and not msg.get("_is_task"):
-            # The opening task instruction is not evidence; anything the user
-            # added afterwards (a file, a correction with data) is.
-            pass
+        if role == "user" and msg.get("content"):
+            # The first user message is the opening task instruction, not
+            # evidence.  Any later non-empty user message is material the
+            # user added mid-run — a paste, a correction, a file's contents.
+            if seen_user:
+                return True
+            seen_user = True
     return False
 
 
@@ -259,6 +266,13 @@ def trusted_evidence(messages: list,
 
     The user's own turns are in here too.  A figure they typed is not something
     the model invented, and an answer quoting it back has nothing to get wrong.
+
+    A result recovered through a handle (``result_read``/``result_grep``)
+    counts as its origin tool: the header carries ``origin=<tool>`` from the
+    stored filename, so a local_search hit read back through a handle is still
+    a local_search hit.  Without this, every figure the run had already seen
+    through a handle lost its trusted status and the verifier demanded a
+    redundant verdict call over evidence it had in hand.
     """
     parts: list[str] = []
     for msg in messages or []:
@@ -277,10 +291,29 @@ def trusted_evidence(messages: list,
         if name in TRUSTED_TOOLS:
             parts.append(body)
             continue
+        if name in _HANDLE_TOOLS:
+            origin = _handle_origin(body)
+            if origin in TRUSTED_TOOLS:
+                parts.append(body)
+                continue
         hosts = _URL_RE.findall(body)
         if hosts and all(is_trusted_url(h, domains) for h in hosts):
             parts.append(body)
     return "\n".join(parts)
+
+
+# Harness tools that return a *stored* result rather than producing one.  The
+# bytes they surface were produced by some other tool; the header's
+# origin=<tool> names it.
+_HANDLE_TOOLS = frozenset({"result_read", "result_grep"})
+
+_ORIGIN_RE = re.compile(r"^\[result:\S+ · origin=([\w.-]+) ·", re.MULTILINE)
+
+
+def _handle_origin(body: str) -> str:
+    """The origin tool named in a handle-read header, or ""."""
+    m = _ORIGIN_RE.search(body or "")
+    return m.group(1) if m else ""
 
 
 def covered_by_trusted_sources(answer: str, messages: list,

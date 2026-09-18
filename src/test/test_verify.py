@@ -18,7 +18,7 @@ from model.serving.verify import (CORRECTION_PREFIX, NOTE_PREFIX, append_note,
                                   claim_tokens, covered_by_trusted_sources,
                                   evidence_digest, is_trusted_url,
                                   needs_verification, parse_verdict,
-                                  revision_note, verify_answer)
+                                  revision_note, trusted_evidence, verify_answer)
 from model.serving.chat import _NO_TEMPLATE_KWARGS, chat, reset_endpoint_caches
 
 
@@ -1090,3 +1090,44 @@ class TestChatWiring:
             ), timeout=30)
         assert result == ANSWER
         assert client.chat.completions.create.call_count == 3
+
+
+# ─── A7: trust survives a handle ──────────────────────────────────────────────
+
+class TestHandleTrust:
+    """A result recovered through result_read arrives with name="result_read"
+    — untrusted — even when the bytes came from a trusted read. The header's
+    origin=<tool> restores the lineage."""
+
+    def test_handle_read_of_trusted_origin_counts(self):
+        body = ('[result:0007 · origin=search_document · 12,000 chars · '
+                'showing 0–4,000]\nRevenue was $4.2M in 2025.')
+        msgs = [{"role": "user", "content": "task"},
+                {"role": "tool", "name": "result_read", "content": body}]
+        ev = trusted_evidence(msgs)
+        assert "$4.2M" in ev
+
+    def test_handle_read_of_untrusted_origin_ignored(self):
+        body = ('[result:0008 · origin=search · 12,000 chars · '
+                'showing 0–4,000]\nRevenue was $4.2M in 2025.')
+        msgs = [{"role": "user", "content": "task"},
+                {"role": "tool", "name": "result_read", "content": body}]
+        ev = trusted_evidence(msgs)
+        assert "$4.2M" not in ev
+
+    def test_handle_read_without_origin_header_ignored(self):
+        """Old-format headers carry no origin; they stay untrusted."""
+        body = ('[result:0009 · 12,000 chars · showing 0–4,000]\n'
+                'Revenue was $4.2M.')
+        msgs = [{"role": "user", "content": "task"},
+                {"role": "tool", "name": "result_grep", "content": body}]
+        ev = trusted_evidence(msgs)
+        assert "$4.2M" not in ev
+
+    def test_results_read_header_carries_origin(self, tmp_path):
+        from model.serving.results import ResultStore
+        store = ResultStore(data_path=str(tmp_path), preview_chars=500,
+                            threshold=1000)
+        store.put("search_document", "x" * 6000)
+        out = store.read("0001")
+        assert "origin=search_document" in out, out[:200]

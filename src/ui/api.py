@@ -289,27 +289,14 @@ _VERIFY_CACHE_MAX = 512        # cached verdicts kept in memory
 
 # Hosts the verifier must never probe (loopback, link-local, RFC-1918) —
 # the model's output is untrusted, so don't let it steer requests inward.
-_PRIVATE_HOST_RE = re.compile(
-    r'^(localhost$|127\.|0\.|10\.|192\.168\.|169\.254\.'
-    r'|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cde])',
-    re.IGNORECASE,
+# The screen lives in tasks/shared.py so every URL-fetching server uses the
+# same one; these aliases keep the historical names used across this module
+# and its tests.
+from src.mcp.servers.tasks.shared import (
+    _PRIVATE_HOST_RE,
+    _host_resolves_public as _shared_host_resolves_public,
+    _url_shape_ok as _link_shape_ok,
 )
-
-
-def _link_shape_ok(url: str) -> bool:
-    """Cheap structural screen before any network probe."""
-    try:
-        parts = urllib.parse.urlsplit(url)
-    except ValueError:
-        return False
-    if parts.scheme not in ("http", "https"):
-        return False
-    host = parts.hostname or ""
-    # A bare word ("manual") can't be a public site; dotless hosts are
-    # either typos or internal names we refuse to probe anyway.
-    if "." not in host:
-        return False
-    return not _PRIVATE_HOST_RE.match(host)
 
 
 # ── Email verification ──────────────────────────────────────────────────────
@@ -443,25 +430,9 @@ async def _read_capped(file, limit: Optional[int] = None) -> Optional[bytes]:
 def _host_resolves_public(host: str) -> bool:
     """True only if *host* resolves exclusively to public IP addresses.
 
-    The structural screen (_link_shape_ok) rejects literal private hosts, but a
-    public-looking name can still resolve to a loopback, RFC-1918, link-local
-    or otherwise reserved address (e.g. cloud metadata at 169.254.169.254).
-    Resolving here and rejecting any non-global result closes that SSRF gap."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, ValueError):
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr.split("%")[0])
-        except ValueError:
-            return False
-        if not ip.is_global or ip.is_reserved:
-            return False
-    return True
+    Kept as a thin alias over the shared implementation in tasks/shared.py;
+    the logic and rationale live there now."""
+    return _shared_host_resolves_public(host)
 
 
 def _remove_session_zip(data_path: str) -> None:

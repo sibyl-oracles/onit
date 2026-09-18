@@ -69,7 +69,8 @@ from src.mcp.servers.tasks.shared import (
 )
 
 
-def _init_submodules(data_path: str, documents_path: str = None, verbose: bool = False):
+def _init_submodules(data_path: str, documents_path: str = None, verbose: bool = False,
+                     file_server_url: str = None):
     """Initialize DATA_PATH, DOCUMENTS_PATH, and logging in the sub-modules."""
     import src.mcp.servers.tasks.os.bash.mcp_server as bash_mod
     import src.mcp.servers.tasks.web.search.mcp_server as search_mod
@@ -78,6 +79,8 @@ def _init_submodules(data_path: str, documents_path: str = None, verbose: bool =
     bash_mod.DATA_PATH = data_path
     bash_mod.DOCUMENTS_PATH = documents_path
     bash_mod._SANDBOX_ENV = None  # Reset sandbox env cache
+    if file_server_url:
+        bash_mod.FILE_SERVER_URL = file_server_url
     search_mod.DATA_PATH = data_path
     search_mod.DEFAULT_MEDIA_DIR = os.path.join(
         os.path.abspath(os.path.expanduser(data_path)), "media"
@@ -208,12 +211,10 @@ Args:
 
 Returns JSON: {stdout, stderr, returncode, cwd, command, status}
 
-For work that may take longer than 300 seconds — installs, builds, full test
-suites, training runs — use the serve tool instead. It runs the command in the
-background with no time limit and lets you poll its logs. Raising this timeout
-cannot get you past 300; the command is killed there regardless. Servers and
-daemons likewise belong in serve: run in the foreground here they burn the whole
-timeout and are then killed."""
+For work that may run past 300 seconds — installs, builds, test suites — use
+the serve tool instead: it runs detached with no time limit and lets you poll
+its logs. Raising this timeout cannot get you past 300; the command is killed
+there regardless. Servers and daemons likewise belong in serve."""
 )
 async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300,
                data_path: str = "", ctx: Context = None) -> str:
@@ -596,7 +597,8 @@ def run(
         DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
 
     # Propagate DATA_PATH, DOCUMENTS_PATH, and log level to sub-modules
-    _init_submodules(DATA_PATH, documents_path=DOCUMENTS_PATH, verbose=verbose)
+    _init_submodules(DATA_PATH, documents_path=DOCUMENTS_PATH, verbose=verbose,
+                     file_server_url=options.get('file_server_url'))
 
     profile = options.get('profile', PROFILE_ALL)
     dropped = _apply_profile(profile)

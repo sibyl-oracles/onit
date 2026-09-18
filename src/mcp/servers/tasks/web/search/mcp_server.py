@@ -50,7 +50,12 @@ from urllib3.util.retry import Retry
 
 from fastmcp import FastMCP
 
-from src.mcp.servers.tasks.shared import extract_pdf_images_impl, uvicorn_config
+from src.mcp.servers.tasks.shared import (
+    assert_public_url,
+    extract_pdf_images_impl,
+    safe_fetch,
+    uvicorn_config,
+)
 
 try:
     from .web_search import WebSearch
@@ -197,7 +202,8 @@ def _get_session():
 def _read_pdf(url: str) -> str:
     """Extract text content from a PDF URL."""
     try:
-        response = requests.get(url, timeout=READ_TIMEOUT)
+        assert_public_url(url)
+        response = safe_fetch("GET", url, timeout=READ_TIMEOUT)
         response.raise_for_status()
 
         # Verify download is complete if Content-Length was provided
@@ -210,17 +216,26 @@ def _read_pdf(url: str) -> str:
         reader = PdfReader(pdf_file)
         text = "\n".join(page.extract_text() or "" for page in reader.pages)
         return text.strip()[:24000]
+    except requests.exceptions.RequestException:
+        return "Error reading PDF: request failed (network error; details withheld)"
     except Exception as e:
-        return f"Error reading PDF: {str(e)}"
+        return f"Error reading PDF: {_redact_secrets(str(e))[:200]}"
 
 
 def _get_location_from_ip():
-    """Get location from IP address."""
+    """Get location from IP address.
+
+    Uses an https-capable provider (geojs.io) so the user's IP is never sent
+    in cleartext to a third party. ip-api.com's free tier is http-only, which
+    disclosed the user's IP on every place-less weather call."""
     try:
-        response = requests.get("http://ip-api.com/json/", timeout=5)
+        response = requests.get("https://get.geojs.io/v1/ip/geo.json", timeout=5)
         data = response.json()
-        if data.get('status') == 'success':
-            return data.get('lat'), data.get('lon'), data.get('city'), data.get('country')
+        lat = data.get('latitude')
+        lon = data.get('longitude')
+        if lat is not None and lon is not None:
+            return (float(lat), float(lon),
+                    data.get('city'), data.get('country'))
     except Exception:
         pass
     return None, None, None, None
@@ -236,6 +251,31 @@ def _get_coordinates(place_name: str):
     except Exception:
         pass
     return None, None, None
+
+
+_APPID_RE = re.compile(r"(appid=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip API keys from anything that might echo a request URL.
+
+    OpenWeather's appid rides in the query string, and requests exceptions
+    embed the full URL — so an error message can carry the key into the tool
+    result and from there into the conversation. Redact the parameter value
+    wherever it appears."""
+    return _APPID_RE.sub(r"\1***", text or "")
+
+
+def _safe_error(e: Exception, prefix: str) -> str:
+    """Fixed-shape error for weather failures: exception class + redacted
+    message, never a raw str(e) of a request exception (which embeds the
+    authenticated URL)."""
+    msg = _redact_secrets(str(e))
+    # requests exceptions embed the full request URL; keep only the class
+    # name and a short generic cause.
+    if isinstance(e, requests.exceptions.RequestException):
+        return f"{prefix}: {type(e).__name__} (network or API error; details withheld)"
+    return f"{prefix}: {msg[:200]}"
 
 
 def _extract_media_urls(soup: BeautifulSoup, base_url: str) -> dict:
@@ -320,7 +360,8 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
         filename = os.path.basename(parsed.path) or "download"
 
         # Download
-        response = requests.get(url, timeout=timeout, stream=True, headers={
+        assert_public_url(url)
+        response = safe_fetch("GET", url, timeout=timeout, stream=True, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
         response.raise_for_status()
@@ -363,8 +404,10 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
             "size_bytes": os.path.getsize(filepath),
             "content_type": content_type
         }
+    except requests.exceptions.RequestException:
+        return {"url": url, "error": "request failed (network error; details withheld)"}
     except Exception as e:
-        return {"url": url, "error": str(e)}
+        return {"url": url, "error": _redact_secrets(str(e))[:200]}
 
 
 # =============================================================================
@@ -394,9 +437,13 @@ def _search_impl(
                     date_pub = dt.strftime('%B %d, %Y')
                 except Exception:
                     pass
+                # Snippets are capped: ranking + dates are the evidence, and
+                # the full body is one fetch_content away. Uncapped, a
+                # 10-result news page could carry ~20k chars of body text.
+                snippet = (r.get('body', '') or '')[:300]
                 formatted.append({
                     "title": r.get('title', ''),
-                    "snippet": r.get('body', ''),
+                    "snippet": snippet,
                     "date": date_pub,
                     "source": r.get('source', ''),
                     "url": r.get('url', '')
@@ -404,11 +451,11 @@ def _search_impl(
             return json.dumps(formatted)
         else:
             # Use the existing WebSearch for general queries
-            search_tool = WebSearch()
+            search_tool = WebSearch(max_results=max_results)
             return search_tool.search(query)
 
     except Exception as e:
-        return json.dumps({"error": f"Search failed: {str(e)}"})
+        return json.dumps({"error": f"Search failed: {_redact_secrets(str(e))[:200]}"})
 
 
 # Shared with the unified ToolsMCPServer re-registration (tools/mcp_server.py)
@@ -493,19 +540,21 @@ def fetch_content(
             })
 
         # Fetch the page
+        assert_public_url(url)
         session = _get_session()
         try:
-            response = session.get(
+            response = safe_fetch(
+                "GET",
                 url,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
                 headers={"Connection": "close"},
                 stream=True,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
             )
             response.raise_for_status()
         except requests.exceptions.Timeout:
             return json.dumps({"error": "Request timed out", "url": url})
-        except requests.exceptions.RequestException as e:
-            return json.dumps({"error": f"Request failed: {str(e)}", "url": url})
+        except requests.exceptions.RequestException:
+            return json.dumps({"error": "Request failed (network error; details withheld)", "url": url})
         finally:
             session.close()
 
@@ -592,8 +641,12 @@ def fetch_content(
 
         return json.dumps(result)
 
-    except Exception as e:
+    except ValueError as e:
+        # SSRF guard refusal — the URL itself was rejected, so echoing it is
+        # safe and useful.
         return json.dumps({"error": str(e), "url": url})
+    except Exception as e:
+        return json.dumps({"error": _redact_secrets(str(e))[:200], "url": url})
 
 
 # =============================================================================
@@ -677,7 +730,7 @@ def _get_weather_impl(
         return json.dumps(result)
 
     except Exception as e:
-        return json.dumps({"error": f"Weather fetch failed: {str(e)}"})
+        return json.dumps({"error": _safe_error(e, "Weather fetch failed")})
 
 
 # Register as MCP tool only when weather is not disabled

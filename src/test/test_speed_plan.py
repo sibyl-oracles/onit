@@ -520,3 +520,30 @@ class TestDecayReturnsCount:
         assert n1 == 3
         n2 = _decay_old_tool_results(msgs, keep_full=2)
         assert n2 == 0  # already decayed — second pass is a no-op
+
+# ─── A1: user-supplied evidence counts ────────────────────────────────────────
+
+class TestUserEvidence:
+    def test_later_user_message_is_evidence(self):
+        """A paste or correction the user added mid-run is evidence."""
+        msgs = [{"role": "user", "content": "summarize"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "here are the numbers: 42% YoY, 1.2M users"}]
+        assert has_tool_evidence(msgs) is True
+
+    def test_opening_task_alone_is_not_evidence(self):
+        msgs = [{"role": "user", "content": "what is the tallest tower in Paris?"}]
+        assert has_tool_evidence(msgs) is False
+
+    def test_empty_later_user_message_ignored(self):
+        msgs = [{"role": "user", "content": "task"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": ""}]
+        assert has_tool_evidence(msgs) is False
+
+    def test_tool_beats_user_order(self):
+        """A tool message anywhere still counts, regardless of position."""
+        msgs = [{"role": "user", "content": "task"},
+                {"role": "tool", "name": "read_file", "content": "x"},
+                {"role": "user", "content": "also this"}]
+        assert has_tool_evidence(msgs) is True

@@ -657,7 +657,7 @@ configured) dense retrieval. Unchanged files are skipped; deleted files are
 dropped from the index. The shared documents_path corpus is indexed once and
 reused across sessions; other paths go into the per-session index.
 
-Supported formats: pdf, md, txt, csv, docx, xlsx
+Formats: pdf, md, txt, csv, docx, xlsx
 
 Args:
 - path: Directory to index (default: documents_path, else data_path)

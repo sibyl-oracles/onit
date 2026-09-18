@@ -61,6 +61,8 @@ from src.mcp.servers.tasks.shared import (
     truncate_output as _truncate_output,
     secure_makedirs as _secure_makedirs,
     validate_required as _validate_required,
+    assert_public_url,
+    safe_fetch,
     search_document_impl,
     search_directory_impl,
     extract_tables_impl,
@@ -284,6 +286,11 @@ def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
     Git will call GIT_ASKPASS for each credential prompt; the script echoes
     'x-access-token' for username prompts and the token for all others.
     GIT_TERMINAL_PROMPT=0 prevents git from falling back to an interactive tty.
+
+    The script reads the token from the process environment at git's call
+    time, so the token itself never sits in a file — the askpass path holds
+    only the lookup logic.  (It used to embed the token verbatim, leaving it
+    at rest in the session tmp dir for the session's lifetime.)
     """
     if "GITHUB_TOKEN" not in env:
         try:
@@ -303,12 +310,37 @@ def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
                     "#!/bin/sh\n"
                     'case "$1" in\n'
                     '  *[Uu]sername*) echo "x-access-token" ;;\n'
-                    '  *) echo "$GITHUB_TOKEN" ;;\n'
+                    '  *) cat "${ONIT_GITHUB_TOKEN_FILE:?token file not set}" ;;\n'
                     "esac\n"
                 )
             os.chmod(askpass, 0o700)
+        # The token lives in a 0o600 file inside the same tmp dir, not in the
+        # script body: the script is world-readable by git's exec requirement
+        # path and is easy to cat; the token file is not.  Still not a secret
+        # store — the file is deleted on serve stop (see _cleanup_askpass) —
+        # but the window and the readers are smaller.
+        token_file = os.path.join(tmp_dir, "git_token")
+        if not os.path.isfile(token_file):
+            with open(token_file, "w") as f:
+                f.write(env["GITHUB_TOKEN"])
+            os.chmod(token_file, 0o600)
+        env["ONIT_GITHUB_TOKEN_FILE"] = token_file
         env["GIT_ASKPASS"] = askpass
         env["GIT_TERMINAL_PROMPT"] = "0"
+
+
+def _cleanup_askpass(tmp_dir: str) -> None:
+    """Delete the askpass script and token file from a tmp dir.
+
+    Called on serve stop and session teardown so the token does not sit at
+    rest on disk for the session's lifetime."""
+    for name in ("git_askpass.sh", "git_token"):
+        p = os.path.join(tmp_dir, name)
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
 def _get_sandbox_env(base: str | None = None) -> dict:
@@ -691,6 +723,14 @@ def _strip_heredoc_bodies(command: str) -> str:
 # enforcement in every mode, including --unrestricted and container mode.
 DEFAULT_SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".onit", "settings.json")
 SETTINGS_PATH = None  # set via run() options; falls back to env var / default
+
+# Only upload destination send_file may POST to. Set via run() options
+# ('file_server_url') or the ONIT_FILE_SERVER_URL env var; it is the host's
+# own file server, which the prompt's upload instructions already name.
+# A model-supplied callback_url to anywhere else is refused: one injected
+# instruction in any read document would otherwise turn this tool into an
+# exfiltration channel for session files.
+FILE_SERVER_URL = os.environ.get("ONIT_FILE_SERVER_URL", "")
 
 # Cache: ((path, mtime), allow_patterns, deny_patterns, allowed_commands)
 _PERMISSIONS_CACHE = None
@@ -2276,6 +2316,11 @@ def serve(
             if _process_running(target_pid):
                 return json.dumps({"error": str(e), "name": name, "pid": target_pid, "status": "error"})
 
+        # The stopped process may have been launched with a git askpass env:
+        # drop its token file so the secret does not outlive the process.
+        _cleanup_askpass(entry.get("cwd") or tempfile.gettempdir())
+        _cleanup_askpass(tempfile.gettempdir())
+
         return json.dumps({"name": name, "pid": target_pid, "status": "stopped"})
 
     # ── STATUS ─────────────────────────────────────────────────────────
@@ -2438,15 +2483,41 @@ def send_file(
         filename = os.path.basename(file_path)
 
         if callback_url:
-            # Strip trailing slash for consistent URL construction
+            # Destination restriction: uploads go to the configured file
+            # server only. Anything else is a model-supplied destination —
+            # refusing it closes the exfiltration path where an injected
+            # instruction in a read document asks for a session file to be
+            # POSTed to an attacker URL. The SSRF screen (public-host check)
+            # runs as defense in depth on the allowed host too.
+            allowed = (FILE_SERVER_URL or "").rstrip("/")
             cb = callback_url.rstrip("/")
+            if not allowed or not (cb == allowed or cb.startswith(allowed + "/")):
+                return json.dumps({
+                    "error": (
+                        "callback_url refused: uploads are restricted to the "
+                        f"configured file server ({allowed or 'none configured'}). "
+                        "Pass the callback_url given in the Files section of "
+                        "your instructions, or omit callback_url to receive "
+                        "the file as base64."
+                    ),
+                    "path": file_path,
+                    "filename": filename,
+                    "status": "refused"
+                })
+            try:
+                assert_public_url(cb)
+            except ValueError as e:
+                return json.dumps({
+                    "error": f"callback_url refused: {e}",
+                    "path": file_path,
+                    "filename": filename,
+                    "status": "refused"
+                })
             # Upload to remote server
             try:
                 with open(file_path, 'rb') as f:
                     files = {'file': (filename, f)}
-                    resp = requests.post(
-                        f"{cb}/", files=files, timeout=60
-                    )
+                    resp = safe_fetch("POST", f"{cb}/", timeout=60, files=files)
                     resp.raise_for_status()
                 return json.dumps({
                     "path": file_path,
@@ -2766,12 +2837,17 @@ def run(
     options: dict = {}
 ) -> None:
     """Run the MCP server."""
-    global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV, SETTINGS_PATH, _PERMISSIONS_CACHE
+    global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV, SETTINGS_PATH, _PERMISSIONS_CACHE, FILE_SERVER_URL
 
     if 'verbose' in options:
         logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.ERROR)
+
+    if 'file_server_url' in options and options['file_server_url']:
+        FILE_SERVER_URL = options['file_server_url']
+    elif os.environ.get('ONIT_FILE_SERVER_URL'):
+        FILE_SERVER_URL = os.environ['ONIT_FILE_SERVER_URL']
 
     if 'data_path' in options:
         DATA_PATH = options['data_path']

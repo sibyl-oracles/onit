@@ -113,7 +113,7 @@ class WebSearch:
             return None
 
         try:
-            response = ollama.web_search(query)
+            response = ollama.web_search(query, max_results=self.max_results)
 
             if not response or 'results' not in response:
                 logger.warning("Ollama returned empty response")

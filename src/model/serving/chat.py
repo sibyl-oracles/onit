@@ -2107,6 +2107,12 @@ def _build_messages(instruction: str, images_bytes: list[str],
     used to live — it shifted by a turn's worth of history each time and was
     re-prefilled on every request of every session.
 
+    ``memories`` is accepted and currently unused: episodic recall (Loop A in
+    docs/SELF_IMPROVEMENT_GAPS.md) has no retrieval half yet, so nothing feeds
+    this parameter.  The signature keeps the slot so the wiring lands without
+    a call-site sweep; injecting anything here before that work would put
+    volatile bytes in the static half and break the prefix-cache contract.
+
     **Prefix-cache contract (do not break):** everything this function places
     before the session history — the system message, and the tool payload the
     caller sends alongside it — must be byte-identical across the turns of a
@@ -2117,6 +2123,7 @@ def _build_messages(instruction: str, images_bytes: list[str],
     standing payload on every turn of every task.  `test_request_prefix_is_byte_stable`
     in test_chat.py holds this contract; S3's `cache_hit_pct` measures it live.
     """
+    del memories  # unused: see docstring — Loop A wires this later
     if images_bytes:
         system_content = (
             f"{prompt_intro} "
@@ -3807,15 +3814,44 @@ async def _handle_structured_tool_calls(
     calls = [(tool.function.name, _parse_tool_arguments(tool, verbose), tool.id)
              for tool in tool_calls]
 
-    if len(calls) > 1 and all(name in _READ_ONLY_TOOLS for name, _, _ in calls):
-        return await _execute_tools_in_parallel(
-            calls, tool_registry, timeout, data_path, chat_ui, verbose,
+    if len(calls) > 1 and any(name in _READ_ONLY_TOOLS for name, _, _ in calls):
+        # Partition a mixed batch: the read-only subset runs concurrently,
+        # then the rest run sequentially in the order the model asked for
+        # them.  Requiring *every* call to be read-only serialized a
+        # search+write_file turn behind the write; now only the write pays
+        # the serial cost.  Read-only calls run first so the turn's I/O
+        # overlaps while the side-effecting calls queue behind them.
+        readonly = [c for c in calls if c[0] in _READ_ONLY_TOOLS]
+        sequential = [c for c in calls if c[0] not in _READ_ONLY_TOOLS]
+        bail = await _execute_tools_in_parallel(
+            readonly, tool_registry, timeout, data_path, chat_ui, verbose,
             messages, tool_call_history, max_repeated, safety_queue, session_id,
             tool_log=tool_log, harness=harness,
         )
+        if bail:
+            return bail
+        for function_name, function_arguments, call_id in sequential:
+            await asyncio.sleep(0)
+            if safety_queue is not None and not safety_queue.empty():
+                if verbose:
+                    print("Safety queue triggered, exiting chat loop.")
+                return _SAFETY_ABORT
+            bail = await _execute_tool(
+                function_name, function_arguments, call_id,
+                tool_registry, timeout, data_path, chat_ui, verbose,
+                messages, tool_call_history, max_repeated,
+                is_structured=True, session_id=session_id,
+                tool_log=tool_log, harness=harness,
+            )
+            if bail:
+                return bail
+        return None
 
     for function_name, function_arguments, call_id in calls:
-        await asyncio.sleep(0.1)
+        # Yield to the event loop so the safety-queue poll and any pending
+        # I/O can run, but don't burn 100 ms of pure sleep per call — a
+        # 10-call sequential run was paying a full second for nothing.
+        await asyncio.sleep(0)
         if safety_queue is not None and not safety_queue.empty():
             if verbose:
                 print("Safety queue triggered, exiting chat loop.")
@@ -4921,7 +4957,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         _content, _tool_calls, _message_for_history = _unify_streaming_result(
                             _full_content, _full_tool_calls,
                         )
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0)
                         if safety_queue is not None and not safety_queue.empty():
                             logger.warning("Safety queue triggered after API call, exiting chat loop.")
                             return None
@@ -4956,7 +4992,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             chat_ui, verbose, level="warning",
                         )
                         state.force_compact = True
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0)
                     if safety_queue is not None and not safety_queue.empty():
                         logger.warning("Safety queue triggered after API call, exiting chat loop.")
                         return None
@@ -5179,7 +5215,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             _full_content, _full_tool_calls,
                         )
 
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0)
                 if safety_queue is not None and not safety_queue.empty():
                     logger.warning("Safety queue triggered after API call, exiting chat loop.")
                     return None

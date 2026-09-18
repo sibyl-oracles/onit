@@ -20,11 +20,14 @@ MCP servers. Server-specific behavior (path validation, command execution) is
 injected via callable parameters so each server retains its own security model.
 '''
 
+import ipaddress
 import json
 import os
 import re
 import shlex
+import socket
 import tempfile
+import urllib.parse
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 
@@ -83,6 +86,125 @@ def truncate_output(text: str, max_size: int = MAX_OUTPUT_SIZE) -> str:
 def secure_makedirs(dir_path: str) -> None:
     """Create directory with owner-only permissions (0o700)."""
     os.makedirs(dir_path, mode=0o700, exist_ok=True)
+
+
+# ── SSRF guard ────────────────────────────────────────────────────────────────
+# Model-supplied URLs are untrusted: a page can steer a fetch at the cloud
+# metadata service (169.254.169.254), loopback, or RFC-1918 space. Shared here
+# (moved from ui/api.py) so every server that fetches a URL uses the same
+# screen. Two layers:
+#   1. _url_shape_ok   — cheap structural screen (scheme, dotful host, literal
+#                        private names). No network traffic.
+#   2. _host_resolves_public — DNS resolution; every resolved address must be
+#                        globally routable. Catches public-looking names that
+#                        resolve inward (DNS-rebinding's first hop).
+# Outbound fetches must go through safe_fetch(), which disables automatic
+# redirects and re-screens every hop, so a public page cannot 302 its way
+# inside.
+
+_PRIVATE_HOST_RE = re.compile(
+    r'^(localhost$|127\.|0\.|10\.|192\.168\.|169\.254\.'
+    r'|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cde])',
+    re.IGNORECASE,
+)
+
+
+def _url_shape_ok(url: str) -> bool:
+    """Cheap structural screen before any network probe."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = parts.hostname or ""
+    # A bare word ("manual") can't be a public site; dotless hosts are
+    # either typos or internal names we refuse to probe anyway.
+    if "." not in host:
+        return False
+    return not _PRIVATE_HOST_RE.match(host)
+
+
+def _host_resolves_public(host: str) -> bool:
+    """True only if *host* resolves exclusively to public IP addresses.
+
+    The structural screen (_url_shape_ok) rejects literal private hosts, but a
+    public-looking name can still resolve to a loopback, RFC-1918, link-local
+    or otherwise reserved address (e.g. cloud metadata at 169.254.169.254).
+    Resolving here and rejecting any non-global result closes that SSRF gap."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, ValueError, OSError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%")[0])
+        except ValueError:
+            return False
+        if not ip.is_global or ip.is_reserved:
+            return False
+    return True
+
+
+def assert_public_url(url: str) -> None:
+    """Raise ValueError when *url* may not be fetched: not http(s), a literal
+    private host, or a name that resolves to any non-global address."""
+    if not _url_shape_ok(url):
+        raise ValueError(f"refused non-public URL: {url!r}")
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if not _host_resolves_public(host):
+        raise ValueError(f"refused URL whose host does not resolve public: {url!r}")
+
+
+# requests is imported lazily so shared.py stays importable in servers that
+# don't fetch (and in test sandboxes without the package).
+try:
+    import requests as _requests
+    from requests import exceptions as _requests_exceptions
+    _HAS_REQUESTS = True
+except ImportError:  # pragma: no cover
+    _requests = None
+    _requests_exceptions = None
+    _HAS_REQUESTS = False
+
+_MAX_REDIRECT_HOPS = 5
+
+
+def safe_fetch(method: str, url: str, timeout, **kwargs):
+    """requests.request with the SSRF screen applied to the URL and to every
+    redirect hop.
+
+    Automatic redirects are disabled; each Location is re-screened with
+    assert_public_url before the next request is issued, so a public page
+    cannot 302 its way to loopback or the metadata service. Raises ValueError
+    for a non-public URL and requests.exceptions.RequestException when a
+    redirect is blocked or too deep."""
+    if not _HAS_REQUESTS:
+        raise RuntimeError("requests not installed")
+    assert_public_url(url)
+    kwargs.setdefault("allow_redirects", False)
+    resp = _requests.request(method, url, timeout=timeout, **kwargs)
+    hops = 0
+    while resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
+        hops += 1
+        if hops > _MAX_REDIRECT_HOPS:
+            raise _requests_exceptions.RequestException("too many redirects")
+        loc = resp.headers.get("Location", "")
+        if not loc:
+            break
+        next_url = urllib.parse.urljoin(resp.url, loc)
+        assert_public_url(next_url)
+        # 303 always becomes GET; 302 becomes GET unless it was a HEAD.
+        if resp.status_code == 303 or (resp.status_code == 302 and method.upper() != "HEAD"):
+            method = "GET"
+            kwargs.pop("stream", None)
+            kwargs.pop("data", None)
+            kwargs.pop("json", None)
+        resp = _requests.request(method, next_url, timeout=timeout, **kwargs)
+    return resp
 
 
 def validate_required(**kwargs) -> str:
@@ -786,9 +908,9 @@ def extract_pdf_images_impl(
             # Imported here rather than at module scope: this module is also
             # the sandbox filesystem server's dependency, and it should not
             # acquire an HTTP stack just by being imported.
-            import requests
             from urllib.parse import urlparse
-            response = requests.get(pdf_path, timeout=30)
+            assert_public_url(pdf_path)
+            response = safe_fetch("GET", pdf_path, timeout=30)
             response.raise_for_status()
             expected = response.headers.get('Content-Length')
             if expected and len(response.content) < int(expected):
@@ -878,19 +1000,18 @@ READ_FILE_DESCRIPTION = """Read a file or extract structured content from it.
 Args:
 - path: FULL absolute file path within the session working directory (required).
   Always use the complete path — never a relative one.
-- mode: What to extract — "text" (default), "tables", or "images"
-  - "text"   : Return file content. Supports text files and PDFs; binary files return metadata.
-  - "tables" : Extract tables from PDF or markdown. Returns structured rows/headers.
+- mode: "text" (default), "tables", or "images"
+  - "text"   : File content. Text files and PDFs; binary files return metadata.
+  - "tables" : Extract tables from PDF or markdown. Structured rows/headers.
   - "images" : Extract embedded images from a PDF and save them locally.
 - encoding: Text encoding for "text" mode
-- max_chars: Max characters for "text" mode
-- table_index: For "tables" — specific table to return (1-based, default: all)
+- max_chars: Max characters for "text" mode (no offset/limit paging — bound a
+  large file with this)
+- table_index: For "tables" — specific table (1-based, default: all)
 - output_format: For "tables" — "json" or "markdown"
 - output_dir: For "images" — directory to save extracted images
-- min_size: For "images" — minimum image dimension in pixels to extract
+- min_size: For "images" — minimum image dimension in pixels
 - data_path: Session working directory — set automatically by the harness; leave unset.
-
-There is no offset/limit paging: use max_chars to bound a large file.
 
 Returns JSON, varying by mode:
   text:   {content, path, size_bytes, format, status}
@@ -905,60 +1026,46 @@ READ_FILE_MODES = ("text", "tables", "images")
 SERVE_DESCRIPTION = """Run anything that takes longer than a few minutes, in the background.
 
 USE THIS INSTEAD OF bash for any command that may run past bash's 300-second
-timeout — installs, builds, full test suites, training runs, data downloads,
-migrations — and for web servers and daemons, which never exit on their own.
-A process started here has no time limit: it is detached, so it keeps running
-between tool calls. Start it, then poll with "status" and "logs" while you do
-other work. Running such a command through bash instead just burns the timeout
-and gets the command killed partway through.
+timeout — installs, builds, test suites, downloads — and for web servers and
+daemons, which never exit on their own. A process started here is detached and
+keeps running between tool calls; poll with "status" and "logs". Running such
+a command through bash instead just burns the timeout and gets it killed
+partway through.
 
-Actions:
-- start   : Launch a command as a background process. Returns name, pid, and log paths.
-- stop    : Stop a running process by name or pid.
-- status  : Check if a process is running (name or pid).
-- logs    : Tail stdout/stderr logs for a process (name or pid).
-- list    : List all managed processes with running/stopped status.
-- restart : Stop then re-start a named process using its saved command.
+Actions: start (launch; returns name, pid, log paths), stop, status, logs,
+list, restart (stop then re-start using the saved command).
 
 Args:
-- action  : One of "start", "stop", "status", "logs", "list", "restart" (required)
-- command : Shell command to run — required for "start" (e.g., "uvicorn main:app --port 8080", "pytest -q")
-- name    : Human-readable label for the process. Used to reference it later.
-- pid     : Process ID — alternative to name for stop/status/logs
-- cwd     : Working directory for the process. Can be any accessible directory.
-- lines   : Number of log lines to return for "logs" action
+- action  : "start"|"stop"|"status"|"logs"|"list"|"restart" (required)
+- command : Shell command — required for "start" (e.g., "uvicorn main:app --port 8080")
+- name    : Label used to reference the process later
+- pid     : Alternative to name for stop/status/logs
+- cwd     : Working directory for the process
+- lines   : Log lines to return for "logs"
 - data_path : Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON with process details and, for "logs", stdout/stderr tail.
-
 A command that finishes on its own reports status "stopped" — that means done,
-not failed, and the exit code is not recorded. When you need to know whether it
-succeeded, append it to the command: "pytest -q; echo EXIT=$?", then read the
-tail of the log once status is "stopped"."""
+not failed. To know whether it succeeded, append "echo EXIT=$?" to the command
+and read the log tail once status is "stopped"."""
 
 GITHUB_REPO_DESCRIPTION = """Create, get, list, fork, or delete GitHub repositories via the GitHub API.
 
-Requires GITHUB_TOKEN environment variable (personal access token with repo scope).
+Requires GITHUB_TOKEN (personal access token with repo scope).
 
-Actions:
-- create : Create a new repository (user or org). Returns repo details.
-- get    : Get info about an existing repository.
-- list   : List repositories for the authenticated user or an org.
-- fork   : Fork an existing repository into the authenticated user's account or an org.
-- delete : Delete a repository (requires admin access).
+Actions: create, get, list, fork, delete (admin).
 
 Args:
-- action      : One of "create", "get", "list", "fork", "delete" (required)
-- name        : Repository name — required for create, get (owner/repo), fork (owner/repo), delete (owner/repo)
-- description : Repository description (create only, optional)
+- action      : "create"|"get"|"list"|"fork"|"delete" (required)
+- name        : Repository name — required for get/fork/delete (owner/repo)
+- description : Repository description (create only)
 - private     : Make repo private (create only)
 - auto_init   : Initialize with a README (create only)
-- gitignore_template : e.g. "Python", "Node" (create only, optional)
-- license_template   : e.g. "mit", "apache-2.0" (create only, optional)
-- org         : Organization name — if set for create/list, targets the org instead of the user
+- gitignore_template : e.g. "Python" (create only)
+- license_template   : e.g. "mit" (create only)
+- org         : Target an org instead of the user (create/list)
 - per_page    : Results per page for list (max: 100)
 
-Returns JSON: repo details for create/get/fork; list of repos for list; status for delete."""
+Returns JSON: repo details for create/get/fork; list for list; status for delete."""
 
 
 def read_file_impl(
@@ -1005,17 +1112,17 @@ SEARCH_DOCUMENT_DESCRIPTION = """Search within a single document file. Supports 
 
 Args:
 - path: FULL absolute file path within the session working directory (required)
-- mode: Search strategy — "pattern" (default) or "context"
-  - "pattern" : Regex search. Returns matching lines with surrounding context lines.
-  - "context" : Keyword/query-based. Returns the most relevant text sections.
-- pattern: Regex to match (required for mode="pattern", e.g., "error.*timeout")
-- query: Question or topic (required for mode="context", e.g., "what is the conclusion?")
+- mode: "pattern" (default) or "context"
+  - "pattern" : Regex search. Matching lines with surrounding context.
+  - "context" : Keyword/query-based. Most relevant text sections.
+- pattern: Regex to match (required for mode="pattern")
+- query: Question or topic (required for mode="context")
 - keywords: Extra keywords for mode="context" (comma-separated)
 - case_sensitive: Case-sensitive matching for mode="pattern"
-- context_lines: Lines of context around each match for mode="pattern"
-- max_matches: Max matches for mode="pattern"
-- context_chars: Characters of context per section for mode="context"
-- max_sections: Max sections for mode="context"
+- context_lines: Context lines around each match (mode="pattern")
+- max_matches: Max matches (mode="pattern")
+- context_chars: Context characters per section (mode="context")
+- max_sections: Max sections (mode="context")
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
 Returns JSON:

@@ -1143,3 +1143,70 @@ class TestFoldOnToolTurn:
         assert _step_summary("</think>only thinking") == "only thinking"
         # An unterminated think block means nothing was said out loud.
         assert _step_summary("some prose then </think>") == ""
+
+
+# ─── A3: mixed batches partition ─────────────────────────────────────────────
+
+class TestMixedBatchPartition:
+    def _registry(self, names, delay=0.05):
+        import asyncio as _aio
+
+        def _handler_for(name):
+            async def _handler(log_handler=None, **kwargs):
+                await _aio.sleep(delay)
+                return f"result of {name}"
+            return _handler
+
+        reg = MagicMock()
+        reg.tools = set(names)
+        reg.tool_accepts_param.return_value = False
+        reg.__getitem__ = lambda _self, key: _handler_for(key)
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_runs_reads_concurrently(self):
+        """search (read-only) + write_file in one turn: the read subset
+        overlaps instead of serializing behind the write."""
+        calls = [_mock_tool_call("read_file", '{"path": "/a"}', "c1"),
+                 _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
+                 _mock_tool_call("write_file", '{"path": "/w"}', "c3")]
+        registry = self._registry({"read_file", "write_file"}, delay=0.05)
+        messages: list = []
+
+        started = time.monotonic()
+        bail = await _handle_structured_tool_calls(
+            calls, {"role": "assistant"}, registry, None, "", None, False,
+            messages, [], 30, asyncio.Queue(), session_id="s",
+        )
+        elapsed = time.monotonic() - started
+
+        assert bail is None
+        # Reads concurrent (~0.05s) + write serial (~0.05s) ≈ 0.10s; fully
+        # serial would be ~0.15s.
+        assert elapsed < 0.14
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
+
+    @pytest.mark.asyncio
+    async def test_writes_in_mixed_batch_keep_order(self):
+        order: list = []
+
+        async def _handler(log_handler=None, path=None, **kwargs):
+            order.append(path)
+            return f"did {path}"
+
+        registry = MagicMock()
+        registry.tools = {"write_file", "read_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        calls = [_mock_tool_call("read_file", '{"path": "/r"}', "c1"),
+                 _mock_tool_call("write_file", '{"path": "/w1"}', "c2"),
+                 _mock_tool_call("write_file", '{"path": "/w2"}', "c3")]
+        messages: list = []
+        await _handle_structured_tool_calls(
+            calls, {"role": "assistant"}, registry, None, "", None, False,
+            messages, [], 30, asyncio.Queue(), session_id="s",
+        )
+        # Both writes ran, in the order the model asked for them.
+        assert order == ["/r", "/w1", "/w2"]
