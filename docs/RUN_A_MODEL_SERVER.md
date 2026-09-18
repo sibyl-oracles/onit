@@ -36,6 +36,14 @@ Two other things pay off across a whole session:
   error output. Serve as much context as the hardware allows, then tell OnIt the
   same number (`serving.max_context_tokens`) so its compaction budget matches
   reality.
+- **Speculative decoding (optional, decode-bound runs).** vLLM can draft several
+  tokens per step — ngram (`--speculative-config '{"method": "ngram", "model": null, "num_speculative_tokens": 5}'`)
+  or a real draft model (`"method": "draft_model", "model": <draft>"`). An agent
+  loop is the good case for it: tool-call JSON repeats the same shapes turn after
+  turn, so ngram proposals hit often and decode throughput rises (commonly
+  1.5–2×) with the output unchanged. It costs some KV memory and helps least on
+  long reasoning spans, where proposals miss. Try it when the benchmark report's
+  decode column, not prefill, dominates.
 
 ## vLLM (NVIDIA GPUs)
 
@@ -64,6 +72,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
 | `--chat-template-content-format string` | Sends message content as a plain string. Some templates render the structured form badly and drop tool results. |
 | `--max-model-len` | The context window. Lower it if the KV cache doesn't fit — vLLM refuses to start rather than silently truncate. |
 | `--tensor-parallel-size` | Number of GPUs to shard across. Must divide the model's attention-head count. |
+| `--speculative-config '{"method": "ngram", "model": null, "num_speculative_tokens": 5}'` | Optional. Drafts 5 tokens per step from n-gram matches; agent tool-call JSON is repetitive enough that decode commonly speeds up 1.5–2× with identical output. Drop it if KV memory is tight or the run is prefill-bound. |
 
 Restrict access with one or more API keys — **space-separated, not
 comma-separated** (`--api-key` is parsed with `nargs="+"`, so a comma-joined

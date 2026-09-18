@@ -124,6 +124,15 @@ class RunState:
     final_answer_prefix: str = ""
     prose_before_tools: str = ""
 
+    # ── incremental compaction ────────────────────────────────────────────────────
+    # The running summary from the last compaction and how many post-system
+    # messages it already covers.  The next compaction summarizes only the
+    # messages past that cursor and merges them into the summary — one
+    # bounded call over the delta instead of re-reading up to 60k chars of
+    # transcript.  Both reset when a compaction falls back to the full path.
+    compaction_summary: str = ""
+    compaction_summarized_upto: int = 0
+
     # ── how it ended, and the session-level totals ──────────────────────────
     stop_reason: str = ""
     # Only meaningful on the persisted copy; see merge().
@@ -192,6 +201,12 @@ class RunState:
         self.final_continuation_count = other.final_continuation_count
         self.repetition_continuation_count = other.repetition_continuation_count
         self.stop_reason = other.stop_reason
+        # The compaction cursor is per-run: the summary describes this run's
+        # transcript, and the next run's messages start from a different
+        # offset, so carrying it over would point the cursor at the wrong
+        # messages.  The next compaction of a new run re-reads from scratch.
+        self.compaction_summary = ""
+        self.compaction_summarized_upto = 0
         self.total_turns += other.iteration_count
         self.task_count += 1
         return self

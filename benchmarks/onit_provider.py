@@ -258,4 +258,28 @@ class OnItAPI(ModelAPI):
                 stats=stats,
             )
 
-        return ModelOutput.from_content(model=self.model_name, content=answer or "")
+        # Wall time and tokens per sample (S1).  process_task fills
+        # stats["metrics"] with the TurnMetrics sink; publishing it here puts
+        # it in the sample's metadata, where report.py's wall/token columns
+        # and the S1 gate read it from.  A run that failed before any turn
+        # has an empty sink — publish zeros so the column always exists.
+        _m = stats.get("metrics") or {}
+        return ModelOutput.from_content(model=self.model_name, content=answer or "",
+                                        metadata={
+                                            "wall_s": round(float(_m.get("model_s", 0.0))
+                                                            + float(_m.get("tool_s", 0.0))
+                                                            + float(_m.get("compaction_s", 0.0))
+                                                            + float(_m.get("verify_s", 0.0))
+                                                            + float(_m.get("instruction_s", 0.0)), 3),
+                                            "model_s": float(_m.get("model_s", 0.0)),
+                                            "prefill_s": float(_m.get("prefill_s", 0.0)),
+                                            "decode_s": float(_m.get("decode_s", 0.0)),
+                                            "tool_s": float(_m.get("tool_s", 0.0)),
+                                            "ttft_s": float(_m.get("ttft_s", 0.0) or 0.0),
+                                            "prompt_tokens_max": int(_m.get("prompt_tokens_max", 0)),
+                                            "completion_tokens": int(_m.get("completion_tokens", 0)),
+                                            "cached_tokens": int(_m.get("cached_tokens", 0)),
+                                            "compactions": int(_m.get("compactions", 0)),
+                                            "turn_count": int(_m.get("turn_count", 0)),
+                                            "retries": int(_m.get("api_retries", 0)),
+                                        })

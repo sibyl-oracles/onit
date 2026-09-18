@@ -236,7 +236,13 @@ class ResultStore:
         no extra tool.  Capped at the newest 20 with a count of the rest: a
         long run stores hundreds of results, and listing them all re-sent
         every ``context_status`` call would outweigh the discovery it exists
-        for.  Older handles are still on disk and still readable."""
+        for.  Older handles are still on disk and still readable.
+
+        A ``url`` field is extracted when the stored text carries one near its
+        head (fetch_content results do): a re-fetch of the same URL is the
+        most common redundant call in a research loop, and seeing the URL next
+        to the handle is what makes the waste visible before it happens.
+        """
         out = []
         files = self._stored_files()
         _omitted = max(0, len(files) - 20)
@@ -246,9 +252,22 @@ class ResultStore:
                 size = path.stat().st_size
             except OSError:
                 continue
-            out.append({"handle": handle,
-                        "tool": rest[:-len(RESULT_SUFFIX)] or "unknown",
-                        "chars": size})
+            rec = {"handle": handle,
+                   "tool": rest[:-len(RESULT_SUFFIX)] or "unknown",
+                   "chars": size}
+            # The URL line, when there is one, sits in the first kilobyte —
+            # fetch_content's header carries it.  One regex, one small read;
+            # worth it only for fetch-shaped results.
+            if rec["tool"] in ("fetch_content", "fetch", "web_fetch"):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        head = f.read(1024)
+                    m = re.search(r"https?://[^\s\"'>\]\)]+", head)
+                    if m:
+                        rec["url"] = m.group(0)[:200]
+                except OSError:
+                    pass
+            out.append(rec)
         if _omitted:
             out.append({"omitted": _omitted,
                         "note": "older stored results not listed; handles are on disk "

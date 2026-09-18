@@ -637,9 +637,22 @@ async def _run_chat(replies, background=None, **kwargs):
     caller that owns the session would.  Left out, no background check is
     scheduled at all — which is what a surface with no way to show a late
     correction gets.
+
+    ``with_evidence`` (default True) scripts a leading tool-call turn so the
+    run has gathered evidence before the answer arrives.  The fast fact-check
+    only runs on answers written from gathered evidence — a knowledge-only
+    answer skips it by design (``has_tool_evidence``) — so the wiring tests,
+    which exist to check the wiring, need a tool result in the conversation.
+    Pass False for tests that assert the skip itself.
     """
     if background is not None:
         kwargs["background_verify"] = background.append
+    if kwargs.pop("with_evidence", True):
+        tc = MagicMock()
+        tc.function.name = "read_file"
+        tc.function.arguments = '{"path": "report.txt"}'
+        tc.id = "call_evidence"
+        replies = [_completion(tool_calls=[tc]), *replies]
     client = AsyncMock()
     client.chat.completions.create = AsyncMock(side_effect=replies)
     with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
@@ -652,6 +665,15 @@ async def _run_chat(replies, background=None, **kwargs):
             **kwargs,
         ), timeout=30)
     return result, client
+
+
+def _evidence_tool_call():
+    """A read_file tool call the wiring tests use to give the run evidence."""
+    tc = MagicMock()
+    tc.function.name = "read_file"
+    tc.function.arguments = '{"path": "report.txt"}'
+    tc.id = "call_evidence"
+    return tc
 
 
 class TestChatWiring:
@@ -670,7 +692,7 @@ class TestChatWiring:
             _completion(content='{"issues": []}'),
         ])
         assert result == ANSWER
-        assert client.chat.completions.create.call_count == 2
+        assert client.chat.completions.create.call_count == 3
 
     @pytest.mark.asyncio
     async def test_a_finding_is_flagged_without_a_second_generation(self):
@@ -684,14 +706,14 @@ class TestChatWiring:
         ])
         assert result.startswith(ANSWER)
         assert f"{CORRECTION_PREFIX}3.1M in the filing" in result
-        assert client.chat.completions.create.call_count == 2
+        assert client.chat.completions.create.call_count == 3
 
     @pytest.mark.asyncio
     async def test_verification_can_be_turned_off(self):
         result, client = await _run_chat([_completion(content=ANSWER)],
                                          verify_answers=False)
         assert result == ANSWER
-        assert client.chat.completions.create.call_count == 1
+        assert client.chat.completions.create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_a_claim_free_answer_is_not_checked(self):
@@ -699,7 +721,7 @@ class TestChatWiring:
                  "different structure, or a shorter version to share around.")
         result, client = await _run_chat([_completion(content=plain)])
         assert result == plain
-        assert client.chat.completions.create.call_count == 1
+        assert client.chat.completions.create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_a_loop_bailout_is_not_fact_checked(self):
@@ -712,7 +734,7 @@ class TestChatWiring:
         result, client = await _run_chat(
             [_completion(content=planning)] * 4, tool_registry=registry)
         assert "unable to complete" in result.lower()
-        assert client.chat.completions.create.call_count == 3
+        assert client.chat.completions.create.call_count == 4
 
     @pytest.mark.asyncio
     async def test_the_ui_is_told_the_check_is_running(self):
@@ -766,9 +788,10 @@ class TestChatWiring:
             _completion(content='{"issues": []}'),
         ], tool_registry=registry, verify_max_tool_turns=1, background=checks)
         await checks[0]
-        deep_call = client.chat.completions.create.call_args_list[2]
+        deep_call = client.chat.completions.create.call_args_list[3]
         offered = [t["function"]["name"] for t in deep_call.kwargs["tools"]]
-        assert offered == ["search"]
+        # context_status joined the read-only set (S8 of the speed plan).
+        assert offered == ["search", "context_status"]
 
     @pytest.mark.asyncio
     async def test_the_check_makes_no_lookups_by_default(self):
@@ -783,8 +806,8 @@ class TestChatWiring:
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
         ], tool_registry=registry)
-        assert client.chat.completions.create.call_count == 2
-        assert "tools" not in client.chat.completions.create.call_args_list[1].kwargs
+        assert client.chat.completions.create.call_count == 3
+        assert "tools" not in client.chat.completions.create.call_args_list[2].kwargs
 
     @pytest.mark.asyncio
     async def test_no_deep_check_without_somewhere_to_report_it(self):
@@ -795,7 +818,7 @@ class TestChatWiring:
             _completion(content='{"issues": []}'),
         ])
         assert result == ANSWER
-        assert client.chat.completions.create.call_count == 2
+        assert client.chat.completions.create.call_count == 3
 
     @pytest.mark.asyncio
     async def test_the_deep_check_is_handed_over_not_started(self):
@@ -810,9 +833,9 @@ class TestChatWiring:
         assert result == ANSWER
         # Handed over, and nothing has run it yet.
         assert len(checks) == 1
-        assert client.chat.completions.create.call_count == 2
-        await checks[0]
         assert client.chat.completions.create.call_count == 3
+        await checks[0]
+        assert client.chat.completions.create.call_count == 4
 
     @pytest.mark.asyncio
     async def test_a_flagged_answer_is_not_checked_twice(self):
@@ -836,6 +859,8 @@ class TestChatWiring:
         async def _create(**_kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
+                return _completion(tool_calls=[_evidence_tool_call()])
+            if calls["n"] == 2:
                 return _completion(content=ANSWER)
             await asyncio.sleep(5)
             return _completion(content='{"issues": []}')
@@ -864,6 +889,7 @@ class TestChatWiring:
 
         client = AsyncMock()
         client.chat.completions.create = AsyncMock(side_effect=[
+            _completion(tool_calls=[_evidence_tool_call()]),
             _completion(content=ANSWER),
             OpenAIError("Request timed out."),
         ])
@@ -874,7 +900,7 @@ class TestChatWiring:
                 host="http://localhost:8000/v1", instruction="q",
                 safety_queue=asyncio.Queue()), timeout=30)
         assert result == ANSWER                     # the check failed open
-        assert client.chat.completions.create.call_count == 2   # and did not retry
+        assert client.chat.completions.create.call_count == 3   # and did not retry
         assert _NO_TEMPLATE_KWARGS == {}
 
     @pytest.mark.asyncio
@@ -884,7 +910,7 @@ class TestChatWiring:
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
         ])
-        verify_call = client.chat.completions.create.call_args_list[1]
+        verify_call = client.chat.completions.create.call_args_list[2]
         assert (verify_call.kwargs["extra_body"]["chat_template_kwargs"]
                 == {"enable_thinking": False})
 
@@ -897,7 +923,7 @@ class TestChatWiring:
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
         ])
-        assert client.chat.completions.create.call_args_list[1].kwargs[
+        assert client.chat.completions.create.call_args_list[2].kwargs[
             "max_tokens"] == 4096
 
     @pytest.mark.asyncio
@@ -918,7 +944,7 @@ class TestChatWiring:
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
         ], max_tokens=32768)
-        verify_call = client.chat.completions.create.call_args_list[1]
+        verify_call = client.chat.completions.create.call_args_list[2]
         assert verify_call.kwargs["max_tokens"] == 512
 
     @pytest.mark.asyncio
@@ -931,7 +957,8 @@ class TestChatWiring:
             _completion(content=ANSWER),
             _completion(content='{"issues": []}'),
         ])
-        answer_call, verify_call = client.chat.completions.create.call_args_list
+        answer_call = client.chat.completions.create.call_args_list[1]
+        verify_call = client.chat.completions.create.call_args_list[2]
         assert (verify_call.kwargs["extra_body"]["chat_template_kwargs"]
                 == {"enable_thinking": False})
         # The check spends nothing on thinking whatever the run does, and it
@@ -951,6 +978,7 @@ class TestChatWiring:
 
         client = AsyncMock()
         client.chat.completions.create = AsyncMock(side_effect=[
+            _completion(tool_calls=[_evidence_tool_call()]),
             _completion(content=ANSWER),
             OpenAIError("unknown chat_template_kwargs"),
             _completion(content='{"issues": []}'),
@@ -962,7 +990,7 @@ class TestChatWiring:
                 host="http://localhost:8000/v1", instruction="q",
                 safety_queue=asyncio.Queue()), timeout=30)
         assert result == ANSWER
-        retried = client.chat.completions.create.call_args_list[2]
+        retried = client.chat.completions.create.call_args_list[3]
         assert retried.kwargs["extra_body"] == {}
         # And remembered, so the next answer does not pay for the same refusal.
         assert "http://localhost:8000/v1" in _NO_TEMPLATE_KWARGS
@@ -975,8 +1003,8 @@ class TestChatWiring:
             _completion(content='{"issues": []}'),
         ])
         assert result == ANSWER
-        assert client.chat.completions.create.call_count == 2
-        assert client.chat.completions.create.call_args_list[1].kwargs["extra_body"] == {}
+        assert client.chat.completions.create.call_count == 3
+        assert client.chat.completions.create.call_args_list[2].kwargs["extra_body"] == {}
 
     @pytest.mark.asyncio
     async def test_ollama_is_asked_for_the_same_thing_its_own_way(self):
@@ -991,6 +1019,15 @@ class TestChatWiring:
         verdict.eval_count = 12
         verdict.prompt_eval_count = 100
 
+        tool_answer = MagicMock()
+        tool_answer.message = MagicMock(
+            content=None,
+            tool_calls=[MagicMock(function=MagicMock(
+                name="read_file", arguments={"path": "report.txt"}))])
+        tool_answer.done_reason = "stop"
+        tool_answer.eval_count = 10
+        tool_answer.prompt_eval_count = 100
+
         answer = MagicMock()
         answer.message = MagicMock(content=ANSWER, tool_calls=None)
         answer.done_reason = "stop"
@@ -998,7 +1035,7 @@ class TestChatWiring:
         answer.prompt_eval_count = 100
 
         ollama = AsyncMock()
-        ollama.chat = AsyncMock(side_effect=[answer, verdict])
+        ollama.chat = AsyncMock(side_effect=[tool_answer, answer, verdict])
         with patch("model.serving.chat._create_ollama_client", return_value=ollama), \
              patch("model.serving.chat._ollama_resolve_model_id",
                    new_callable=AsyncMock, return_value="qwen3"), \
@@ -1008,7 +1045,7 @@ class TestChatWiring:
                 host="https://ollama.com", host_key="test-key", instruction="q",
                 safety_queue=asyncio.Queue()), timeout=30)
         assert result == ANSWER
-        assert ollama.chat.call_args_list[1].kwargs["think"] is False
+        assert ollama.chat.call_args_list[2].kwargs["think"] is False
 
     @pytest.mark.asyncio
     async def test_the_check_is_timed_separately(self):
@@ -1034,6 +1071,8 @@ class TestChatWiring:
         async def _stop_during_the_check(**_kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
+                return _completion(tool_calls=[_evidence_tool_call()])
+            if calls["n"] == 2:
                 return _completion(content=ANSWER)
             # The check is in flight when the user presses stop.  The call is
             # cancelled; the answer they already read is not.
@@ -1050,4 +1089,4 @@ class TestChatWiring:
                 safety_queue=queue,
             ), timeout=30)
         assert result == ANSWER
-        assert client.chat.completions.create.call_count == 2
+        assert client.chat.completions.create.call_count == 3

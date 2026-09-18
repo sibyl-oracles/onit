@@ -1406,16 +1406,38 @@ class OnIt(BaseModel):
         history = []
         try:
             if os.path.exists(effective_path):
-                with open(effective_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
+                # Read the tail, not the whole file.  Sessions grow without
+                # bound and this runs before the first token of every task;
+                # parsing the entire JSONL to return the last few pairs made
+                # startup latency a function of session age.  Chunks are read
+                # backwards from the end until enough pairs are found or the
+                # file head is reached; a partial line at a chunk boundary is
+                # carried over to the previous chunk, so no record is lost.
+                _CHUNK = 64 * 1024
+                with open(effective_path, "rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    pos = f.tell()
+                    remainder = b""
+                    while pos > 0 and len(history) < max_turns * 2:
+                        step = min(_CHUNK, pos)
+                        pos -= step
+                        f.seek(pos)
+                        chunk = f.read(step) + remainder
+                        lines = chunk.split(b"\n")
+                        # The first element is a partial line unless we are at
+                        # the file start; keep it for the next chunk back.
+                        remainder = lines[0] if pos > 0 else b""
+                        for line in reversed(lines[1:] if pos > 0 else lines):
+                            line = line.strip()
+                            if not line:
+                                continue
                             try:
                                 entry = json.loads(line)
-                                if "task" in entry and "response" in entry:
-                                    history.append(entry)
                             except json.JSONDecodeError:
                                 continue
+                            if "task" in entry and "response" in entry:
+                                history.append(entry)
+                history.reverse()
         except Exception:
             pass
         # return only the most recent turns

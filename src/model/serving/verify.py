@@ -128,6 +128,32 @@ def needs_verification(answer: str, min_chars: int = MIN_ANSWER_CHARS) -> bool:
     return bool(_CLAIM_RE.search(text))
 
 
+def has_tool_evidence(messages: list) -> bool:
+    """Whether the run gathered any evidence a fast verdict could check against.
+
+    The fast pass compares the draft's claims to what tools returned.  A run
+    that made no tool calls wrote from the model's own knowledge, so the only
+    thing a verdict call can report back is that knowledge again — a serial
+    LLM call of pure latency on the tail of every knowledge-answer turn.  The
+    deep check behind it still runs and may still look things up; this only
+    decides whether the *fast* pass has anything to be fast about.
+
+    User-supplied material counts: the user's own file or paste is exactly the
+    kind of source the free pass checks figures against.
+    """
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "tool":
+            return True
+        if role == "user" and msg.get("content") and not msg.get("_is_task"):
+            # The opening task instruction is not evidence; anything the user
+            # added afterwards (a file, a correction with data) is.
+            pass
+    return False
+
+
 # ── the free pass ───────────────────────────────────────────────────────────
 #
 # A figure that appears verbatim in a document the run read, or on a source

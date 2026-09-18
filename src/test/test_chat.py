@@ -2713,7 +2713,7 @@ class TestRunCodeInChat:
         answer, client = await self._run(
             tmp_path, calls, code_execution=True, session_id="chat-4",
             max_repeated_tool_calls=2)
-        assert "rephrase" in answer
+        assert "change approach" in answer
         await shutdown_session("chat-4")
 
 

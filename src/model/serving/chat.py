@@ -34,7 +34,8 @@ from typing import List, Optional, Any
 
 from .verify import (DEFAULT_TRUSTED_DOMAINS, REVISION_MAX_TOKENS,
                      THINKING_VERDICT_MAX_TOKENS,
-                     VERDICT_MAX_TOKENS, needs_verification, verify_answer)
+                     VERDICT_MAX_TOKENS, has_tool_evidence,
+                     needs_verification, verify_answer)
 
 from .harness import COMPACTION_NOTICE, HarnessTools
 from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
@@ -66,6 +67,36 @@ logger = logging.getLogger(__name__)
 # Larger responses are truncated to avoid blowing up the context window.
 MAX_TOOL_RESPONSE = 16000
 
+# Per-tool result budgets (Tier 5.1).  MAX_TOOL_RESPONSE is one number for all
+# tools; a cheap tool does not need it and an expensive one is stored anyway.
+# Unlisted tools keep MAX_TOOL_RESPONSE.  Sized against what the tool returns
+# that is worth reading whole: a weather report is a few lines, a fetch is a
+# document whose body belongs behind a handle, a search page is its ranking.
+TOOL_RESPONSE_BUDGETS = {
+    "get_weather": 2000,
+    "context_status": 4000,
+    "note_read": 4000,
+    "result_read": 8000,
+    "result_grep": 8000,
+    "fetch_content": 8000,
+    "search": 8000,
+    "local_search": 12000,
+}
+
+
+def _truncate_tool_response(response: str, tool: str = "") -> str:
+    """Truncate a tool response if it exceeds its per-tool budget.
+
+    The head+tail cut keeps the opening (what the tool says first is usually
+    the ranking or the status) and the closing (totals, errors).  A tool with
+    no entry in TOOL_RESPONSE_BUDGETS gets MAX_TOOL_RESPONSE.
+    """
+    budget = TOOL_RESPONSE_BUDGETS.get(tool, MAX_TOOL_RESPONSE)
+    if len(response) <= budget:
+        return response
+    half = budget // 2
+    return response[:half] + f"\n\n... [truncated {len(response) - budget} chars] ...\n\n" + response[-half:]
+
 # Output tokens per response when nothing says otherwise.  Sized for a long
 # answer on a modern long-context model; a request is still clamped down to
 # what is left of the context window before it goes out, so this is a ceiling
@@ -95,7 +126,24 @@ CONNECT_TIMEOUT = 30.0
 STREAM_STALL_TIMEOUT = 300.0
 
 
-def _build_client_timeout(timeout, stream: bool):
+def _cached_tokens_of(usage) -> int | None:
+    """Prefix-cache hit tokens from an OpenAI-shaped usage object, or None.
+
+    vLLM (and OpenAI) report it at ``usage.prompt_tokens_details.cached_tokens``;
+    a plain namespace built by the Responses path or an Ollama stream has no
+    such field, and None means "unknown" — never 0, which would read as a
+    cold cache and drag the run's hit rate down.
+    """
+    if usage is None:
+        return None
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return None
+    cached = getattr(details, "cached_tokens", None)
+    return int(cached) if cached is not None else None
+
+
+def _build_client_timeout(timeout, stream: bool, prompt_tokens: int = 0):
     """Return the timeout configuration for the API client.
 
     A positive ``timeout`` is used as-is (total request timeout).  ``None`` or
@@ -103,11 +151,26 @@ def _build_client_timeout(timeout, stream: bool):
     and when streaming, the gap between chunks is bounded by
     STREAM_STALL_TIMEOUT.  Streaming read timeouts apply per-chunk, so long
     generations are unaffected — only a genuine stall raises.
+
+    ``prompt_tokens`` scales the *first* read, which for a streaming request
+    is not a chunk gap at all: no bytes arrive until the server has queued the
+    request and prefilled the whole prompt, so the stall budget has to cover
+    queue + prefill.  At the 0.89 compaction threshold a 256k-window run
+    regularly ships ~200k-token prompts, and a loaded endpoint can spend
+    longer than the flat stall budget on prefill alone — the request then dies
+    as a "stall" that was really a slow prefill.  The first read gets
+    max(STREAM_STALL_TIMEOUT, ~1s per 300 prompt tokens, 600s); once tokens
+    are flowing, per-chunk gaps stay at the flat stall budget.
     """
     if timeout is not None and timeout >= 0:
         return timeout
-    read = STREAM_STALL_TIMEOUT if stream else None
-    return httpx.Timeout(connect=CONNECT_TIMEOUT, read=read, write=30.0, pool=30.0)
+    if not stream:
+        return httpx.Timeout(connect=CONNECT_TIMEOUT, read=None,
+                             write=30.0, pool=30.0)
+    first_read = max(STREAM_STALL_TIMEOUT,
+                     min(600.0, prompt_tokens / 300.0))
+    return httpx.Timeout(connect=CONNECT_TIMEOUT, read=first_read,
+                         write=30.0, pool=30.0)
 
 
 def _api_tool_payload(tool_items: list) -> list:
@@ -137,14 +200,6 @@ def _api_tool_payload(tool_items: list) -> list:
         payload.append({**{k: v for k, v in item.items() if k != 'function'},
                         'function': projected})
     return payload
-
-
-def _truncate_tool_response(response: str) -> str:
-    """Truncate a tool response if it exceeds MAX_TOOL_RESPONSE characters."""
-    if len(response) <= MAX_TOOL_RESPONSE:
-        return response
-    half = MAX_TOOL_RESPONSE // 2
-    return response[:half] + f"\n\n... [truncated {len(response) - MAX_TOOL_RESPONSE} chars] ...\n\n" + response[-half:]
 
 
 # ── per-turn telemetry ──────────────────────────────────────────────────────
@@ -221,7 +276,7 @@ class TurnMetrics:
             self._ttft = time.monotonic() - self._api_start
 
     def end_api(self, prompt_tokens=0, completion_tokens=0,
-                finish_reason=None) -> None:
+                finish_reason=None, cached_tokens=None) -> None:
         # The streaming paths close the turn early, so the UI's footer can read
         # a sink that already includes the stream it is reporting on.  The
         # shared call further down then arrives second, and recording the turn
@@ -231,12 +286,14 @@ class TurnMetrics:
         elapsed = time.monotonic() - self._api_start
         prompt_tokens = _as_int(prompt_tokens)
         completion_tokens = _as_int(completion_tokens)
+        cached_tokens = _as_int(cached_tokens) if cached_tokens is not None else None
         self.turns.append({
             "n": len(self.turns) + 1,
             "ttft_s": round(self._ttft, 3) if self._ttft is not None else None,
             "model_s": round(elapsed, 3),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
+            "cached_tokens": cached_tokens,
             "finish_reason": finish_reason,
             "tools": [],
             "tool_s": 0.0,
@@ -246,6 +303,13 @@ class TurnMetrics:
         s["model_s"] = round(s["model_s"] + elapsed, 3)
         s["completion_tokens"] += completion_tokens
         s["prompt_tokens_max"] = max(s["prompt_tokens_max"], prompt_tokens)
+        if cached_tokens is not None:
+            # Prefix-cache hit rate is the health signal of the whole
+            # instruction-split design: a warm cache turns most of the
+            # standing payload's prefill into a no-op.  Summed so the run's
+            # hit rate is a token-weighted average, not a mean of turns.
+            s["cached_tokens"] = s.get("cached_tokens", 0) + cached_tokens
+            s["prompt_tokens_sum"] = s.get("prompt_tokens_sum", 0) + prompt_tokens
         if self._ttft is not None:
             # Only streamed turns can separate the two: without a first-token
             # timestamp there is no line between waiting and generating.
@@ -335,6 +399,9 @@ def summarize_metrics(m: dict) -> str:
     ]
     if m.get("compactions"):
         parts.append(f"{m['compactions']} compaction(s) {m['compaction_s']:.1f}s")
+    _pt_sum, _ct_sum = m.get("prompt_tokens_sum", 0), m.get("cached_tokens", 0)
+    if _pt_sum > 0 and _ct_sum > 0:
+        parts.append(f"cache {_ct_sum / _pt_sum:.0%} hit")
     if m.get("verify_s"):
         _verdict = (f"{m['verify_issues']} claim(s) corrected"
                     if m.get("verify_revisions") else "clean")
@@ -532,6 +599,21 @@ def _openai_responses_input(messages: list) -> list:
     return items
 
 
+def _strip_internal_keys(messages: list) -> list:
+    """Drop bookkeeping keys no provider should ever see.
+
+    ``_compaction`` rides on the compacted user message so the caller can
+    advance the incremental-summary cursor; it is popped here, at the last
+    point before any request is built, so the marker can never leak into a
+    payload regardless of which provider path runs.  Returns the same list —
+    the keys are popped in place.
+    """
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg.pop("_compaction", None)
+    return messages
+
+
 def _openai_responses_tools(tools: list) -> list:
     """Flatten chat-completions tool records into Responses-API function tools.
 
@@ -665,14 +747,15 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     return host_key
 
 
-def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True):
+def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True,
+                          prompt_tokens: int = 0):
     """Create an OllamaAsyncClient configured for the given host and API key."""
     if not OLLAMA_SDK_AVAILABLE:
         raise ImportError("The 'ollama' package is required for Ollama cloud support.")
     return OllamaAsyncClient(
         host=host,
         headers={"Authorization": f"Bearer {api_key}"},
-        timeout=_build_client_timeout(timeout, stream),
+        timeout=_build_client_timeout(timeout, stream, prompt_tokens=prompt_tokens),
     )
 
 
@@ -1236,6 +1319,15 @@ _DECAY_MARKER = (CONTINUATION_PREFIX
 # quadratic prompt growth of a six-document research loop actually goes.
 TOOL_RESULT_STORED_DECAY_CHARS = 1200
 
+# Repeated-tool-call policy (see _execute_tool).  A loop is the consecutive
+# shape: the same call back-to-back.  Steering starts early — the notice is
+# nearly free (one line in a message already being sent) and usually works —
+# and the turn only ends when the model has ignored it.  The lifetime backstop
+# is 2× the caller's max_repeated so a run that re-consults the same tool
+# legitimately, spread across other work, is never punished for it.
+_REPEAT_STEER_AFTER = 3
+_REPEAT_STREAK_BAIL = 5
+
 # Compaction-transcript caps: the summarizer sees the newest window in full
 # (bounded by both message count and total chars) and everything older as
 # one-line mentions.  60k chars ≈ 15k tokens — comfortably inside a 128k
@@ -1271,12 +1363,16 @@ def _decay_old_tool_results(messages: list,
     ``store``, when given, changes both halves of that for a result with a
     handle: it is cut much further, because the rest is a local file read away
     rather than a tool re-execution away, and the marker says so.
+
+    Returns the number of results trimmed, so the timeout-retry path can tell
+    whether its emergency trim actually shrank the prompt.
     """
     tool_indices = [
         i for i, msg in enumerate(messages)
         if isinstance(msg, dict) and msg.get("role") == "tool"
         and isinstance(msg.get("content"), str)
     ]
+    trimmed_count = 0
     for i in tool_indices[:-keep_full] if keep_full else tool_indices:
         content = messages[i]["content"]
         handle = handle_of(content) if store is not None else None
@@ -1299,6 +1395,8 @@ def _decay_old_tool_results(messages: list,
                 continue
             trimmed = content[:head_chars].rstrip() + "\n\n" + _DECAY_MARKER
         messages[i] = {**messages[i], "content": trimmed}
+        trimmed_count += 1
+    return trimmed_count
 
 
 def _strip_old_images(messages: list) -> None:
@@ -1859,7 +1957,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             # better than an unbounded message.
             _stored = harness.results.put(function_name, tool_response) if harness else None
             tool_response = (_stored if _stored is not None
-                             else _truncate_tool_response(tool_response))
+                             else _truncate_tool_response(tool_response, function_name))
             if _vision_b64:
                 tool_content = [
                     {"type": "text", "text": tool_response},
@@ -1891,13 +1989,50 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             messages.append(tool_message)
             _log(False, 0)
 
-    # Check for repeated tool calls
+    # Check for repeated tool calls.  Two counters, two thresholds:
+    #   * lifetime count (over the run's whole 200-call window) — the original
+    #     guard, kept but only as the hard backstop;
+    #   * consecutive streak — the same call back-to-back, which is the actual
+    #     shape of a loop.  The lifetime counter alone punished legitimate
+    #     re-consultation spread across a long run (re-read a file after other
+    #     work, re-check a page after it changed) and, worst of all, ended the
+    #     *turn* with a message the model never sees — the "I am sorry, could
+    #     you rephrase" dead end.  Now the common case is a steering notice
+    #     appended to the tool message, which the model reads on its next turn
+    #     and can act on; the turn only dies when the model has proven it will
+    #     not change course.
     call_key = (function_name, json.dumps(function_arguments, sort_keys=True))
     tool_call_history.append(call_key)
-    if tool_call_history.count(call_key) >= max_repeated:
-        msg = f"I am sorry 😊. Could you try to rephrase or provide additional details?"
-        _log_to_ui_or_verbose(f"Repeated tool call detected: {function_name} called {tool_call_history.count(call_key)} times with same args", chat_ui, verbose, level="warning")
+    _lifetime = tool_call_history.count(call_key)
+    _streak = 0
+    for _prev in reversed(tool_call_history):
+        if _prev == call_key:
+            _streak += 1
+        else:
+            break
+    if _streak >= _REPEAT_STREAK_BAIL or _lifetime >= max_repeated * 2:
+        msg = (f"Stopped: {function_name} was called {_streak} time(s) in a row "
+               f"({_lifetime} in this run) with identical arguments and returned "
+               f"the same result each time. The result is already in the "
+               f"conversation — use it, or change approach.")
+        _log_to_ui_or_verbose(f"Repeated tool call loop: {function_name} streak={_streak} lifetime={_lifetime}", chat_ui, verbose, level="warning")
         return msg
+    if _streak >= _REPEAT_STEER_AFTER or _lifetime >= max_repeated:
+        # Steering, not termination: the notice rides in the tool message the
+        # model is about to read, names the exact repetition, and points at the
+        # cheaper recovery paths (the result already in context; result_read
+        # for anything a stored handle holds).
+        _notice = (
+            f"[repeated call #{_lifetime}: this exact call has run {_streak} time(s) "
+            f"in a row and returned the same result. Do not call it again with the "
+            f"same arguments — the result above is already in the conversation; "
+            f"if part of it was trimmed, read it back with result_read/result_grep "
+            f"rather than re-running the tool.]")
+        _last = messages[-1] if messages else None
+        if isinstance(_last, dict) and _last.get("role") == "tool" \
+                and isinstance(_last.get("content"), str):
+            messages[-1] = {**_last, "content": _last["content"] + "\n\n" + _notice}
+        _log_to_ui_or_verbose(f"Repeated tool call (steering): {function_name} streak={_streak} lifetime={_lifetime}", chat_ui, verbose, level="info")
     return None
 
 
@@ -1971,6 +2106,16 @@ def _build_messages(instruction: str, images_bytes: list[str],
     prefilling them.  Carried in the trailing user message instead — where it
     used to live — it shifted by a turn's worth of history each time and was
     re-prefilled on every request of every session.
+
+    **Prefix-cache contract (do not break):** everything this function places
+    before the session history — the system message, and the tool payload the
+    caller sends alongside it — must be byte-identical across the turns of a
+    run.  A prefix-caching server (vLLM ``--enable-prefix-caching``) skips
+    prefilling exactly the shared prefix; reordering keys, reformatting a
+    block, or letting any volatile content (timestamps, counts, live token
+    numbers) drift into the static half invalidates the cache and re-pays the
+    standing payload on every turn of every task.  `test_request_prefix_is_byte_stable`
+    in test_chat.py holds this contract; S3's `cache_hit_pct` measures it live.
     """
     if images_bytes:
         system_content = (
@@ -3549,6 +3694,11 @@ _READ_ONLY_TOOLS = frozenset({
     "read_file", "grep", "find_files", "search_directory",
     "search", "fetch_content", "extract_tables", "extract_pdf_images",
     "get_weather",
+    # The harness's own read tools: all local, all side-effect-free, and the
+    # ones a model most often batches with a real read (checking what handles
+    # exist before reading one).  Excluding them serialized a batched
+    # read+status turn on tools that take microseconds.
+    "context_status", "note_read", "result_read", "result_grep",
 })
 
 
@@ -3692,6 +3842,8 @@ async def _compact_context(
     max_transcript_chars: int = MAX_TRANSCRIPT_CHARS,
     max_transcript_messages: int = MAX_TRANSCRIPT_MESSAGES,
     max_transcript_mentions: int = MAX_TRANSCRIPT_MENTIONS,
+    prior_summary: str = "",
+    summarized_upto: int = 0,
 ) -> list:
     """Summarize the conversation and return a compacted messages list.
 
@@ -3709,7 +3861,17 @@ async def _compact_context(
     sandbox) live in the system message, which compaction preserves untouched,
     so restating them here would duplicate them in every compacted prompt.
 
+    Incremental mode: ``prior_summary`` (the summary from the previous
+    compaction) plus ``summarized_upto`` (how many of ``messages[1:]`` it
+    already covers) make the summarizer see only the *new* messages, folded
+    into the prior summary — one bounded call over the delta instead of a full
+    re-read of a transcript that can reach 60k chars.  The transcript caps
+    bound the delta the same way they bounded the whole thing before.
+
     Falls back to the original messages list if the summarization call fails.
+    On success the caller receives the new summary back via ``state`` (see
+    ``_compact`` in chat()); ``summarized_upto`` is returned inside the
+    messages as metadata the caller strips, so the signature stays a list.
     """
     system_msg = (
         messages[0]
@@ -3719,6 +3881,14 @@ async def _compact_context(
     messages_to_summarize = messages[1:] if system_msg else messages[:]
     if not messages_to_summarize:
         return messages
+
+    # Incremental mode: only the messages past summarized_upto are new.  A
+    # stale or out-of-range marker falls back to full summarization — the
+    # marker is an optimization, never a correctness condition.
+    _new_start = 0
+    if prior_summary and 0 < summarized_upto <= len(messages_to_summarize):
+        _new_start = summarized_upto
+    _new_messages = messages_to_summarize[_new_start:]
 
     # Build plain-text conversation transcript for the summarization prompt.
     # Messages may be plain dicts or OpenAI SDK objects (ChatCompletionMessage);
@@ -3738,7 +3908,7 @@ async def _compact_context(
     _full_budget = max_transcript_chars
     _older: list[str] = []
     _omitted = 0
-    for msg in reversed(messages_to_summarize):
+    for msg in reversed(_new_messages):
         role = _field(msg, "role", "?")
         content = _field(msg, "content") or ""
         if isinstance(content, list):
@@ -3781,11 +3951,19 @@ async def _compact_context(
         parts = [_head] + _older + parts
 
     compaction_prompt = (
+        ("Update the running summary below with everything important from the "
+         "new messages. Keep every task, key tool result, decision, and open "
+         "item from the existing summary; fold in what the new messages add; "
+         "drop nothing that still matters. Be thorough but concise — this "
+         "summary replaces the full history.\n\n"
+         "## Existing summary\n" + prior_summary + "\n\n"
+         "## New messages\n")
+        if prior_summary and _new_start > 0 else
         "Summarize the following agent conversation. Include: the original task, "
         "key tool results and findings, decisions made, and what still needs to be "
         "done. Be thorough but concise — this summary replaces the full history.\n\n"
-        + "\n".join(parts)
     )
+    compaction_prompt += "\n".join(parts)
     try:
         if is_ollama:
             resp = await client.chat(
@@ -3813,7 +3991,11 @@ async def _compact_context(
         return messages
 
     _log_to_ui_or_verbose(
-        f"Context compacted: {len(messages_to_summarize)} messages → {len(summary):,} char summary",
+        f"Context compacted: {len(_new_messages)} new message(s)"
+        + (f" merged into prior summary ({_new_start} already summarized)"
+           if _new_start > 0 else
+           f" ({len(messages_to_summarize)} messages)")
+        + f" → {len(summary):,} char summary",
         chat_ui, verbose, level="info",
     )
     if chat_ui and hasattr(chat_ui, "show_context_compaction"):
@@ -3862,6 +4044,13 @@ async def _compact_context(
     # consecutive assistant turn with nothing new to respond to — it answers
     # with filler ("Ready for the next message.") and no tool call, which the
     # loop then returns as the final answer, silently ending a long task.
+    # The compaction marker rides on the last message under a reserved key:
+    # the caller reads it to advance the incremental-summary cursor, and the
+    # serializer strips it before anything reaches the API.
+    new_messages[-1]["_compaction"] = {
+        "summary": summary,
+        "summarized_upto": len(messages_to_summarize),
+    }
     return new_messages
 
 
@@ -3977,18 +4166,35 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                                kwargs.get('session_history', None), memories,
                                system_rules=system_rules)
 
+    # Size the first read from the standing payload.  The client below is
+    # built before the first API call, so this estimate — chars/4 over the
+    # opening messages, plus the tool schemas the request will carry — is what
+    # the first-read budget in _build_client_timeout scales on.  It is a floor
+    # for queue+prefill, deliberately generous: a false stall costs the turn.
+    _standing_chars = sum(
+        len(m.get("content") or "") if isinstance(m, dict) else 0
+        for m in messages)
+    _prompt_tokens_estimate = _standing_chars // 4 + len(tools) * 48
+
     api_key = _resolve_api_key(host, host_key)
     host = _normalize_openai_base_url(host)
     # Explicit positive timeout applies to the whole request; -1/None means no
     # overall limit but connect and per-chunk stall timeouts still apply (see
     # _build_client_timeout) so a wedged server can't hang the loop forever.
     is_ollama = _is_ollama_host(host)
+    # The timeout is built before the first prompt exists, so the first-read
+    # budget is sized from the standing payload estimate computed above.  It
+    # is a floor for queue+prefill, not a per-chunk gap, and errs generous —
+    # a false stall costs the whole turn.
+    _first_read_est = _prompt_tokens_estimate
     if is_ollama:
-        ollama_client = _create_ollama_client(host, api_key, timeout, stream)
+        ollama_client = _create_ollama_client(host, api_key, timeout, stream,
+                                              prompt_tokens=_first_read_est)
         client = None
     else:
         client = AsyncOpenAI(base_url=host, api_key=api_key,
-                             timeout=_build_client_timeout(timeout, stream))
+                             timeout=_build_client_timeout(timeout, stream,
+                                                           prompt_tokens=_first_read_est))
         ollama_client = None
 
     # Resolve model: use explicit name if provided, otherwise auto-detect.
@@ -4139,7 +4345,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     async def _compact(msgs: list) -> list:
         """Compact the conversation, timing it.  Compaction is itself an LLM
         call, so its cost belongs in the telemetry rather than hidden inside
-        whichever turn happened to trigger it."""
+        whichever turn happened to trigger it.
+
+        Incremental: the summary from the previous compaction and the count of
+        messages it covered live in ``state``, so this call only summarizes
+        the delta.  The marker returned on the compacted message carries the
+        new summary and cursor back; it is stripped before the next API call.
+        """
         _t0 = time.monotonic()
         out = await _compact_context(
             msgs, ollama_client if is_ollama else client,
@@ -4147,9 +4359,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             is_ollama=is_ollama, is_openai=_is_openai_host(host),
             instruction=task_instruction,
             harness_note=COMPACTION_NOTICE if harness.enabled else "",
+            prior_summary=state.compaction_summary,
+            summarized_upto=state.compaction_summarized_upto,
         )
         _m.add_compaction(time.monotonic() - _t0)
         harness.observe(compactions=harness.compactions + 1)
+        _marker = None
+        if out and isinstance(out[-1], dict):
+            _marker = out[-1].pop("_compaction", None)
+        if _marker:
+            state.compaction_summary = _marker.get("summary", "")
+            state.compaction_summarized_upto = int(_marker.get("summarized_upto", 0))
+        else:
+            # Full fallback path (summarizer failed, or an unexpected shape):
+            # forget the cursor so the next compaction re-reads everything
+            # rather than trusting a summary it cannot account for.
+            state.compaction_summary = ""
+            state.compaction_summarized_upto = 0
         return out
 
     # ── fact-checking the answer ────────────────────────────────────────────
@@ -4299,6 +4525,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         deadline over the one call it does make.
         """
         if not verify_answers or not answer or not needs_verification(answer):
+            return answer
+        # No tool results in the conversation means the draft was written from
+        # the model's own knowledge: the fast verdict could only re-report that
+        # knowledge back, so it is skipped and the deep check (which may look
+        # things up) still runs behind the answer.  This removes a serial LLM
+        # call from the tail of every knowledge-answer turn.
+        if not has_tool_evidence(msgs):
             return answer
         if safety_queue is not None and not safety_queue.empty():
             return answer
@@ -4481,7 +4714,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 state.last_prompt_tokens = 0
 
         _strip_old_images(messages)
-        _decay_old_tool_results(messages, store=harness.results)
+        _decay_old_tool_results(messages, store=harness.results)  # noqa: F841 — return count unused on the normal path
         # What context_status answers with.  Read here, after the compaction
         # decisions above: a turn that just compacted has no token count until
         # the next response, and reporting the pre-compaction number would tell
@@ -4539,12 +4772,30 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # default effort: the retry goes out with reasoning_effort "none",
         # the only value that keeps tools reachable on this endpoint.
         _openai_effort_400 = False
+        # The chat-completions response object, when that is the path taken.
+        # The Responses and Ollama paths never assign it; the converged
+        # end_api call below must not read it on those paths.
+        chat_completion = None
+        # The Responses path's usage object, same bargain in the other
+        # direction: None until that path assigns it.
+        _usage = None
         # The Responses path's effort, run-scoped like the flags above: a
         # model that refuses an effort is retried one step down, then never
         # asked above what it takes.  None means the parameter is omitted.
         _responses_effort = _openai_responses_reasoning_effort(_turn_think)
+        # Timeout retries are capped separately from MAX_API_RETRIES: a
+        # timeout is a prompt-size/server-load signal, and retrying the same
+        # oversized prompt three times converts one slow prefill into
+        # minutes of stalling before the turn fails anyway.
+        _MAX_TIMEOUT_RETRIES = 1
+        _timeout_retries = 0
         for api_attempt in range(1, MAX_API_RETRIES + 1):
             api_error = None
+            # Internal bookkeeping keys never ride in a request.  Popped per
+            # attempt (cheap) rather than once before the loop: the timeout
+            # handler below mutates ``messages`` between attempts, and the
+            # marker must not survive into any payload regardless of path.
+            _strip_internal_keys(messages)
             try:
                 if safety_queue is not None and not safety_queue.empty():
                     logger.warning("Safety queue triggered before API call, exiting chat loop.")
@@ -4646,7 +4897,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason)
+                                   _finish_reason,
+                                   cached_tokens=_cached_tokens_of(_stream_usage))
                         if (not _full_tool_calls and _ui_was_streaming and chat_ui
                                 and hasattr(chat_ui, "stream_fold")
                                 and _looks_like_raw_tool_call(_full_content)):
@@ -4836,7 +5088,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                             if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         # Before stream_end: the footer it prints reports this
-                        # turn, and reads it from the metrics sink.
+                        # turn, and reads it from the metrics sink.  Ollama's
+                        # /api_chat stream carries prompt_eval_count but no
+                        # cached-token field, so there is nothing to pass.
                         _m.end_api(state.last_prompt_tokens, _completion_tokens,
                                    _finish_reason)
                         # A raw-JSON tool call streams as ordinary content, so
@@ -4893,7 +5147,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         # Before stream_end: the footer it prints reports this
                         # turn, and reads it from the metrics sink.
                         _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason)
+                                   _finish_reason,
+                                   cached_tokens=_cached_tokens_of(_stream_usage))
                         # A raw-JSON tool call streams as ordinary content, so
                         # its narration reached the screen as if it were the
                         # answer.  Fold it here, at the last moment before
@@ -4941,6 +5196,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     state.active_max_tokens = max_tokens
                     _log_to_ui_or_verbose(
                         "Dropping tool_choice=required for retry (possible guided-decoding stall).",
+                        chat_ui, verbose, level="warning",
+                    )
+                # A timeout is a prompt-size or server-load problem, not a
+                # transient blip: the identical prompt re-sent into the same
+                # loaded server stalls for the same budget again, and at
+                # MAX_API_RETRIES that is minutes of stalling per failure.
+                # One retry, and the retry goes out *smaller* — the oldest
+                # tool results are decayed to their heads, which is exactly
+                # what _decay_old_tool_results does to aged results anyway.
+                if _timeout_retries >= _MAX_TIMEOUT_RETRIES:
+                    logger.warning("Timeout retry budget spent; failing this call.")
+                    break
+                _timeout_retries += 1
+                _trimmed = _decay_old_tool_results(messages, keep_full=1)
+                if _trimmed:
+                    _log_to_ui_or_verbose(
+                        "Timed out; retrying once with older tool results trimmed to their heads.",
                         chat_ui, verbose, level="warning",
                     )
             except NotFoundError as e:
@@ -5106,7 +5378,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
 
         # Both paths have converged: the model call for this turn is done.
-        _m.end_api(state.last_prompt_tokens, _completion_tokens, _finish_reason)
+        # cached_tokens: the chat-completions paths carry a usage object with
+        # prompt_tokens_details; the Responses path reports usage through
+        # _usage instead, and the Ollama path has no such field.  Read
+        # whichever exists — None, never 0, when the path does not say.
+        _usage_for_cache = (getattr(chat_completion, "usage", None)
+                            if chat_completion is not None else _usage)
+        _m.end_api(state.last_prompt_tokens, _completion_tokens, _finish_reason,
+                   cached_tokens=_cached_tokens_of(_usage_for_cache))
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:

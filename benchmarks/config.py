@@ -255,8 +255,13 @@ def bench_timeout() -> int:
     Bounded by default so a stalled endpoint fails the sample instead of hanging
     the whole run forever. Override with ``ONIT_BENCH_TIMEOUT`` (``-1`` disables,
     use only when you know the endpoint is reliable).
+
+    600 rather than 300: prompts now grow to ~89% of the window before
+    compaction, so queue+prefill alone can eat the old budget on a loaded
+    endpoint — a sample that used to pass was failing as a timeout, not an
+    accuracy regression.  The sample limit stays 4× this value.
     """
-    raw = os.environ.get("ONIT_BENCH_TIMEOUT", "300")
+    raw = os.environ.get("ONIT_BENCH_TIMEOUT", "600")
     try:
         return int(raw)
     except ValueError:
