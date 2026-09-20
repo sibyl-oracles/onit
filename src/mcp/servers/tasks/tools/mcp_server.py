@@ -217,10 +217,23 @@ its logs. Raising this timeout cannot get you past 300; the command is killed
 there regardless. Servers and daemons likewise belong in serve."""
 )
 async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300,
-               data_path: str = "", ctx: Context = None) -> str:
+               data_path: str = "",
+               approval_token: str = "", approval_scope: str = "",
+               ctx: Context = None) -> str:
+    # approval_token/approval_scope are harness-only parameters, deliberately
+    # absent from the description above: the model must not learn it can pass
+    # them (dispatch strips them from model-supplied arguments anyway). They
+    # still have to be part of this signature, because an approved call is
+    # re-issued with the ticket added to the original arguments and routed to
+    # this same handler — without them the re-issue dies in argument
+    # validation ("approval_token: Unexpected keyword argument") and the
+    # person's yes is lost. Forwarded verbatim; the os/bash server owns the
+    # gating, the scope constants, and the empty-scope default.
     if err := _validate_required(command=command):
         return err
-    return await _bash(command=command, cwd=cwd, timeout=timeout, data_path=data_path, ctx=ctx)
+    return await _bash(command=command, cwd=cwd, timeout=timeout,
+                       data_path=data_path, approval_token=approval_token,
+                       approval_scope=approval_scope, ctx=ctx)
 
 
 @mcp.tool(
@@ -313,11 +326,17 @@ def serve(
     cwd: Optional[str] = None,
     lines: int = 50,
     data_path: str = "",
+    approval_token: str = "",
+    approval_scope: str = "",
 ) -> str:
+    # Same harness-only approval pair as bash above: undocumented so the model
+    # never supplies its own ticket, present so the re-issue of an approved
+    # serve command survives argument validation.
     if err := _validate_required(action=action):
         return err
     return _serve(action=action, command=command, name=name, pid=pid, cwd=cwd, lines=lines,
-                  data_path=data_path)
+                  data_path=data_path, approval_token=approval_token,
+                  approval_scope=approval_scope)
 
 
 

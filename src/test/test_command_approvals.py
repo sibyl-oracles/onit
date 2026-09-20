@@ -16,6 +16,7 @@ Two things are being checked throughout, and they pull in opposite directions:
 """
 
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -1054,3 +1055,84 @@ class TestApprovalParamsAreHiddenFromTheModel:
         assert "approval_scope" not in (tool.description or "")
         # Still accepted, which is what lets the harness re-issue the call.
         assert "approval_token" in tool.parameters["properties"]
+
+
+class TestPassThroughWrappersCarryTheTicket:
+    """The consolidated tools server re-exports bash and serve.
+
+    A re-issued approved call carries ``approval_token``/``approval_scope``
+    in its arguments and is routed to the handler the session actually has —
+    the pass-through in tools/mcp_server.py, not the os/bash original. A
+    wrapper whose signature omits the pair dies in argument validation
+    ("approval_token: Unexpected keyword argument") *after* the person said
+    yes: the command never runs, the harness reports the wrapper's error as
+    the answer, and the model reads a failure that reads like the command
+    itself broke. These tests pin the signatures, because the failure is
+    invisible to the mock-registry tests above — they never touch the
+    wrapper.
+    """
+
+    def test_bash_wrapper_signature_has_the_pair(self):
+        from src.mcp.servers.tasks.tools import mcp_server as tools_mod
+
+        wrapper = tools_mod.bash
+        inner = getattr(wrapper, "fn", wrapper)
+        params = inspect.signature(inner).parameters
+        assert "approval_token" in params
+        assert "approval_scope" in params
+
+    def test_serve_wrapper_signature_has_the_pair(self):
+        from src.mcp.servers.tasks.tools import mcp_server as tools_mod
+
+        wrapper = tools_mod.serve
+        inner = getattr(wrapper, "fn", wrapper)
+        params = inspect.signature(inner).parameters
+        assert "approval_token" in params
+        assert "approval_scope" in params
+
+    async def test_an_approved_bash_call_runs_through_the_wrapper(
+            self, enforced, with_human, tmp_path):
+        """The exact path that used to fail: ticket in, command out.
+
+        The wrapper must forward the pair to the os/bash server, whose
+        policy then decides — a ticket minted for this command lets it
+        through, so the result is the command's output rather than a
+        validation error or a second question.
+        """
+        from src.mcp.servers.tasks.tools import mcp_server as tools_mod
+
+        wrapper = tools_mod.bash
+        inner = getattr(wrapper, "fn", wrapper)
+        base = _session(tmp_path, "s")
+        first = json.loads(await inner(command="mytool --version",
+                                       data_path=base))
+        assert first["status"] == "needs_approval"
+        second = json.loads(await inner(command="mytool --version",
+                                        data_path=base,
+                                        approval_token=first["approval_id"],
+                                        approval_scope="once"))
+        assert second["status"] != "needs_approval"
+        assert "Unexpected keyword" not in json.dumps(second)
+
+    async def test_the_wrapper_strips_nothing_the_model_sent(
+            self, enforced, with_human, tmp_path):
+        """The boundary that drops model-supplied tickets is chat.py's, not
+        the wrapper's: here the pair arrives from the harness side, and the
+        wrapper passing it on untouched is the whole point."""
+        from src.mcp.servers.tasks.tools import mcp_server as tools_mod
+
+        wrapper = tools_mod.bash
+        inner = getattr(wrapper, "fn", wrapper)
+        base = _session(tmp_path, "s")
+        first = json.loads(await inner(command="mytool --version",
+                                       data_path=base))
+        # A ticket bound to another command must not open this one: the
+        # wrapper forwards verbatim and the server's binding check refuses —
+        # which here means a fresh ticket and a fresh question, never the
+        # command's output.
+        second = json.loads(await inner(command="mytool --version",
+                                        data_path=base,
+                                        approval_token="not-a-real-token",
+                                        approval_scope="once"))
+        assert second["status"] == "needs_approval"
+        assert second["approval_id"] != first["approval_id"]
