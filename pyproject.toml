@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [
     {name = "Rowel Atienza"},
 ]
-keywords = ["agent", "llm", "mcp", "a2a", "automation"]
+keywords = ["agent", "llm", "mcp", "automation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -31,7 +31,6 @@ dependencies = [
     "fastmcp",
     "fastapi",
     "openai",
-    "a2a-sdk[all]>=1.0.0",
     "beautifulsoup4",
     "python-dateutil",
     "geopy",
@@ -50,10 +49,6 @@ search = [
 ]
 web = [
     "google-auth",
-]
-gateway = [
-    "python-telegram-bot",
-    "aiohttp",
 ]
 # Full-duplex speech-to-speech. Only the websocket client to the VoiceChat
 # container is needed here — the model runs in that container, and audio
@@ -77,7 +72,7 @@ bench = [
 all = [
     "onit[search]",
     "onit[web]",
-    "onit[gateway]",
+    "onit[voice]",
     "onit[test]",
     "onit[bench]",
 ]

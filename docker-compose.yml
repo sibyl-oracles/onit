@@ -128,32 +128,6 @@ services:
       timeout: 5s
       retries: 3
 
-  onit-a2a:
-    build: .
-    <<: [*onit-hardening, *gpu]
-    restart: unless-stopped
-    ports:
-      - "9001:9001"
-    env_file: .env
-    environment: *documents-env
-    volumes:
-      - a2a-sessions:/home/onit/.onit/sessions
-      - *data-volume
-      - *documents-volume
-    command: ["--data-path", "/home/onit/data", "--think", "serve", "a2a", "--port", "9001"]
-
-  onit-gateway:
-    build: .
-    <<: [*onit-hardening, *gpu]
-    restart: unless-stopped
-    env_file: .env
-    environment: *documents-env
-    volumes:
-      - gateway-sessions:/home/onit/.onit/sessions
-      - *data-volume
-      - *documents-volume
-    command: ["--data-path", "/home/onit/data", "--think", "serve", "gateway"]
-
   onit-terminal:
     build: .
     <<: [*onit-hardening, *gpu]
@@ -170,8 +144,6 @@ services:
 
 volumes:
   web-sessions:
-  a2a-sessions:
-  gateway-sessions:
   terminal-sessions:
   caddy-data:
   caddy-config:
