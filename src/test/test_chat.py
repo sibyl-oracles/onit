@@ -553,6 +553,125 @@ class TestChat:
 
         assert result is None
 
+    @staticmethod
+    def _timeout_cls():
+        """The ReadTimeout class the installed OpenAI SDK actually raises.
+
+        Recent SDKs vendor a forked httpx (httpx2) whose ReadTimeout is a
+        distinct class; older ones raise plain httpx.ReadTimeout.  Tests use
+        whichever the local environment really has.
+        """
+        import httpx
+        try:
+            import httpx2
+            return httpx2.ReadTimeout
+        except ImportError:
+            return httpx.ReadTimeout
+
+    @staticmethod
+    def _stream_of(chunks, fail_after=None, timeout_cls=None):
+        """An async-iterable stand-in for a chat-completions stream.
+
+        Yields ``chunks`` (each a list of delta texts), then either ends or
+        raises ``timeout_cls`` after ``fail_after`` chunks — the shape of a
+        stream that stalls mid-generation.
+        """
+        class _Stream:
+            def __init__(self):
+                self._i = 0
+                self._flat = [t for group in chunks for t in group]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._i < len(self._flat):
+                    token = self._flat[self._i]
+                    self._i += 1
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=token, tool_calls=None,
+                                reasoning_content=None),
+                            finish_reason=None)],
+                        usage=None)
+                if fail_after is not None and self._i >= fail_after:
+                    raise timeout_cls("timed out")
+                raise StopAsyncIteration
+
+        return _Stream()
+
+    @pytest.mark.asyncio
+    async def test_midstream_read_timeout_takes_timeout_path(self):
+        """A read timeout raised *during* stream iteration hits the timeout
+        handler, not the generic one.
+
+        The SDK's streaming iterator lets transport errors escape unwrapped,
+        and its vendored httpx fork raises a ReadTimeout that is a distinct
+        class from httpx.ReadTimeout — the exact failure seen in production
+        traces.  The timeout budget allows one retry, so a second consecutive
+        timeout breaks the loop after 2 calls; the generic error path would
+        have burned all MAX_API_RETRIES (3).
+        """
+        timeout_cls = self._timeout_cls()
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
+            self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"), \
+             patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="test",
+                stream=True,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result is None
+        assert mock_client.chat.completions.create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_midstream_read_timeout_retries_and_recovers(self):
+        """A stream that times out mid-generation is retried whole, and a
+        healthy retry still delivers the answer."""
+        timeout_cls = self._timeout_cls()
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
+            self._stream_of([["Hello"]]),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"), \
+             patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="test",
+                stream=True,
+                safety_queue=asyncio.Queue(),
+            )
+
+        assert result == "Hello"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    def test_transport_timeout_tuple_includes_vendored_fork(self):
+        """The handler tuple must carry ReadTimeout from every installed
+        httpx variant — httpx plus the SDK's vendored httpx2 when present."""
+        from model.serving.chat import _TRANSPORT_TIMEOUT_ERRORS
+        import httpx
+
+        assert httpx.ReadTimeout in _TRANSPORT_TIMEOUT_ERRORS
+        try:
+            import httpx2
+        except ImportError:
+            pytest.skip("openai SDK without vendored httpx2")
+        assert httpx2.ReadTimeout in _TRANSPORT_TIMEOUT_ERRORS
+
     @pytest.mark.asyncio
     async def test_tool_calling_loop(self):
         """Model requests a tool, gets result, then gives final answer."""

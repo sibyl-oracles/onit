@@ -19,6 +19,7 @@ Provider is auto-detected from the host URL.
 
 import asyncio
 import base64
+import importlib
 import logging
 import mimetypes
 import os
@@ -62,6 +63,41 @@ except ImportError:
     OLLAMA_SDK_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# The OpenAI SDK vendors a forked HTTP stack: recent releases ship ``httpx2``
+# and ``httpcore2`` instead of depending on ``httpx`` directly, and the fork's
+# exception classes are distinct types — ``httpx2.ReadTimeout`` is not
+# ``httpx.ReadTimeout`` (different MRO, ``is`` comparison False).  The SDK's
+# streaming iterator also lets transport errors escape *unwrapped*: a read
+# timeout mid-stream surfaces as the raw fork exception, never as
+# APITimeoutError.  An ``except (APITimeoutError, httpx.ReadTimeout)`` handler
+# therefore misses the most common streaming failure — the stream stalls, the
+# fork's read timeout fires, and the error falls through to the generic
+# ``except Exception`` where it is logged with a full traceback instead of
+# getting the timeout-specific retry.  Sweep every installed httpx variant
+# for its ReadTimeout so the handler catches the real class whatever the
+# SDK version bundles.
+def _collect_read_timeout_errors() -> tuple:
+    """Gather ReadTimeout classes from every installed httpx variant.
+
+    Checks ``httpx`` and, when present, the OpenAI SDK's vendored ``httpx2``
+    fork.  Returns a tuple for use in an ``except`` clause; always
+    non-empty (httpx is a hard dependency), so the handler below never
+    catches with an empty tuple.
+    """
+    classes = []
+    for module_name in ("httpx", "httpx2"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        cls = getattr(module, "ReadTimeout", None)
+        if cls is not None and cls not in classes:
+            classes.append(cls)
+    return tuple(classes)
+
+
+_TRANSPORT_TIMEOUT_ERRORS = _collect_read_timeout_errors()
 
 # Maximum characters for a tool response stored in conversation history.
 # Larger responses are truncated to avoid blowing up the context window.
@@ -5272,7 +5308,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     logger.warning("Safety queue triggered after API call, exiting chat loop.")
                     return None
                 break  # success — exit retry loop
-            except (APITimeoutError, httpx.ReadTimeout) as e:
+            except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS) as e:
                 api_error = f"Request to {host} timed out (read timeout during streaming)."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="error")
