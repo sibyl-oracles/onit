@@ -42,8 +42,6 @@ _SECRET_ENV_KEYS = [
     ("ollama_api_key", "OLLAMA_API_KEY"),
     ("vllm_api_key", "VLLM_API_KEY"),
     ("openweathermap_api_key", "OPENWEATHERMAP_API_KEY"),
-    ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
-    ("viber_bot_token", "VIBER_BOT_TOKEN"),
     ("github_token", "GITHUB_TOKEN"),
     ("huggingface_token", "HF_TOKEN"),
 ]
@@ -395,19 +393,11 @@ def _port_args(forwarded_args: list[str]) -> list[str]:
     if "--web" in forwarded_args:
         p = _extract_port(forwarded_args, "--web-port", 9000)
         ports.extend(["-p", f"{p}:{p}"])
-    if "--a2a" in forwarded_args:
-        p = _extract_port(forwarded_args, "--a2a-port", 9001)
-        ports.extend(["-p", f"{p}:{p}"])
-    if "--gateway" in forwarded_args or any(
-        t == "--viber-port" or t.startswith("--viber-port=") for t in forwarded_args
-    ):
-        p = _extract_port(forwarded_args, "--viber-port", 8443)
-        ports.extend(["-p", f"{p}:{p}"])
     return ports
 
 
 def _is_server_mode(forwarded_args: list[str]) -> bool:
-    return any(flag in forwarded_args for flag in ("--web", "--a2a", "--gateway"))
+    return "--web" in forwarded_args
 
 
 def _run_docker(

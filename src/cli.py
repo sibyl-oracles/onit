@@ -10,9 +10,7 @@ Usage:
     onit doctor [--deep]                          # run the live self-check battery
     onit resume [TAG_OR_ID]                       # resume a previous session
     onit ask "your question"                      # send a task to a remote A2A server
-    onit serve a2a [--port 9001]                  # run as an A2A protocol server
     onit serve web [--port 9000]                  # launch the web UI
-    onit serve gateway [telegram|viber|auto]      # run as a messaging bot gateway
     onit serve loop "task" [--period 60]          # repeat a task on a timer
     onit --config my.yaml                         # custom config file
     onit --container                              # run in a hardened Docker container
@@ -717,11 +715,6 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_sub = serve_parser.add_subparsers(dest="serve_mode", metavar="MODE")
     serve_sub.required = True
 
-    # serve a2a
-    a2a_p = serve_sub.add_parser("a2a", help="Run as an A2A protocol server.")
-    a2a_p.add_argument("--port", type=int, default=None,
-                       help="A2A server port (default: 9001, or a2a_port in config).")
-
     # serve web
     web_p = serve_sub.add_parser("web", help="Launch the web UI.")
     web_p.add_argument("--port", type=int, default=None,
@@ -735,17 +728,6 @@ def _build_parser() -> argparse.ArgumentParser:
     web_p.add_argument("--voice-url", type=str, default=None, dest="voice_url",
                        help="VoiceChat realtime websocket URL "
                             "(default: ws://localhost:9100/v1/realtime).")
-
-    # serve gateway
-    gw_p = serve_sub.add_parser("gateway",
-                                 help="Run as a Telegram or Viber bot gateway.")
-    gw_p.add_argument("gateway_type", nargs="?",
-                      choices=["telegram", "viber", "auto"], default="auto",
-                      help="Gateway type: telegram, viber, or auto (default: auto-detect from env vars).")
-    gw_p.add_argument("--webhook-url", type=str, default=None, dest="webhook_url",
-                      help="Public HTTPS URL for Viber webhook (or set VIBER_WEBHOOK_URL env var).")
-    gw_p.add_argument("--port", type=int, default=None,
-                      help="Local port for Viber webhook server (default: 8443, or viber_port in config).")
 
     # serve loop
     loop_p = serve_sub.add_parser("loop",
@@ -840,7 +822,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Answer yes to every command approval prompt, so a run "
                              "never stops to ask. On by default for your own runs "
                              "(terminal chat, --loop, one-shot); pass it explicitly "
-                             "to get the same for a web, gateway or A2A deployment, "
+                             "to get the same for a web deployment, "
                              "which serves other people and so keeps asking. Only "
                              "questions that would have been put to a person are "
                              "answered: privilege escalation, container and "
@@ -927,11 +909,7 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     # serve subcommand: inject mode-specific settings into config_data
     if getattr(args, 'command', None) == 'serve':
         serve_mode = getattr(args, 'serve_mode', None)
-        if serve_mode == 'a2a':
-            config_data['a2a'] = True
-            if args.port is not None:
-                config_data['a2a_port'] = args.port
-        elif serve_mode == 'web':
+        if serve_mode == 'web':
             config_data['web'] = True
             if args.port is not None:
                 config_data['web_port'] = args.port
@@ -943,12 +921,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
                 if getattr(args, 'voice_url', None):
                     voice_cfg['url'] = args.voice_url
                 config_data['voice'] = voice_cfg
-        elif serve_mode == 'gateway':
-            config_data['gateway'] = args.gateway_type
-            if getattr(args, 'webhook_url', None):
-                config_data['viber_webhook_url'] = args.webhook_url
-            if getattr(args, 'port', None) is not None:
-                config_data['viber_port'] = args.port
         elif serve_mode == 'loop':
             config_data['loop'] = True
             config_data['task'] = args.task
@@ -1091,47 +1063,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
                 if val:
                     config_data[key] = val
 
-    # Resolve gateway type and token
-    gateway_type = config_data.get('gateway')
-    if gateway_type:
-        telegram_token = resolve_credential(None, 'TELEGRAM_BOT_TOKEN', 'telegram_bot_token')
-        viber_token = resolve_credential(None, 'VIBER_BOT_TOKEN', 'viber_bot_token')
-
-        if gateway_type == 'auto':
-            # Auto-detect: prefer Telegram for backward compat, fall back to Viber
-            if telegram_token:
-                gateway_type = 'telegram'
-            elif viber_token:
-                gateway_type = 'viber'
-            else:
-                print("Error: 'onit serve gateway' requires TELEGRAM_BOT_TOKEN or "
-                      "VIBER_BOT_TOKEN environment variable.", file=sys.stderr)
-                sys.exit(1)
-
-        if gateway_type == 'viber':
-            if not viber_token:
-                print("Error: 'onit serve gateway viber' requires VIBER_BOT_TOKEN "
-                      "environment variable.", file=sys.stderr)
-                sys.exit(1)
-            config_data['gateway_token'] = viber_token
-            # Resolve webhook URL
-            webhook_url = (config_data.get('viber_webhook_url')
-                           or os.environ.get('VIBER_WEBHOOK_URL'))
-            if not webhook_url:
-                print("Error: Viber gateway requires a webhook URL. "
-                      "Set VIBER_WEBHOOK_URL env var or pass --webhook-url.",
-                      file=sys.stderr)
-                sys.exit(1)
-            config_data['viber_webhook_url'] = webhook_url
-        else:  # telegram
-            if not telegram_token:
-                print("Error: 'onit serve gateway telegram' requires TELEGRAM_BOT_TOKEN "
-                      "environment variable.", file=sys.stderr)
-                sys.exit(1)
-            config_data['gateway_token'] = telegram_token
-
-        config_data['gateway'] = gateway_type
-
     return config_data
 
 
@@ -1158,10 +1089,7 @@ def _setup_servers(config_data: dict) -> None:
 def _dispatch_mode(config_data: dict) -> None:
     """Instantiate OnIt and launch the appropriate run mode."""
     onit = OnIt(config=config_data)
-    if config_data.get('gateway'):
-        onit.run_gateway_sync()
-    else:
-        asyncio.run(onit.run())
+    asyncio.run(onit.run())
 
 
 def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
@@ -1179,7 +1107,9 @@ def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
 
     # A doctor run is a diagnostic, not a deployment: strip the mode keys so
     # OnIt builds the plain terminal-chat shape (no web server, no loop) and
-    # never auto-resumes someone's last real session.
+    # never auto-resumes someone's last real session. The a2a/gateway keys
+    # are legacy config; they are stripped so old config files cannot turn a
+    # diagnostic into a server.
     for key in ('web', 'a2a', 'gateway', 'loop', 'resume_session_id',
                 'web_require_auth'):
         config_data.pop(key, None)
@@ -1387,12 +1317,11 @@ def main():
     # Session selection.  The terminal chat continues where it left off, so an
     # explicit --resume is optional: without one we resume the last session.
     # --restart-session opts out and starts from scratch.  Server modes
-    # (web/a2a/gateway/loop) manage their own sessions and never auto-resume.
+    # (web/loop) manage their own sessions and never auto-resume.
     resume_target = args.resume
     auto_resume = False
     if not resume_target and not args.restart_session and not (
-            config_data.get('web') or config_data.get('a2a')
-            or config_data.get('gateway') or config_data.get('loop')):
+            config_data.get('web') or config_data.get('loop')):
         resume_target = "last"
         auto_resume = True
 
@@ -1437,29 +1366,27 @@ def main():
     # this run can answer at all about a command the policy will not run on
     # its own. Only the two interactive front ends have a person to ask: the
     # terminal chat and the web UI, both of which implement the prompt. A
-    # gateway bot, an A2A server and a --loop run have nobody at the other
-    # end, so unless something else is answering they keep refusing outright
-    # rather than minting approval tickets nobody will ever answer. Set here
-    # rather than inferred inside the servers, because "is anyone watching" is
-    # a fact about how OnIt was started and nothing downstream can recover it.
+    # --loop run has nobody at the other end, so unless something else is
+    # answering it keeps refusing outright rather than minting approval
+    # tickets nobody will ever answer. Set here rather than inferred inside
+    # the servers, because "is anyone watching" is a fact about how OnIt was
+    # started and nothing downstream can recover it.
     #
     # Automatic approval is a channel of its own: the answer comes from the
     # switch rather than from a person, so it works in the modes that have no
     # one attached — which is where an unattended run actually needs it.
-    _interactive = not (config_data.get('a2a') or config_data.get('gateway')
-                        or config_data.get('loop'))
+    _interactive = not config_data.get('loop')
 
     # Whether the prompts are answered by the flag rather than by a person.
     # Unset means take the default, and the default turns on whose run this
     # is. A terminal chat, a --loop and a one-shot belong to whoever started
     # them: they already hold the shell OnIt is running commands from, so
     # stopping to ask them protects nobody, and the prompt is one more thing
-    # to get stuck on. A web, gateway or A2A deployment answers to people who
-    # are not the operator — on a shared host the approval prompt is part of
-    # what keeps one session out of another's way — so those keep asking
-    # unless --auto says otherwise in as many words.
-    _serves_others = bool(config_data.get('web') or config_data.get('a2a')
-                          or config_data.get('gateway'))
+    # to get stuck on. A web deployment answers to people who are not the
+    # operator — on a shared host the approval prompt is part of what keeps
+    # one session out of another's way — so it keeps asking unless --auto
+    # says otherwise in as many words.
+    _serves_others = bool(config_data.get('web'))
     _auto = (not _serves_others) if args.auto is None else args.auto
     _auto_by_default = _auto and args.auto is None
 
