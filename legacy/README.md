@@ -6,7 +6,7 @@ is imported by `src/`; these components run standalone.
 | Component | What it was | Entry point |
 |---|---|---|
 | `gateway/` | Telegram and Viber chat-bot gateways | `python -m legacy.gateway` |
-| `a2a/` | A2A protocol server (agent-to-agent) | `python -m legacy.a2a` |
+| `a2a/` | A2A protocol server (agent-to-agent) | `python -m legacy.a2a_server` |
 
 ## Running a legacy component
 
@@ -23,7 +23,7 @@ VIBER_BOT_TOKEN=... VIBER_WEBHOOK_URL=https://... python -m legacy.gateway viber
     --webhook-url https://... --port 8443
 
 # A2A protocol server
-python -m legacy.a2a --port 9001
+python -m legacy.a2a_server --port 9001
 ```
 
 The gateways and the A2A server construct the same `OnIt` agent the active
@@ -34,10 +34,10 @@ extraction.
 
 `onit ask` is a plain JSON-RPC-over-HTTP client (no A2A SDK import), so it
 remains part of the active CLI. It can talk to any A2A server, including
-`python -m legacy.a2a`:
+`python -m legacy.a2a_server`:
 
 ```bash
-python -m legacy.a2a --port 9001 &
+python -m legacy.a2a_server --port 9001 &
 onit ask "what is the weather in Manila" --server http://localhost:9001
 ```
 

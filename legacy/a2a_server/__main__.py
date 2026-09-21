@@ -1,12 +1,12 @@
 """Run the legacy A2A protocol server from the command line.
 
-    python -m legacy.a2a [--port 9001]
+    python -m legacy.a2a_server [--port 9001]
 
 Builds the same ``OnIt`` agent the active front ends use and serves it over
 the A2A JSON-RPC protocol. ``onit ask`` (kept in the active CLI) can send
 tasks to it:
 
-    python -m legacy.a2a --port 9001 &
+    python -m legacy.a2a_server --port 9001 &
     onit ask "hello" --server http://localhost:9001
 """
 
@@ -18,7 +18,7 @@ import sys
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="python -m legacy.a2a",
+        prog="python -m legacy.a2a_server",
         description="Run the legacy A2A protocol server.",
     )
     parser.add_argument("--port", type=int, default=None,
