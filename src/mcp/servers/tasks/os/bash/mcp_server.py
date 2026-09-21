@@ -574,14 +574,23 @@ _ASKABLE_PATTERNS = [
     # GITHUB_TOKEN and whatever else the keychain handed the process — which
     # is the operator's secret on a shared deployment, and the reader's own on
     # a personal one. Hence "system": askable in a terminal, never on the web.
-    (re.compile(r'\benv\b', re.IGNORECASE), "env command", "system"),
-    (re.compile(r'\bprintenv\b', re.IGNORECASE), "printenv command", "system"),
-    (re.compile(r'\bexport\s', re.IGNORECASE), "export command", "system"),
+    # The lookbehind keeps filenames out of the match: ".env" has a word
+    # boundary before "env" (the dot is not a word character), so a plain \benv\b
+    # refused every deploy command that mentioned a dotenv file — cat .env,
+    # scp .env, docker compose --env-file — and the retry loop that follows
+    # ate five turns before the repeated-call guard ended the task. A command
+    # still has to run the env *binary* to be blocked: bare `env`, `env | grep`,
+    # `FOO=1 env cmd`, /usr/bin/env.
+    (re.compile(r'(?<![\w.\-])env\b', re.IGNORECASE), "env command", "system"),
+    (re.compile(r'(?<![\w.\-])printenv\b', re.IGNORECASE), "printenv command", "system"),
+    (re.compile(r'(?<![\w.\-])export\s', re.IGNORECASE), "export command", "system"),
     (re.compile(r'/proc/self/environ', re.IGNORECASE), "/proc/self/environ", "system"),
     # Process listings: what the OS already shows this account, no more.
-    (re.compile(r'\bps\b', re.IGNORECASE), "ps command", "system"),
-    (re.compile(r'\btop\b', re.IGNORECASE), "top command", "system"),
-    (re.compile(r'\bhtop\b', re.IGNORECASE), "htop command", "system"),
+    # Same lookbehind as env: ".ps" and ".top" are file extensions, not
+    # process inspection.
+    (re.compile(r'(?<![\w.\-])ps\b', re.IGNORECASE), "ps command", "system"),
+    (re.compile(r'(?<![\w.\-])top\b', re.IGNORECASE), "top command", "system"),
+    (re.compile(r'(?<![\w.\-])htop\b', re.IGNORECASE), "htop command", "system"),
     (re.compile(r'/proc/\d+', re.IGNORECASE), "/proc access", "system"),
     (re.compile(r'/proc/self\b', re.IGNORECASE), "/proc/self access", "system"),
     # World-readable on every Unix; kept behind a prompt because asking for it

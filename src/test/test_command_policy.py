@@ -254,3 +254,62 @@ class TestPackagePolicy:
 
     def test_substitution_does_not_bypass(self):
         blocked("echo $(pip install requests)", "disabled by default")
+
+
+class TestEnvPatternMatchesTheBinaryNotTheFile:
+    """The env block must refuse the env *binary*, not any path mentioning it.
+
+    Checked through _validate_bash_command (mcp_server), not check_command
+    (command_policy): the askable-pattern list lives in the server module.
+    The original pattern was \\benv\\b — a dot is a non-word character, so the
+    boundary before "env" in ".env" matched, and every deploy command that
+    touched a dotenv file was refused. The refusal is deterministic, so the
+    model's retry loop ate five turns before the repeated-call guard ended
+    the task.
+    """
+
+    @staticmethod
+    def _reason(cmd):
+        import src.mcp.servers.tasks.os.bash.mcp_server as m
+        return m._validate_bash_command(cmd)
+
+    def test_dotenv_files_are_not_the_env_binary(self):
+        for cmd in ("cat .env",
+                    "cat /data/apps/app/.env",
+                    "grep KEY .env.production",
+                    "cp .env.example .env",
+                    "scp app/.env host:/data/apps/app/.env"):
+            reason = self._reason(cmd)
+            assert reason is None or "env command" not in reason, \
+                f"{cmd!r} refused as env binary: {reason}"
+
+    def test_the_env_binary_is_still_blocked(self):
+        for cmd in ("env", "env | grep TOKEN", "FOO=1 env python x.py",
+                    "/usr/bin/env python3"):
+            reason = self._reason(cmd)
+            assert reason is not None and "env command" in reason, \
+                f"{cmd!r} not refused as env binary: {reason}"
+
+    def test_sibling_names_are_not_caught_by_the_lookbehind(self):
+        # The lookbehind excludes [\w.\-] before the name, so a filename that
+        # merely contains the name must not be swept in, while the binary
+        # itself is still caught.
+        for cmd in ("cat renv.lock", "cat .printenv"):
+            reason = self._reason(cmd)
+            assert reason is None or "env command" not in reason, \
+                f"{cmd!r} refused as env binary: {reason}"
+        assert "printenv command" in self._reason("printenv HOME")
+
+    def test_export_and_process_tools_keep_their_scope(self):
+        assert "export command" in self._reason("export FOO=1")
+        reason = self._reason("cat .export-notes.md")
+        assert reason is None or "export command" not in reason
+        assert "ps command" in self._reason("ps aux")
+        reason = self._reason("cat file.ps")
+        assert reason is None or "ps command" not in reason
+        assert "top command" in self._reason("top")
+        reason = self._reason("cat topology.png")
+        assert reason is None or "top command" not in reason
+        assert "htop command" in self._reason("htop")
+        reason = self._reason("cat .htop")
+        assert reason is None or "htop command" not in reason

@@ -273,6 +273,120 @@ class TestExecuteToolIntegration:
         chat_ui.stop_tool_spinner.assert_called_once()
 
 
+# ── repeated-call guard × policy refusals ────────────────────────────────────
+
+_REFUSAL = json.dumps({
+    "error": "Command blocked: env command is not allowed.",
+    "command": "cat .env", "status": "blocked", "retryable": False,
+    "guidance": "This command was refused by policy and was not run.",
+})
+
+
+class _RefusingRegistry:
+    """A registry whose tool answers with the bash server's refusal shape."""
+    tools = {"bash"}
+
+    def tool_accepts_param(self, name, param):
+        return False
+
+    def __getitem__(self, name):
+        async def handler(**kw):
+            return _REFUSAL
+        return handler
+
+
+class _SucceedingRegistry:
+    """A registry whose tool answers with an ordinary (non-refusal) result."""
+    tools = {"bash"}
+
+    def tool_accepts_param(self, name, param):
+        return False
+
+    def __getitem__(self, name):
+        async def handler(**kw):
+            return "some result"
+        return handler
+
+
+class TestRefusalLoopBailsEarly:
+    """A refused call is a different loop from a repeated result.
+
+    The refusal is deterministic — the same command is refused the same way
+    every time — so two identical refused calls in a row is the whole loop.
+    The old guard waited for five, spending three turns the model had already
+    proven it would waste re-reading the same refusal.
+    """
+
+    def _loop(self, registry, args, limit=8):
+        messages: list = []
+        history: list = []
+        bail = None
+        for i in range(limit):
+            bail = asyncio.run(_execute_tool(
+                "bash", args, f"call_{i}", registry, timeout=5,
+                data_path=None, chat_ui=None, verbose=False, messages=messages,
+                tool_call_history=history, max_repeated=30,
+            ))
+            if bail:
+                break
+        return bail, history, messages
+
+    def test_two_identical_refusals_end_the_loop(self):
+        bail, history, _ = self._loop(_RefusingRegistry(), {"command": "cat .env"})
+        assert bail is not None and len(history) == 2
+        assert "refused by policy" in bail
+        # The reason rides in the bail message: a resumed session reads this
+        # as its last response and should start from the cause.
+        assert "env command is not allowed" in bail
+
+    def test_an_ordinary_loop_still_waits_for_five(self):
+        bail, history, _ = self._loop(_SucceedingRegistry(), {"command": "ls"})
+        assert bail is not None and len(history) == 5
+        assert "identical arguments" in bail
+
+    def test_interleaved_refusals_do_not_trip_the_streak(self):
+        """Streak, not lifetime: refusal, success, refusal... is not one loop."""
+        class Mixed(_SucceedingRegistry):
+            def __getitem__(self, name):
+                async def handler(**kw):
+                    return _REFUSAL if kw.get("command") == "cat .env" else "ok"
+                return handler
+
+        messages: list = []
+        history: list = []
+        bail = None
+        for i in range(6):
+            cmd = "cat .env" if i % 2 == 0 else "ls"
+            bail = asyncio.run(_execute_tool(
+                "bash", {"command": cmd}, f"call_{i}", Mixed(), timeout=5,
+                data_path=None, chat_ui=None, verbose=False, messages=messages,
+                tool_call_history=history, max_repeated=30,
+            ))
+            if bail:
+                break
+        assert bail is None, f"interleaved loop bailed early: {bail}"
+
+    def test_the_steer_notice_carries_the_refusal_reason(self):
+        """On the steering path the model is told why, in the message it is
+        about to read — the one thing it has not seen in this shape. Reached
+        with two different refused commands (streak stays 1, the lifetime
+        threshold triggers steering): a pure refusal loop hits the streak-2
+        bail before steering ever applies."""
+        messages: list = []
+        history: list = []
+        calls = [{"command": "cat .env"}, {"command": "printenv HOME"}]
+        for i, args in enumerate(calls):
+            asyncio.run(_execute_tool(
+                "bash", args, f"call_{i}",
+                _RefusingRegistry(), timeout=5, data_path=None,
+                chat_ui=None, verbose=False, messages=messages,
+                tool_call_history=history, max_repeated=1,
+            ))
+        assert "repeated call #" in messages[-1]["content"]
+        assert "The refusal reason:" in messages[-1]["content"]
+        assert "env command is not allowed" in messages[-1]["content"]
+
+
 # ── raw JSON tool calls ─────────────────────────────────────────────────────
 
 class TestRawToolCallParsing:

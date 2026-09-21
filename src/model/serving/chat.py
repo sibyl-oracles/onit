@@ -1327,6 +1327,33 @@ TOOL_RESULT_STORED_DECAY_CHARS = 1200
 # legitimately, spread across other work, is never punished for it.
 _REPEAT_STEER_AFTER = 3
 _REPEAT_STREAK_BAIL = 5
+# A policy refusal is not a result: the command did not run, the refusal says
+# so, and the identical call is refused identically every time. Two identical
+# refused calls in a row is already proof the model is ignoring the refusal's
+# own guidance ("do not retry it"), so bail at 2 rather than 5 — the remaining
+# three turns were the loop the guard exists to stop.
+_REPEAT_REFUSAL_BAIL = 2
+
+
+def _policy_refusal_reason(tool_response: str) -> str:
+    """The policy reason in a tool result that is a refusal, else "".
+
+    Both refusal shapes are JSON with ``status == "blocked"``: the bash
+    server's ``_refusal`` and the harness's ``_approval_refused``. Detection
+    reads the raw text, which is what reaches this function — refusals are
+    short enough to sit far below the store threshold, so no handle wraps
+    them, and the steer notice below quotes the reason so the model reads
+    *why* it is stuck, not just that it is.
+    """
+    if not tool_response or '"status": "blocked"' not in tool_response:
+        return ""
+    try:
+        payload = json.loads(tool_response)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(payload, dict) or payload.get("status") != "blocked":
+        return ""
+    return str(payload.get("error") or "")
 
 # Compaction-transcript caps: the summarizer sees the newest window in full
 # (bounded by both message count and total chars) and everything older as
@@ -2010,6 +2037,26 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             _streak += 1
         else:
             break
+    # A refused call is a different loop from a repeated result. The refusal
+    # is deterministic — the same command is refused the same way every time —
+    # so two in a row is the whole loop; waiting for five only spends three
+    # turns the model has already proven it will waste. The bail message
+    # carries the policy's own reason so the next turn (a resumed session
+    # reads this as its last response) starts from the cause, not from a
+    # bare "stopped".
+    _refusal_reason = _policy_refusal_reason(messages[-1]["content"]
+                                             if messages and
+                                             isinstance(messages[-1], dict)
+                                             and isinstance(messages[-1].get("content"), str)
+                                             else "")
+    if _streak >= _REPEAT_REFUSAL_BAIL and _refusal_reason:
+        msg = (f"Stopped: {function_name} was called {_streak} time(s) in a row "
+               f"({_lifetime} in this run) and refused by policy each time. "
+               f"The command did not run and will not run: {_refusal_reason} "
+               f"Do not retry it or reword it — take a different approach, or "
+               f"tell the user what is blocked and why.")
+        _log_to_ui_or_verbose(f"Repeated policy refusal: {function_name} streak={_streak} — {_refusal_reason[:120]}", chat_ui, verbose, level="warning")
+        return msg
     if _streak >= _REPEAT_STREAK_BAIL or _lifetime >= max_repeated * 2:
         msg = (f"Stopped: {function_name} was called {_streak} time(s) in a row "
                f"({_lifetime} in this run) with identical arguments and returned "
@@ -2021,13 +2068,18 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         # Steering, not termination: the notice rides in the tool message the
         # model is about to read, names the exact repetition, and points at the
         # cheaper recovery paths (the result already in context; result_read
-        # for anything a stored handle holds).
+        # for anything a stored handle holds). When the last call was refused,
+        # the notice also carries the policy's reason — a model that keeps
+        # re-running a blocked command is ignoring the refusal's guidance, and
+        # the reason is the one thing it has not read in this shape yet.
+        _refusal_note = (f" The refusal reason: {_refusal_reason}"
+                         if _refusal_reason else "")
         _notice = (
             f"[repeated call #{_lifetime}: this exact call has run {_streak} time(s) "
             f"in a row and returned the same result. Do not call it again with the "
             f"same arguments — the result above is already in the conversation; "
             f"if part of it was trimmed, read it back with result_read/result_grep "
-            f"rather than re-running the tool.]")
+            f"rather than re-running the tool.{_refusal_note}]")
         _last = messages[-1] if messages else None
         if isinstance(_last, dict) and _last.get("role") == "tool" \
                 and isinstance(_last.get("content"), str):
