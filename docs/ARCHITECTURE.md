@@ -10,11 +10,12 @@
 ┌─────────────────────────────────────────────────────┐
 │                     OnIt (src/onit.py)              │
 │                                                     │
-│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────┐ │
-│  │ ChatUI  │ │ WebApiUI │ │ Telegram │ │ Viber  │ │ A2A  │ │
-│  │(terminal│ │(FastAPI) │ │ Gateway  │ │Gateway │ │Server│ │
-│  └────┬────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └──┬───┘ │
-│       └─────────┬─┘            │             │       │
+│  ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────────────┐ │
+│  │ ChatUI  │ │ WebApiUI │ │ Loop  │ │ legacy/ (A2A, │ │
+│  │(terminal│ │(FastAPI) │ │ runner│ │ Telegram,     │ │
+│  └────┬────┘ └────┬─────┘ └───┬───┘ │ Viber)        │ │
+└───────┼───────────┼───────────┼─────┴───┬───────────┘
+│       └──────────┼──┘            │             │       │
 │                 ▼                 ▼                 │
 │          client_to_agent()  /  process_task()       │
 │                 │                                   │
@@ -57,8 +58,9 @@ onit/
 │   ├── ui/
 │   │   ├── text.py             # Rich terminal UI
 │   │   ├── api.py              # FastAPI + SSE web UI
-│   │   ├── static/             # Web UI assets (no build step)
-│   │   ├── telegram.py         # Telegram bot gateway
-│   │   └── viber.py            # Viber bot gateway
+│   │   └── static/             # Web UI assets (no build step)
 │   └── test/                   # Test suite (pytest)
 ```
+
+Legacy front ends (A2A server, Telegram and Viber gateways) live in
+`legacy/` at the repository root.

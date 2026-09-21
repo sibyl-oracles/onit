@@ -41,7 +41,7 @@ All `path`, `directory`, and `cwd` parameters are validated against two sandbox 
 - **`data_path`** — the read/write working directory. Defaults to `~/sandbox`. Precedence: `--data-path` CLI flag > `data_path` in the config YAML > `~/sandbox`. The CLI exports the resolved value as `ONIT_DATA_PATH` before starting the MCP servers, so agent and tools always agree on the same directory. Relative paths always resolve against `data_path`, never the process working directory.
 - **`ONIT_DOCUMENTS_PATH`** — an optional read-only documents root for in-house data (also settable as `documents_path`).
 
-A2A server sessions each work in their own subdirectory `<data_path>/<session_id>`, created automatically per session.
+Legacy A2A server sessions each work in their own subdirectory `<data_path>/<session_id>`, created automatically per session.
 
 | Tools | Allowed roots |
 |-------|---------------|

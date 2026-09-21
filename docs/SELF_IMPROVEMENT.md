@@ -645,7 +645,7 @@ Shipped:
   [`_execute_tool()`](../src/model/serving/chat.py#L777) — every path that answers a call
   records one, failures included — plus an API-retry counter on `TurnMetrics`.
 - Recording wired into all three task paths in [`onit.py`](../src/onit.py): `process_task`
-  (web/A2A), the interactive CLI, and loop mode.
+  (web), the interactive CLI, and loop mode.
 - 👍/👎 under every answer in the web UI, backed by `POST /api/rating`. The buttons are
   quiet until hovered, restore the verdict already given when history reloads, and a
   second click on the same thumb retracts it. They are not shown at all when recording is

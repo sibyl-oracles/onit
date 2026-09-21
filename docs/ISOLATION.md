@@ -21,7 +21,6 @@ Runs the entire OnIt process inside a hardened Docker container so a breach cann
 ```bash
 onit --container                                          # interactive terminal in container
 onit --container serve web                                # web UI, port 9000 published
-onit --container serve a2a --port 9100                    # A2A server on custom port
 onit --container --container-gpus all                     # NVIDIA GPU pass-through
 onit --container --container-mount "$HOME/docs:/home/onit/documents:ro" \
   serve web                                               # expose host path read-only
@@ -58,8 +57,6 @@ The first run auto-builds the `onit:local` image from the repo `Dockerfile`. Sub
 |---|---|---|
 | (terminal) | — (no ports) | — |
 | `serve web` | `9000:9000` | `--port` |
-| `serve a2a` | `9001:9001` | `--port` |
-| `serve gateway viber` | `8443:8443` | `--port` |
 
 See [DOCKER.md](DOCKER.md) for full details.
 
@@ -107,7 +104,7 @@ On top of the glob rules, the bash tool can enforce a **command allowlist backed
 | `ONIT_ALLOW_PACKAGE_INSTALL` | `1` = permit package-manager installs (pinned versions only). Set by `--container-allow-installs`. |
 | `ONIT_CONTAIN_THRESHOLD` | Critical refusals before auto-containment. Default `0` (disabled); set a positive number to enable. |
 | `ONIT_CONTAIN_WINDOW` | Seconds the containment counter looks back over. Default `600`. |
-| `ONIT_APPROVAL_CHANNEL` | `1` when this run has a person who can approve commands. Set automatically by `onit` for the terminal and web UIs; never set for `serve a2a`, gateways or `--loop`. |
+| `ONIT_APPROVAL_CHANNEL` | `1` when this run has a person who can approve commands. Set automatically by `onit` for the terminal and web UIs; never set for `--loop`. |
 | `ONIT_ASK_APPROVAL` | `0` disables approval prompts, so every unlisted command is refused outright. |
 
 The allowlist can also be extended in `settings.json` (read in the web UI, or when `ONIT_SETTINGS` is set explicitly):
@@ -176,14 +173,12 @@ puts a prompt between you and the work. Each approval is still logged.
 ```bash
 onit                           # approves automatically
 onit --no-auto                 # ask me instead (alias: --ask)
-onit --auto serve a2a          # a server with no one watching
 onit --auto serve web          # a deployment: opt in explicitly
 ```
 
-**A deployment keeps asking.** `serve web`, `serve a2a` and the gateway bots
-answer to people who are not the operator, so they need `--auto` spelled out.
-Without it a web session shows the question as a card in the transcript, and
-an A2A or gateway run — which has nobody to show it to — refuses.
+**A deployment keeps asking.** `serve web`
+answers to people who are not the operator, so it needs `--auto` spelled out.
+Without it a web session shows the question as a card in the transcript.
 
 The switch substitutes for the *person*, not for the policy. It answers tickets,
 and a refusal is not a ticket — so `sudo`, `docker`, `ssh`, `systemctl`,
@@ -202,8 +197,8 @@ wins over `--auto`: with both set, nothing is asked and nothing is approved.
 
 **Where there is nobody to ask and nothing answering, the answer is no.**
 `ONIT_APPROVAL_CHANNEL` is set for the terminal and web UIs, which have a
-person, and for any run that approves automatically. An A2A server, a gateway
-bot, or a `--loop` started with `--no-auto` has neither, and fails closed with
+person, and for any run that approves automatically. A `--loop` started with
+`--no-auto` has neither, and fails closed with
 the identical refusal message.
 
 ### What a person may not approve

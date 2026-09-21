@@ -108,8 +108,6 @@ GOOGLE_CLIENT_SECRET=GOCSPX-...
 # OPENWEATHERMAP_API_KEY=...    # enables the weather tool
 # GITHUB_TOKEN=...              # github_repo tool + git credential helper
 # HF_TOKEN=...                  # Hugging Face model downloads
-# TELEGRAM_BOT_TOKEN=...        # onit-gateway service (Telegram)
-# VIBER_BOT_TOKEN=...           # onit-gateway service (Viber)
 
 # Embedding endpoint for local_search dense/hybrid retrieval
 # ONIT_EMBEDDING_HOST=http://host.docker.internal:8001/v1

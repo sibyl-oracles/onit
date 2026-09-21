@@ -1,7 +1,7 @@
 # CLI Reference
 
 Every `onit` command and flag. The terminal chat is the default mode; the
-`serve` subcommands run OnIt as a server (web UI, A2A, chat gateways, timers),
+`serve` subcommands run OnIt as a server (web UI, timers),
 and `onit doctor` self-checks the stack.
 
 
@@ -27,7 +27,7 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
 | `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
-| `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web`/`a2a`/gateway deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
+| `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web` deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
 | `--no-auto` | Be asked about a command policy will not run on its own, instead of approving it automatically (alias: `--ask`) | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
 | `--container` | Run the entire OnIt process inside a hardened Docker container | `false` |
@@ -40,7 +40,7 @@ Interactive setup wizard, in three sections:
 
 - **Model serving** — the endpoint editor (add/edit/delete servers and rank them by priority), the load balancing algorithm, and the API keys those endpoints use (OpenRouter, Ollama, vLLM)
 - **Preferences** — theme, web UI port, request timeout
-- **Integrations** — OpenWeatherMap, Telegram, Viber, Google OAuth2, GitHub, HuggingFace
+- **Integrations** — OpenWeatherMap, Google OAuth2, GitHub, HuggingFace
 
 Settings go to `~/.onit/config.yaml`, secrets to the OS keychain.
 
@@ -79,7 +79,7 @@ onit resume              # resume the most recent session (same as bare `onit`)
 Equivalent to `onit --resume TAG_OR_ID`.
 
 To start from scratch instead, use `onit --restart-session`. Server modes
-(`serve web`, `serve a2a`, `serve gateway`, `serve loop`) manage their own
+(`serve web`, `serve loop`) manage their own
 sessions and never auto-resume.
 
 A resumed session carries more than the conversation. Alongside each
@@ -91,7 +91,7 @@ succeeded instead of starting it again. It is deleted with the session.
 
 ## `onit ask`
 
-Send a single task to a running OnIt A2A server and print the response. Useful for scripting, pipelines, or one-shot queries without starting a local agent.
+Send a single task to a running OnIt A2A server and print the response. Useful for scripting, pipelines, or one-shot queries without starting a local agent. The A2A server itself lives in [legacy/](../legacy/) (`python -m legacy.a2a_server`); the `ask` client is SDK-free and stays in the active CLI.
 
 ```bash
 onit ask "what is the weather in Manila"
@@ -145,37 +145,6 @@ onit doctor --json > doctor.json || exit 1
 ## `onit serve`
 
 Run OnIt in a persistent server or daemon mode. All serve modes run indefinitely until interrupted (Ctrl+C).
-
-### `onit serve a2a`
-
-Run OnIt as an [A2A protocol](https://a2a-protocol.org/) server so other agents or clients can send tasks.
-
-```bash
-onit serve a2a                 # listen on port 9001 (default)
-onit serve a2a --port 9100     # custom port
-```
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--port PORT` | A2A server port | `9001` (or `a2a_port` in config) |
-
-The agent card is available at `http://localhost:9001/.well-known/agent.json`.
-
-**Send a task from another agent (Python A2A SDK):**
-
-```python
-from a2a.client import ClientFactory, create_text_message_object
-from a2a.types import Role
-import asyncio
-
-async def main():
-    client = await ClientFactory.connect("http://localhost:9001")
-    message = create_text_message_object(role=Role.user, content="What is the weather?")
-    async for event in client.send_message(message):
-        print(event)
-
-asyncio.run(main())
-```
 
 ### `onit serve web`
 
@@ -274,32 +243,6 @@ Analytics is off when unset.
    chat, with your email and a Logout link shown in the UI.
 
 More detail (session lifetime, troubleshooting): [WEB_AUTHENTICATION.md](WEB_AUTHENTICATION.md).
-
-### `onit serve gateway`
-
-Run OnIt as a Telegram or Viber bot. Configure bot tokens via `onit setup` or environment variables.
-
-```bash
-onit serve gateway                                      # auto-detect from env vars
-onit serve gateway telegram                             # Telegram bot
-onit serve gateway viber --webhook-url https://...      # Viber bot
-```
-
-| Argument / Flag | Description | Default |
-|-----------------|-------------|---------|
-| `gateway_type` (positional) | `telegram`, `viber`, or `auto` | `auto` |
-| `--webhook-url URL` | Public HTTPS URL for Viber webhook (or set `VIBER_WEBHOOK_URL`) | — |
-| `--port PORT` | Local port for Viber webhook server | `8443` (or `viber_port` in config) |
-
-Required environment variables (set via `onit setup` or export):
-- Telegram: `TELEGRAM_BOT_TOKEN`
-- Viber: `VIBER_BOT_TOKEN`, `VIBER_WEBHOOK_URL`
-
-Install gateway dependencies if not using `[all]`:
-
-```bash
-pip install "onit[gateway]"
-```
 
 ### `onit serve loop`
 

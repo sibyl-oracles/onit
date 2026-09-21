@@ -26,8 +26,6 @@ OnIt can run fully containerized in two ways:
 ```bash
 onit --container                          # interactive terminal inside the container
 onit --container serve web                # web UI, port 9000 published
-onit --container serve a2a --port 9100    # A2A server on a custom port
-onit --container serve gateway telegram   # Telegram bot (no ports published)
 ```
 
 On first run, the launcher builds the `onit:local` image from the repository `Dockerfile` (this takes a few minutes — it installs the full Python stack). Subsequent runs reuse the image.
@@ -87,7 +85,7 @@ package-manager install. `pip`, `uv`, `pipx`, `npm`, `yarn`, `pnpm`, `gem`,
 
 This is **not** an overridable setting. `ONIT_ALLOW_PACKAGE_INSTALL=1` and
 `--container-allow-installs` have no effect here. They remain available for
-terminal, A2A and gateway modes, and for bare-metal `onit serve web`.
+terminal mode, and for bare-metal `onit serve web`.
 
 Why this mode specifically: the containerized web UI is a long-lived,
 network-facing service shared by every user and every session. An install there
@@ -152,8 +150,6 @@ avahi and other daemons arrive uninvited.
   |---|---|---|
   | (terminal) | — (no ports) | — |
   | `serve web` | `9000:9000` | `--port` |
-  | `serve a2a` | `9001:9001` | `--port` |
-  | `serve gateway viber` | `8443:8443` | `--port` |
 
 ## Exposing GPUs, extra host paths, and resources
 
@@ -278,45 +274,6 @@ docker run --rm --name onit-web \
 Open `http://localhost:9000`. Google login is required by default; for an
 open UI on a trusted network, drop the `GOOGLE_*` vars and add `--no-login`.
 
-### A2A mode (Agent-to-Agent server)
-
-```bash
-docker run --rm --name onit-a2a \
-  -e ONIT_HOST=https://openrouter.ai/api/v1 \
-  -e OPENROUTER_API_KEY=sk-or-v1-... \
-  -p 9001:9001 \
-  onit:local serve a2a --port 9001
-```
-
-Send a task to it from another container (or use `onit ask` from any host):
-
-```bash
-docker run --rm onit:local ask "What is the weather in Manila?" \
-  --server http://host.docker.internal:9001
-```
-
-### Gateway mode (Telegram / Viber)
-
-```bash
-docker run --rm --name onit-telegram \
-  -e ONIT_HOST=https://openrouter.ai/api/v1 \
-  -e OPENROUTER_API_KEY=sk-or-v1-... \
-  -e TELEGRAM_BOT_TOKEN=... \
-  onit:local serve gateway telegram
-```
-
-```bash
-docker run --rm --name onit-viber \
-  -e ONIT_HOST=https://openrouter.ai/api/v1 \
-  -e OPENROUTER_API_KEY=sk-or-v1-... \
-  -e VIBER_BOT_TOKEN=... \
-  -e VIBER_WEBHOOK_URL=https://your-domain.com/viber \
-  -p 8443:8443 \
-  onit:local serve gateway viber
-```
-
-Port 8443 must be reachable from the internet for the Viber webhook.
-
 ### In-house documents
 
 Mount a host directory read-only and point `ONIT_DOCUMENTS_PATH` at it:
@@ -362,9 +319,6 @@ stack, all services sharing the same hardening profile (read-only rootfs,
 | `caddy` | TLS termination, automatic Let's Encrypt certificates | 80, 443 |
 | `onit-mcp` | MCP servers, one set per container | 18200+ (loopback; found free at startup) |
 | `onit-web` | Web UI (loopback-only; public traffic goes through Caddy) | 127.0.0.1:9000 |
-| `onit-a2a` | A2A server | 9001 |
-| `onit-gateway` | Telegram bot gateway | — |
-| `onit-viber` | Viber bot gateway | 8443 |
 | `onit-terminal` | Interactive terminal (opt-in `terminal` profile) | — |
 
 Configuration is driven by a `.env` file in the repo root (see
@@ -386,7 +340,7 @@ sudo chown 1000:1000 /data/sandbox
 Start the stack:
 
 ```bash
-docker compose up -d --build     # build + start web, a2a, gateways behind Caddy
+docker compose up -d --build     # build + start web behind Caddy
 docker compose logs -f onit-web  # follow a service's logs
 docker compose --profile terminal run --rm onit-terminal   # one-off interactive chat
 docker compose down              # stop (volumes are kept)
@@ -401,12 +355,12 @@ State survives container restarts in named Docker volumes:
 
 - `onit-data` (launcher) / `ONIT_DATA_DIR` bind mount (compose) — the agent's
   working directory: tool output, pip installs (`PIP_TARGET`), HF caches.
-- `web-sessions`, `a2a-sessions`, `gateway-sessions`, `terminal-sessions`
+- `web-sessions`, `terminal-sessions`
   (compose) — per-mode chat history (JSONL) so sessions can be resumed.
 - `caddy-data`, `caddy-config` (compose) — TLS certificates and ACME account
   keys. Keep these: recreating them repeatedly hits Let's Encrypt rate limits.
 
-Each browser tab (web), A2A context, or messaging chat gets its own isolated
+Each browser tab (web) gets its own isolated
 session with separate chat history and file storage. To start completely
 fresh:
 
@@ -448,11 +402,6 @@ OPENWEATHERMAP_API_KEY=...          # weather tool
 # Web UI login (required unless running with --no-login)
 GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-...
-
-# Gateways
-TELEGRAM_BOT_TOKEN=...              # serve gateway telegram
-VIBER_BOT_TOKEN=...                 # serve gateway viber
-VIBER_WEBHOOK_URL=https://your-domain.com/viber
 
 # Compose stack
 ONIT_DOMAIN=mychat.ai

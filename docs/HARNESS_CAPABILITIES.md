@@ -895,7 +895,7 @@ typed fields" and proposed building `src/agent.py`. That is wrong and the mistak
 expensive: [`OnIt`](../src/onit.py#L586) is already `class OnIt(BaseModel)` with ~50 typed
 `Field()` declarations, and a new `Agent` base class would duplicate it. The accurate
 distinction is **configuration state vs. run state**. OnIt's fields are configuration —
-`web_port`, `a2a_name`, `theme`, `history_turns` — set at startup and stable for the
+`web_port`, `agent_name`, `theme`, `history_turns` — set at startup and stable for the
 process. What is missing is state describing *this run*, and that is a narrower fix inside
 `chat()`, not a new class hierarchy.
 

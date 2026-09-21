@@ -5,8 +5,7 @@
 OnIt is an agent harness: it hands a language model a set of tools — shell, file
 editing, web search, weather, search over your own documents — a working directory,
 and a memory of what it has already done, then runs the loop until the task is
-finished. The same agent is reachable from a terminal, a browser chat UI, an
-[A2A](https://a2a-protocol.org/) endpoint, or a Telegram/Viber bot.
+finished. The same agent is reachable from a terminal or a browser chat UI.
 
 ## Quick Start (~10 minutes)
 
@@ -169,10 +168,12 @@ each tool call is shown as it runs.
 | | |
 |---|---|
 | `onit serve web` | Browser chat UI — [above](#from-text-ui-to-web-ui) |
-| `onit serve a2a` | [A2A](https://a2a-protocol.org/) server; send tasks with `onit ask "…"` |
-| `onit serve gateway` | Telegram or Viber bot ([docs/GATEWAY_QUICK_START.md](docs/GATEWAY_QUICK_START.md)) |
 | `onit serve loop "task" --period 60` | Repeat a task on a timer |
 | `onit --container` | Hardened Docker container ([docs/DOCKER.md](docs/DOCKER.md)) |
+| `onit ask "…"` | Send a task to a remote OnIt A2A server ([legacy/](legacy/)) |
+
+Telegram, Viber and the A2A server moved to [legacy/](legacy/) — see its
+README for how to run them.
 
 ## Documentation
 

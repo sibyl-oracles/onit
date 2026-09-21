@@ -98,7 +98,6 @@ timeout: 600
 # show_intermediate: false
 
 web_port: 9000
-a2a_port: 9001
 
 theme: white         # or "dark"
 topic: ~             # default topic context, e.g. "machine learning"
@@ -227,7 +226,7 @@ browser, in place; in the terminal, at the top of your next turn, since a
 terminal that writes under a half-typed line is worse than one that waits. Ask
 anything else and the check is cancelled outright: a correction to an answer
 you have moved past is not worth the interruption. It only runs where there is
-somewhere to show it, so one-shot callers (A2A) never start one.
+somewhere to show it, so one-shot callers never start one.
 
 Measured on Qwen3.6-27B, against 5–15s to write the answer itself:
 

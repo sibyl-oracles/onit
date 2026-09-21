@@ -1,12 +1,33 @@
 # Release Notes
 
+## Unreleased (legacy extraction)
+
+### Breaking Changes
+
+- **A2A server, Telegram and Viber gateways moved to `legacy/`** — The active
+  codebase now covers the terminal chat, web UI, loop mode, MCP servers and
+  the container. The A2A protocol server runs as `python -m legacy.a2a_server`
+  and the chat gateways as `python -m legacy.gateway [telegram|viber]`, after
+  `pip install -r legacy/requirements.txt`. See [legacy/README.md](legacy/README.md).
+  `onit serve a2a` and `onit serve gateway` are gone; **`onit ask` stays** —
+  it is a plain JSON-RPC client and still talks to the legacy A2A server.
+- **Dependencies slimmed** — `a2a-sdk[all]` (with its grpcio/protobuf chain)
+  and `python-telegram-bot` are no longer core dependencies; installs are
+  faster and the supply chain smaller. The `gateway` extra is gone;
+  `onit[all]` now pulls `onit[voice]` instead.
+- **Setup no longer prompts** for `telegram_bot_token` / `viber_bot_token`.
+  Old config files that still carry `a2a:`/`gateway:` keys are ignored
+  gracefully.
+- **docker-compose** — the `onit-a2a` and `onit-gateway` services and their
+  session volumes are removed.
+
 ## v0.1.4
 
 ### New Features
 
 - **Native Web UI** — The web UI no longer runs on Gradio. It is now a FastAPI app with a hand-written front end (`src/ui/api.py` + `src/ui/static/`) served over SSE, with streaming tokens, inline tool-call detail during the thinking phase, code and image rendering, copy buttons, and a login screen (`--no-login` to disable). Gradio is gone from the dependency list.
 - **Voice Mode** (`onit --voice`) — Full-duplex speech-to-speech. Audio is handled end to end by NVIDIA NemotronLabs VoiceChat 11B over an OpenAI-Realtime-compatible WebSocket (`--voice-url`); OnIt supplies the tools and the work. Install with `onit[voice]`. See [docs/VOICE.md](docs/VOICE.md).
-- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, `onit ask`, and `onit serve {a2a,web,gateway,loop}`. Plain `onit` still opens terminal chat.
+- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, `onit ask`, and `onit serve {web,loop}`. Plain `onit` still opens terminal chat. *(A2A and gateway subcommands later moved to legacy/.)*
 - **Persistent Sessions** — Terminal chat resumes the last session by default. `onit sessions` lists, tags, rebuilds, and clears them; `--resume TAG_OR_ID` (or `last`) reopens one; `--restart-session` starts fresh.
 - **Two-Host Load Balancing** — Serve from two endpoints at once with `--host2`/`--model2` and pick a policy with `--load-balancer {sticky,round_robin,random,least_busy}`. Endpoints are health-ranked, and Ollama endpoints stay in reserve unless `--no-ollama-fallback-only` puts them in normal rotation.
 - **Agent Harness Capabilities** — All six harness phases from the NOOA framework landed: run-state budgeting, a result store that keeps large tool results readable instead of truncating them (`result_read` / `result_grep`), harness tools, early stopping, and answer verification. See [docs/HARNESS_CAPABILITIES.md](docs/HARNESS_CAPABILITIES.md).
@@ -101,7 +122,7 @@
 - **Per-Session Isolation (Web UI)** — Each browser tab now gets its own independent session with isolated chat history, file storage, and response routing. Multiple users can chat concurrently without seeing each other's messages or files. Sessions auto-cleanup after 24 hours.
 - **Per-Session Isolation (A2A Server)** — Each A2A context (client conversation) gets its own isolated session with separate chat history, data directory, and safety queue. Different A2A clients no longer share state.
 - **Concurrent Request Processing (Web UI)** — Web UI requests are now processed concurrently via `process_task()` (matching the Telegram/Viber gateway pattern), instead of sequentially through a single queue.
-- **Viber Gateway** — Chat with OnIt remotely via a Viber bot. Supports text and photo messages with vision processing. Requires a public HTTPS webhook URL (see [Gateway Quick Start](docs/GATEWAY_QUICK_START.md)).
+- **Viber Gateway** — Chat with OnIt remotely via a Viber bot. Supports text and photo messages with vision processing. Requires a public HTTPS webhook URL (now in [legacy/](legacy/); see [legacy/GATEWAY_QUICK_START.md](legacy/GATEWAY_QUICK_START.md)).
 - **Gateway Auto-Detection** — `onit --gateway` now auto-detects Telegram or Viber based on which environment variable is set (`TELEGRAM_BOT_TOKEN` or `VIBER_BOT_TOKEN`).
 - **Tunnel Documentation** — Comprehensive guide for tunneling options: Cloudflare Tunnel, ngrok, localtunnel, Tailscale Funnel, and SSH reverse tunnel.
 
