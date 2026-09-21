@@ -170,10 +170,8 @@ each tool call is shown as it runs.
 | `onit serve web` | Browser chat UI — [above](#from-text-ui-to-web-ui) |
 | `onit serve loop "task" --period 60` | Repeat a task on a timer |
 | `onit --container` | Hardened Docker container ([docs/DOCKER.md](docs/DOCKER.md)) |
-| `onit ask "…"` | Send a task to a remote OnIt A2A server ([legacy/](legacy/)) |
 
-Telegram, Viber and the A2A server moved to [legacy/](legacy/) — see its
-README for how to run them.
+Telegram, Viber and A2A moved to [legacy/](legacy/).
 
 ## Documentation
 
