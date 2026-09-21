@@ -7,7 +7,7 @@ Usage: onit --gateway  (requires TELEGRAM_BOT_TOKEN env var)
 import asyncio
 import logging
 
-from . import split_message
+from src.ui import split_message
 import os
 import uuid
 from pathlib import Path

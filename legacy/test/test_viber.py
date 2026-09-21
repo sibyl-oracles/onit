@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.ui.viber import ViberGateway, MAX_MESSAGE_LENGTH
+from legacy.gateway.viber import ViberGateway, MAX_MESSAGE_LENGTH
 from src.ui import split_message
 
 
@@ -250,7 +250,7 @@ class TestHandlePhoto:
             "message_token": 99,
         }
 
-        with patch("src.ui.viber.aiohttp.ClientSession", return_value=mock_session):
+        with patch("legacy.gateway.viber.aiohttp.ClientSession", return_value=mock_session):
             await gw._handle_photo(data)
 
         onit.process_task.assert_called_once()
@@ -290,7 +290,7 @@ class TestHandlePhoto:
             "message_token": 100,
         }
 
-        with patch("src.ui.viber.aiohttp.ClientSession", return_value=mock_session):
+        with patch("legacy.gateway.viber.aiohttp.ClientSession", return_value=mock_session):
             await gw._handle_photo(data)
 
         # Should use default caption
@@ -317,7 +317,7 @@ class TestSendMessage:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.ui.viber.aiohttp.ClientSession", return_value=mock_session):
+        with patch("legacy.gateway.viber.aiohttp.ClientSession", return_value=mock_session):
             await gw._send_text("user1", "Hello!")
 
         mock_session.post.assert_called_once()
@@ -420,7 +420,7 @@ class TestSetWebhook:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.ui.viber.aiohttp.ClientSession", return_value=mock_session):
+        with patch("legacy.gateway.viber.aiohttp.ClientSession", return_value=mock_session):
             await gw._set_webhook()
 
     @pytest.mark.asyncio
@@ -441,7 +441,7 @@ class TestSetWebhook:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.ui.viber.aiohttp.ClientSession", return_value=mock_session):
+        with patch("legacy.gateway.viber.aiohttp.ClientSession", return_value=mock_session):
             with pytest.raises(RuntimeError, match="status 1.*invalidUrl"):
                 await gw._set_webhook()
 

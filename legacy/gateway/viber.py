@@ -9,7 +9,7 @@ endpoint. This gateway uses FastAPI + uvicorn to serve the webhook.
 
 import asyncio
 
-from . import split_message
+from src.ui import split_message
 import hashlib
 import hmac
 import json

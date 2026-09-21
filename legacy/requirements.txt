@@ -1,0 +1,13 @@
+# Dependencies for the legacy components only.
+# The active codebase does not import anything from legacy/, so these are
+# not needed for a normal install.
+
+# A2A protocol server (legacy/a2a/)
+a2a-sdk[all]>=1.0.0
+
+# Telegram gateway (legacy/gateway/telegram.py)
+python-telegram-bot
+
+# Shared by the Viber gateway and the A2A server's HTTP layer
+aiohttp
+uvicorn
