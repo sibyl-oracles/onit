@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from starlette.testclient import TestClient
 
 from test.fake_voicechat import FakeVoiceChat
+from ui import auth as ui_auth
 from ui.api import WebApiUI
 from ui.voice import (
     CANCELLED_MESSAGE,
@@ -241,9 +242,14 @@ class TestVoiceRoute:
         assert config["voice_enabled"] is True
         assert config["voice_sample_rate"] == 24000
 
-    def test_unauthenticated_call_is_refused(self, tmp_path, bg_loop):
+    def test_unauthenticated_call_is_refused(self, tmp_path, bg_loop, monkeypatch):
         # A websocket never passes through @app.middleware("http"), so the
         # route has to check auth itself or voice becomes the way in.
+        # google-auth is an optional extra; stub it like test_web_api does so
+        # this runs in environments without the [web] extra installed.
+        monkeypatch.setattr(ui_auth, "GOOGLE_AUTH_AVAILABLE", True)
+        monkeypatch.setattr("ui.api.GOOGLE_AUTH_AVAILABLE", True)
+        monkeypatch.setattr("ui.api.GoogleAuthenticator", lambda *a, **k: object())
         ui = WebApiUI(
             data_path=str(tmp_path / "d"),
             session_path=str(tmp_path / "s" / "c.jsonl"),

@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[test,gateway]
+          pip install .[test,web]
 
       - name: Run tests
         run: pytest src/test/ -v --tb=short
