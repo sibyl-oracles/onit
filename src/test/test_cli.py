@@ -685,9 +685,9 @@ class TestWebServingDefaults:
         assert serving["top_p"] == 0.95
 
     def test_other_serve_modes_are_not_web(self, tmp_path, monkeypatch):
-        """a2a and the gateway are not someone watching a composer."""
+        """The loop mode is not someone watching a composer."""
         serving = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                ["serve", "a2a"])["serving"]
+                                ["serve", "loop", "check things"])["serving"]
         assert serving["think"] is True
         assert serving["temperature"] == 0.6
 
@@ -896,10 +896,7 @@ class TestSessionSelection:
         assert excinfo.value.code == 1
 
     def test_server_modes_do_not_auto_resume(self, sessions, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         assert "resume_session_id" not in self._run(["serve", "web"])
-        assert "resume_session_id" not in self._run(["serve", "a2a"])
-        assert "resume_session_id" not in self._run(["serve", "gateway", "telegram"])
         assert "resume_session_id" not in self._run(["serve", "loop", "check things"])
 
 
@@ -971,9 +968,10 @@ class TestApprovalChannelWiring:
         assert "ONIT_AUTO_APPROVE" not in os.environ
 
     def test_a_server_run_cannot(self, sessions):
-        """No one is attached to an A2A server, so it must not mint tickets."""
-        self._run(["serve", "a2a"])
-        assert "ONIT_APPROVAL_CHANNEL" not in os.environ
+        """A web deployment keeps the approval channel (a person at the
+        browser can answer) but must not auto-approve without --auto."""
+        self._run(["serve", "web"])
+        assert os.environ.get("ONIT_APPROVAL_CHANNEL") == "1"
         assert "ONIT_AUTO_APPROVE" not in os.environ
 
     def test_a_loop_run_answers_for_itself(self, sessions):

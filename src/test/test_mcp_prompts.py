@@ -466,7 +466,7 @@ class TestSealedNoInstallBlock:
         ("1", "1", True),     # containerized web UI: sealed
         (None, None, False),  # terminal on the host
         ("1", None, False),   # bare-metal `onit serve web`: local dev loop
-        (None, "1", False),   # containerized terminal/A2A/gateway
+        (None, "1", False),   # containerized terminal/loop
     ])
     async def test_block_tracks_the_gate(self, tmp_path, monkeypatch,
                                          web_ui, container, announced):

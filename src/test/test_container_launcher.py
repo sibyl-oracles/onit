@@ -127,26 +127,12 @@ def test_build_run_command_web_maps_9000():
     assert cmd[i + 1] == "9000:9000"
 
 
-def test_build_run_command_a2a_maps_9001():
-    cmd = build_run_command(
-        "docker", ["--a2a"], config_mounts=[], secret_env=[]
-    )
-    assert "9001:9001" in cmd
-
-
 def test_build_run_command_honors_custom_web_port():
     cmd = build_run_command(
         "docker", ["--web", "--web-port", "9500"], config_mounts=[], secret_env=[]
     )
     assert "9500:9500" in cmd
     assert "9000:9000" not in cmd
-
-
-def test_build_run_command_honors_custom_a2a_port_equals_form():
-    cmd = build_run_command(
-        "docker", ["--a2a", "--a2a-port=9100"], config_mounts=[], secret_env=[]
-    )
-    assert "9100:9100" in cmd
 
 
 def test_build_run_command_passes_gpus():
@@ -368,8 +354,6 @@ def test_collect_secret_env_honors_host_env(monkeypatch):
         ("host_key", "OPENROUTER_API_KEY"),
         ("ollama_api_key", "OLLAMA_API_KEY"),
         ("openweathermap_api_key", "OPENWEATHERMAP_API_KEY"),
-        ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
-        ("viber_bot_token", "VIBER_BOT_TOKEN"),
         ("github_token", "GITHUB_TOKEN"),
         ("huggingface_token", "HF_TOKEN"),
     ]:

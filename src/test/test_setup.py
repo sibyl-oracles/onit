@@ -152,7 +152,7 @@ class TestSectionGrouping:
 
     def test_unrelated_keys_are_not_in_the_serving_section(self):
         keys = {k for k, _, _ in setup_mod.LEGACY_SERVING_SECRETS}
-        for unrelated in ("openweathermap_api_key", "telegram_bot_token",
+        for unrelated in ("openweathermap_api_key", "web_google_client_id",
                           "github_token", "huggingface_token"):
             assert unrelated not in keys
 

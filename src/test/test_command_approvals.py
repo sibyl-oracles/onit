@@ -668,7 +668,7 @@ class TestHarnessApproval:
 
 
 class _NoAskUI(_UI):
-    """A UI with no way to ask — the A2A, gateway and scheduled-run case.
+    """A UI with no way to ask — the scheduled-run and embedding case.
 
     Not a UI that answers no: one that has no method at all, which is how
     chat() tells "asked and refused" from "there was nobody to ask".
@@ -752,7 +752,7 @@ class TestAutoApprove:
         assert "ran" in messages[-1]["content"]
 
     async def test_it_works_with_no_ui_at_all(self, auto):
-        """The unattended modes are the point: a --loop or gateway run has no
+        """The unattended modes are the point: a --loop run has no
         one to ask, and before the flag every gated command there was
         refused."""
         registry = _GatedRegistry()

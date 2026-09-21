@@ -667,7 +667,7 @@ class TestCommandAllowlist:
         assert "web UI mode" not in err
 
     def test_container_terminal_keeps_the_optin(self, sealed_web, monkeypatch):
-        """Container without the web UI is terminal/A2A/gateway — opt-in intact."""
+        """Container without the web UI is terminal/loop — opt-in intact."""
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         assert bash_mod._validate_bash_command(
             "pip install requests==2.31.0") is None
