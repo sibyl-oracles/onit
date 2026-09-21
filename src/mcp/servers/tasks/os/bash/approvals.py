@@ -289,8 +289,8 @@ def approval_channel_available() -> bool:
     """Whether this deployment has a human it can actually ask.
 
     Declared by the harness process before it spawns the tool servers, which
-    inherit the variable. Absent — a cron run, an A2A server, a gateway bot,
-    a directly-launched MCP server — every ask collapses to the refusal it
+    inherit the variable. Absent — a cron run, a directly-launched MCP
+    server — every ask collapses to the refusal it
     would have been before approvals existed. That is the fail-closed default,
     and it is the reason nothing here needs a timeout policy of its own: with
     no channel, no ticket is ever minted.
