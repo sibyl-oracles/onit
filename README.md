@@ -15,12 +15,13 @@ It runs on a model server you control — [vLLM](https://github.com/vllm-project
 its work through [MCP](https://modelcontextprotocol.io/) tools: web search, weather,
 shell, file editing, and search over your own documents.
 
-This README gets you to a first session in the **text UI**. The other front ends,
+This README gets you to a first session in the **text UI** in about ten minutes, then
+shows how to grow the same setup into a **web UI** deployment. The other front ends,
 containers, and the full CLI and configuration reference are in [docs/](docs/).
 
 ## Quick Start
 
-Two steps: install → run.
+Three steps: install, point OnIt at a model, run.
 
 ### 1. Install
 
@@ -39,32 +40,65 @@ git clone https://github.com/sibyl-oracles/onit.git
 cd onit && pip install -U --upgrade-strategy eager -e '.[all]'
 ```
 
-Activate the environment again in every new shell before running `onit`. To pick up
-newer commits later: `git pull && pip install -U --upgrade-strategy eager -e '.[all]'` —
-and if dependencies ever end up conflicting, recreate the environment from scratch.
+This step is most of the ten minutes — the rest is two commands. Activate the
+environment again in every new shell before running `onit`. To pick up newer commits
+later: `git pull && pip install -U --upgrade-strategy eager -e '.[all]'` — and if
+dependencies ever end up conflicting, recreate the environment from scratch.
 
-### 2. Run
+### 2. Point OnIt at a model
 
-OnIt talks to any OpenAI-compatible endpoint. The quickest to reach is Ollama cloud —
-nothing to install, no GPU:
+OnIt talks to any OpenAI-compatible endpoint. Two hosted options need no hardware and
+no model-serving setup — pick one:
+
+**Ollama cloud — free tier, nothing to install:**
 
 ```bash
-export OLLAMA_API_KEY=...   # free tier — sign in at ollama.com and create a key
+export OLLAMA_API_KEY=...   # sign in at ollama.com and create a key
 onit --host https://api.ollama.com --model glm-5.3:cloud
 ```
 
-That is already a complete run: `--host` and `--model` override everything, so the rest
-of this step is about saving the settings instead of retyping them. The other hosted
-option is [OpenRouter](https://openrouter.ai/) —
-`--host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro`, with an
-`OPENROUTER_API_KEY` (paid).
+**OpenRouter — one API, many models (paid per token):**
 
-To run the model on your own hardware instead — vLLM, SGLang, MLX, or Ollama — see
-[docs/RUN_A_MODEL_SERVER.md](docs/RUN_A_MODEL_SERVER.md) and come back with the
-endpoint's URL. Whichever you choose, the model must support **tool calling**: OnIt does
-its work through tools, so a model without it will talk but not act.
+```bash
+export OPENROUTER_API_KEY=...   # create at openrouter.ai → Keys
+onit --host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro
+```
 
-To make the endpoint stick:
+Browse models at [openrouter.ai/models](https://openrouter.ai/models). Either way, the
+model must support **tool calling**: OnIt does its work through tools, so a model
+without it will talk but not act.
+
+Prefer to run the model on your own hardware? Local Ollama needs no key at all —
+`ollama pull qwen3:30b`, then `onit --host http://localhost:11434/v1 --model qwen3:30b`
+(the `/v1` suffix is required). vLLM, SGLang, and MLX work the same way — see
+[docs/RUN_A_MODEL_SERVER.md](docs/RUN_A_MODEL_SERVER.md).
+
+### 3. Run
+
+```bash
+onit
+```
+
+That launches the text UI. MCP tools start automatically, the agent works out of
+`~/sandbox`, and `\bye` (or Ctrl+D) leaves. Running `onit` again picks the conversation
+back up where you left it.
+
+A first task — this is the shape of a session (output abbreviated):
+
+```text
+> check the weather in Manila, then write manila.md comparing it to Tokyo's
+
+◆ search   get_weather(place="Manila") → 29°C, thunderstorms
+◆ search   get_weather(place="Tokyo")  → 24°C, clear
+◆ bash     writing manila.md
+Done — manila.md is in the working directory. Manila is 5°C warmer and the
+UV is high; Tokyo is dry and clear this week.
+```
+
+The agent plans, calls tools, narrates each step, and asks before anything
+destructive. Files it writes land in `~/sandbox` (or the directory you started it in).
+
+To make the endpoint stick so you never retype it:
 
 ```bash
 onit setup   # endpoint URL, API key, model name
@@ -81,10 +115,6 @@ server. Rerun it any time, and `onit setup --show` prints what is currently set.
 
 On a hosted endpoint, and with local Ollama or MLX, **name the model explicitly** —
 auto-detection picks the first entry the server lists, which is rarely the one you meant.
-
-`onit` then launches the text UI. MCP tools start automatically, the agent works out of
-`~/sandbox`, and `\bye` (or Ctrl+D) leaves. Running `onit` again picks the conversation
-back up where you left it.
 
 ### Commands inside the session
 
@@ -115,16 +145,17 @@ Two things worth knowing:
 
 Any other line goes to the model, so a message may still start with a backslash.
 
-### Optional keys
+## Keys worth adding
 
-None of these are needed to start. Add them with `onit setup`, or as environment
-variables if you would rather skip the keychain.
+None of these are needed to start — the Quick Start above already gives you a working
+agent. Add them with `onit setup`, or as environment variables if you would rather skip
+the keychain.
 
 | Key | What it enables | Getting one |
 |-----|-----------------|-------------|
+| **GitHub token** (`GITHUB_TOKEN`) | **Automated git workflows.** `git clone`, `pull`, and `push` from the agent's shell, plus the `github_repo` tool — see [below](#github-and-hugging-face). | GitHub → Settings → Developer settings → Personal access tokens (`repo` scope). |
 | **Ollama API key** (`OLLAMA_API_KEY`) | **Web search.** The `search` tool uses the [Ollama web search API](https://ollama.com/blog/web-search); without a key it falls back to DuckDuckGo. | Free tier — sign in at [ollama.com](https://ollama.com) and create a key. Nothing needs to run locally. |
-| **OpenWeatherMap** (`OPENWEATHERMAP_API_KEY`) | The `get_weather` tool. | Free — [openweathermap.org/api](https://openweathermap.org/api). |
-| **GitHub token** (`GITHUB_TOKEN`) | `git push` from the agent's shell, plus the `github_repo` tool — see [below](#github-and-hugging-face). | GitHub → Settings → Developer settings → Personal access tokens (`repo` scope). |
+| **OpenWeatherMap** (`OPENWEATHERMAP_API_KEY`) | The `get_weather` tool. Optional — free, and the agent works fine without it. | [openweathermap.org/api](https://openweathermap.org/api). |
 | **Hugging Face token** (`HF_TOKEN`) | Model and dataset downloads in `--container` runs — see [below](#github-and-hugging-face). | [huggingface.co](https://huggingface.co) → Settings → Access Tokens. |
 
 Model-server keys are not in this table — `onit setup` asks for each endpoint's key
@@ -164,8 +195,10 @@ it pull models and datasets.
 
 ### GitHub
 
-Store a personal access token with `repo` scope — `onit setup` (*GitHub personal access
-token*), or `export GITHUB_TOKEN=...`. Two things switch on:
+The GitHub token is the one key that turns OnIt from a chatbot into a coding agent —
+with it, the agent can clone, branch, commit, and push without you touching the
+terminal. Store a personal access token with `repo` scope — `onit setup` (*GitHub
+personal access token*), or `export GITHUB_TOKEN=...`. Two things switch on:
 
 - **`git` in the agent's shell.** OnIt writes a `GIT_ASKPASS` helper into the bash tool's
   environment and mirrors the token to `GH_TOKEN`, so `git clone`, `pull`, and `push`
@@ -178,6 +211,18 @@ project you're working on:
 
 ```bash
 onit --data-path ~/projects/my-model
+```
+
+A typical delegation, once the key is stored:
+
+```text
+> clone github.com/sibyl-oracles/onit, fix the typo in README line 12,
+  commit as "docs: fix typo", and push
+
+◆ bash     git clone https://github.com/sibyl-oracles/onit.git
+◆ bash     edit + git commit -m "docs: fix typo"
+◆ bash     git push origin main
+Pushed to main.
 ```
 
 ### Hugging Face
@@ -201,13 +246,85 @@ One container-only gotcha: the command allowlist is enforced there and carries `
 `git-lfs` but not `gh` or `hf`. Add what you need with
 `ONIT_ALLOWED_COMMANDS=gh,hf,huggingface-cli` ([docs/ISOLATION.md](docs/ISOLATION.md)).
 
+## From text UI to web UI
+
+The text UI and the web UI are the same agent with the same config — the endpoint and
+keys you set up above are exactly what the browser version uses. Going from a working
+`onit` session to a working `http://localhost:9000` takes about five more minutes.
+
+### The short path (local machine)
+
+```bash
+onit serve web        # http://localhost:9000
+```
+
+By default this **requires Google login** — every browser session starts with a
+"Sign in with Google" screen, and each session is private to the account that created
+it. Without OAuth credentials the server refuses to start. Two ways through:
+
+- **Trusted network (fastest, no Google Console visit):** `onit serve web --no-login`.
+  Anyone who can reach the port can use the agent — fine for `localhost`, not for a
+  shared server.
+- **Google login (needed for anything reachable by others):** three steps, below.
+
+### Google login, step by step (~5 minutes)
+
+1. **Create the OAuth client.** At
+   [console.cloud.google.com](https://console.cloud.google.com/) create a project (any
+   Google account, no billing), open **APIs & Services → Credentials → Create
+   credentials → OAuth client ID**, choose **Web application**, and configure the
+   consent screen when prompted (app name + support email; **External** audience; add
+   yourself under **Test users** while the app is in *Testing*).
+
+2. **Add the redirect URI.** Under **Authorized redirect URIs** add exactly:
+
+   ```
+   http://localhost:9000/auth/callback
+   ```
+
+   Google rejects any callback not on this list, character for character — a mismatch
+   here is the `Error 400: redirect_uri_mismatch` sign-in failure. Each extra host or
+   port you browse from needs its own entry.
+
+3. **Store the credentials and launch.** Copy the client ID and secret, then:
+
+   ```bash
+   onit setup    # paste them at the Google OAuth2 client ID / secret prompts
+   onit serve web
+   ```
+
+   The startup banner shows `OAuth2 authentication enabled`. Open the URL, sign in,
+   and you land in the same chat UI — streaming markdown, tool status, session
+   sidebar, file attachments.
+
+Optionally restrict who may log in beyond the built-in Gmail/Workspace gate:
+
+```yaml
+web_allowed_emails:
+  - alice@gmail.com
+  - "*@sibyl.ai"
+```
+
+### Putting it on a server
+
+Three differences from the local run, all covered in the linked docs:
+
+- **HTTPS is required** for non-localhost Google sign-in — put OnIt behind a TLS
+  reverse proxy ([docs/HTTPS_DEPLOYMENT.md](docs/HTTPS_DEPLOYMENT.md)), and register
+  the `https://YOUR_HOST/auth/callback` redirect URI.
+- **The full deployment path** — Docker Compose, environment files, reverse proxy —
+  is walked through in [docs/DEPLOYMENT_WEB.md](docs/DEPLOYMENT_WEB.md).
+- **Session isolation and command approvals** matter once other people can reach the
+  agent — see [docs/ISOLATION.md](docs/ISOLATION.md) and
+  [docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
+
 ## Other front ends
 
 The same agent, the same sessions, the same tools — reached a different way:
 
 | | |
 |---|---|
-| `onit serve web` | Browser chat UI with Google login ([docs/CLI.md](docs/CLI.md#onit-serve-web)) |
+| `onit serve web` | Browser chat UI with Google login — see [above](#from-text-ui-to-web-ui) |
 | `onit serve a2a` | [A2A protocol](https://a2a-protocol.org/) server; send tasks with `onit ask "…"` |
 | `onit serve gateway` | Telegram or Viber bot ([docs/GATEWAY_QUICK_START.md](docs/GATEWAY_QUICK_START.md)) |
 | `onit serve loop "task" --period 60` | Repeat a task on a timer |
