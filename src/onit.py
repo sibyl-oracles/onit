@@ -1188,6 +1188,57 @@ class OnIt(BaseModel):
         # return only the most recent turns
         return history[-max_turns:]
 
+    def _chat_kwargs(self, *, metrics: dict, run_state: 'RunState',
+                     chat_ui, verbose: bool, data_path: str,
+                     session_id: str, session_history: list,
+                     background_verify=None, stream: bool | None = None,
+                     with_prompt_intro: bool = True) -> dict:
+        """Build the kwargs dict handed to chat().
+
+        One builder for every chat() caller — process_task, run_loop,
+        agent_session — so the serving defaults, the SERVING_PASSTHROUGH
+        forwarding and the optional keys cannot drift apart again.  Each
+        caller supplies only what is genuinely its own: the accounting
+        sinks, the UI, and where history comes from.
+
+        Args:
+            metrics: Caller-owned dict TurnMetrics fills in turn by turn.
+            run_state: The run's RunState, read back after chat() returns.
+            chat_ui: The UI chat() reports through (None for loop mode).
+            verbose: Whether chat() narrates its steps.
+            data_path: Working directory for tool file access.
+            session_id: Session identifier for state and sandbox routing.
+            session_history: Recent turns, from load_session_history().
+            background_verify: Optional sink chat() hands deep checks to;
+                omitted from the kwargs entirely when None.
+            stream: Streaming request.  None inherits the config's
+                ``stream`` setting; a value overrides it.
+            with_prompt_intro: False drops the configured prompt intro
+                from the kwargs, leaving chat()'s default in place.
+
+        Returns:
+            The kwargs dict for chat().
+        """
+        kwargs = {
+            'metrics': metrics,
+            'run_state': run_state,
+            'chat_ui': chat_ui,
+            'verbose': verbose,
+            'data_path': data_path,
+            'session_id': session_id,
+            'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
+            'max_context_tokens': self.model_serving.get('max_context_tokens', None),
+            'stream': self.stream if stream is None else stream,
+        }
+        for _k in SERVING_PASSTHROUGH:
+            if _k in self.model_serving:
+                kwargs[_k] = self.model_serving[_k]
+        if with_prompt_intro and self.prompt_intro:
+            kwargs['prompt_intro'] = self.prompt_intro
+        if background_verify is not None:
+            kwargs['background_verify'] = background_verify
+        return kwargs
+
     async def run(self) -> None:
         """Run the OnIt agent session"""
         try:
@@ -1309,29 +1360,19 @@ class OnIt(BaseModel):
         # a session's accumulated history would spend that budget before the
         # task made its first call.
         _run_state = RunState()
-        kwargs = {
-            'metrics': _metrics,
-            'run_state': _run_state,
-            'chat_ui': _adapter,
-            'verbose': self.verbose or self.show_logs,
-            'data_path': effective_data_path,
-            'session_id': effective_session_id,
-            'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
-            'max_context_tokens': self.model_serving.get('max_context_tokens', None),
-            'session_history': self.load_session_history(session_path=effective_session_path),
-            'stream': self.stream,
-        }
-        for _k in SERVING_PASSTHROUGH:
-            if _k in self.model_serving:
-                kwargs[_k] = self.model_serving[_k]
-        if self.prompt_intro:
-            kwargs['prompt_intro'] = self.prompt_intro
         # Collected rather than started: the deep check amends the answer this
         # method has not saved yet, so it is handed to the loop below only once
         # there is a saved answer for it to amend.
         _deep_checks: list = []
-        if correction_callback:
-            kwargs['background_verify'] = _deep_checks.append
+        kwargs = self._chat_kwargs(
+            metrics=_metrics,
+            run_state=_run_state,
+            chat_ui=_adapter,
+            verbose=self.verbose or self.show_logs,
+            data_path=effective_data_path,
+            session_id=effective_session_id,
+            session_history=self.load_session_history(session_path=effective_session_path),
+            background_verify=_deep_checks.append if correction_callback else None)
         MAX_PROCESS_RETRIES = 3
         last_response = None
         for _pt_attempt in range(1, MAX_PROCESS_RETRIES + 1):
@@ -1628,18 +1669,19 @@ class OnIt(BaseModel):
                 # call chat directly (no queues needed)
                 _metrics: dict = {}
                 _run_state = RunState()
-                kwargs = {'run_state': _run_state,
-                          'chat_ui': None,
-                          'metrics': _metrics,
-                          'verbose': self.verbose,
-                          'data_path': self.data_path,
-                          'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
-                          'max_context_tokens': self.model_serving.get('max_context_tokens', None),
-                          'session_history': self.load_session_history()}
-                for _k in SERVING_PASSTHROUGH:
-                    if _k in self.model_serving:
-                        kwargs[_k] = self.model_serving[_k]
+                # Loop mode has no streaming consumer and takes no
+                # prompt_intro override: both are forced off here rather
+                # than inherited from the config.
+                kwargs = self._chat_kwargs(
+                    metrics=_metrics,
+                    run_state=_run_state,
+                    chat_ui=None,
+                    verbose=self.verbose,
+                    data_path=self.data_path,
+                    session_id=self.session_id,
+                    session_history=self.load_session_history(),
+                    stream=False,
+                    with_prompt_intro=False)
                 endpoint = self.load_balancer.acquire(key=self.session_id)
                 last_response = None
                 try:
@@ -2051,28 +2093,21 @@ class OnIt(BaseModel):
                     break
                 self.last_metrics.clear()
                 self.last_run_state = RunState()
-                kwargs = {'run_state': self.last_run_state,
-                          'chat_ui': self.chat_ui,
-                          'metrics': self.last_metrics,
-                          'verbose': self.verbose,
-                          'data_path': self.data_path,
-                          'session_id': self.session_id,
-                          'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
-                          'max_context_tokens': self.model_serving.get('max_context_tokens', None),
-                          'session_history': self.load_session_history(),
-                          'stream': self.stream}
-                for _k in SERVING_PASSTHROUGH:
-                    if _k in self.model_serving:
-                        kwargs[_k] = self.model_serving[_k]
-                if self.prompt_intro:
-                    kwargs['prompt_intro'] = self.prompt_intro
                 # The terminal is handed its correction by chat() itself — the
                 # UI object there is the real one — so all that is collected
                 # here is the check, to be started once the answer is saved.
                 for _stale in self.pending_deep_checks:
                     _stale.close()
                 self.pending_deep_checks.clear()
-                kwargs['background_verify'] = self.pending_deep_checks.append
+                kwargs = self._chat_kwargs(
+                    metrics=self.last_metrics,
+                    run_state=self.last_run_state,
+                    chat_ui=self.chat_ui,
+                    verbose=self.verbose,
+                    data_path=self.data_path,
+                    session_id=self.session_id,
+                    session_history=self.load_session_history(),
+                    background_verify=self.pending_deep_checks.append)
 
                 last_response = None
                 for attempt in range(1, MAX_AGENT_RETRIES + 1):

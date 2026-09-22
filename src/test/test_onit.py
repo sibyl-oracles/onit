@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.onit import (OnIt, STOP_TAG, StreamingAdapter, friendly_tool_status)
+from src.model.serving.state import RunState
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -644,6 +645,68 @@ class TestLoadSessionHistory:
         history = onit.load_session_history()
         assert history == []
 
+
+# ── OnIt._chat_kwargs ─────────────────────────────────────────────────────────
+
+class TestChatKwargs:
+    """The one builder every chat() caller goes through."""
+
+    def _base(self, onit):
+        return dict(metrics={}, run_state=RunState(), chat_ui=None,
+                    verbose=False, data_path=".", session_id="s",
+                    session_history=[])
+
+    def test_defaults(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        metrics, run_state = {}, RunState()
+        kwargs = onit._chat_kwargs(
+            metrics=metrics, run_state=run_state, chat_ui=None,
+            verbose=False, data_path=str(tmp_path), session_id="s1",
+            session_history=[])
+        assert kwargs['metrics'] is metrics
+        assert kwargs['run_state'] is run_state
+        assert kwargs['chat_ui'] is None
+        assert kwargs['verbose'] is False
+        # The config's own serving.max_tokens wins over chat()'s default.
+        assert kwargs['max_tokens'] == 1024
+        assert kwargs['max_context_tokens'] is None
+        assert kwargs['stream'] == onit.stream
+        # Optional keys stay out entirely when there is nothing to put in
+        # them — chat() keys off presence, not value.
+        assert 'prompt_intro' not in kwargs
+        assert 'background_verify' not in kwargs
+
+    def test_prompt_intro_included_and_suppressible(self, tmp_path):
+        cfg = _make_config(tmp_path, {"prompt_intro": "I am a custom bot."})
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        base = self._base(onit)
+        assert onit._chat_kwargs(**base)['prompt_intro'] == "I am a custom bot."
+        assert 'prompt_intro' not in onit._chat_kwargs(**base,
+                                                       with_prompt_intro=False)
+
+    def test_serving_passthrough_forwarded(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["serving"].update({"temperature": 0.2, "max_chat_iterations": 7})
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        kwargs = onit._chat_kwargs(**self._base(onit))
+        assert kwargs['temperature'] == 0.2
+        assert kwargs['max_chat_iterations'] == 7
+        # An unset passthrough key is not invented.
+        assert 'top_p' not in kwargs
+
+    def test_background_verify_and_stream_override(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        sink = lambda *a, **k: None  # noqa: E731
+        kwargs = onit._chat_kwargs(
+            **self._base(onit), background_verify=sink, stream=False)
+        assert kwargs['background_verify'] is sink
+        assert kwargs['stream'] is False
 
 # ── OnIt.process_task ───────────────────────────────────────────────────────
 
