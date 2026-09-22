@@ -3060,7 +3060,7 @@ class TestBuildMessages:
     def test_standing_rules_go_to_the_system_message(self):
         messages = _build_messages(
             "## Task\nwhat scholarships exist", [], "I am OnIt.",
-            session_history=None, memories=None,
+            session_history=None,
             system_rules="## Instructions\nCite your sources.",
         )
         assert messages[0]["role"] == "system"
@@ -3075,18 +3075,18 @@ class TestBuildMessages:
         of request N, so a prefix cache can skip prefilling them."""
         rules = "## Instructions\nCite your sources."
         turn_one = _build_messages("## Task\nfirst", [], "I am OnIt.",
-                                   session_history=[], memories=None,
+                                   session_history=[],
                                    system_rules=rules)
         turn_two = _build_messages("## Task\nsecond", [], "I am OnIt.",
                                    session_history=[{"task": "first",
                                                      "response": "an answer"}],
-                                   memories=None, system_rules=rules)
+                                   system_rules=rules)
         assert turn_one[0] == turn_two[0]
 
     def test_no_rules_leaves_the_system_message_alone(self):
         """A custom template yields no static half; nothing should change."""
         messages = _build_messages("do the thing", [], "I am OnIt.",
-                                   session_history=None, memories=None)
+                                   session_history=None)
         assert messages[0]["content"] == "I am OnIt."
 
 

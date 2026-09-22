@@ -43,7 +43,7 @@ class TestLoadConfig:
             by_name = {s["name"]: s for s in result["servers"]}
             assert set(by_name) == {
                 "PromptsMCPServer", "ToolsLocalMCPServer",
-                "ToolsNetMCPServer", "VLMToolsMCPServer",
+                "ToolsNetMCPServer",
             }
 
             # The tools that touch a session's data_path are served over a
@@ -54,7 +54,7 @@ class TestLoadConfig:
             assert "port" not in local
 
             # The rest keep a socket, on loopback only.
-            for name in ("PromptsMCPServer", "ToolsNetMCPServer", "VLMToolsMCPServer"):
+            for name in ("PromptsMCPServer", "ToolsNetMCPServer"):
                 assert by_name[name]["transport"] == "sse"
                 assert by_name[name]["host"] == "127.0.0.1"
 

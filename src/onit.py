@@ -656,7 +656,6 @@ class OnIt(BaseModel):
     messages: dict[str, str] = Field(default_factory=dict)
     stop_commands: list[str] = Field(default_factory=lambda: ['\\goodbye', '\\bye', '\\quit', '\\exit'])
     model_serving: dict[str, Any] = Field(default_factory=dict)
-    user_id: str = Field(default="default_user")
     input_queue: asyncio.Queue | None = Field(default=None, exclude=True)
     output_queue: asyncio.Queue | None = Field(default=None, exclude=True)
     safety_queue: asyncio.Queue | None = Field(default=None, exclude=True)
@@ -912,7 +911,6 @@ class OnIt(BaseModel):
         # Mirror the preferred endpoint onto serving.host so config readers
         # that expect a single host keep working under an endpoints list.
         self.model_serving.setdefault('host', self.load_balancer.preferred.host)
-        self.user_id = self.config_data.get('user_id', 'default_user')
         self.status = "initialized"
         self.verbose = self.config_data.get('verbose', False)
         # Suppress noisy logs unless verbose
@@ -1314,9 +1312,7 @@ class OnIt(BaseModel):
         kwargs = {
             'metrics': _metrics,
             'run_state': _run_state,
-            'console': None,
             'chat_ui': _adapter,
-            'cursor': AGENT_CURSOR, 'memories': None,
             'verbose': self.verbose or self.show_logs,
             'data_path': effective_data_path,
             'session_id': effective_session_id,
@@ -1632,11 +1628,8 @@ class OnIt(BaseModel):
                 # call chat directly (no queues needed)
                 _metrics: dict = {}
                 _run_state = RunState()
-                kwargs = {'console': None,
-                          'run_state': _run_state,
+                kwargs = {'run_state': _run_state,
                           'chat_ui': None,
-                          'cursor': AGENT_CURSOR,
-                          'memories': None,
                           'metrics': _metrics,
                           'verbose': self.verbose,
                           'data_path': self.data_path,
@@ -2058,11 +2051,8 @@ class OnIt(BaseModel):
                     break
                 self.last_metrics.clear()
                 self.last_run_state = RunState()
-                kwargs = {'console': self.chat_ui.console,
-                          'run_state': self.last_run_state,
+                kwargs = {'run_state': self.last_run_state,
                           'chat_ui': self.chat_ui,
-                          'cursor': AGENT_CURSOR,
-                          'memories': None,
                           'metrics': self.last_metrics,
                           'verbose': self.verbose,
                           'data_path': self.data_path,

@@ -572,7 +572,3 @@ def strip_launcher_args(argv: list[str]) -> list[str]:
         i += 1
     return out
 
-
-# Backward-compatible alias.
-def strip_container_flag(argv: list[str]) -> list[str]:
-    return strip_launcher_args(argv)

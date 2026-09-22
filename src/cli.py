@@ -419,7 +419,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Show tool execution logs.")
 
     # ── Isolation ────────────────────────────────────────────────────────────
-    parser.add_argument("--data-path", "--data_path", type=str, default=None, dest="data_path",
+    parser.add_argument("--data-path", type=str, default=None, dest="data_path",
                         help="Working directory for agent files (default: ~/sandbox). "
                              "Overrides data_path in the config YAML.")
     parser.add_argument("--unrestricted", action="store_true", default=False,

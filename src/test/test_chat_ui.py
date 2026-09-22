@@ -107,12 +107,6 @@ class TestChatUI:
         chat_ui.clear_logs(keep_last=2)
         assert len(chat_ui.execution_logs) == 2
 
-    def test_set_show_logs(self, chat_ui):
-        chat_ui.set_show_logs(True)
-        assert chat_ui.show_logs is True
-        chat_ui.set_show_logs(False)
-        assert chat_ui.show_logs is False
-
     def test_render_messages_empty(self, chat_ui):
         result = chat_ui.render_messages()
         assert isinstance(result, Group)
@@ -138,7 +132,7 @@ class TestChatUI:
         assert isinstance(result, Group)
 
     def test_render_with_show_logs(self, chat_ui):
-        chat_ui.set_show_logs(True)
+        chat_ui.show_logs = True
         chat_ui.add_log("visible log")
         result = chat_ui.render()
         assert isinstance(result, Group)

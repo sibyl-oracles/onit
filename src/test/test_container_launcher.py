@@ -11,19 +11,8 @@ from container_launcher import (  # noqa: E402
     DATA_VOLUME,
     IMAGE_TAG,
     build_run_command,
-    strip_container_flag,
     strip_launcher_args,
 )
-
-
-def test_strip_container_flag_removes_flag():
-    argv = ["--web", "--container", "--web-port", "9000"]
-    assert strip_container_flag(argv) == ["--web", "--web-port", "9000"]
-
-
-def test_strip_container_flag_no_op_when_absent():
-    argv = ["--web", "--web-port", "9000"]
-    assert strip_container_flag(argv) == argv
 
 
 def test_strip_launcher_args_removes_gpus_and_mounts():

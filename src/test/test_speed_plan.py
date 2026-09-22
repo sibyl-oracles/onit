@@ -261,17 +261,17 @@ class TestRequestPrefixByteStable:
     """Tier 5.2: the cacheable prefix must not move between turns."""
 
     def test_system_message_identical_across_two_builds(self):
-        m1 = _build_messages("task one", [], "intro", [], None,
+        m1 = _build_messages("task one", [], "intro", [],
                              system_rules="standing rules")
-        m2 = _build_messages("task two", [], "intro", [], None,
+        m2 = _build_messages("task two", [], "intro", [],
                              system_rules="standing rules")
         # The system message is the prefix; the task lives after it.
         assert m1[0]["content"] == m2[0]["content"]
         assert json.dumps(m1[0], sort_keys=True) == json.dumps(m2[0], sort_keys=True)
 
     def test_system_message_leads_and_is_stable_with_images(self):
-        m1 = _build_messages("t", [], "intro", [], None, system_rules="rules")
-        m2 = _build_messages("t", ["b64"], "intro", [], None, system_rules="rules")
+        m1 = _build_messages("t", [], "intro", [], system_rules="rules")
+        m2 = _build_messages("t", ["b64"], "intro", [], system_rules="rules")
         assert m1[0]["role"] == "system" and m2[0]["role"] == "system"
         # Both start with the same intro bytes; the vision variant appends
         # its fixed block, so the common prefix is still stable.

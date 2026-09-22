@@ -38,11 +38,3 @@ servers:
     options:
       profile: net
 
-  - name: VLMToolsMCPServer
-    module: src.mcp.vlm_web.tools
-    description: "MCP server for vision-language model tools"
-    enabled: true
-    host : 127.0.0.1
-    port : 18222
-    path: /sse
-    transport : 'sse'

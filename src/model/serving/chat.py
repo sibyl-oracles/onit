@@ -1289,7 +1289,7 @@ def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str |
         return tool_response, None, None
 
     file_data_b64 = data.pop("file_data_base64")
-    # Tools are inconsistent about the key: vlm_web uses 'file_name',
+    # Tools are inconsistent about the key: some use 'file_name',
     # bash send_file uses 'filename'.
     file_name = data.get("file_name") or data.get("filename")
     mime_type = data.get("mime_type") \
@@ -2180,7 +2180,7 @@ def _trim_history(session_history: list,
 
 def _build_messages(instruction: str, images_bytes: list[str],
                     prompt_intro: str, session_history: list | None,
-                    memories: Any, system_rules: str = "") -> list[dict]:
+                    system_rules: str = "") -> list[dict]:
     """Assemble the initial message list for the API call.
 
     Includes the system message, session history, the current user instruction,
@@ -2195,12 +2195,6 @@ def _build_messages(instruction: str, images_bytes: list[str],
     used to live — it shifted by a turn's worth of history each time and was
     re-prefilled on every request of every session.
 
-    ``memories`` is accepted and currently unused: episodic recall (Loop A in
-    docs/SELF_IMPROVEMENT_GAPS.md) has no retrieval half yet, so nothing feeds
-    this parameter.  The signature keeps the slot so the wiring lands without
-    a call-site sweep; injecting anything here before that work would put
-    volatile bytes in the static half and break the prefix-cache contract.
-
     **Prefix-cache contract (do not break):** everything this function places
     before the session history — the system message, and the tool payload the
     caller sends alongside it — must be byte-identical across the turns of a
@@ -2211,7 +2205,6 @@ def _build_messages(instruction: str, images_bytes: list[str],
     standing payload on every turn of every task.  `test_request_prefix_is_byte_stable`
     in test_chat.py holds this contract; S3's `cache_hit_pct` measures it live.
     """
-    del memories  # unused: see docstring — Loop A wires this later
     if images_bytes:
         system_content = (
             f"{prompt_intro} "
@@ -4202,7 +4195,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     min_p = kwargs.get('min_p', 0.0)
     presence_penalty = kwargs.get('presence_penalty', 0.0)
     repetition_penalty = kwargs.get('repetition_penalty', 1.0 if think else 1.05)
-    memories = kwargs.get('memories', None)
     prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
     max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
     num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
@@ -4287,7 +4279,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # requests; only the session context and the task ride in the user message.
     system_rules, task_instruction = split_instruction(instruction)
     messages = _build_messages(task_instruction, images_bytes, prompt_intro,
-                               kwargs.get('session_history', None), memories,
+                               kwargs.get('session_history', None),
                                system_rules=system_rules)
 
     # Size the first read from the standing payload.  The client below is

@@ -328,15 +328,6 @@ class ChatUI:
         else:
             self.execution_logs.clear()
 
-    def set_show_logs(self, show: bool) -> None:
-        """
-        Enable or disable the execution logs panel.
-
-        Args:
-            show: True to show logs panel, False to hide
-        """
-        self.show_logs = show
-
     def render_logs_panel(self) -> Panel:
         """
         Render the execution logs panel.
