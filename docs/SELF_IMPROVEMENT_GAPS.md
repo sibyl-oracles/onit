@@ -3,6 +3,8 @@
 **Status as of commit `a995876` (main, Aug 31 2026).**
 Companion to `docs/SELF_IMPROVEMENT.md` (the RFC). This file is the gap assessment: what the framework already has for self-improvement, what is missing, and the critical path to close the loop.
 
+**Updated Sep 22 2026** after the codebase-simplification pass: the dead `memories` kwarg was removed entirely (gap 1's hook no longer exists — Loop A wires it fresh), `baselines/full.json` is pinned (Sep 05, 2026), and line-number references were dropped because the refactors moved the code.
+
 **Updated Aug 31 2026** with the framework from [Recursive Self-Improvement](https://www.philschmid.de/recursive-self-improvement) (Philschmid, Aug 21 2026) — see *External lens* below. All code claims re-verified at `f1552ca`.
 
 **Updated again Aug 31 2026 at `a995876`:** the **event store has landed** (`f91554a`) — tool-lifecycle events (`proposed`/`loaded`/`rejected`/`archived` via `record_tool_event`, `src/learn/events.py`) now append to the same per-session JSONL as trajectories, giving Loop A memory and future tool-lifecycle decisions a single shared log. Gap numbering below predates this commit: the event store closes part of the Loop A substrate (recording half), so the remaining Loop A work is the retrieval/injection half only.
@@ -29,13 +31,13 @@ Trajectory data is already accumulating in `~/.onit/learned/` (23 trajectory fil
 
 ## What is missing — the open loop
 
-1. **The injection path is literally dead (biggest gap).** `memories` is threaded from `src/onit.py` (always `None`, lines 1517/1837/2402) → `chat()` (`chat.py:3115`) → `_build_messages()` (`chat.py:1618`) — and the function body **never references it**. Nothing learned is ever fed back to the model. The loop records but does not close.
+1. **The injection path is literally dead (biggest gap).** `memories` was threaded from `src/onit.py` → `chat()` → `_build_messages()` — and the function body **never referenced it**. Nothing learned is ever fed back to the model. The loop records but does not close. *(September 22, 2026: the dead kwarg was removed from the codebase in the simplification pass — the hook no longer exists at all, which makes wiring it Loop A's first commit rather than a cleanup.)*
 
 2. **No episodic recall (Loop A).** No `recall.py`, no index over trajectories, no retrieval of "what worked last time on a similar task." Estimated ~3 days: wire the dead `memories` hook, BM25/TF-IDF retrieval over the trajectory store, token-budgeted injection into the volatile half of context. **Caution from the external lens:** PAST-Bench found stored experience often does *not* help later episodes — memory on is not memory working. The RFC's A/B-on-holdout gate is the right defense; do not ship recall on intuition.
 
 3. **No playbook (Loop B).** No `playbook.py` (itemized procedural memory with delta updates, decay, eviction), no `reflect.py` (ACE-style Reflector/Curator offline pass), no `onit learn --reflect/--promote/--rollback` CLI.
 
-4. **No frozen holdout or pinned baseline.** `benchmarks/baselines/` contains **only a README** — no pinned baseline, no held-out suite. The external lens elevates this from "prerequisite for measurement" to **the thing that makes any gain evidence at all**: every convincing self-improvement result has a ruler the system does not own. If the agent can edit the evaluation, the score stops being evidence. This is still the single most valuable next commit.
+4. **No frozen holdout.** `benchmarks/baselines/full.json` pins a baseline (September 05, 2026), but there is **no held-out suite** the agent cannot see. The external lens elevates this from "prerequisite for measurement" to **the thing that makes any gain evidence at all**: every convincing self-improvement result has a ruler the system does not own. If the agent can edit the evaluation, the score stops being evidence. This is still the single most valuable next commit.
 
 5. **No skill synthesis (Loop C) or scaffold evolution (Loop D).** No skill mining, no serving validated skills as MCP tools, no variant generation/evaluation in worktrees, no promotion gating. These are the high-risk rungs and correctly deferred. The external lens reframes Loop D's endpoint: not "rewrite the core," but **coded extensions that integrate automatically** — see below.
 
@@ -85,6 +87,6 @@ The most valuable thing in the repo right now is the plan (`docs/SELF_IMPROVEMEN
 - `docs/archive/NOOA_onit_recommendations.md` — Aug 8 2026 NOOA capability analysis; superseded by this file, kept for its per-capability code citations. **Open item absorbed from the retired `docs/TODO.md`:** integrate [baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) for OCR support.
 - `src/learn/config.py` — autonomy ladder, `_MAX_IMPLEMENTED = OBSERVE`
 - `src/learn/trajectory.py`, `src/learn/report.py` — what is recorded and how it is summarized
-- `src/model/serving/chat.py:1618,3115,3199` — the dead `memories` hook
-- `src/onit.py:1517,1837,2402` — `memories: None` at every call site
-- `benchmarks/` + `RESULTS.md` — existing fitness function; `baselines/` empty
+- `src/model/serving/chat.py` — the `memories` hook is gone (removed with the dead kwarg; Loop A re-adds it as a live path)
+- `src/onit.py` — `_chat_kwargs()` is now the single builder for every `chat()` caller; Loop A injects memories there
+- `benchmarks/` + `RESULTS.md` — existing fitness function; `baselines/full.json` pinned 2026-09-05, holdout still missing

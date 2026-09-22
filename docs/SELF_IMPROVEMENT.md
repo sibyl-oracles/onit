@@ -105,8 +105,9 @@ independently and land on this plan's own gap list:
 
 - **H6 (explicit run state)** builds the `RunState` object that `_record_trajectory` should
   serialize. §4.1 already says the Layer 0 change is *"to persist the sink rather than
-  log-and-drop it"* — H6 generalizes exactly that, and closes gap 2's dead `memories`
-  parameter by giving it somewhere typed to live.
+  log-and-drop it"* — H6 generalizes exactly that, and closes gap 2's missing `memories`
+  path by giving it somewhere typed to live. *(The dead kwarg was removed in the
+  September 2026 simplification pass; Loop A re-adds it as a live, wired path.)*
 - **H2 (`note_write` / `note_read`)** is the harness-level primitive for durable
   model-written memory. Loop A and Loop B are the *learned* version of the same idea. They
   must share one on-disk root and one path-jail — see §4.0.
@@ -314,8 +315,9 @@ An honest audit. Findings are file-referenced so they can be verified.
 5. **No holdout discipline — and the fitness function measures the wrong thing.** This gap
    grew since August 09, because settling the harness fixed the ruler's *stability* and
    not what it is a ruler *of*:
-   - `benchmarks/baselines/` holds a README and nothing else. No `holdout.jsonl`, no
-     `baseline.json`, no `pinned.yaml`. Invariants I1 and I3 are prose, not code.
+   - `benchmarks/baselines/` holds `full.json` (pinned September 05, 2026) and
+     nothing else. No `holdout.jsonl`, no
+     `pinned.yaml`. Invariants I1 and I3 are prose, not code.
    - The tasks registered in [`run.py`](../benchmarks/run.py#L30-L41) are gsm8k, humaneval,
      mbpp and bigcodebench — **single-turn, and near-saturated** at 0.978 /
      0.915 / 0.957 in `RESULTS.md`. A playbook cannot move humaneval: there is no

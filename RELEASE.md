@@ -1,16 +1,31 @@
 # Release Notes
 
-## Unreleased (legacy extraction)
+## Unreleased (simplification)
 
 ### Breaking Changes
 
+- **CLI slimmed** — `onit ask` (and its `--file`/`--image`/`--server` flags),
+  `--host2`/`--model2`, and `--target-env` are gone. The A2A client moved to
+  [legacy/](legacy/) (`python -m legacy.a2a_client`); multi-endpoint serving is
+  configured through `serving.endpoints` in the config file; a stale
+  `serving.host2` key in an old config logs a migration warning and is ignored.
+- **Dead code removed** — the VLM web-image MCP server (`VLMToolsMCPServer`)
+  and several unused `chat()` kwargs (`console`, `cursor`, `memories`) are gone.
+  The `memories` hook had never been read by `chat()`; wiring it is Loop A of
+  the self-improvement plan, see
+  [docs/SELF_IMPROVEMENT_GAPS.md](docs/SELF_IMPROVEMENT_GAPS.md).
+- **One kwargs builder** — `OnIt._chat_kwargs()` now builds the `chat()` kwargs
+  for every caller (`process_task`, `run_loop`, `agent_session`), so the
+  serving defaults cannot drift between call paths.
+- **One failover layer** — the two whole-run retry loops collapsed into a
+  single failover budget (`MAX_FAILOVER_ATTEMPTS`); a failing endpoint is
+  retried once per layer instead of compounding to nine attempts.
 - **A2A server, Telegram and Viber gateways moved to `legacy/`** — The active
   codebase now covers the terminal chat, web UI, loop mode, MCP servers and
   the container. The A2A protocol server runs as `python -m legacy.a2a_server`
   and the chat gateways as `python -m legacy.gateway [telegram|viber]`, after
   `pip install -r legacy/requirements.txt`. See [legacy/README.md](legacy/README.md).
-  `onit serve a2a` and `onit serve gateway` are gone; **`onit ask` stays** —
-  it is a plain JSON-RPC client and still talks to the legacy A2A server.
+  `onit serve a2a` and `onit serve gateway` are gone.
 - **Dependencies slimmed** — `a2a-sdk[all]` (with its grpcio/protobuf chain)
   and `python-telegram-bot` are no longer core dependencies; installs are
   faster and the supply chain smaller. The `gateway` extra is gone;
@@ -27,9 +42,9 @@
 
 - **Native Web UI** — The web UI no longer runs on Gradio. It is now a FastAPI app with a hand-written front end (`src/ui/api.py` + `src/ui/static/`) served over SSE, with streaming tokens, inline tool-call detail during the thinking phase, code and image rendering, copy buttons, and a login screen (`--no-login` to disable). Gradio is gone from the dependency list.
 - **Voice Mode** (`onit --voice`) — Full-duplex speech-to-speech. Audio is handled end to end by NVIDIA NemotronLabs VoiceChat 11B over an OpenAI-Realtime-compatible WebSocket (`--voice-url`); OnIt supplies the tools and the work. Install with `onit[voice]`. See [docs/VOICE.md](docs/VOICE.md).
-- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, `onit ask`, and `onit serve {web,loop}`. Plain `onit` still opens terminal chat. *(A2A and gateway subcommands later moved to legacy/.)*
+- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, and `onit serve {web,loop}`. Plain `onit` still opens terminal chat. *(A2A and gateway subcommands later moved to legacy/.)*
 - **Persistent Sessions** — Terminal chat resumes the last session by default. `onit sessions` lists, tags, rebuilds, and clears them; `--resume TAG_OR_ID` (or `last`) reopens one; `--restart-session` starts fresh.
-- **Two-Host Load Balancing** — Serve from two endpoints at once with `--host2`/`--model2` and pick a policy with `--load-balancer {sticky,round_robin,random,least_busy}`. Endpoints are health-ranked, and Ollama endpoints stay in reserve unless `--no-ollama-fallback-only` puts them in normal rotation.
+- **Two-Host Load Balancing** — Serve from two endpoints at once with `--host2`/`--model2` and pick a policy with `--load-balancer {sticky,round_robin,random,least_busy}`. Endpoints are health-ranked, and Ollama endpoints stay in reserve unless `--no-ollama-fallback-only` puts them in normal rotation. *(Superseded: multi-endpoint serving is now configured through `serving.endpoints`; the flags are gone.)*
 - **Agent Harness Capabilities** — All six harness phases from the NOOA framework landed: run-state budgeting, a result store that keeps large tool results readable instead of truncating them (`result_read` / `result_grep`), harness tools, early stopping, and answer verification. See [docs/HARNESS_CAPABILITIES.md](docs/HARNESS_CAPABILITIES.md).
 - **Answer Verification** — Answers stream to the user and are then checked against the evidence the run gathered, in a fast stage the user waits for and a thorough stage that runs behind the delivered answer. Set `verify_answers: false` to hand back the answer unchecked.
 - **Code as Action** (`code_execution`, off by default) — A per-session Python interpreter that keeps variables between calls and exposes every registered tool as a function, collapsing multi-turn tool chains into one block. Off by default: the code runs with OnIt's privileges and no path jail, so enable it only where the deployment is already isolated (`onit --container`).
@@ -38,13 +53,13 @@
 - **Per-User MCP Isolation** — MCP tool servers are started per user, and MCP ports are chosen after the default servers exist, so concurrent users on one host no longer share tool-server state or collide on ports. See [docs/ISOLATION.md](docs/ISOLATION.md).
 - **Bash Command Policy** — Command classification (`src/mcp/servers/tasks/os/bash/command_policy.py`) routes long-running commands to `serve` rather than the bash tool and enforces the blocklist in one place.
 - **Container Mode** (`--container`) — Run the whole OnIt process inside a hardened Docker container, with GPU pass-through (`--container-gpus`), extra bind mounts (`--container-mount`), a memory cap (`--container-memory`), custom `/dev/shm` and `/tmp` sizes, and opt-in package installs (`--container-allow-installs`).
-- **Target Environment** (`--target-env`) — Point the agent's bash tool at a specific conda or virtual environment's Python, pip, and binaries without leaving the host shell.
+- **Target Environment** (`--target-env`) — Point the agent's bash tool at a specific conda or virtual environment's Python, pip, and binaries without leaving the host shell. *(Removed in the simplification pass.)*
 - **Unrestricted Mode** (`--unrestricted`) — Opt-in flag granting full host filesystem access, lifting the default sandbox path restrictions for power users and CI pipelines.
-- **Streaming Output** — Chat responses stream token-by-token in the terminal UI, web UI, and A2A client, with a live tok/s indicator. `--no-stream` turns it off.
+- **Streaming Output** — Chat responses stream token-by-token in the terminal UI and web UI, with a live tok/s indicator. `--no-stream` turns it off. *(The A2A client moved to legacy/ with the extraction.)*
 - **Auto Model Detection** — The model is auto-detected from the LLM endpoint, so vLLM hosts no longer need it set explicitly. `--model` still overrides.
 - **Context Compaction** — Automatic context-window compaction summarises older messages as the limit approaches, with a streaming inline notice when it happens.
 - **MLX and Ollama Cloud** — Added local MLX serving on Apple silicon and hosted Ollama cloud endpoints alongside vLLM, local Ollama, and OpenRouter. See [docs/MODEL_SERVING.md](docs/MODEL_SERVING.md).
-- **VLM Web Image Fetch** — New MCP server (`VLMToolsMCPServer`) for fetching and processing images from web URLs in vision-language workflows.
+- **VLM Web Image Fetch** — New MCP server (`VLMToolsMCPServer`) for fetching and processing images from web URLs in vision-language workflows. *(Removed in the simplification pass — it depended on an undeclared Pillow import.)*
 - **Windows Support** — Platform-specific fixes for signal handling and the terminal UI.
 
 ### Improvements
@@ -55,7 +70,7 @@
 - **DeepSeek v4 Compatibility** — Continuation token budget raised (64 → 512) so models that prepend thinking tokens before tool-call JSON are not truncated mid-call.
 - **Repetition Penalty** — Applied automatically for Ollama models (higher default with thinking mode off) to reduce output looping.
 - **Show Logs Everywhere** — `--show-logs` applies to web UI and A2A server modes, not just terminal and gateway.
-- **4 Default MCP Servers** — The unified Tools server is split into local and net profiles (`ToolsLocalMCPServer`, `ToolsNetMCPServer`), joining `PromptsMCPServer` and the new `VLMToolsMCPServer`.
+- **4 Default MCP Servers** — The unified Tools server is split into local and net profiles (`ToolsLocalMCPServer`, `ToolsNetMCPServer`), joining `PromptsMCPServer` and the new `VLMToolsMCPServer`. *(The VLM server was later removed; three remain.)*
 - **a2a-sdk 1.0** — Upgraded to `a2a-sdk>=1.0.0` for improved A2A protocol compatibility.
 - **Prompt Engineering** — Reworked prompt templates: more concise instructions, date awareness, and better plan generation.
 

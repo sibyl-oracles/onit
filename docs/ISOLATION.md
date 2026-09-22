@@ -166,7 +166,7 @@ and answering again.
 ### Automatic approval (`--auto` / `--no-auto`)
 
 Answering yes to every prompt is **the default for a run that is yours**: the
-terminal chat, a `--loop`, a one-shot `onit ask`. You are already at the shell
+terminal chat and a `--loop`. You are already at the shell
 OnIt runs its commands from, so stopping to ask you protects nothing — it only
 puts a prompt between you and the work. Each approval is still logged.
 
