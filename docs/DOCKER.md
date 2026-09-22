@@ -384,7 +384,7 @@ OPENROUTER_API_KEY=sk-or-v1-your-key-here
 
 # Additional LLM endpoints go in serving.endpoints (see MODEL_SERVING.md).
 # The model name is auto-detected from each endpoint; the load-balancing
-# algorithm is set with the --load-balancer flag in the service command,
+# algorithm is set with serving.load_balancer in the config file,
 # not an env var.
 
 # Embedding endpoint for local_search dense/hybrid retrieval (optional)

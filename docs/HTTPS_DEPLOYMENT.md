@@ -94,7 +94,7 @@ ONIT_HOST=http://host.docker.internal:8000/v1
 # OPENROUTER_API_KEY=...        # if ONIT_HOST is OpenRouter
 
 # Additional endpoints go in serving.endpoints (see MODEL_SERVING.md);
-# the algorithm is set with --load-balancer in the service command
+# the algorithm is set with serving.load_balancer in the config file
 # (sticky / round_robin / random / least_busy; default sticky).
 
 # ── Web UI login (required unless started with --no-login) ───────────

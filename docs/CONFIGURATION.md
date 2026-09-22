@@ -75,7 +75,7 @@ serving:
   # load_balancer: sticky          # or: round_robin, random, least_busy
   # Ollama endpoints (cloud or local) are fallback-only: while any
   # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
-  # (or pass --no-ollama-fallback-only) to load-balance across them equally:
+  # to load-balance across them equally:
   # ollama_fallback_only: true
 
 verbose: false
@@ -86,6 +86,9 @@ timeout: 600
 # your question, the steps, then the final answer. Default: false (folding on).
 # Set true to see every intermediate turn in full, as before.
 # show_intermediate: false
+
+# Stream tokens to the UI as they are generated (default: true).
+# stream: true
 
 web_port: 9000
 

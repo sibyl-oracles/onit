@@ -22,7 +22,6 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--max-context-tokens N` | Context window size in tokens (`128k`, `1M`). Set it when the server does not report its own, or to hold the agent to a smaller window. On Ollama it also sizes `num_ctx` unless `serving.num_ctx` is set. Overrides `serving.max_context_tokens` | detected from endpoint, else `262144` |
 | `--verbose` | Enable verbose logging | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
-| `--no-stream` | Disable token streaming | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
 | `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |

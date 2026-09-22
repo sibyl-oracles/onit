@@ -103,8 +103,8 @@ serving:
 > endpoint is healthy (see `serving.ollama_fallback_only` in
 > [CONFIGURATION.md](CONFIGURATION.md)). That is usually what
 > you want — the local box is the backstop. To load-balance across it equally,
-> pass `--no-ollama-fallback-only`, or give it an explicit `priority` in an
-> `endpoints` list.
+> set `serving.ollama_fallback_only: false`, or give it an explicit `priority`
+> in an `endpoints` list.
 
 ## Local MLX (Apple silicon)
 

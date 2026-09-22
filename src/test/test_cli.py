@@ -340,18 +340,6 @@ class TestHostOverrides:
         assert serving["host"] == "http://vllm1:8001/v1"
         assert serving["host2"] == "http://vllm2:8000/v1"
 
-    def test_no_ollama_fallback_only_flag(self, tmp_path, monkeypatch):
-        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                 ["--no-ollama-fallback-only"])
-        assert resolved["serving"]["ollama_fallback_only"] is False
-
-    def test_ollama_fallback_only_flag_overrides_config(self, tmp_path, monkeypatch):
-        cfg = {"serving": {"host": "http://vllm1:8001/v1",
-                           "ollama_fallback_only": False}}
-        resolved = self._resolve(tmp_path, monkeypatch, cfg,
-                                 ["--ollama-fallback-only"])
-        assert resolved["serving"]["ollama_fallback_only"] is True
-
     def test_flag_absent_leaves_config_value(self, tmp_path, monkeypatch):
         cfg = {"serving": {"host": "http://vllm1:8001/v1",
                            "ollama_fallback_only": False}}

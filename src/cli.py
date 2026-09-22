@@ -267,22 +267,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=str, default=None,
                         help="Model name to use (e.g. Qwen/Qwen3-30B-A3B-Instruct-2507). "
                              "Skips auto-detection from endpoint.")
-    parser.add_argument("--load-balancer", type=str, default=None,
-                        dest="load_balancer",
-                        choices=["sticky", "round_robin", "random", "least_busy"],
-                        help="Load balancing algorithm across the two hosts "
-                             "(default: sticky — new sessions are assigned "
-                             "round-robin, then each session stays on its "
-                             "host unless a timeout/error fails it over).")
-    parser.add_argument("--ollama-fallback-only", default=None,
-                        dest="ollama_fallback_only",
-                        action=argparse.BooleanOptionalAction,
-                        help="Whether Ollama endpoints only serve while no "
-                             "vLLM/OpenRouter endpoint is healthy (default: "
-                             "true). Use --no-ollama-fallback-only to put "
-                             "Ollama endpoints in normal load-balancing "
-                             "rotation. Overrides serving.ollama_fallback_only "
-                             "in the config YAML.")
     parser.add_argument("--max-tokens", type=_token_count, default=None,
                         dest="max_tokens", metavar="N",
                         help="Max output tokens per model response, e.g. 32768, "
@@ -305,8 +289,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Enable verbose logging.")
     parser.add_argument("--think", action="store_true", default=None,
                         help="Enable thinking/reasoning mode (CoT).")
-    parser.add_argument("--no-stream", action="store_true", default=None, dest="no_stream",
-                        help="Disable streaming of tokens (streaming is on by default).")
     parser.add_argument("--show-logs", action="store_true", default=None,
                         help="Show tool execution logs.")
 
@@ -428,10 +410,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     _apply_web_serving_defaults(config_data, bool(config_data.get('web')),
                                 bool(getattr(args, 'think', False)))
 
-    # --no-stream explicitly disables streaming (default is True)
-    if args.no_stream:
-        config_data['stream'] = False
-
     # --host, --model, --think override serving config
     if args.host:
         serving_cfg = config_data.setdefault('serving', {})
@@ -448,11 +426,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         serving_cfg.pop('endpoints', None)
     if args.model:
         config_data.setdefault('serving', {})['model'] = args.model
-    if getattr(args, 'load_balancer', None):
-        config_data.setdefault('serving', {})['load_balancer'] = args.load_balancer
-    if getattr(args, 'ollama_fallback_only', None) is not None:
-        config_data.setdefault('serving', {})['ollama_fallback_only'] = \
-            args.ollama_fallback_only
     if getattr(args, 'max_tokens', None) is not None:
         config_data.setdefault('serving', {})['max_tokens'] = args.max_tokens
     if getattr(args, 'max_context_tokens', None) is not None:
