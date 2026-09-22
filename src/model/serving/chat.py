@@ -19,6 +19,7 @@ Provider is auto-detected from the host URL.
 
 import asyncio
 import base64
+import dataclasses
 import importlib
 import logging
 import mimetypes
@@ -3402,6 +3403,757 @@ def _repetition_span(text: str) -> tuple:
     return best
 
 
+# ── one model call, with its retries ────────────────────────────────────────
+#
+# The retry loop and its provider branches used to sit inside chat()'s
+# while-True body, 620 lines between the compaction decisions and the
+# answer handling.  As a class the run-stable inputs (clients, sampling
+# parameters, the tool payload) are the constructor signature, the per-turn
+# ones (messages, state, whether this turn thinks) are the method's, and
+# the handoff to the answer phase is the _TurnResult fields instead of a
+# dozen bare locals.
+
+
+@dataclasses.dataclass
+class _TurnResult:
+    """What one model call handed back, unified across the four provider paths.
+
+    ``api_error`` set means every retry was spent and the turn failed; the
+    caller ends the run.  ``None`` as a whole (never an instance) means the
+    safety queue fired and chat() must exit without an answer.  ``model`` is
+    returned because the NotFoundError handler may replace it with an
+    auto-detected fallback mid-run.
+    """
+
+    content: Optional[str] = None
+    full_reasoning: str = ""
+    full_content: str = ""
+    tool_calls: Optional[list] = None
+    finish_reason: Optional[str] = None
+    message_for_history: Optional[Any] = None
+    completion_tokens: int = 0
+    usage: Optional[Any] = None
+    chat_completion: Optional[Any] = None
+    model: str = ""
+    api_error: Optional[str] = None
+
+
+class _ModelCaller:
+    """One turn's model call: kwargs build, send, retry, response unify.
+
+    Holds what does not change across a run — the resolved clients, the
+    sampling parameters, the tool payload — and exposes ``call_turn`` for
+    what does.  The retry loop's memory (a model that refused sampling, an
+    effort that was refused) lives for exactly one call_turn invocation,
+    which is what the per-turn re-initialization inside the old loop body
+    did too.
+    """
+
+    def __init__(self, *, host: str, model: str, is_ollama: bool, num_ctx,
+                 client, ollama_client, tools: list, stream: bool,
+                 temperature: float, top_p: float, top_k: int, min_p: float,
+                 presence_penalty: float, repetition_penalty: float,
+                 max_tokens: int, max_context_tokens: Optional[int],
+                 max_api_retries: int, chat_ui, verbose: bool, safety_queue,
+                 metrics):
+        self.host = host
+        self.model = model
+        self.is_ollama = is_ollama
+        self.num_ctx = num_ctx
+        self.client = client
+        self.ollama_client = ollama_client
+        self.tools = tools
+        self.stream = stream
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
+        self.presence_penalty = presence_penalty
+        self.repetition_penalty = repetition_penalty
+        self.max_tokens = max_tokens
+        self.max_context_tokens = max_context_tokens
+        self.max_api_retries = max_api_retries
+        self.chat_ui = chat_ui
+        self.verbose = verbose
+        self.safety_queue = safety_queue
+        self.metrics = metrics
+
+    async def call_turn(self, messages: list, state: RunState,
+                        turn_think: bool) -> Optional[_TurnResult]:
+        """Send one request, retrying transient failures.
+
+        Returns ``None`` when the safety queue fired (chat() exits), a
+        ``_TurnResult`` with ``api_error`` set when the retries ran out, and
+        otherwise the unified response.  ``messages`` is mutated in place by
+        the timeout handler (oldest tool results decayed); ``state`` is
+        mutated as the loop always did.
+        """
+        model = self.model
+
+        # Run-stable inputs, aliased once so the body reads exactly as it did
+        # as a closure inside chat().
+        _turn_think = turn_think
+        # Streaming state, initialized here as the old while-body preamble did.
+        _full_content = ""
+        _full_reasoning = ""
+        _finish_reason: str | None = None
+        _completion_tokens = 0  # set from usage where the provider reports it
+        chat_ui = self.chat_ui
+        verbose = self.verbose
+        safety_queue = self.safety_queue
+        is_ollama = self.is_ollama
+        num_ctx = self.num_ctx
+        client = self.client
+        ollama_client = self.ollama_client
+        tools = self.tools
+        temperature = self.temperature
+        top_p = self.top_p
+        top_k = self.top_k
+        min_p = self.min_p
+        presence_penalty = self.presence_penalty
+        repetition_penalty = self.repetition_penalty
+        max_tokens = self.max_tokens
+        max_context_tokens = self.max_context_tokens
+        max_api_retries = self.max_api_retries
+        stream = self.stream
+        host = self.host
+        _m = self.metrics
+
+        # Retry loop for transient API errors — preserves accumulated messages/tool history
+        api_error = None
+        # Reasoning-model sampling rejection, remembered for the rest of the
+        # run: once OpenAI refuses temperature/top_p the same refusal would
+        # repeat every turn (see the OpenAI branch above).
+        _openai_strip_sampling = False
+        # Same memory for a model that does not take reasoning_effort at all
+        # (a non-reasoning model): the branch stops sending it.
+        _openai_strip_reasoning = False
+        # Set when a reasoning model refuses function tools under its
+        # default effort: the retry goes out with reasoning_effort "none",
+        # the only value that keeps tools reachable on this endpoint.
+        _openai_effort_400 = False
+        # The chat-completions response object, when that is the path taken.
+        # The Responses and Ollama paths never assign it; the converged
+        # end_api call below must not read it on those paths.
+        chat_completion = None
+        # The Responses path's usage object, same bargain in the other
+        # direction: None until that path assigns it.
+        _usage = None
+        # The Responses path's effort, run-scoped like the flags above: a
+        # model that refuses an effort is retried one step down, then never
+        # asked above what it takes.  None means the parameter is omitted.
+        _responses_effort = _openai_responses_reasoning_effort(_turn_think)
+        # Timeout retries are capped separately from MAX_API_RETRIES: a
+        # timeout is a prompt-size/server-load signal, and retrying the same
+        # oversized prompt three times converts one slow prefill into
+        # minutes of stalling before the turn fails anyway.
+        _MAX_TIMEOUT_RETRIES = 1
+        _timeout_retries = 0
+        for api_attempt in range(1, max_api_retries + 1):
+            api_error = None
+            # Internal bookkeeping keys never ride in a request.  Popped per
+            # attempt (cheap) rather than once before the loop: the timeout
+            # handler below mutates ``messages`` between attempts, and the
+            # marker must not survive into any payload regardless of path.
+            _strip_internal_keys(messages)
+            try:
+                if safety_queue is not None and not safety_queue.empty():
+                    logger.warning("Safety queue triggered before API call, exiting chat loop.")
+                    return None
+
+                _m.start_api()
+
+                # Cap output tokens so that prompt + output never approaches the context limit.
+                # Never expand beyond the configured max_tokens — only shrink when the
+                # remaining context window is tighter than max_tokens.
+                _api_max_tokens = state.active_max_tokens
+                if max_context_tokens:
+                    _prompt_est = state.last_prompt_tokens if state.last_prompt_tokens > 0 else 0
+                    # Use MAX_TOOL_RESPONSE // 2 because code/JSON can be ~1.5 chars/token,
+                    # so the same char limit costs more tokens than a /3 estimate implies.
+                    _growth_buffer = max(MAX_TOOL_RESPONSE // 2, 1024)
+                    _available = max(max_context_tokens - _prompt_est - _growth_buffer, 64)
+                    _api_max_tokens = min(_api_max_tokens, _available)
+
+                if is_ollama:
+                    ollama_kwargs = dict(
+                        model=model,
+                        messages=_adapt_messages_for_ollama(messages),
+                        stream=stream,
+                        options={
+                            "temperature": temperature,
+                            "top_p": top_p,
+                            "top_k": top_k,
+                            "num_ctx": num_ctx,
+                            "num_predict": _api_max_tokens,
+                            "presence_penalty": presence_penalty,
+                            "repeat_penalty": repetition_penalty,
+                        },
+                    )
+                    if _turn_think:
+                        ollama_kwargs["think"] = True
+                    if tools:
+                        ollama_kwargs["tools"] = tools
+                    # Force JSON output when the model keeps generating planning prose
+                    # instead of tool calls.  Ollama's format="json" ensures the response
+                    # is parseable by _parse_tool_call_from_content even though Ollama has
+                    # no tool_choice="required" equivalent.
+                    if state.force_tool_call and tools:
+                        ollama_kwargs["format"] = "json"
+                    chat_completion = await _await_with_safety(
+                        ollama_client.chat(**ollama_kwargs), safety_queue)
+                    if chat_completion is _SAFETY_ABORT:
+                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
+                        return None
+                elif _is_openai_host(host) and _is_openai_responses_model(model):
+                    # The gpt-6 family is served by /v1/responses —
+                    # /v1/chat/completions refuses every reasoning_effort a
+                    # tool-carrying request can name (see
+                    # _is_openai_responses_model).  The history stays in
+                    # chat-completions shape and is converted per request;
+                    # the reply is flattened back into the same variables
+                    # the chat-completions paths fill, so the rest of the
+                    # loop reads one shape.
+                    _responses_kwargs: dict = dict(
+                        model=model,
+                        input=_openai_responses_input(messages),
+                        max_output_tokens=_api_max_tokens,
+                        store=False,
+                    )
+                    if _responses_effort:
+                        _responses_kwargs["reasoning"] = {"effort": _responses_effort}
+                    if tools:
+                        _responses_kwargs["tools"] = _openai_responses_tools(tools)
+                        _responses_kwargs["tool_choice"] = (
+                            "required" if state.force_tool_call else "auto")
+                    if stream:
+                        _responses_stream = client.responses.stream(
+                            **_responses_kwargs)
+                        _stream_entered = False
+                        try:
+                            # The SDK's stream() returns a manager whose
+                            # __aenter__ yields the event iterator itself —
+                            # the manager is not the iterator, so enter it
+                            # and hand the iterator to the processor.
+                            _responses_events_iter = await _await_with_safety(
+                                _responses_stream.__aenter__(), safety_queue)
+                            _stream_entered = True
+                            (_full_content, _full_reasoning, _full_tool_calls,
+                             _ui_was_streaming, _stream_usage, _finish_reason
+                             ) = await _process_responses_streaming_response(
+                                _responses_events_iter, safety_queue, chat_ui,
+                                on_first_token=_m.first_token,
+                            )
+                        finally:
+                            if _stream_entered:
+                                await _responses_stream.__aexit__(None, None, None)
+                        if _full_content is None and _full_tool_calls is None:
+                            # Safety queue fired mid-stream: the processor
+                            # returned None through the tuple contract.
+                            return None
+                        if _stream_usage is not None:
+                            state.last_prompt_tokens = _stream_usage.prompt_tokens
+                            _completion_tokens = _stream_usage.completion_tokens
+                            if max_context_tokens and chat_ui:
+                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
+                                   _finish_reason,
+                                   cached_tokens=_cached_tokens_of(_stream_usage))
+                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
+                                and _looks_like_raw_tool_call(_full_content)):
+                            chat_ui.stream_fold(_step_summary(_full_content))
+                        if _ui_was_streaming and chat_ui:
+                            chat_ui.stream_end()
+                        if _finish_reason == "length":
+                            _log_to_ui_or_verbose(
+                                "Model response truncated (finish_reason=length). "
+                                "Consider increasing max_tokens.",
+                                chat_ui, verbose, level="warning",
+                            )
+                            state.force_compact = True
+                        elif _finish_reason == "tool_calls" and not _full_tool_calls:
+                            _log_to_ui_or_verbose(
+                                f"Model signaled finish_reason=tool_calls but no tool calls received "
+                                f"(model={model}). Checking content for raw tool calls.",
+                                chat_ui, verbose, level="warning",
+                            )
+                        _content, _tool_calls, _message_for_history = _unify_streaming_result(
+                            _full_content, _full_tool_calls,
+                        )
+                        await asyncio.sleep(0)
+                        if safety_queue is not None and not safety_queue.empty():
+                            logger.warning("Safety queue triggered after API call, exiting chat loop.")
+                            return None
+                        break  # success — exit retry loop
+                    _response = await _await_with_safety(
+                        client.responses.create(**_responses_kwargs), safety_queue)
+                    if _response is _SAFETY_ABORT:
+                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
+                        return None
+                    (_content, _full_reasoning, _tool_calls, _finish_reason,
+                     _usage) = _openai_responses_result(_response)
+                    _full_content = _content
+                    _message_for_history = {
+                        "role": "assistant",
+                        "content": _content or None,
+                        "tool_calls": [
+                            {"id": tc.id, "type": "function",
+                             "function": {"name": tc.function.name,
+                                          "arguments": tc.function.arguments}}
+                            for tc in (_tool_calls or [])
+                        ] if _tool_calls else None,
+                    } if _tool_calls else {"role": "assistant", "content": _content}
+                    if _usage is not None:
+                        state.last_prompt_tokens = _usage.prompt_tokens
+                        _completion_tokens = _usage.completion_tokens
+                        if max_context_tokens and chat_ui:
+                            chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                    if _finish_reason == "length":
+                        _log_to_ui_or_verbose(
+                            "Model response truncated (finish_reason=length). "
+                            "Consider increasing max_tokens.",
+                            chat_ui, verbose, level="warning",
+                        )
+                        state.force_compact = True
+                    await asyncio.sleep(0)
+                    if safety_queue is not None and not safety_queue.empty():
+                        logger.warning("Safety queue triggered after API call, exiting chat loop.")
+                        return None
+                    break  # success — exit retry loop
+                elif _is_openai_host(host):
+                    # OpenAI rejects unknown body params: no vLLM extensions
+                    # here, and no chat-template thinking switch.  Output
+                    # budget goes out as max_completion_tokens — the spelling
+                    # every OpenAI chat model takes (max_tokens is deprecated
+                    # and reasoning models refuse it outright).
+                    completion_kwargs = dict(
+                        model=model, messages=messages, stream=stream,
+                        max_completion_tokens=_api_max_tokens,
+                    )
+                    # Reasoning and function tools don't mix on
+                    # /v1/chat/completions — but only for models that
+                    # actually refuse the combination ("Function tools with
+                    # reasoning_effort are not supported").  Others reject
+                    # the parameter outright, or reject "none" specifically
+                    # ("does not support 'none' with this model", gpt-6
+                    # class: supported values low/medium/high/xhigh).  No
+                    # single value works everywhere, so nothing is sent
+                    # until the model itself asks for it: the tools+effort
+                    # 400 is retried with effort "none", and any other
+                    # reasoning_effort rejection drops the parameter for the
+                    # rest of the run (handler below).  The send itself
+                    # happens where tools are attached, further below, so
+                    # the flag and the tools list are read at the same
+                    # point.
+                    # Reasoning models (o-series, gpt-5) take only default
+                    # sampling; a rejection names the parameter and the
+                    # handler below drops these for the rest of the run.
+                    if not _openai_strip_sampling:
+                        completion_kwargs["temperature"] = temperature
+                        completion_kwargs["top_p"] = top_p
+                        if presence_penalty:
+                            completion_kwargs["presence_penalty"] = presence_penalty
+                else:
+                    _extra_body = {
+                        "top_k": top_k,          # vLLM extension, important for Qwen3
+                        "min_p": min_p,
+                        "presence_penalty": presence_penalty,
+                        "repetition_penalty": repetition_penalty,
+                    }
+                    if _turn_think and not _template_kwargs_unsupported(host):
+                        _chat_template_kwargs: dict = {"enable_thinking": True}
+                        # preserve_thinking is only supported on Qwen3.6+
+                        _model_lower = model.lower()
+                        _qwen3_ver = next(
+                            (float(p.removeprefix("qwen"))
+                             for p in _model_lower.replace("/", "-").split("-")
+                             if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()),
+                            None,
+                        )
+                        if _qwen3_ver is not None and _qwen3_ver >= 3.6:
+                            _chat_template_kwargs["preserve_thinking"] = True
+                        _extra_body["chat_template_kwargs"] = _chat_template_kwargs
+                    elif not _turn_think and not _template_kwargs_unsupported(host):
+                        # Thinking off has to be *said*, not left unsaid.  The
+                        # Qwen3 family's chat template reads a missing
+                        # ``enable_thinking`` as thinking on, so omitting the
+                        # switch made both ``think: false`` and
+                        # ``think_tool_turns: false`` no-ops against vLLM: the
+                        # model reasoned on every turn anyway, the reasoning
+                        # arrived on ``reasoning_content`` where the answer
+                        # should have been, and a final turn that thought to
+                        # the end of its budget returned no answer at all.
+                        _extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+                    completion_kwargs = dict(
+                        model=model,
+                        messages=messages,
+                        stream=stream,
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=_api_max_tokens,
+                        extra_body=_extra_body,
+                    )
+                # Shared by the OpenAI and vLLM branches: the request goes
+                # out here, after each branch has built its kwargs.  The
+                # Ollama branch above already sent its own request and set
+                # chat_completion itself.
+                if not is_ollama:
+                    if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
+                        completion_kwargs["tools"] = tools
+                        # vLLM rejects tool_choice when tools is unset, so
+                        # only send it alongside tools.
+                        completion_kwargs["tool_choice"] = "required" if state.force_tool_call else "auto"
+                    # A reasoning model that refused function tools under
+                    # its default effort: the retry goes out with
+                    # reasoning_effort "none", the only value that keeps
+                    # the tool loop reachable on this endpoint.  A
+                    # non-reasoning model (gpt-4o class) takes "none"
+                    # from the first call, which keeps a chatty default
+                    # effort from spending the output budget on thinking
+                    # nobody asked for.  A reasoning model gets nothing
+                    # until its own 400 asks — gpt-6 class refuses "none"
+                    # outright, and the others refuse it alongside tools.
+                    # A model that refuses the parameter itself stops
+                    # being asked for it (handler below).
+                    if (_is_openai_host(host)
+                            and not _openai_strip_reasoning
+                            and (_openai_effort_400
+                                 or (not tools
+                                     and not _is_openai_reasoning_model(model)))):
+                        completion_kwargs["reasoning_effort"] = "none"
+                    if stream:
+                        completion_kwargs["stream_options"] = {"include_usage": True}
+                    chat_completion = await _await_with_safety(
+                        client.chat.completions.create(**completion_kwargs), safety_queue)
+                    if chat_completion is _SAFETY_ABORT:
+                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
+                        return None
+
+                # Streaming path: iterate chunks, populate shared variables
+                if stream:
+                    if is_ollama:
+                        stream_result = await _ollama_process_streaming_response(
+                            chat_completion, safety_queue, chat_ui, _turn_think,
+                            on_first_token=_m.first_token,
+                        )
+                        if stream_result is None:
+                            return None
+                        (_full_content, _full_reasoning, _ollama_tcs,
+                         _ui_was_streaming, _ollama_prompt_tokens, _finish_reason,
+                         _ollama_eval_count) = stream_result
+                        _completion_tokens = _ollama_eval_count
+                        if _ollama_prompt_tokens:
+                            state.last_prompt_tokens = _ollama_prompt_tokens
+                            if max_context_tokens and chat_ui:
+                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        # Before stream_end: the footer it prints reports this
+                        # turn, and reads it from the metrics sink.  Ollama's
+                        # /api_chat stream carries prompt_eval_count but no
+                        # cached-token field, so there is nothing to pass.
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
+                                   _finish_reason)
+                        # A raw-JSON tool call streams as ordinary content, so
+                        # its narration reached the screen as if it were the
+                        # answer.  Fold it here, at the last moment before
+                        # stream_end() persists it -- the structured path
+                        # above folds on the tool-calls chunk; this is the
+                        # same decision made at the only point the raw
+                        # path can make it.
+                        if (not _ollama_tcs and _ui_was_streaming and chat_ui
+                                and _looks_like_raw_tool_call(_full_content)):
+                            chat_ui.stream_fold(_step_summary(_full_content))
+                        if _ui_was_streaming and chat_ui:
+                            chat_ui.stream_end()
+                        if _finish_reason == "length":
+                            _log_to_ui_or_verbose(
+                                "Model response truncated (finish_reason=length). "
+                                "Consider increasing num_ctx/max_tokens.",
+                                chat_ui, verbose, level="warning",
+                            )
+                            state.force_compact = True
+                        if _ollama_tcs:
+                            _tool_calls = _adapt_ollama_tool_calls(_ollama_tcs)
+                            # arguments must be dict in the history message (Ollama validates this)
+                            _message_for_history = {
+                                "role": "assistant",
+                                "content": _prose_alongside_tool_calls(_full_content),
+                                "tool_calls": [
+                                    {"id": tc.id, "type": "function",
+                                     "function": {"name": tc.function.name,
+                                                  "arguments": json.loads(tc.function.arguments)}}
+                                    for tc in _tool_calls
+                                ],
+                            }
+                            _content = None
+                        else:
+                            _tool_calls = None
+                            _content = _full_content
+                            _message_for_history = {"role": "assistant", "content": _full_content}
+                    else:
+                        stream_result = await _process_streaming_response(
+                            chat_completion, safety_queue, chat_ui, _turn_think,
+                            on_first_token=_m.first_token,
+                        )
+                        if stream_result is None:
+                            return None
+                        _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
+                        if _stream_usage is not None:
+                            state.last_prompt_tokens = _stream_usage.prompt_tokens
+                            _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
+                            if max_context_tokens and chat_ui:
+                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        # Before stream_end: the footer it prints reports this
+                        # turn, and reads it from the metrics sink.
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
+                                   _finish_reason,
+                                   cached_tokens=_cached_tokens_of(_stream_usage))
+                        # A raw-JSON tool call streams as ordinary content, so
+                        # its narration reached the screen as if it were the
+                        # answer.  Fold it here, at the last moment before
+                        # stream_end() persists it -- the structured path
+                        # above folds on the first tool-call delta; this is
+                        # the same decision made at the only point the raw
+                        # path can make it.
+                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
+                                and _looks_like_raw_tool_call(_full_content)):
+                            chat_ui.stream_fold(_step_summary(_full_content))
+                        if _ui_was_streaming and chat_ui:
+                            chat_ui.stream_end()
+                        if _finish_reason == "length":
+                            _log_to_ui_or_verbose(
+                                "Model response truncated (finish_reason=length). "
+                                "Consider increasing max_tokens.",
+                                chat_ui, verbose, level="warning",
+                            )
+                            state.force_compact = True
+                        elif _finish_reason == "tool_calls" and not _full_tool_calls:
+                            _log_to_ui_or_verbose(
+                                f"Model signaled finish_reason=tool_calls but no tool calls received "
+                                f"(model={model}). Checking content for raw tool calls.",
+                                chat_ui, verbose, level="warning",
+                            )
+                        _content, _tool_calls, _message_for_history = _unify_streaming_result(
+                            _full_content, _full_tool_calls,
+                        )
+
+                await asyncio.sleep(0)
+                if safety_queue is not None and not safety_queue.empty():
+                    logger.warning("Safety queue triggered after API call, exiting chat loop.")
+                    return None
+                break  # success — exit retry loop
+            except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS) as e:
+                api_error = f"Request to {host} timed out (read timeout during streaming)."
+                logger.error(api_error)
+                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="error")
+                # tool_choice="required" engages guided decoding on vLLM, which
+                # can stall on large tool schemas.  If that's what we asked for,
+                # retry without it rather than wedging the server again.
+                if state.force_tool_call:
+                    state.force_tool_call = False
+                    state.active_max_tokens = max_tokens
+                    _log_to_ui_or_verbose(
+                        "Dropping tool_choice=required for retry (possible guided-decoding stall).",
+                        chat_ui, verbose, level="warning",
+                    )
+                # A timeout is a prompt-size or server-load problem, not a
+                # transient blip: the identical prompt re-sent into the same
+                # loaded server stalls for the same budget again, and at
+                # MAX_API_RETRIES that is minutes of stalling per failure.
+                # One retry, and the retry goes out *smaller* — the oldest
+                # tool results are decayed to their heads, which is exactly
+                # what _decay_old_tool_results does to aged results anyway.
+                if _timeout_retries >= _MAX_TIMEOUT_RETRIES:
+                    logger.warning("Timeout retry budget spent; failing this call.")
+                    break
+                _timeout_retries += 1
+                _trimmed = _decay_old_tool_results(messages, keep_full=1)
+                if _trimmed:
+                    _log_to_ui_or_verbose(
+                        "Timed out; retrying once with older tool results trimmed to their heads.",
+                        chat_ui, verbose, level="warning",
+                    )
+            except NotFoundError as e:
+                api_error = f"Model {model!r} not found at {host}: {e}."
+                logger.error(api_error)
+                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
+                _detected = await _autodetect_fallback_model(
+                    client, ollama_client, is_ollama, host, model)
+                if _detected:
+                    model = _detected
+                    if chat_ui:
+                        chat_ui.model_name = model
+                    _log_to_ui_or_verbose(
+                        f"Falling back to auto-detected model: {model}",
+                        chat_ui, verbose, level="warning")
+            except OpenAIError as e:
+                # A host that validates chat_template_kwargs refuses the whole
+                # request over the thinking switch.  Remember that and the
+                # retry below goes out without it — the same bargain
+                # _verify_ask strikes, and the reason every turn now sends the
+                # switch rather than only the thinking ones.
+                if (not is_ollama and _is_parameter_rejection(e)
+                        and not _template_kwargs_unsupported(host)):
+                    _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
+                    logger.info("Host %s rejected chat_template_kwargs (%s); "
+                                "retrying without the thinking switch.", host, e)
+                # OpenAI names the offending parameter in the rejection:
+                # o-series and gpt-5 take only default sampling, so drop
+                # temperature/top_p/presence_penalty for the rest of the run.
+                if (_is_openai_host(host) and _is_parameter_rejection(e)
+                        and any(p in str(e).lower() for p in
+                                ("temperature", "top_p", "presence_penalty"))):
+                    _openai_strip_sampling = True
+                    logger.info("OpenAI rejected a sampling parameter (%s); "
+                                "retrying with provider defaults.", e)
+                # A reasoning model that refuses function tools under its
+                # default effort: remember it and let the retry above go
+                # out with reasoning_effort "none" — the only value that
+                # keeps the tool loop reachable on this endpoint.  The
+                # error's own wording ("function tools") is the evidence;
+                # `tools` is not required here, because a run whose tools
+                # list is empty this turn can still grow one next turn.
+                if (_is_openai_host(host) and _is_parameter_rejection(e)
+                        and "reasoning_effort" in str(e).lower()
+                        and "function tools" in str(e).lower()):
+                    _openai_effort_400 = True
+                    logger.info("OpenAI refused function tools under the "
+                                "default reasoning effort (%s); retrying "
+                                "with reasoning_effort='none'.", e)
+                # And a model that takes no reasoning_effort at all (a
+                # non-reasoning model): stop sending it, for the rest of
+                # the run.  A model that takes the parameter but refuses
+                # "none" specifically (gpt-6 class: low/medium/high/xhigh
+                # only) is handled the same way — the parameter is not
+                # sent again, because with tools the request would just
+                # 400 the other way ("Function tools with reasoning_effort
+                # are not supported").
+                if (_is_openai_host(host) and _is_parameter_rejection(e)
+                        and "reasoning_effort" in str(e).lower()
+                        and "function tools" not in str(e).lower()):
+                    _openai_strip_reasoning = True
+                    logger.info("OpenAI rejected reasoning_effort (%s); "
+                                "retrying without it.", e)
+                # The Responses path names its effort in the error too
+                # ("Unsupported value: 'effort' ... supported values are").
+                # One step down and remember it for the rest of the run —
+                # a model that refuses "medium" is asked for "low" once and
+                # then never above what it takes.
+                if (_is_openai_host(host) and _is_openai_responses_model(model)
+                        and _is_parameter_rejection(e)
+                        and ("effort" in str(e).lower()
+                             or "reasoning" in str(e).lower())):
+                    _responses_effort = ("low"
+                                         if _responses_effort == "medium" else None)
+                    logger.info("OpenAI refused reasoning effort (%s); "
+                                "retrying with effort %s.",
+                                e, _responses_effort or "omitted")
+                api_error = f"Error communicating with {host}: {e}."
+                logger.error(api_error)
+                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
+            except Exception as e:
+                api_error = f"Unexpected error ({type(e).__name__}): {e}"
+                logger.error(api_error, exc_info=True)
+                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="error")
+
+            # Log retry attempt if we haven't exhausted retries
+            if api_attempt < max_api_retries:
+                _m.add_retry()
+                retry_msg = f"Retrying API call (attempt {api_attempt + 1}/{max_api_retries})..."
+                logger.info(retry_msg)
+                _log_to_ui_or_verbose(retry_msg, chat_ui, verbose, level="info")
+                await asyncio.sleep(min(2 ** api_attempt, 10))  # exponential backoff
+
+        if api_error is not None:
+            # All retries exhausted.
+            return _TurnResult(api_error=api_error, model=model)
+
+        # Non-streaming: extract from response object into unified variables
+        if not stream:
+            if _is_openai_host(host) and _is_openai_responses_model(model):
+                # The Responses path already extracted everything the
+                # non-streaming branch below reads out of a chat completion;
+                # it set these variables inside the retry loop and broke out
+                # with them.
+                pass
+            elif is_ollama:
+                _msg = chat_completion.message
+                _content = _msg.content
+                _full_reasoning = _reasoning_text(_msg)  # Ollama: .thinking
+                _raw_tcs = getattr(_msg, "tool_calls", None)
+                _tool_calls = _adapt_ollama_tool_calls(_raw_tcs) if _raw_tcs else None
+                _finish_reason = getattr(chat_completion, "done_reason", None)
+                if _tool_calls:
+                    _message_for_history = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {"id": tc.id, "type": "function",
+                             "function": {"name": tc.function.name,
+                                          "arguments": json.loads(tc.function.arguments)}}
+                            for tc in _tool_calls
+                        ],
+                    }
+                else:
+                    _message_for_history = {"role": "assistant", "content": _content}
+                # Ollama exposes prompt_eval_count for token tracking
+                _completion_tokens = getattr(chat_completion, "eval_count", 0)
+                _pec = getattr(chat_completion, "prompt_eval_count", None)
+                if _pec is not None:
+                    state.last_prompt_tokens = _pec
+                    if max_context_tokens and chat_ui:
+                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+            else:
+                _choice = chat_completion.choices[0]
+                _msg = _choice.message
+                _content = _msg.content
+                # Same split the streaming path handles: a host that puts the
+                # thinking in its own field can hand back an empty content with
+                # the answer sitting in the other one.
+                _full_reasoning = _reasoning_text(_msg)
+                _tool_calls = _msg.tool_calls if _msg.tool_calls else None
+                _finish_reason = _choice.finish_reason
+                _message_for_history = _msg
+                # Warn on unexpected finish reasons
+                if _finish_reason == "length":
+                    _log_to_ui_or_verbose(
+                        "Model response truncated (finish_reason=length). "
+                        "Consider increasing max_tokens.",
+                        chat_ui, verbose, level="warning",
+                    )
+                    state.force_compact = True
+                elif _finish_reason == "tool_calls" and not _tool_calls:
+                    _log_to_ui_or_verbose(
+                        f"Model signaled finish_reason=tool_calls but no tool calls received "
+                        f"(model={model}). Checking content for raw tool calls.",
+                        chat_ui, verbose, level="warning",
+                    )
+                # Capture token usage for context tracking
+                if chat_completion.usage is not None:
+                    state.last_prompt_tokens = chat_completion.usage.prompt_tokens
+                    _completion_tokens = getattr(chat_completion.usage, "completion_tokens", 0)
+                    if max_context_tokens and chat_ui:
+                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+
+        # Both paths have converged: the model call for this turn is done.
+        # cached_tokens: the chat-completions paths carry a usage object with
+        # prompt_tokens_details; the Responses path reports usage through
+        # _usage instead, and the Ollama path has no such field.  Read
+        # whichever exists — None, never 0, when the path does not say.
+        _usage_for_cache = (getattr(chat_completion, "usage", None)
+                            if chat_completion is not None else _usage)
+        self.metrics.end_api(state.last_prompt_tokens, _completion_tokens,
+                             _finish_reason,
+                             cached_tokens=_cached_tokens_of(_usage_for_cache))
+        return _TurnResult(
+            content=_content, full_reasoning=_full_reasoning,
+            full_content=_full_content, tool_calls=_tool_calls,
+            finish_reason=_finish_reason,
+            message_for_history=_message_for_history,
+            completion_tokens=_completion_tokens, usage=_usage,
+            chat_completion=chat_completion, model=model,
+        )
+
+
 # ── sentence-level loop detection ───────────────────────────────────────────
 #
 # The periodicity scan above has a structural blind spot: a loop whose unit is
@@ -4175,6 +4927,339 @@ async def _compact_context(
     return new_messages
 
 
+# ── fact-checking the answer ─────────────────────────────────────────────────
+#
+# The whole verification apparatus, built once per run.  It used to live as
+# seven nested closures inside chat(), which put 270 lines of checking logic
+# between the run's setup and its loop and made the closure inputs — twenty
+# names, all read-only — invisible.  As a class the inputs are the constructor
+# signature and the methods are the same functions under the same names.
+
+
+class _FactChecker:
+    """Two-stage verification of a finished answer (see verify.py).
+
+    The fast pass (``fact_check``) decides the answer the user keeps: one
+    verdict call, no tools, no rewrite, a hard deadline.  The deep check
+    (``deep_check``) runs behind the answer on whoever's clock the caller
+    lent via ``background_verify``: read-only lookups and a real revision,
+    cancelled the moment the user asks something else.
+
+    Everything here is read-only relative to the run: the checker may look
+    things up, and nothing else.  A checker able to write a file or run a
+    command would be a second agent acting after the user was told the work
+    was done.
+    """
+
+    def __init__(self, *, tools: list, tool_registry, harness, metrics,
+                 host: str, model: str, is_ollama: bool, num_ctx,
+                 client, ollama_client, timeout, data_path: str,
+                 session_id: str, chat_ui, verbose: bool, safety_queue,
+                 max_tokens: int, max_repeated_tool_calls: int,
+                 task_instruction: str, verify_answers: bool,
+                 verify_background: bool, background_verify,
+                 verify_max_tool_turns: int, verify_timeout_s: float,
+                 verify_trusted_domains: tuple):
+        # Tools the check may use: the read-only ones, and only those.
+        self.tools = [
+            t for t in (tools or [])
+            if isinstance(t, dict)
+            and isinstance(t.get('function'), dict)
+            and t['function'].get('name') in _READ_ONLY_TOOLS
+        ]
+        self.tool_registry = tool_registry
+        self.metrics = metrics
+        self.host = host
+        self.model = model
+        self.is_ollama = is_ollama
+        self.num_ctx = num_ctx
+        self.client = client
+        self.ollama_client = ollama_client
+        self.timeout = timeout
+        self.data_path = data_path
+        self.session_id = session_id
+        self.chat_ui = chat_ui
+        self.verbose = verbose
+        self.safety_queue = safety_queue
+        self.max_tokens = max_tokens
+        self.max_repeated_tool_calls = max_repeated_tool_calls
+        self.task_instruction = task_instruction
+        self.verify_answers = verify_answers
+        self.verify_background = verify_background
+        self.background_verify = background_verify
+        self.verify_max_tool_turns = verify_max_tool_turns
+        self.verify_timeout_s = verify_timeout_s
+        self.verify_trusted_domains = verify_trusted_domains
+
+    async def ask(self, msgs: list, tools: list | None = None,
+                  max_tokens: int = VERDICT_MAX_TOKENS):
+        """One non-streaming completion for the fact-check.
+
+        Deliberate at temperature 0: the check is a judgment about text that
+        already exists, and sampling it is how a clean answer acquires an
+        imaginary error on the second run.
+
+        And explicitly without thinking, which is the whole cost of the pass.
+        A hybrid model reasons its way through a verdict by default — measured
+        on Qwen3.6-27B at 18s and 1,277 tokens to report two wrong figures, and
+        6.7s to report that a correct answer was correct.  The same two calls
+        with thinking off returned the same verdicts in 1.2s and 0.1s.  Reading
+        a claim off a source and comparing it to a sentence is recognition, not
+        deliberation, and paying for a chain of thought to do it turns a check
+        that runs behind a finished answer into a wait the user notices.
+        """
+        if self.is_ollama:
+            _kw: dict = dict(model=self.model,
+                             messages=_adapt_messages_for_ollama(msgs),
+                             stream=False, think=False,
+                             options={"temperature": 0.0, "num_ctx": self.num_ctx,
+                                      "num_predict": max_tokens})
+            if tools:
+                _kw["tools"] = tools
+            resp = await _await_with_safety(self.ollama_client.chat(**_kw),
+                                            self.safety_queue)
+            if resp is _SAFETY_ABORT:
+                raise _VerifyStopped()
+            _msg = resp.message
+            _raw = getattr(_msg, "tool_calls", None)
+            return (_verify_content(_msg),
+                    _adapt_ollama_tool_calls(_raw) if _raw else None)
+        _kw = dict(model=self.model, messages=msgs, temperature=0.0, stream=False)
+        if _is_openai_host(self.host):
+            # The same OpenAI-only spelling for the output budget.  The
+            # effort is deliberately NOT pinned here: models disagree on
+            # what they accept (gpt-6 class rejects "none" outright), and
+            # the checker is offered tools only when the caller has them —
+            # a model that refuses tools under its default effort 400s the
+            # same way the main loop does, and the caller's own retry with
+            # reasoning_effort "none" covers it.
+            _kw["max_completion_tokens"] = max_tokens
+        else:
+            _kw["max_tokens"] = max_tokens
+        if tools:
+            _kw["tools"] = tools
+        # Asked of the chat template, which is where a hybrid model's thinking
+        # is switched.  A template without the switch ignores an unknown
+        # variable, but a server that validates them rejects the request — so
+        # a rejection is retried plainly and remembered for a while.  Only a
+        # rejection: any other failure is re-raised, because retrying it
+        # without the switch would answer a transient error by permanently
+        # buying two orders of magnitude more latency per check.
+        _no_think = {"chat_template_kwargs": {"enable_thinking": False}}
+        # OpenAI rejects the unknown body parameter outright — and its
+        # models have no chat-template thinking switch to address — so the
+        # attempt list collapses to the plain call.
+        _attempts = ({},) if _is_openai_host(self.host) else (_no_think, {})
+        for _attempt in _attempts:
+            if _attempt and _template_kwargs_unsupported(self.host):
+                continue
+            try:
+                resp = await _await_with_safety(
+                    self.client.chat.completions.create(**_kw, extra_body=_attempt),
+                    self.safety_queue)
+                break
+            except OpenAIError as e:
+                if not _attempt or not _is_parameter_rejection(e):
+                    raise
+                logger.info("Host %s rejected chat_template_kwargs (%s); "
+                            "running the fact-check without it.", self.host, e)
+                _NO_TEMPLATE_KWARGS[self.host] = (time.monotonic()
+                                                  + _NO_TEMPLATE_KWARGS_TTL)
+        if resp is _SAFETY_ABORT:
+            raise _VerifyStopped()
+        _msg = resp.choices[0].message
+        return _verify_content(_msg), (_msg.tool_calls or None)
+
+    async def run_tools(self, tool_calls: list, msgs: list) -> None:
+        """Run the lookups the checker asked for, into its own message list.
+
+        Its own list, not the run's: the check is a separate conversation
+        about the answer, and folding its detour back into the history the
+        answer was written from would rewrite the evidence under it.
+        """
+        _args = ((lambda a: json.loads(a)) if self.is_ollama else (lambda a: a))
+        _history = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name,
+                              "arguments": _args(tc.function.arguments)}}
+                for tc in tool_calls
+            ],
+        }
+        _t0 = time.monotonic()
+        _tool_log: list = []
+        # A fresh call history, so a lookup the run already made during the
+        # task is not refused here as a repeat — checking a claim against the
+        # same source the answer used is the point, not a loop.
+        bail = await _handle_structured_tool_calls(
+            tool_calls, _history, self.tool_registry, self.timeout,
+            self.data_path, self.chat_ui, self.verbose, msgs, [],
+            self.max_repeated_tool_calls,
+            self.safety_queue, session_id=self.session_id, tool_log=_tool_log,
+        )
+        self.metrics.add_tools([tc.function.name for tc in tool_calls],
+                               time.monotonic() - _t0, runs=_tool_log)
+        if bail is _SAFETY_ABORT:
+            raise _VerifyStopped()
+
+    def verdict_budget(self) -> int:
+        """Output room for one verdict.
+
+        A verdict is a short JSON list and 512 tokens is that with room to
+        spare — unless this host cannot switch thinking off, in which case the
+        same verdict arrives behind a thousand tokens of reasoning and a small
+        budget buys finish_reason=length instead of a shorter answer.
+        """
+        ceiling = (VERDICT_MAX_TOKENS
+                   if not _template_kwargs_unsupported(self.host)
+                   else THINKING_VERDICT_MAX_TOKENS)
+        return min(self.max_tokens, ceiling)
+
+    def log(self, message: str, level: str = "info") -> None:
+        _log_to_ui_or_verbose(message, self.chat_ui, self.verbose, level=level)
+
+    async def fact_check(self, answer: str, msgs: list) -> str:
+        """The answer the user keeps, decided fast.
+
+        Runs after the draft has finished streaming, so the user has already
+        read it — and it is the last thing between them and a final answer,
+        which is the whole reason it is bounded.  Everything expensive is left
+        to ``deep_check`` behind it: no lookups here, no rewrite, and a hard
+        deadline over the one call it does make.
+        """
+        if not self.verify_answers or not answer or not needs_verification(answer):
+            return answer
+        # No tool results in the conversation means the draft was written from
+        # the model's own knowledge: the fast verdict could only re-report that
+        # knowledge back, so it is skipped and the deep check (which may look
+        # things up) still runs behind the answer.  This removes a serial LLM
+        # call from the tail of every knowledge-answer turn.
+        if not has_tool_evidence(msgs):
+            return answer
+        if self.safety_queue is not None and not self.safety_queue.empty():
+            return answer
+        if self.chat_ui:
+            self.chat_ui.verification_start()
+        _t0 = time.monotonic()
+        try:
+            checked, note, issues = await asyncio.wait_for(
+                verify_answer(
+                    task=self.task_instruction, answer=answer, messages=msgs,
+                    ask=self.ask,
+                    # No tools and no rewrite: both cost more than the budget
+                    # this stage has, and both are what the deep check is for.
+                    run_tools=None, tools=None, max_tool_turns=0,
+                    allow_revision=False,
+                    verdict_max_tokens=self.verdict_budget(),
+                    trusted_domains=self.verify_trusted_domains,
+                    log=self.log,
+                ),
+                timeout=(self.verify_timeout_s if self.verify_timeout_s > 0
+                         else None),
+            )
+        except asyncio.TimeoutError:
+            # The ceiling exists so that a slow endpoint costs the answer
+            # nothing.  The draft stands, and the deep check behind it still
+            # gets to look at the same claims without a clock on it.
+            logger.info("Fact-check exceeded its %.1fs budget; keeping the draft.",
+                        self.verify_timeout_s)
+            self.log("Fact-check ran long; the answer stands while the check "
+                     "continues in the background.")
+            checked, note, issues = answer, "", []
+        except Exception as e:
+            logger.warning("Fact-check pass failed: %s", e)
+            checked, note, issues = answer, "", []
+        self.metrics.add_verification(time.monotonic() - _t0, len(issues),
+                                      bool(note))
+        if self.chat_ui:
+            self.chat_ui.verification_end(checked, note)
+        self.schedule_deep_check(checked, msgs, already_found=bool(issues))
+        return checked
+
+    async def deep_check(self, answer: str, msgs: list) -> tuple[str, str]:
+        """The check that runs after the user has their answer.
+
+        Nothing here is on anyone's clock, so this is where the expensive parts
+        live: read-only lookups for claims the run never gathered evidence for,
+        and a real revision rather than a note.  It is cancelled outright when
+        the user asks something else — a correction to an answer they have
+        stopped caring about is not worth the tokens, let alone the
+        interruption.
+
+        Returns ``(answer, note)``; an empty note means nothing came of it and
+        the caller has nothing to show.
+        """
+        _t0 = time.monotonic()
+        try:
+            checked, note, issues = await verify_answer(
+                task=self.task_instruction, answer=answer, messages=msgs,
+                ask=self.ask,
+                run_tools=self.run_tools if self.tools else None,
+                tools=self.tools,
+                max_tool_turns=self.verify_max_tool_turns,
+                verdict_max_tokens=self.verdict_budget(),
+                # The rewrite is the answer again, not a fresh answer — cap it
+                # at the verify module's own budget instead of the whole
+                # response budget (which with the default max_tokens reserved
+                # 128k tokens of context for a rewrite).
+                revision_max_tokens=min(self.max_tokens, REVISION_MAX_TOKENS),
+                allow_revision=True,
+                trusted_domains=self.verify_trusted_domains,
+                log=self.log,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Background fact-check failed: %s", e)
+            return answer, ""
+        self.metrics.add_verification(time.monotonic() - _t0, len(issues),
+                                      bool(note))
+        if not note:
+            return answer, ""
+        logger.info("Background fact-check corrected %d claim(s) after %.1fs",
+                    len(issues), time.monotonic() - _t0)
+        # Told here rather than by the caller, because this is where the UI
+        # contract already lives — the same object that was told the check had
+        # started is the one owed the outcome.  Persisting it to the session is
+        # the caller's half; showing it is this one.
+        if self.chat_ui:
+            try:
+                self.chat_ui.verification_correction(checked, note)
+            except Exception as e:
+                logger.warning("Could not deliver the correction: %s", e)
+        return checked, note
+
+    def schedule_deep_check(self, answer: str, msgs: list,
+                            already_found: bool) -> None:
+        """Hand the deep check to whoever owns the session's background work.
+
+        Handed over rather than started here: this function returns the
+        answer, and a task started here would outlive it with nobody left to
+        cancel it when the user types their next question.  The caller owns the
+        session, so the caller owns the task — and a caller that has no way to
+        show a late correction simply does not take it, which is why this is
+        opt-in rather than opt-out.
+        """
+        if not (self.verify_answers and self.verify_background
+                and self.background_verify):
+            return
+        if not answer or not needs_verification(answer):
+            return
+        if already_found:
+            # The fast pass already found and flagged something.  Sending the
+            # same answer round again would re-report what the user is already
+            # looking at.
+            return
+        if self.safety_queue is not None and not self.safety_queue.empty():
+            return
+        try:
+            self.background_verify(self.deep_check(answer, list(msgs)))
+        except Exception as e:  # a scheduler that refuses must not fail the turn
+            logger.warning("Could not schedule the background fact-check: %s", e)
+
+
 async def chat(host: str = "http://127.0.0.1:8001/v1",
          host_key: str = "EMPTY",
          model: str = None,
@@ -4498,282 +5583,36 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             state.compaction_summarized_upto = 0
         return out
 
-    # ── fact-checking the answer ────────────────────────────────────────────
-    #
-    # Tools the check may use: the read-only ones, and only those.  A checker
-    # able to write a file or run a command would be a second agent acting
-    # after the user was told the work was done; this one may look things up
-    # and nothing else.
-    _verify_tools = [
-        t for t in (tools or [])
-        if isinstance(t, dict)
-        and isinstance(t.get('function'), dict)
-        and t['function'].get('name') in _READ_ONLY_TOOLS
-    ]
-
-    async def _verify_ask(msgs: list, tools: list | None = None,
-                          max_tokens: int = VERDICT_MAX_TOKENS):
-        """One non-streaming completion for the fact-check.
-
-        Deliberate at temperature 0: the check is a judgment about text that
-        already exists, and sampling it is how a clean answer acquires an
-        imaginary error on the second run.
-
-        And explicitly without thinking, which is the whole cost of the pass.
-        A hybrid model reasons its way through a verdict by default — measured
-        on Qwen3.6-27B at 18s and 1,277 tokens to report two wrong figures, and
-        6.7s to report that a correct answer was correct.  The same two calls
-        with thinking off returned the same verdicts in 1.2s and 0.1s.  Reading
-        a claim off a source and comparing it to a sentence is recognition, not
-        deliberation, and paying for a chain of thought to do it turns a check
-        that runs behind a finished answer into a wait the user notices.
-        """
-        if is_ollama:
-            _kw: dict = dict(model=model, messages=_adapt_messages_for_ollama(msgs), stream=False,
-                             think=False,
-                             options={"temperature": 0.0, "num_ctx": num_ctx,
-                                      "num_predict": max_tokens})
-            if tools:
-                _kw["tools"] = tools
-            resp = await _await_with_safety(ollama_client.chat(**_kw), safety_queue)
-            if resp is _SAFETY_ABORT:
-                raise _VerifyStopped()
-            _msg = resp.message
-            _raw = getattr(_msg, "tool_calls", None)
-            return (_verify_content(_msg),
-                    _adapt_ollama_tool_calls(_raw) if _raw else None)
-        _kw = dict(model=model, messages=msgs, temperature=0.0, stream=False)
-        if _is_openai_host(host):
-            # The same OpenAI-only spelling for the output budget.  The
-            # effort is deliberately NOT pinned here: models disagree on
-            # what they accept (gpt-6 class rejects "none" outright), and
-            # the checker is offered tools only when the caller has them —
-            # a model that refuses tools under its default effort 400s the
-            # same way the main loop does, and the caller's own retry with
-            # reasoning_effort "none" covers it.
-            _kw["max_completion_tokens"] = max_tokens
-        else:
-            _kw["max_tokens"] = max_tokens
-        if tools:
-            _kw["tools"] = tools
-        # Asked of the chat template, which is where a hybrid model's thinking
-        # is switched.  A template without the switch ignores an unknown
-        # variable, but a server that validates them rejects the request — so
-        # a rejection is retried plainly and remembered for a while.  Only a
-        # rejection: any other failure is re-raised, because retrying it
-        # without the switch would answer a transient error by permanently
-        # buying two orders of magnitude more latency per check.
-        _no_think = {"chat_template_kwargs": {"enable_thinking": False}}
-        # OpenAI rejects the unknown body parameter outright — and its
-        # models have no chat-template thinking switch to address — so the
-        # attempt list collapses to the plain call.
-        _attempts = ({},) if _is_openai_host(host) else (_no_think, {})
-        for _attempt in _attempts:
-            if _attempt and _template_kwargs_unsupported(host):
-                continue
-            try:
-                resp = await _await_with_safety(
-                    client.chat.completions.create(**_kw, extra_body=_attempt),
-                    safety_queue)
-                break
-            except OpenAIError as e:
-                if not _attempt or not _is_parameter_rejection(e):
-                    raise
-                logger.info("Host %s rejected chat_template_kwargs (%s); "
-                            "running the fact-check without it.", host, e)
-                _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
-        if resp is _SAFETY_ABORT:
-            raise _VerifyStopped()
-        _msg = resp.choices[0].message
-        return _verify_content(_msg), (_msg.tool_calls or None)
-
-    async def _verify_run_tools(tool_calls: list, msgs: list) -> None:
-        """Run the lookups the checker asked for, into its own message list.
-
-        Its own list, not the run's: the check is a separate conversation
-        about the answer, and folding its detour back into the history the
-        answer was written from would rewrite the evidence under it.
-        """
-        _args = ((lambda a: json.loads(a)) if is_ollama else (lambda a: a))
-        _history = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name,
-                              "arguments": _args(tc.function.arguments)}}
-                for tc in tool_calls
-            ],
-        }
-        _t0 = time.monotonic()
-        _tool_log: list = []
-        # A fresh call history, so a lookup the run already made during the
-        # task is not refused here as a repeat — checking a claim against the
-        # same source the answer used is the point, not a loop.
-        bail = await _handle_structured_tool_calls(
-            tool_calls, _history, tool_registry, timeout, data_path,
-            chat_ui, verbose, msgs, [], MAX_REPEATED_TOOL_CALLS,
-            safety_queue, session_id=session_id, tool_log=_tool_log,
-        )
-        _m.add_tools([tc.function.name for tc in tool_calls],
-                     time.monotonic() - _t0, runs=_tool_log)
-        if bail is _SAFETY_ABORT:
-            raise _VerifyStopped()
-
-    def _verdict_budget() -> int:
-        """Output room for one verdict.
-
-        A verdict is a short JSON list and 512 tokens is that with room to
-        spare — unless this host cannot switch thinking off, in which case the
-        same verdict arrives behind a thousand tokens of reasoning and a small
-        budget buys finish_reason=length instead of a shorter answer.
-        """
-        ceiling = (VERDICT_MAX_TOKENS if not _template_kwargs_unsupported(host)
-                   else THINKING_VERDICT_MAX_TOKENS)
-        return min(max_tokens, ceiling)
-
-    def _verify_log(message: str, level: str = "info") -> None:
-        _log_to_ui_or_verbose(message, chat_ui, verbose, level=level)
-
-    async def _fact_check(answer: str, msgs: list) -> str:
-        """The answer the user keeps, decided fast.
-
-        Runs after the draft has finished streaming, so the user has already
-        read it — and it is the last thing between them and a final answer,
-        which is the whole reason it is bounded.  Everything expensive is left
-        to ``_deep_check`` behind it: no lookups here, no rewrite, and a hard
-        deadline over the one call it does make.
-        """
-        if not verify_answers or not answer or not needs_verification(answer):
-            return answer
-        # No tool results in the conversation means the draft was written from
-        # the model's own knowledge: the fast verdict could only re-report that
-        # knowledge back, so it is skipped and the deep check (which may look
-        # things up) still runs behind the answer.  This removes a serial LLM
-        # call from the tail of every knowledge-answer turn.
-        if not has_tool_evidence(msgs):
-            return answer
-        if safety_queue is not None and not safety_queue.empty():
-            return answer
-        if chat_ui:
-            chat_ui.verification_start()
-        _t0 = time.monotonic()
-        try:
-            checked, note, issues = await asyncio.wait_for(
-                verify_answer(
-                    task=task_instruction, answer=answer, messages=msgs,
-                    ask=_verify_ask,
-                    # No tools and no rewrite: both cost more than the budget
-                    # this stage has, and both are what the deep check is for.
-                    run_tools=None, tools=None, max_tool_turns=0,
-                    allow_revision=False,
-                    verdict_max_tokens=_verdict_budget(),
-                    trusted_domains=verify_trusted_domains,
-                    log=_verify_log,
-                ),
-                timeout=verify_timeout_s if verify_timeout_s > 0 else None,
-            )
-        except asyncio.TimeoutError:
-            # The ceiling exists so that a slow endpoint costs the answer
-            # nothing.  The draft stands, and the deep check behind it still
-            # gets to look at the same claims without a clock on it.
-            logger.info("Fact-check exceeded its %.1fs budget; keeping the draft.",
-                        verify_timeout_s)
-            _verify_log("Fact-check ran long; the answer stands while the check "
-                        "continues in the background.")
-            checked, note, issues = answer, "", []
-        except Exception as e:
-            logger.warning("Fact-check pass failed: %s", e)
-            checked, note, issues = answer, "", []
-        _m.add_verification(time.monotonic() - _t0, len(issues), bool(note))
-        if chat_ui:
-            chat_ui.verification_end(checked, note)
-        _schedule_deep_check(checked, msgs, already_found=bool(issues))
-        return checked
-
-    async def _deep_check(answer: str, msgs: list) -> tuple[str, str]:
-        """The check that runs after the user has their answer.
-
-        Nothing here is on anyone's clock, so this is where the expensive parts
-        live: read-only lookups for claims the run never gathered evidence for,
-        and a real revision rather than a note.  It is cancelled outright when
-        the user asks something else — a correction to an answer they have
-        stopped caring about is not worth the tokens, let alone the
-        interruption.
-
-        Returns ``(answer, note)``; an empty note means nothing came of it and
-        the caller has nothing to show.
-        """
-        _t0 = time.monotonic()
-        try:
-            checked, note, issues = await verify_answer(
-                task=task_instruction, answer=answer, messages=msgs,
-                ask=_verify_ask,
-                run_tools=_verify_run_tools if _verify_tools else None,
-                tools=_verify_tools,
-                max_tool_turns=verify_max_tool_turns,
-                verdict_max_tokens=_verdict_budget(),
-                # The rewrite is the answer again, not a fresh answer — cap it
-                # at the verify module's own budget instead of the whole
-                # response budget (which with the default max_tokens reserved
-                # 128k tokens of context for a rewrite).
-                revision_max_tokens=min(max_tokens, REVISION_MAX_TOKENS),
-                allow_revision=True,
-                trusted_domains=verify_trusted_domains,
-                log=_verify_log,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("Background fact-check failed: %s", e)
-            return answer, ""
-        _m.add_verification(time.monotonic() - _t0, len(issues), bool(note))
-        if not note:
-            return answer, ""
-        logger.info("Background fact-check corrected %d claim(s) after %.1fs",
-                    len(issues), time.monotonic() - _t0)
-        # Told here rather than by the caller, because this is where the UI
-        # contract already lives — the same object that was told the check had
-        # started is the one owed the outcome.  Persisting it to the session is
-        # the caller's half; showing it is this one.
-        if chat_ui:
-            try:
-                chat_ui.verification_correction(checked, note)
-            except Exception as e:
-                logger.warning("Could not deliver the correction: %s", e)
-        return checked, note
-
-    def _schedule_deep_check(answer: str, msgs: list, already_found: bool) -> None:
-        """Hand the deep check to whoever owns the session's background work.
-
-        Handed over rather than started here: this function returns the
-        answer, and a task started here would outlive it with nobody left to
-        cancel it when the user types their next question.  The caller owns the
-        session, so the caller owns the task — and a caller that has no way to
-        show a late correction simply does not take it, which is why this is
-        opt-in rather than opt-out.
-        """
-        if not (verify_answers and verify_background and background_verify):
-            return
-        if not answer or not needs_verification(answer):
-            return
-        if already_found:
-            # The fast pass already found and flagged something.  Sending the
-            # same answer round again would re-report what the user is already
-            # looking at.
-            return
-        if safety_queue is not None and not safety_queue.empty():
-            return
-        try:
-            background_verify(_deep_check(answer, list(msgs)))
-        except Exception as e:  # a scheduler that refuses must not fail the turn
-            logger.warning("Could not schedule the background fact-check: %s", e)
+    fact_checker = _FactChecker(
+        tools=tools, tool_registry=tool_registry, harness=harness,
+        metrics=_m, host=host, model=model, is_ollama=is_ollama,
+        num_ctx=num_ctx, client=client, ollama_client=ollama_client,
+        timeout=timeout, data_path=data_path, session_id=session_id,
+        chat_ui=chat_ui, verbose=verbose, safety_queue=safety_queue,
+        max_tokens=max_tokens, max_repeated_tool_calls=MAX_REPEATED_TOOL_CALLS,
+        task_instruction=task_instruction, verify_answers=verify_answers,
+        verify_background=verify_background, background_verify=background_verify,
+        verify_max_tool_turns=verify_max_tool_turns,
+        verify_timeout_s=verify_timeout_s,
+        verify_trusted_domains=verify_trusted_domains,
+    )
 
     # The answer-or-nothing retry: set for the next turn only, and spent once
     # per task.  Per-task rather than per-session, because a task that ends
     # having used it has ended — nothing carries the flag forward.
     _no_think_next = False
     _no_think_retries = 0
+
+    caller = _ModelCaller(
+        host=host, model=model, is_ollama=is_ollama, num_ctx=num_ctx,
+        client=client, ollama_client=ollama_client, tools=tools,
+        stream=stream, temperature=temperature, top_p=top_p, top_k=top_k,
+        min_p=min_p, presence_penalty=presence_penalty,
+        repetition_penalty=repetition_penalty, max_tokens=max_tokens,
+        max_context_tokens=max_context_tokens,
+        max_api_retries=MAX_API_RETRIES, chat_ui=chat_ui,
+        verbose=verbose, safety_queue=safety_queue, metrics=_m,
+    )
 
     while True:
         state.iteration_count += 1
@@ -4849,11 +5688,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # indistinguishable phase.
             chat_ui.set_turn_context(tools_run=len(state.tool_call_history))
 
-        # Track streaming state across the try block for the final-response path
-        _full_content = ""
-        _full_reasoning = ""
-        _finish_reason: str | None = None
-        _completion_tokens = 0  # set from usage where the provider reports it
         # Reasoning on the opening turn is the plan; on later turns it is spent
         # deciding which tool to call next.  See think_tool_turns.  The third
         # term is the answer-or-nothing retry below, and it lasts exactly one
@@ -4879,630 +5713,26 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 messages = await _compact(messages)
                 state.last_prompt_tokens = 0
 
-        # Retry loop for transient API errors — preserves accumulated messages/tool history
-        api_error = None
-        # Reasoning-model sampling rejection, remembered for the rest of the
-        # run: once OpenAI refuses temperature/top_p the same refusal would
-        # repeat every turn (see the OpenAI branch above).
-        _openai_strip_sampling = False
-        # Same memory for a model that does not take reasoning_effort at all
-        # (a non-reasoning model): the branch stops sending it.
-        _openai_strip_reasoning = False
-        # Set when a reasoning model refuses function tools under its
-        # default effort: the retry goes out with reasoning_effort "none",
-        # the only value that keeps tools reachable on this endpoint.
-        _openai_effort_400 = False
-        # The chat-completions response object, when that is the path taken.
-        # The Responses and Ollama paths never assign it; the converged
-        # end_api call below must not read it on those paths.
-        chat_completion = None
-        # The Responses path's usage object, same bargain in the other
-        # direction: None until that path assigns it.
-        _usage = None
-        # The Responses path's effort, run-scoped like the flags above: a
-        # model that refuses an effort is retried one step down, then never
-        # asked above what it takes.  None means the parameter is omitted.
-        _responses_effort = _openai_responses_reasoning_effort(_turn_think)
-        # Timeout retries are capped separately from MAX_API_RETRIES: a
-        # timeout is a prompt-size/server-load signal, and retrying the same
-        # oversized prompt three times converts one slow prefill into
-        # minutes of stalling before the turn fails anyway.
-        _MAX_TIMEOUT_RETRIES = 1
-        _timeout_retries = 0
-        for api_attempt in range(1, MAX_API_RETRIES + 1):
-            api_error = None
-            # Internal bookkeeping keys never ride in a request.  Popped per
-            # attempt (cheap) rather than once before the loop: the timeout
-            # handler below mutates ``messages`` between attempts, and the
-            # marker must not survive into any payload regardless of path.
-            _strip_internal_keys(messages)
-            try:
-                if safety_queue is not None and not safety_queue.empty():
-                    logger.warning("Safety queue triggered before API call, exiting chat loop.")
-                    return None
-
-                _m.start_api()
-
-                # Cap output tokens so that prompt + output never approaches the context limit.
-                # Never expand beyond the configured max_tokens — only shrink when the
-                # remaining context window is tighter than max_tokens.
-                _api_max_tokens = state.active_max_tokens
-                if max_context_tokens:
-                    _prompt_est = state.last_prompt_tokens if state.last_prompt_tokens > 0 else 0
-                    # Use MAX_TOOL_RESPONSE // 2 because code/JSON can be ~1.5 chars/token,
-                    # so the same char limit costs more tokens than a /3 estimate implies.
-                    _growth_buffer = max(MAX_TOOL_RESPONSE // 2, 1024)
-                    _available = max(max_context_tokens - _prompt_est - _growth_buffer, 64)
-                    _api_max_tokens = min(_api_max_tokens, _available)
-
-                if is_ollama:
-                    ollama_kwargs = dict(
-                        model=model,
-                        messages=_adapt_messages_for_ollama(messages),
-                        stream=stream,
-                        options={
-                            "temperature": temperature,
-                            "top_p": top_p,
-                            "top_k": top_k,
-                            "num_ctx": num_ctx,
-                            "num_predict": _api_max_tokens,
-                            "presence_penalty": presence_penalty,
-                            "repeat_penalty": repetition_penalty,
-                        },
-                    )
-                    if _turn_think:
-                        ollama_kwargs["think"] = True
-                    if tools:
-                        ollama_kwargs["tools"] = tools
-                    # Force JSON output when the model keeps generating planning prose
-                    # instead of tool calls.  Ollama's format="json" ensures the response
-                    # is parseable by _parse_tool_call_from_content even though Ollama has
-                    # no tool_choice="required" equivalent.
-                    if state.force_tool_call and tools:
-                        ollama_kwargs["format"] = "json"
-                    chat_completion = await _await_with_safety(
-                        ollama_client.chat(**ollama_kwargs), safety_queue)
-                    if chat_completion is _SAFETY_ABORT:
-                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
-                        return None
-                elif _is_openai_host(host) and _is_openai_responses_model(model):
-                    # The gpt-6 family is served by /v1/responses —
-                    # /v1/chat/completions refuses every reasoning_effort a
-                    # tool-carrying request can name (see
-                    # _is_openai_responses_model).  The history stays in
-                    # chat-completions shape and is converted per request;
-                    # the reply is flattened back into the same variables
-                    # the chat-completions paths fill, so the rest of the
-                    # loop reads one shape.
-                    _responses_kwargs: dict = dict(
-                        model=model,
-                        input=_openai_responses_input(messages),
-                        max_output_tokens=_api_max_tokens,
-                        store=False,
-                    )
-                    if _responses_effort:
-                        _responses_kwargs["reasoning"] = {"effort": _responses_effort}
-                    if tools:
-                        _responses_kwargs["tools"] = _openai_responses_tools(tools)
-                        _responses_kwargs["tool_choice"] = (
-                            "required" if state.force_tool_call else "auto")
-                    if stream:
-                        _responses_stream = client.responses.stream(
-                            **_responses_kwargs)
-                        _stream_entered = False
-                        try:
-                            # The SDK's stream() returns a manager whose
-                            # __aenter__ yields the event iterator itself —
-                            # the manager is not the iterator, so enter it
-                            # and hand the iterator to the processor.
-                            _responses_events_iter = await _await_with_safety(
-                                _responses_stream.__aenter__(), safety_queue)
-                            _stream_entered = True
-                            (_full_content, _full_reasoning, _full_tool_calls,
-                             _ui_was_streaming, _stream_usage, _finish_reason
-                             ) = await _process_responses_streaming_response(
-                                _responses_events_iter, safety_queue, chat_ui,
-                                on_first_token=_m.first_token,
-                            )
-                        finally:
-                            if _stream_entered:
-                                await _responses_stream.__aexit__(None, None, None)
-                        if _full_content is None and _full_tool_calls is None:
-                            # Safety queue fired mid-stream: the processor
-                            # returned None through the tuple contract.
-                            return None
-                        if _stream_usage is not None:
-                            state.last_prompt_tokens = _stream_usage.prompt_tokens
-                            _completion_tokens = _stream_usage.completion_tokens
-                            if max_context_tokens and chat_ui:
-                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason,
-                                   cached_tokens=_cached_tokens_of(_stream_usage))
-                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
-                                and _looks_like_raw_tool_call(_full_content)):
-                            chat_ui.stream_fold(_step_summary(_full_content))
-                        if _ui_was_streaming and chat_ui:
-                            chat_ui.stream_end()
-                        if _finish_reason == "length":
-                            _log_to_ui_or_verbose(
-                                "Model response truncated (finish_reason=length). "
-                                "Consider increasing max_tokens.",
-                                chat_ui, verbose, level="warning",
-                            )
-                            state.force_compact = True
-                        elif _finish_reason == "tool_calls" and not _full_tool_calls:
-                            _log_to_ui_or_verbose(
-                                f"Model signaled finish_reason=tool_calls but no tool calls received "
-                                f"(model={model}). Checking content for raw tool calls.",
-                                chat_ui, verbose, level="warning",
-                            )
-                        _content, _tool_calls, _message_for_history = _unify_streaming_result(
-                            _full_content, _full_tool_calls,
-                        )
-                        await asyncio.sleep(0)
-                        if safety_queue is not None and not safety_queue.empty():
-                            logger.warning("Safety queue triggered after API call, exiting chat loop.")
-                            return None
-                        break  # success — exit retry loop
-                    _response = await _await_with_safety(
-                        client.responses.create(**_responses_kwargs), safety_queue)
-                    if _response is _SAFETY_ABORT:
-                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
-                        return None
-                    (_content, _full_reasoning, _tool_calls, _finish_reason,
-                     _usage) = _openai_responses_result(_response)
-                    _full_content = _content
-                    _message_for_history = {
-                        "role": "assistant",
-                        "content": _content or None,
-                        "tool_calls": [
-                            {"id": tc.id, "type": "function",
-                             "function": {"name": tc.function.name,
-                                          "arguments": tc.function.arguments}}
-                            for tc in (_tool_calls or [])
-                        ] if _tool_calls else None,
-                    } if _tool_calls else {"role": "assistant", "content": _content}
-                    if _usage is not None:
-                        state.last_prompt_tokens = _usage.prompt_tokens
-                        _completion_tokens = _usage.completion_tokens
-                        if max_context_tokens and chat_ui:
-                            chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-                    if _finish_reason == "length":
-                        _log_to_ui_or_verbose(
-                            "Model response truncated (finish_reason=length). "
-                            "Consider increasing max_tokens.",
-                            chat_ui, verbose, level="warning",
-                        )
-                        state.force_compact = True
-                    await asyncio.sleep(0)
-                    if safety_queue is not None and not safety_queue.empty():
-                        logger.warning("Safety queue triggered after API call, exiting chat loop.")
-                        return None
-                    break  # success — exit retry loop
-                elif _is_openai_host(host):
-                    # OpenAI rejects unknown body params: no vLLM extensions
-                    # here, and no chat-template thinking switch.  Output
-                    # budget goes out as max_completion_tokens — the spelling
-                    # every OpenAI chat model takes (max_tokens is deprecated
-                    # and reasoning models refuse it outright).
-                    completion_kwargs = dict(
-                        model=model, messages=messages, stream=stream,
-                        max_completion_tokens=_api_max_tokens,
-                    )
-                    # Reasoning and function tools don't mix on
-                    # /v1/chat/completions — but only for models that
-                    # actually refuse the combination ("Function tools with
-                    # reasoning_effort are not supported").  Others reject
-                    # the parameter outright, or reject "none" specifically
-                    # ("does not support 'none' with this model", gpt-6
-                    # class: supported values low/medium/high/xhigh).  No
-                    # single value works everywhere, so nothing is sent
-                    # until the model itself asks for it: the tools+effort
-                    # 400 is retried with effort "none", and any other
-                    # reasoning_effort rejection drops the parameter for the
-                    # rest of the run (handler below).  The send itself
-                    # happens where tools are attached, further below, so
-                    # the flag and the tools list are read at the same
-                    # point.
-                    # Reasoning models (o-series, gpt-5) take only default
-                    # sampling; a rejection names the parameter and the
-                    # handler below drops these for the rest of the run.
-                    if not _openai_strip_sampling:
-                        completion_kwargs["temperature"] = temperature
-                        completion_kwargs["top_p"] = top_p
-                        if presence_penalty:
-                            completion_kwargs["presence_penalty"] = presence_penalty
-                else:
-                    _extra_body = {
-                        "top_k": top_k,          # vLLM extension, important for Qwen3
-                        "min_p": min_p,
-                        "presence_penalty": presence_penalty,
-                        "repetition_penalty": repetition_penalty,
-                    }
-                    if _turn_think and not _template_kwargs_unsupported(host):
-                        _chat_template_kwargs: dict = {"enable_thinking": True}
-                        # preserve_thinking is only supported on Qwen3.6+
-                        _model_lower = model.lower()
-                        _qwen3_ver = next(
-                            (float(p.removeprefix("qwen"))
-                             for p in _model_lower.replace("/", "-").split("-")
-                             if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()),
-                            None,
-                        )
-                        if _qwen3_ver is not None and _qwen3_ver >= 3.6:
-                            _chat_template_kwargs["preserve_thinking"] = True
-                        _extra_body["chat_template_kwargs"] = _chat_template_kwargs
-                    elif not _turn_think and not _template_kwargs_unsupported(host):
-                        # Thinking off has to be *said*, not left unsaid.  The
-                        # Qwen3 family's chat template reads a missing
-                        # ``enable_thinking`` as thinking on, so omitting the
-                        # switch made both ``think: false`` and
-                        # ``think_tool_turns: false`` no-ops against vLLM: the
-                        # model reasoned on every turn anyway, the reasoning
-                        # arrived on ``reasoning_content`` where the answer
-                        # should have been, and a final turn that thought to
-                        # the end of its budget returned no answer at all.
-                        _extra_body["chat_template_kwargs"] = {"enable_thinking": False}
-                    completion_kwargs = dict(
-                        model=model,
-                        messages=messages,
-                        stream=stream,
-                        temperature=temperature,
-                        top_p=top_p,
-                        max_tokens=_api_max_tokens,
-                        extra_body=_extra_body,
-                    )
-                # Shared by the OpenAI and vLLM branches: the request goes
-                # out here, after each branch has built its kwargs.  The
-                # Ollama branch above already sent its own request and set
-                # chat_completion itself.
-                if not is_ollama:
-                    if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
-                        completion_kwargs["tools"] = tools
-                        # vLLM rejects tool_choice when tools is unset, so
-                        # only send it alongside tools.
-                        completion_kwargs["tool_choice"] = "required" if state.force_tool_call else "auto"
-                    # A reasoning model that refused function tools under
-                    # its default effort: the retry goes out with
-                    # reasoning_effort "none", the only value that keeps
-                    # the tool loop reachable on this endpoint.  A
-                    # non-reasoning model (gpt-4o class) takes "none"
-                    # from the first call, which keeps a chatty default
-                    # effort from spending the output budget on thinking
-                    # nobody asked for.  A reasoning model gets nothing
-                    # until its own 400 asks — gpt-6 class refuses "none"
-                    # outright, and the others refuse it alongside tools.
-                    # A model that refuses the parameter itself stops
-                    # being asked for it (handler below).
-                    if (_is_openai_host(host)
-                            and not _openai_strip_reasoning
-                            and (_openai_effort_400
-                                 or (not tools
-                                     and not _is_openai_reasoning_model(model)))):
-                        completion_kwargs["reasoning_effort"] = "none"
-                    if stream:
-                        completion_kwargs["stream_options"] = {"include_usage": True}
-                    chat_completion = await _await_with_safety(
-                        client.chat.completions.create(**completion_kwargs), safety_queue)
-                    if chat_completion is _SAFETY_ABORT:
-                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
-                        return None
-
-                # Streaming path: iterate chunks, populate shared variables
-                if stream:
-                    if is_ollama:
-                        stream_result = await _ollama_process_streaming_response(
-                            chat_completion, safety_queue, chat_ui, _turn_think,
-                            on_first_token=_m.first_token,
-                        )
-                        if stream_result is None:
-                            return None
-                        (_full_content, _full_reasoning, _ollama_tcs,
-                         _ui_was_streaming, _ollama_prompt_tokens, _finish_reason,
-                         _ollama_eval_count) = stream_result
-                        _completion_tokens = _ollama_eval_count
-                        if _ollama_prompt_tokens:
-                            state.last_prompt_tokens = _ollama_prompt_tokens
-                            if max_context_tokens and chat_ui:
-                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-                        # Before stream_end: the footer it prints reports this
-                        # turn, and reads it from the metrics sink.  Ollama's
-                        # /api_chat stream carries prompt_eval_count but no
-                        # cached-token field, so there is nothing to pass.
-                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason)
-                        # A raw-JSON tool call streams as ordinary content, so
-                        # its narration reached the screen as if it were the
-                        # answer.  Fold it here, at the last moment before
-                        # stream_end() persists it -- the structured path
-                        # above folds on the tool-calls chunk; this is the
-                        # same decision made at the only point the raw
-                        # path can make it.
-                        if (not _ollama_tcs and _ui_was_streaming and chat_ui
-                                and _looks_like_raw_tool_call(_full_content)):
-                            chat_ui.stream_fold(_step_summary(_full_content))
-                        if _ui_was_streaming and chat_ui:
-                            chat_ui.stream_end()
-                        if _finish_reason == "length":
-                            _log_to_ui_or_verbose(
-                                "Model response truncated (finish_reason=length). "
-                                "Consider increasing num_ctx/max_tokens.",
-                                chat_ui, verbose, level="warning",
-                            )
-                            state.force_compact = True
-                        if _ollama_tcs:
-                            _tool_calls = _adapt_ollama_tool_calls(_ollama_tcs)
-                            # arguments must be dict in the history message (Ollama validates this)
-                            _message_for_history = {
-                                "role": "assistant",
-                                "content": _prose_alongside_tool_calls(_full_content),
-                                "tool_calls": [
-                                    {"id": tc.id, "type": "function",
-                                     "function": {"name": tc.function.name,
-                                                  "arguments": json.loads(tc.function.arguments)}}
-                                    for tc in _tool_calls
-                                ],
-                            }
-                            _content = None
-                        else:
-                            _tool_calls = None
-                            _content = _full_content
-                            _message_for_history = {"role": "assistant", "content": _full_content}
-                    else:
-                        stream_result = await _process_streaming_response(
-                            chat_completion, safety_queue, chat_ui, _turn_think,
-                            on_first_token=_m.first_token,
-                        )
-                        if stream_result is None:
-                            return None
-                        _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
-                        if _stream_usage is not None:
-                            state.last_prompt_tokens = _stream_usage.prompt_tokens
-                            _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
-                            if max_context_tokens and chat_ui:
-                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-                        # Before stream_end: the footer it prints reports this
-                        # turn, and reads it from the metrics sink.
-                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason,
-                                   cached_tokens=_cached_tokens_of(_stream_usage))
-                        # A raw-JSON tool call streams as ordinary content, so
-                        # its narration reached the screen as if it were the
-                        # answer.  Fold it here, at the last moment before
-                        # stream_end() persists it -- the structured path
-                        # above folds on the first tool-call delta; this is
-                        # the same decision made at the only point the raw
-                        # path can make it.
-                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
-                                and _looks_like_raw_tool_call(_full_content)):
-                            chat_ui.stream_fold(_step_summary(_full_content))
-                        if _ui_was_streaming and chat_ui:
-                            chat_ui.stream_end()
-                        if _finish_reason == "length":
-                            _log_to_ui_or_verbose(
-                                "Model response truncated (finish_reason=length). "
-                                "Consider increasing max_tokens.",
-                                chat_ui, verbose, level="warning",
-                            )
-                            state.force_compact = True
-                        elif _finish_reason == "tool_calls" and not _full_tool_calls:
-                            _log_to_ui_or_verbose(
-                                f"Model signaled finish_reason=tool_calls but no tool calls received "
-                                f"(model={model}). Checking content for raw tool calls.",
-                                chat_ui, verbose, level="warning",
-                            )
-                        _content, _tool_calls, _message_for_history = _unify_streaming_result(
-                            _full_content, _full_tool_calls,
-                        )
-
-                await asyncio.sleep(0)
-                if safety_queue is not None and not safety_queue.empty():
-                    logger.warning("Safety queue triggered after API call, exiting chat loop.")
-                    return None
-                break  # success — exit retry loop
-            except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS) as e:
-                api_error = f"Request to {host} timed out (read timeout during streaming)."
-                logger.error(api_error)
-                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="error")
-                # tool_choice="required" engages guided decoding on vLLM, which
-                # can stall on large tool schemas.  If that's what we asked for,
-                # retry without it rather than wedging the server again.
-                if state.force_tool_call:
-                    state.force_tool_call = False
-                    state.active_max_tokens = max_tokens
-                    _log_to_ui_or_verbose(
-                        "Dropping tool_choice=required for retry (possible guided-decoding stall).",
-                        chat_ui, verbose, level="warning",
-                    )
-                # A timeout is a prompt-size or server-load problem, not a
-                # transient blip: the identical prompt re-sent into the same
-                # loaded server stalls for the same budget again, and at
-                # MAX_API_RETRIES that is minutes of stalling per failure.
-                # One retry, and the retry goes out *smaller* — the oldest
-                # tool results are decayed to their heads, which is exactly
-                # what _decay_old_tool_results does to aged results anyway.
-                if _timeout_retries >= _MAX_TIMEOUT_RETRIES:
-                    logger.warning("Timeout retry budget spent; failing this call.")
-                    break
-                _timeout_retries += 1
-                _trimmed = _decay_old_tool_results(messages, keep_full=1)
-                if _trimmed:
-                    _log_to_ui_or_verbose(
-                        "Timed out; retrying once with older tool results trimmed to their heads.",
-                        chat_ui, verbose, level="warning",
-                    )
-            except NotFoundError as e:
-                api_error = f"Model {model!r} not found at {host}: {e}."
-                logger.error(api_error)
-                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
-                _detected = await _autodetect_fallback_model(
-                    client, ollama_client, is_ollama, host, model)
-                if _detected:
-                    model = _detected
-                    if chat_ui:
-                        chat_ui.model_name = model
-                    _log_to_ui_or_verbose(
-                        f"Falling back to auto-detected model: {model}",
-                        chat_ui, verbose, level="warning")
-            except OpenAIError as e:
-                # A host that validates chat_template_kwargs refuses the whole
-                # request over the thinking switch.  Remember that and the
-                # retry below goes out without it — the same bargain
-                # _verify_ask strikes, and the reason every turn now sends the
-                # switch rather than only the thinking ones.
-                if (not is_ollama and _is_parameter_rejection(e)
-                        and not _template_kwargs_unsupported(host)):
-                    _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
-                    logger.info("Host %s rejected chat_template_kwargs (%s); "
-                                "retrying without the thinking switch.", host, e)
-                # OpenAI names the offending parameter in the rejection:
-                # o-series and gpt-5 take only default sampling, so drop
-                # temperature/top_p/presence_penalty for the rest of the run.
-                if (_is_openai_host(host) and _is_parameter_rejection(e)
-                        and any(p in str(e).lower() for p in
-                                ("temperature", "top_p", "presence_penalty"))):
-                    _openai_strip_sampling = True
-                    logger.info("OpenAI rejected a sampling parameter (%s); "
-                                "retrying with provider defaults.", e)
-                # A reasoning model that refuses function tools under its
-                # default effort: remember it and let the retry above go
-                # out with reasoning_effort "none" — the only value that
-                # keeps the tool loop reachable on this endpoint.  The
-                # error's own wording ("function tools") is the evidence;
-                # `tools` is not required here, because a run whose tools
-                # list is empty this turn can still grow one next turn.
-                if (_is_openai_host(host) and _is_parameter_rejection(e)
-                        and "reasoning_effort" in str(e).lower()
-                        and "function tools" in str(e).lower()):
-                    _openai_effort_400 = True
-                    logger.info("OpenAI refused function tools under the "
-                                "default reasoning effort (%s); retrying "
-                                "with reasoning_effort='none'.", e)
-                # And a model that takes no reasoning_effort at all (a
-                # non-reasoning model): stop sending it, for the rest of
-                # the run.  A model that takes the parameter but refuses
-                # "none" specifically (gpt-6 class: low/medium/high/xhigh
-                # only) is handled the same way — the parameter is not
-                # sent again, because with tools the request would just
-                # 400 the other way ("Function tools with reasoning_effort
-                # are not supported").
-                if (_is_openai_host(host) and _is_parameter_rejection(e)
-                        and "reasoning_effort" in str(e).lower()
-                        and "function tools" not in str(e).lower()):
-                    _openai_strip_reasoning = True
-                    logger.info("OpenAI rejected reasoning_effort (%s); "
-                                "retrying without it.", e)
-                # The Responses path names its effort in the error too
-                # ("Unsupported value: 'effort' ... supported values are").
-                # One step down and remember it for the rest of the run —
-                # a model that refuses "medium" is asked for "low" once and
-                # then never above what it takes.
-                if (_is_openai_host(host) and _is_openai_responses_model(model)
-                        and _is_parameter_rejection(e)
-                        and ("effort" in str(e).lower()
-                             or "reasoning" in str(e).lower())):
-                    _responses_effort = ("low"
-                                         if _responses_effort == "medium" else None)
-                    logger.info("OpenAI refused reasoning effort (%s); "
-                                "retrying with effort %s.",
-                                e, _responses_effort or "omitted")
-                api_error = f"Error communicating with {host}: {e}."
-                logger.error(api_error)
-                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
-            except Exception as e:
-                api_error = f"Unexpected error ({type(e).__name__}): {e}"
-                logger.error(api_error, exc_info=True)
-                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="error")
-
-            # Log retry attempt if we haven't exhausted retries
-            if api_attempt < MAX_API_RETRIES:
-                _m.add_retry()
-                retry_msg = f"Retrying API call (attempt {api_attempt + 1}/{MAX_API_RETRIES})..."
-                logger.info(retry_msg)
-                _log_to_ui_or_verbose(retry_msg, chat_ui, verbose, level="info")
-                await asyncio.sleep(min(2 ** api_attempt, 10))  # exponential backoff
-
-        if api_error is not None:
-            # All retries exhausted
+        turn = await caller.call_turn(messages, state, _turn_think)
+        if turn is None:
+            # Safety queue fired mid-call; exit without an answer.
             return None
-
-        # Non-streaming: extract from response object into unified variables
-        if not stream:
-            if _is_openai_host(host) and _is_openai_responses_model(model):
-                # The Responses path already extracted everything the
-                # non-streaming branch below reads out of a chat completion;
-                # it set these variables inside the retry loop and broke out
-                # with them.
-                pass
-            elif is_ollama:
-                _msg = chat_completion.message
-                _content = _msg.content
-                _full_reasoning = _reasoning_text(_msg)  # Ollama: .thinking
-                _raw_tcs = getattr(_msg, "tool_calls", None)
-                _tool_calls = _adapt_ollama_tool_calls(_raw_tcs) if _raw_tcs else None
-                _finish_reason = getattr(chat_completion, "done_reason", None)
-                if _tool_calls:
-                    _message_for_history = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {"id": tc.id, "type": "function",
-                             "function": {"name": tc.function.name,
-                                          "arguments": json.loads(tc.function.arguments)}}
-                            for tc in _tool_calls
-                        ],
-                    }
-                else:
-                    _message_for_history = {"role": "assistant", "content": _content}
-                # Ollama exposes prompt_eval_count for token tracking
-                _completion_tokens = getattr(chat_completion, "eval_count", 0)
-                _pec = getattr(chat_completion, "prompt_eval_count", None)
-                if _pec is not None:
-                    state.last_prompt_tokens = _pec
-                    if max_context_tokens and chat_ui:
-                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-            else:
-                _choice = chat_completion.choices[0]
-                _msg = _choice.message
-                _content = _msg.content
-                # Same split the streaming path handles: a host that puts the
-                # thinking in its own field can hand back an empty content with
-                # the answer sitting in the other one.
-                _full_reasoning = _reasoning_text(_msg)
-                _tool_calls = _msg.tool_calls if _msg.tool_calls else None
-                _finish_reason = _choice.finish_reason
-                _message_for_history = _msg
-                # Warn on unexpected finish reasons
-                if _finish_reason == "length":
-                    _log_to_ui_or_verbose(
-                        "Model response truncated (finish_reason=length). "
-                        "Consider increasing max_tokens.",
-                        chat_ui, verbose, level="warning",
-                    )
-                    state.force_compact = True
-                elif _finish_reason == "tool_calls" and not _tool_calls:
-                    _log_to_ui_or_verbose(
-                        f"Model signaled finish_reason=tool_calls but no tool calls received "
-                        f"(model={model}). Checking content for raw tool calls.",
-                        chat_ui, verbose, level="warning",
-                    )
-                # Capture token usage for context tracking
-                if chat_completion.usage is not None:
-                    state.last_prompt_tokens = chat_completion.usage.prompt_tokens
-                    _completion_tokens = getattr(chat_completion.usage, "completion_tokens", 0)
-                    if max_context_tokens and chat_ui:
-                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-
-        # Both paths have converged: the model call for this turn is done.
-        # cached_tokens: the chat-completions paths carry a usage object with
-        # prompt_tokens_details; the Responses path reports usage through
-        # _usage instead, and the Ollama path has no such field.  Read
-        # whichever exists — None, never 0, when the path does not say.
-        _usage_for_cache = (getattr(chat_completion, "usage", None)
-                            if chat_completion is not None else _usage)
-        _m.end_api(state.last_prompt_tokens, _completion_tokens, _finish_reason,
-                   cached_tokens=_cached_tokens_of(_usage_for_cache))
+        if turn.api_error is not None:
+            # All retries exhausted.
+            return None
+        model = turn.model
+        # The NotFoundError handler may have swapped in an auto-detected
+        # fallback; subsequent turns must use it too.
+        caller.model = model
+        _content = turn.content
+        _full_reasoning = turn.full_reasoning
+        _full_content = turn.full_content
+        _tool_calls = turn.tool_calls
+        _finish_reason = turn.finish_reason
+        _message_for_history = turn.message_for_history
+        _completion_tokens = turn.completion_tokens
+        _usage = turn.usage
+        chat_completion = turn.chat_completion
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:
@@ -5789,7 +6019,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # other return above is the loop reporting on itself — a limit hit,
             # a model that cannot call tools — and there is nothing in those to
             # check against evidence.
-            return await _fact_check(
+            return await fact_checker.fact_check(
                 _recover_dropped_answer(_final, state.prose_before_tools), messages)
 
         # Keep the answer text written ahead of this tool call.  A model that
