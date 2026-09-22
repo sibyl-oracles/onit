@@ -59,6 +59,13 @@ AGENT_CURSOR = "OnIt"
 USER_CURSOR = "You"
 STOP_TAG = "<stop></stop>"
 
+# Whole-run failover attempts across the load balancer, on top of the
+# transport retries chat() itself does inside a turn.  One initial attempt
+# plus one failover: a second endpoint is the redundancy the balancer
+# provides, and a third round against the same struggling servers only
+# multiplies the wait (chat() has already retried each turn 3x by then).
+MAX_FAILOVER_ATTEMPTS = 2
+
 # ``serving:`` keys forwarded to chat() only when the config sets them, so
 # chat()'s own default stays the single place each one is defined.
 SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty',
@@ -118,6 +125,70 @@ async def _call_sandbox_stop(tool_registry, session_id: str = "") -> None:
             await asyncio.wait_for(handler(**kwargs), timeout=10)
     except Exception as e:
         logger.warning("sandbox_stop failed: %s", e)
+
+
+async def _chat_with_failover(onit, *, instruction: str, kwargs: dict,
+                              safety_queue: asyncio.Queue,
+                              session_key: str | None,
+                              images: list | None = None) -> str | None:
+    """Run one chat() call with load-balancer failover around it.
+
+    The single failover layer every whole-run caller goes through —
+    process_task and agent_session — so the acquire/release pairing, the
+    empty-response retry and the backoff cannot drift apart again.  chat()
+    keeps its own transport retries inside a turn (they carry the
+    per-request parameter recovery: dropping tool_choice, stripping
+    reasoning_effort); this layer only moves the whole run to another
+    endpoint when the first one came back with nothing usable.
+
+    Args:
+        onit: The OnIt instance, for its load_balancer, model_serving,
+            timeout and tool_registry.
+        kwargs: The chat() kwargs from OnIt._chat_kwargs().
+        safety_queue: The queue whose non-emptiness means "stop now".
+        session_key: Sticky-session key for the load balancer.
+        images: Optional images for the instruction.
+
+    Returns:
+        The chat() response, or None when every attempt came back empty.
+    """
+    last_response = None
+    for attempt in range(1, MAX_FAILOVER_ATTEMPTS + 1):
+        if not safety_queue.empty():
+            break
+        endpoint = onit.load_balancer.acquire(key=session_key)
+        _usable = None
+        try:
+            last_response = await chat(
+                host=endpoint.host,
+                host_key=endpoint.host_key,
+                model=endpoint.model,
+                instruction=instruction,
+                images=images,
+                tool_registry=onit.tool_registry,
+                safety_queue=safety_queue,
+                think=onit.model_serving.get("think", False),
+                timeout=onit.timeout,
+                **kwargs)
+            # Treat empty/whitespace-only responses as failures too.
+            _usable = last_response and remove_tags(last_response).strip()
+        finally:
+            # A stop request is not an endpoint failure — don't cool down.
+            onit.load_balancer.release(
+                endpoint,
+                success=bool(_usable) or not safety_queue.empty())
+        if _usable:
+            break
+        if attempt < MAX_FAILOVER_ATTEMPTS and safety_queue.empty():
+            kind = "Empty" if last_response is not None else "No"
+            retry_msg = (f"{kind} response from {endpoint.name or endpoint.host}, "
+                         f"retrying ({attempt}/{MAX_FAILOVER_ATTEMPTS})...")
+            logger.warning(retry_msg)
+            chat_ui = getattr(onit, 'chat_ui', None)
+            if chat_ui and hasattr(chat_ui, 'add_log'):
+                chat_ui.add_log(retry_msg, level="warning")
+            await asyncio.sleep(min(2 ** attempt, 10))
+    return last_response
 
 
 # Substring → layman-friendly status line, first match wins. Raw tool log
@@ -1373,42 +1444,10 @@ class OnIt(BaseModel):
             session_id=effective_session_id,
             session_history=self.load_session_history(session_path=effective_session_path),
             background_verify=_deep_checks.append if correction_callback else None)
-        MAX_PROCESS_RETRIES = 3
-        last_response = None
-        for _pt_attempt in range(1, MAX_PROCESS_RETRIES + 1):
-            if not effective_safety_queue.empty():
-                break
-            endpoint = self.load_balancer.acquire(key=effective_session_id)
-            _usable = None
-            try:
-                last_response = await chat(
-                    host=endpoint.host,
-                    host_key=endpoint.host_key,
-                    model=endpoint.model,
-                    instruction=instruction,
-                    images=images,
-                    tool_registry=self.tool_registry,
-                    safety_queue=effective_safety_queue,
-                    think=self.model_serving.get("think", False),
-                    timeout=self.timeout,
-                    **kwargs,
-                )
-                _usable = last_response and remove_tags(last_response).strip()
-            finally:
-                # A stop request is not an endpoint failure — don't cool down.
-                self.load_balancer.release(
-                    endpoint,
-                    success=bool(_usable) or not effective_safety_queue.empty())
-            if _usable:
-                break
-            if _pt_attempt < MAX_PROCESS_RETRIES and effective_safety_queue.empty():
-                kind = "Empty" if last_response is not None else "No"
-                retry_msg = (f"{kind} response from {endpoint.name or endpoint.host}, "
-                             f"retrying ({_pt_attempt}/{MAX_PROCESS_RETRIES})...")
-                logger.warning(retry_msg)
-                if hasattr(self, 'chat_ui') and self.chat_ui and hasattr(self.chat_ui, 'add_log'):
-                    self.chat_ui.add_log(retry_msg, level="warning")
-                await asyncio.sleep(min(2 ** _pt_attempt, 10))
+        last_response = await _chat_with_failover(
+            self, instruction=instruction, kwargs=kwargs,
+            safety_queue=effective_safety_queue,
+            session_key=effective_session_id, images=images)
 
         # If the safety queue fired, stop the sandbox container.
         if not effective_safety_queue.empty():
@@ -1430,9 +1469,9 @@ class OnIt(BaseModel):
                     _instruction_s, summarize_metrics(_metrics))
 
         if not last_response or not remove_tags(last_response).strip():
-            logger.error("chat() returned empty/None after %d retries "
-                         "across hosts: %s",
-                         MAX_PROCESS_RETRIES, ", ".join(self.load_balancer.hosts))
+            logger.error("chat() returned empty/None after %d failover "
+                         "attempts across hosts: %s",
+                         MAX_FAILOVER_ATTEMPTS, ", ".join(self.load_balancer.hosts))
             for _stale in _deep_checks:
                 _stale.close()
             # A run that spent thirty turns and came back with nothing is
@@ -2082,8 +2121,7 @@ class OnIt(BaseModel):
             self._cleanup_enter_key_listener(loop)
             
     async def agent_session(self) -> None:
-        """Start the agent session with automatic retry on transient failures."""
-        MAX_AGENT_RETRIES = 3
+        """Start the agent session with automatic failover on empty responses."""
         while True:
             try:
                 instruction = await self.input_queue.get()
@@ -2109,39 +2147,10 @@ class OnIt(BaseModel):
                     session_history=self.load_session_history(),
                     background_verify=self.pending_deep_checks.append)
 
-                last_response = None
-                for attempt in range(1, MAX_AGENT_RETRIES + 1):
-                    if not self.safety_queue.empty():
-                        break
-                    endpoint = self.load_balancer.acquire(key=self.session_id)
-                    _usable = None
-                    try:
-                        last_response = await chat(
-                            host=endpoint.host,
-                            host_key=endpoint.host_key,
-                            model=endpoint.model,
-                            instruction=instruction,
-                            tool_registry=self.tool_registry,
-                            safety_queue=self.safety_queue,
-                            think=self.model_serving.get("think", False),
-                            timeout=self.timeout,
-                            **kwargs)
-                        # Treat empty/whitespace-only responses as failures too
-                        _usable = last_response and remove_tags(last_response).strip()
-                    finally:
-                        # A stop request is not an endpoint failure — don't cool down.
-                        self.load_balancer.release(
-                            endpoint,
-                            success=bool(_usable) or not self.safety_queue.empty())
-                    if _usable:
-                        break
-                    if attempt < MAX_AGENT_RETRIES and self.safety_queue.empty():
-                        kind = "Empty" if last_response is not None else "No"
-                        retry_msg = f"{kind} response from model, retrying ({attempt}/{MAX_AGENT_RETRIES})..."
-                        logger.warning(retry_msg)
-                        if self.chat_ui and hasattr(self.chat_ui, 'add_log'):
-                            self.chat_ui.add_log(retry_msg, level="warning")
-                        await asyncio.sleep(min(2 ** attempt, 10))
+                last_response = await _chat_with_failover(
+                    self, instruction=instruction, kwargs=kwargs,
+                    safety_queue=self.safety_queue,
+                    session_key=self.session_id)
 
                 # Normalize: if final response is empty/whitespace, treat as None
                 if not last_response or not remove_tags(last_response).strip():

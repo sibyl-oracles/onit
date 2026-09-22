@@ -12,7 +12,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.onit import (OnIt, STOP_TAG, StreamingAdapter, friendly_tool_status)
+from src.onit import (OnIt, STOP_TAG, StreamingAdapter, friendly_tool_status,
+                      MAX_FAILOVER_ATTEMPTS, _chat_with_failover)
 from src.model.serving.state import RunState
 
 
@@ -707,6 +708,95 @@ class TestChatKwargs:
             **self._base(onit), background_verify=sink, stream=False)
         assert kwargs['background_verify'] is sink
         assert kwargs['stream'] is False
+
+
+# ── _chat_with_failover ──────────────────────────────────────────────────────
+
+class TestChatWithFailover:
+    """The one failover layer every whole-run chat() caller goes through."""
+
+    def _onit(self, tmp_path):
+        onit = _make_onit_for_async(tmp_path)
+        onit.safety_queue = asyncio.Queue()
+        return onit
+
+    @pytest.mark.asyncio
+    async def test_first_usable_response_wins(self, tmp_path):
+        onit = self._onit(tmp_path)
+        calls = []
+
+        async def _chat(**kw):
+            calls.append(kw["host"])
+            return "The answer"
+
+        with patch("src.onit.chat", new=_chat):
+            result = await _chat_with_failover(
+                onit, instruction="hi", kwargs=onit._chat_kwargs(
+                    metrics={}, run_state=RunState(), chat_ui=None,
+                    verbose=False, data_path=".", session_id="s",
+                    session_history=[]),
+                safety_queue=onit.safety_queue, session_key="s")
+        assert result == "The answer"
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_response_fails_over_then_gives_up(self, tmp_path):
+        onit = self._onit(tmp_path)
+        calls = []
+
+        async def _chat(**kw):
+            calls.append(kw["host"])
+            return "   "  # whitespace-only: unusable
+
+        with patch("src.onit.chat", new=_chat):
+            result = await _chat_with_failover(
+                onit, instruction="hi", kwargs=onit._chat_kwargs(
+                    metrics={}, run_state=RunState(), chat_ui=None,
+                    verbose=False, data_path=".", session_id="s",
+                    session_history=[]),
+                safety_queue=onit.safety_queue, session_key="s")
+        # One initial attempt + one failover, then give up with the last
+        # response — the caller decides what "nothing" means.
+        assert len(calls) == MAX_FAILOVER_ATTEMPTS
+        assert result == "   "
+
+    @pytest.mark.asyncio
+    async def test_safety_stop_beats_the_retry(self, tmp_path):
+        onit = self._onit(tmp_path)
+        await onit.safety_queue.put("stop")
+        calls = []
+
+        async def _chat(**kw):
+            calls.append(kw["host"])
+            return "The answer"
+
+        with patch("src.onit.chat", new=_chat):
+            result = await _chat_with_failover(
+                onit, instruction="hi", kwargs=onit._chat_kwargs(
+                    metrics={}, run_state=RunState(), chat_ui=None,
+                    verbose=False, data_path=".", session_id="s",
+                    session_history=[]),
+                safety_queue=onit.safety_queue, session_key="s")
+        assert calls == []
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_failed_endpoint_is_released_into_cooldown(self, tmp_path):
+        onit = self._onit(tmp_path)
+
+        async def _chat(**kw):
+            return None
+
+        with patch("src.onit.chat", new=_chat):
+            await _chat_with_failover(
+                onit, instruction="hi", kwargs=onit._chat_kwargs(
+                    metrics={}, run_state=RunState(), chat_ui=None,
+                    verbose=False, data_path=".", session_id="s",
+                    session_history=[]),
+                safety_queue=onit.safety_queue, session_key="s")
+        preferred = onit.load_balancer.preferred
+        assert preferred.failed_at > 0.0  # cooldown started
+
 
 # ── OnIt.process_task ───────────────────────────────────────────────────────
 
