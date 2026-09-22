@@ -59,5 +59,5 @@ pytest legacy/test -v
 - Removing both shortens install time and shrinks the supply chain, in line
   with the goal of a sub-10-minute setup.
 
-See `legacy_extraction_proposal.md` in the repository root for the full
-feasibility study and migration plan.
+See [`legacy_extraction_proposal.md`](../archive/legacy_extraction_proposal.md)
+in `docs/archive/` for the full feasibility study and migration plan.
