@@ -1,5 +1,4 @@
 include LICENSE
 include README.md
 recursive-include src/mcp/prompts/prompt_templates *.yaml
-recursive-include src/mcp/servers/configs *.yaml
 recursive-include src/ui/static *

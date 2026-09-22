@@ -31,7 +31,7 @@ def _make_config(tmp_path, overrides=None):
             "servers": [
                 {
                     "name": "PromptsMCPServer",
-                    "url": "http://127.0.0.1:18200/sse",
+                    "url": "stdio://PromptsMCPServer",
                     "enabled": True,
                 },
             ],
@@ -332,7 +332,8 @@ class TestOnItInit:
     def test_init_prompts_server_disabled_raises(self, tmp_path):
         cfg = _make_config(tmp_path)
         cfg["mcp"]["servers"] = [
-            {"name": "PromptsMCPServer", "url": "http://x", "enabled": False},
+            {"name": "PromptsMCPServer", "transport": "stdio",
+             "module": "src.mcp.prompts.prompts", "enabled": False},
         ]
         with _mock_discover():
             with pytest.raises(ValueError, match="PromptsMCPServer"):
@@ -351,7 +352,7 @@ class TestOnItInit:
 
 class TestOnItInitialize:
     def test_mcp_host_override(self, tmp_path):
-        """mcp_host moves the socket-served servers, and only those.
+        """mcp_host moves external socket-served servers, and only those.
 
         A stdio server is a subprocess of this process reached over a pipe, so
         there is no host to point elsewhere; rewriting its address would leave
@@ -359,11 +360,14 @@ class TestOnItInitialize:
         """
         cfg = _make_config(tmp_path)
         cfg["mcp"]["mcp_host"] = "192.168.1.100"
+        cfg["mcp"]["servers"].append(
+            {"name": "Ext", "url": "http://127.0.0.1:9000/mcp",
+             "external": True, "enabled": True})
         with _mock_discover():
             onit = OnIt(config=cfg)
 
         moved = [s for s in onit.mcp_servers if not s["url"].startswith("stdio://")]
-        assert moved, "expected at least one socket-served MCP server"
+        assert [s["name"] for s in moved] == ["Ext"]
         for server in moved:
             assert "192.168.1.100" in server["url"]
 

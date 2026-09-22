@@ -5,13 +5,14 @@ MCP servers start automatically. Tools are auto-discovered and available to the 
 
 | Server | Transport | Description |
 |--------|-----------|-------------|
-| PromptsMCPServer | loopback socket | Prompt templates for instruction generation |
+| PromptsMCPServer | stdio | Prompt templates for instruction generation |
 | ToolsLocalMCPServer | stdio (per user) | Bash, file operations, document and local search, GitHub |
-| ToolsNetMCPServer | loopback socket | Web search and weather |
+| ToolsNetMCPServer | stdio | Web search and weather |
 
-The split follows one rule: a tool that touches this session's files — or acts
-under this user's credentials, as `github_repo` does — is served over a pipe
-that belongs to one OnIt process. What is left is stateless lookups.
+Every server is a subprocess of the OnIt that started it, spoken to over a
+pipe. The split follows one rule: a tool that touches this session's files —
+or acts under this user's credentials, as `github_repo` does — is served by
+the process that belongs to one OnIt. What is left is stateless lookups.
 
 ## Default tools
 

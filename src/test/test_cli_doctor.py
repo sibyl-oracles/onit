@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.cli import _run_doctor, main
+from src.cli import main
 
 # main() writes the approval variables with a plain os.environ assignment,
 # which monkeypatch cannot see and so cannot undo.  _run_doctor sets them
@@ -26,10 +26,16 @@ from src.cli import _run_doctor, main
 _APPROVAL_ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
                       "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
 
+# Same hazard, same place: credential resolution with nothing to find leaves
+# the tool-disable switches in the environment, and a stdio server spawned by
+# a later test inherits a toolset missing its web half.
+_TOOL_DISABLE_VARS = ("ONIT_DISABLE_WEB_SEARCH", "ONIT_DISABLE_WEATHER")
+
 
 @pytest.fixture(autouse=True)
 def _restore_approval_env():
-    saved = {var: os.environ.get(var) for var in _APPROVAL_ENV_VARS}
+    saved = {var: os.environ.get(var)
+             for var in _APPROVAL_ENV_VARS + _TOOL_DISABLE_VARS}
     yield
     for var, value in saved.items():
         if value is None:
@@ -268,7 +274,6 @@ class TestDoctorOnUnconfiguredMachine:
         # The whole point of a self-check: a machine with no serving.host
         # gets a diagnosis, not a stack trace.  Resolution exits; the doctor
         # catches that and runs the battery on an empty config.
-        import yaml
         from src import setup as setup_mod
         monkeypatch.setattr("src.cli._find_default_config",
                             lambda: str(tmp_path / "nope.yaml"))

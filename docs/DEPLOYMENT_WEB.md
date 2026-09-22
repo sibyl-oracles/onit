@@ -310,10 +310,10 @@ sudo ufw allow 443/tcp
 # Block direct access to Uvicorn from outside
 sudo ufw deny 9000/tcp
 
-# MCP servers bind loopback only and pick free ports from 18200 upward, so
-# they are already unreachable from off the host. Deny the range anyway, in
-# case a config sets mcp_host or an older release is still deployed.
-sudo ufw deny 18200:18600/tcp
+# The built-in MCP servers are pipes to subprocesses of OnIt itself — no
+# ports to deny. An external socket-served MCP server in the config (mcp_host
+# or external: true) binds loopback only, so nothing MCP-related is reachable
+# from off the host either way.
 
 sudo ufw enable
 ```

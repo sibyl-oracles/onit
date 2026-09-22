@@ -95,32 +95,30 @@ template_path: ~     # custom prompt template YAML
 data_path: ~         # working directory for file operations (default: ~/sandbox)
 
 mcp:
-  # fixed_ports: false   # true pins the ports below instead of finding free ones
   servers:
     - name: PromptsMCPServer
-      url: http://127.0.0.1:18200/sse
+      transport: stdio
+      module: src.mcp.prompts.prompts
       enabled: true
-    - name: ToolsLocalMCPServer   # per-user, over stdio — no port
+    - name: ToolsLocalMCPServer   # per-user: bash, files, document search
       transport: stdio
       module: tasks.tools
       profile: local
       enabled: true
-    - name: ToolsNetMCPServer
-      url: http://127.0.0.1:18201/sse
+    - name: ToolsNetMCPServer     # stateless: web search, weather
+      transport: stdio
+      module: tasks.tools
+      profile: net
       enabled: true
 ```
 
-The ports above are a starting point, not fixed addresses: each OnIt process
-finds free ports at or above 18200 on startup. That is what lets several people
-run OnIt on one machine at the same time — before, the second to start found
-those ports taken, assumed the servers were already its own, and ran its tools
-in the first user's account and sandbox. Set `mcp.fixed_ports: true` for a
-single-user host, or when something outside OnIt has to reach the servers.
-
-`ToolsLocalMCPServer` has no port at all. Every tool that touches the session
-working directory lives there, and OnIt starts it as a subprocess of its own
-and talks to it over a pipe — so it runs as you, exits with you, and no other
-account on the machine can reach it.
+Every default server is a subprocess of the OnIt that started it, spoken to
+over a pipe. There is no port to find, to collide with, or to expose: each
+server runs as you, exits with you, and no other account on the machine can
+reach it — which is also what lets several people run OnIt on one machine at
+the same time. `profile` picks which half of the toolset a tools server
+registers: `local` holds every tool that touches the session working
+directory, `net` the stateless remote calls.
 
 An MCP server that already runs somewhere else — not started by OnIt — is
 listed with `external: true`. OnIt neither starts it nor re-ports it; tools are

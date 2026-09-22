@@ -3,7 +3,7 @@
 import json
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.cli import (
     _find_default_config,
-    _mcp_servers_ready, _ensure_mcp_servers,
+    _ensure_mcp_servers,
 )
 
 
@@ -26,10 +26,19 @@ from src.cli import (
 _APPROVAL_ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
                       "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
 
+# The tool-availability switches are set the same way, in the same place, when
+# credential resolution finds nothing: a config resolved without a key leaves
+# ONIT_DISABLE_WEB_SEARCH / ONIT_DISABLE_WEATHER in the process environment,
+# and every stdio server spawned afterwards inherits them — its web tools are
+# never registered. The net-profile test in test_multiuser_isolation.py is
+# exactly such a spawn, so a leak here fails a file this one has never heard of.
+_TOOL_DISABLE_VARS = ("ONIT_DISABLE_WEB_SEARCH", "ONIT_DISABLE_WEATHER")
+
 
 @pytest.fixture(autouse=True)
 def _restore_approval_env():
-    saved = {var: os.environ.get(var) for var in _APPROVAL_ENV_VARS}
+    saved = {var: os.environ.get(var)
+             for var in _APPROVAL_ENV_VARS + _TOOL_DISABLE_VARS}
     yield
     for var, value in saved.items():
         if value is None:
@@ -55,94 +64,34 @@ class TestFindDefaultConfig:
         assert result == "configs/default.yaml"
 
 
-# ── _mcp_servers_ready ─────────────────────────────────────────────────────
-
-def _mock_mcp_client(raises=None):
-    """Build a mock fastmcp.Client context manager for readiness probes."""
-    client = AsyncMock()
-    if raises:
-        client.list_tools = AsyncMock(side_effect=raises)
-    else:
-        client.list_tools = AsyncMock(return_value=[MagicMock()])
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
-    return client
-
-
-class TestMcpServersReady:
-    def test_returns_true_when_all_servers_up(self):
-        config = {
-            "mcp": {
-                "servers": [
-                    {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
-                    {"name": "B", "url": "http://127.0.0.1:18201/sse", "enabled": True},
-                ]
-            }
-        }
-        mock = _mock_mcp_client()
-        with patch("src.cli.Client", return_value=mock):
-            assert _mcp_servers_ready(config, timeout=1.0) is True
-
-    def test_returns_true_when_no_servers(self):
-        assert _mcp_servers_ready({}, timeout=1.0) is True
-
-    def test_returns_false_when_server_unreachable(self):
-        config = {
-            "mcp": {
-                "servers": [
-                    {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
-                ]
-            }
-        }
-        mock = _mock_mcp_client(raises=ConnectionError("refused"))
-        with patch("src.cli.Client", return_value=mock):
-            assert _mcp_servers_ready(config, timeout=0.5) is False
-
-
-# ── _ensure_mcp_servers ────────────────────────────────────────────────────
+# ── _ensure_mcp_servers ──────────────────────────────────────────────────────
 
 class TestEnsureMcpServers:
     @staticmethod
-    def _http_config():
+    def _config():
         """One named server. _ensure_mcp_servers adds the defaults alongside."""
         return {"mcp": {"servers": [
-            {"name": "A", "url": "http://127.0.0.1:18200/sse", "enabled": True},
+            {"name": "A", "url": "http://127.0.0.1:9000/mcp",
+             "external": True, "enabled": True},
         ]}}
-
-    def test_always_starts_its_own_servers(self):
-        """A port answering on 18200 belongs to somebody else's OnIt.
-
-        This used to be read as "my servers are already up" and startup was
-        skipped, which pointed this user's tools at another user's server
-        process — running as them, jailed to their sandbox. Now every OnIt
-        starts its own.
-        """
-        config = self._http_config()
-        mock_thread_instance = MagicMock()
-        with patch("src.cli.threading.Thread", return_value=mock_thread_instance), \
-             patch("src.cli._mcp_servers_ready", return_value=True):
-            _ensure_mcp_servers(config)
-            mock_thread_instance.start.assert_called_once()
-
-    def test_rewrites_urls_to_the_allocated_ports(self):
-        config = self._http_config()
-        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
-             patch("src.cli._mcp_servers_ready", return_value=True), \
-             patch("src.mcp.servers.run.find_free_ports", return_value=[18999]):
-            _ensure_mcp_servers(config)
-        assert config["mcp"]["servers"][0]["url"] == "http://127.0.0.1:18999/sse"
 
     @staticmethod
     def _by_name(config, name):
         return next(s for s in config["mcp"]["servers"] if s["name"] == name)
 
-    def test_fixed_ports_opt_out_keeps_the_configured_url(self):
-        config = self._http_config()
-        config["mcp"]["fixed_ports"] = True
-        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
-             patch("src.cli._mcp_servers_ready", return_value=True):
-            _ensure_mcp_servers(config)
-        assert self._by_name(config, "A")["url"] == "http://127.0.0.1:18200/sse"
+    def test_an_external_server_is_left_alone(self):
+        """A server that lives elsewhere is neither registered nor re-addressed:
+        the client connects to its URL as written."""
+        config = self._config()
+        _ensure_mcp_servers(config)
+        assert self._by_name(config, "A")["url"] == "http://127.0.0.1:9000/mcp"
+
+    def test_the_defaults_are_added_beside_a_named_server(self):
+        config = self._config()
+        _ensure_mcp_servers(config)
+        names = {s["name"] for s in config["mcp"]["servers"]}
+        assert names == {"A", "PromptsMCPServer", "ToolsLocalMCPServer",
+                         "ToolsNetMCPServer"}
 
     def test_stdio_server_gets_a_spec(self):
         from type.tools import _STDIO_SPECS
@@ -150,9 +99,7 @@ class TestEnsureMcpServers:
             {"name": "ToolsLocalMCPServer", "transport": "stdio",
              "module": "tasks.tools", "profile": "local", "enabled": True},
         ]}}
-        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
-             patch("src.cli._mcp_servers_ready", return_value=True):
-            _ensure_mcp_servers(config)
+        _ensure_mcp_servers(config)
 
         server = self._by_name(config, "ToolsLocalMCPServer")
         assert server["url"] == "stdio://ToolsLocalMCPServer"
@@ -170,9 +117,7 @@ class TestEnsureMcpServers:
         config = {"mcp": {"servers": [
             {"name": "Broken", "transport": "stdio", "enabled": True},
         ]}}
-        with patch("src.cli.threading.Thread", return_value=MagicMock()), \
-             patch("src.cli._mcp_servers_ready", return_value=True):
-            _ensure_mcp_servers(config)
+        _ensure_mcp_servers(config)
         assert self._by_name(config, "Broken")["enabled"] is False
 
 

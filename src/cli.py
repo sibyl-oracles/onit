@@ -20,18 +20,13 @@ import asyncio
 import json
 import os
 import re
-import subprocess
 import sys
-import time
-import threading
 from pathlib import Path
 
 import yaml
-from fastmcp import Client
 
 from .onit import OnIt
-from .lib.tools import (is_stdio_server as _is_stdio_server,
-                        register_stdio_servers, apply_default_mcp_servers)
+from .lib.tools import register_stdio_servers, apply_default_mcp_servers
 
 
 def _find_default_config() -> str:
@@ -62,99 +57,13 @@ def _is_external_server(server: dict) -> bool:
     return name.startswith('ExternalSSE_') or name.startswith('ExternalMCP_')
 
 
-def _mcp_servers_ready(config_data: dict, timeout: float = 15.0) -> bool:
-    """Wait for all locally-managed MCP servers to be ready to serve MCP requests.
-
-    Probes each server with an actual list_tools() MCP call rather than a raw
-    TCP port check.  A server is considered ready only when it can respond to
-    MCP protocol requests, which happens after the ASGI app is fully initialized
-    — port-open alone is not sufficient.
-
-    External servers (``external: true`` in the config) are excluded since
-    they are not managed by this process.
-    Returns True if all servers respond within timeout, False otherwise.
-    """
-    servers = config_data.get('mcp', {}).get('servers', [])
-    urls = [
-        s['url']
-        for s in servers
-        if not _is_external_server(s) and not _is_stdio_server(s)
-        and s.get('enabled', True) and s.get('url')
-    ]
-
-    if not urls:
-        return True
-
-    async def _probe(url: str) -> bool:
-        try:
-            async with Client(url) as client:
-                await client.list_tools()
-                return True
-        except Exception:
-            return False
-
-    async def _all_ready() -> bool:
-        results = await asyncio.gather(*[_probe(url) for url in urls])
-        return all(results)
-
-    start = time.monotonic()
-    while time.monotonic() - start < timeout:
-        if asyncio.run(_all_ready()):
-            return True
-        time.sleep(0.5)
-    return False
-
-
-def _start_mcp_servers_background(log_level='ERROR', port_overrides=None):
-    """Start MCP servers in a daemon thread. Blocks forever (runs in background)."""
-    from .mcp.servers.run import run_servers
-    try:
-        run_servers(log_level=log_level, port_overrides=port_overrides)
-    except Exception as exc:
-        print(f"ERROR: MCP server background thread failed: {exc}", file=sys.stderr)
-
-
-def _assign_free_ports(servers: list, config_data: dict) -> dict:
-    """Point every socket-served MCP server at a free port, and report the map.
-
-    Ports are searched for at or above 18200 rather than fixed, so that two
-    people running OnIt on one machine each get their own servers instead of
-    the second silently attaching to the first one's — which used to run their
-    tools under the first user's account, inside the first user's sandbox.
-
-    Set ``mcp.fixed_ports: true`` to keep the configured ports as written.
-    """
-    from urllib.parse import urlparse, urlunparse
-    from src.mcp.servers.run import find_free_ports
-
-    targets = [s for s in servers
-               if s.get('enabled', True) and s.get('url')
-               and not _is_stdio_server(s) and not _is_external_server(s)]
-    if not targets:
-        return {}
-
-    if config_data.get('mcp', {}).get('fixed_ports'):
-        return {s['name']: urlparse(s['url']).port for s in targets
-                if s.get('name') and urlparse(s['url']).port}
-
-    port_base = config_data.get('mcp', {}).get('port_base')
-    ports = find_free_ports(len(targets), base=port_base)
-    assigned: dict = {}
-    for server, port in zip(targets, ports):
-        parsed = urlparse(server['url'])
-        server['url'] = urlunparse(
-            parsed._replace(netloc=f"{parsed.hostname or '127.0.0.1'}:{port}"))
-        if server.get('name'):
-            assigned[server['name']] = port
-    return assigned
-
-
 def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
-    """Start this process's MCP servers and wait for the socket-served ones.
+    """Register this process's stdio MCP servers so the client can spawn them.
 
-    Every OnIt process gets its own servers. The stdio ones are spawned by the
-    MCP client on first use; the rest are started here on ports found free at
-    startup.
+    Every server is a subprocess of this process: it runs as this user, dies
+    with this process, and is reachable by no other account on the machine.
+    The MCP client spawns a server the first time something connects to it, so
+    there is nothing to start or wait for here.
     """
     # Propagate data_path to MCP servers via an environment variable.
     # Fall back to OnIt's own default (~/sandbox) when unset so the MCP servers write
@@ -164,31 +73,14 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     os.environ['ONIT_DATA_PATH'] = data_path
 
     # Fill in the default servers first. A config that names none still gets
-    # them — from OnIt, further down startup — and allocating ports before
-    # they exist would leave those servers pointing at ports nothing listens
-    # on. The list must be complete here, where the ports are chosen.
+    # them — from OnIt, further down startup — but a server the CLI never saw
+    # would be registered with a data_path resolved differently, so the list
+    # must be complete here, where the launch specs are written.
     config_data.setdefault('mcp', {}).setdefault('servers', [])
     servers = config_data['mcp']['servers']
     apply_default_mcp_servers(servers)
 
     register_stdio_servers(servers, data_path, log_level)
-    port_overrides = _assign_free_ports(servers, config_data)
-
-    # Start the socket-served MCP servers in a daemon thread. Always: the
-    # runner has its own config and may serve more than the client lists (the
-    # VLM tools server, for one). It allocates ports for anything not named in
-    # the overrides, and returns immediately if there is nothing to start.
-    mcp_thread = threading.Thread(
-        target=_start_mcp_servers_background,
-        args=(log_level, port_overrides),
-        daemon=True,
-    )
-    mcp_thread.start()
-
-    # Wait for all servers to be reachable (spawn start method on Linux is slower)
-    if not _mcp_servers_ready(config_data, timeout=30.0):
-        print("Warning: some MCP servers may not have started in time.",
-              file=sys.stderr)
 
 
 # What the web UI serves with, over and above the shared ``serving:`` block.
@@ -803,7 +695,7 @@ def main():
                 print(f"Error: {result}", file=sys.stderr)
                 sys.exit(1)
             else:
-                print(f"Error: Session not found.", file=sys.stderr)
+                print("Error: Session not found.", file=sys.stderr)
                 sys.exit(1)
             return
         sessions = list_sessions(sessions_dir, limit=args.limit)
@@ -839,7 +731,7 @@ def main():
             print(json.dumps(summary, indent=2))
             return
         if args.events:
-            from .learn.events import summarize_events, tool_timeline
+            from .learn.events import summarize_events
             events = summarize_events(config_data)
             if not events["total"]:
                 print("No loop events recorded yet. They appear when the "

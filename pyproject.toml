@@ -95,7 +95,6 @@ include = ["src*"]
 [tool.setuptools.package-data]
 "src" = [
     "mcp/prompts/prompt_templates/*.yaml",
-    "mcp/servers/configs/*.yaml",
     "configs/*.yaml",
     "ui/static/*",
     "ui/static/vendor/*",

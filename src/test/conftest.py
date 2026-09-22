@@ -85,7 +85,7 @@ def sample_config_dict(tmp_path):
             "servers": [
                 {
                     "name": "PromptsMCPServer",
-                    "url": "http://127.0.0.1:18200/sse",
+                    "url": "stdio://PromptsMCPServer",
                     "enabled": True,
                 },
                 {

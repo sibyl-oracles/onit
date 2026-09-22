@@ -68,9 +68,9 @@ from dataclasses import dataclass
 # any of this runs (onit.py imports lib.tools at module scope; conftest.py
 # guarantees it under pytest).
 try:
-    from type.tools import _STDIO_SPECS, is_stdio_url
+    from type.tools import _STDIO_SPECS, _transport_for, is_stdio_url
 except ImportError:  # pragma: no cover - standalone import of this module
-    from ..type.tools import _STDIO_SPECS, is_stdio_url
+    from ..type.tools import _STDIO_SPECS, _transport_for, is_stdio_url
 
 from ..lib.tools import _wait_for_port
 
@@ -811,7 +811,7 @@ async def check_prompts(agent) -> CheckResult:
                            "prompt_in_process is off but no prompt_url", start)
         try:
             from fastmcp import Client
-            async with Client(url) as client:
+            async with Client(_transport_for(url, shared=False)) as client:
                 result = await client.get_prompt("assistant", {
                     "task": "doctor self-check probe", "data_path": data_path})
             served = result.messages[0].content.text

@@ -18,10 +18,8 @@ OnIt: An agent harness for task automation and assistance.
 """
 
 import asyncio
-import base64
 import os
 import time
-import tempfile
 import yaml
 import json
 import uuid
@@ -44,9 +42,10 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from .lib.tools import (discover_tools, register_stdio_servers,
                         apply_default_mcp_servers)
+from .type.tools import _transport_for
 from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
-from .lib.files import has_code_files, zip_code_files
+from .lib.files import has_code_files
 from .ui import ChatUI
 from .ui.protocol import ChatUIProtocol
 from .ui.commands import dispatch as dispatch_command
@@ -912,9 +911,10 @@ class OnIt(BaseModel):
         """Parse MCP server list from config and resolve the prompts server URL."""
         self.mcp_servers = self.config_data['mcp']['servers'] if 'mcp' in self.config_data and 'servers' in self.config_data['mcp'] else []
         # Ensure default servers are present if missing from config. Normally
-        # the CLI has already done this, before it allocated ports for them.
+        # the CLI has already done this, before it registered the stdio launch
+        # specs.
         apply_default_mcp_servers(self.mcp_servers)
-        # Override MCP server URL hosts if mcp_host is configured. A stdio
+        # Point external socket-served servers at the configured host. A stdio
         # server is a subprocess of this process, so there is no host to move.
         mcp_host = self.config_data.get('mcp', {}).get('mcp_host')
         if mcp_host:
@@ -1857,16 +1857,19 @@ class OnIt(BaseModel):
         }
         if self.prompt_in_process:
             return await build_assistant_instruction(**args)
-        async with Client(self.prompt_url) as prompt_client:
+        # The fallback path reaches the prompt over MCP. A stdio server needs
+        # its registered launch spec, not a bare URL — _transport_for builds
+        # the pipe transport from it (one-shot: this round trip is all the
+        # client is for).
+        async with Client(_transport_for(self.prompt_url, shared=False)) as prompt_client:
             result = await prompt_client.get_prompt("assistant", args)
         return result.messages[0].content.text
 
-    def _setup_enter_key_listener(self, loop: asyncio.AbstractEventLoop):
+    def _setup_enter_key_listener(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set up Enter-key stop listener for text UI.
 
-        Returns the callback so callers can pass it to
-        ``_restore_enter_key_listener`` without storing it on the instance.
-        Returns ``None`` in web mode (no listener needed).
+        Returns ``None`` in web mode (no listener needed). The reader is
+        removed again by ``_cleanup_enter_key_listener``.
         """
         if self.web:
             return None
@@ -1909,17 +1912,6 @@ class OnIt(BaseModel):
             loop.remove_reader(sys.stdin.fileno())
         except Exception:
             pass
-
-    def _restore_enter_key_listener(self, loop: asyncio.AbstractEventLoop,
-                                    callback) -> None:
-        """Re-attach Enter-key listener after removing it (e.g. for retry prompt)."""
-        if self.web or callback is None:
-            return
-        import sys
-        try:
-            loop.add_reader(sys.stdin.fileno(), callback)
-        except NotImplementedError:
-            pass  # Windows ProactorEventLoop does not support add_reader
 
     def _handle_successful_response(self, response: str, task: str,
                                     elapsed_time: str,
@@ -2048,7 +2040,7 @@ class OnIt(BaseModel):
 
             instruction = await self._assistant_instruction(task)
 
-            on_enter_cb = self._setup_enter_key_listener(loop)
+            self._setup_enter_key_listener(loop)
 
             # submit instruction with retry on API error
             start_time = loop.time()

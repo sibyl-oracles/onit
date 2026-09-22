@@ -20,15 +20,16 @@ from type.tools import (ToolHandler, ToolRegistry, _transport_for,
 
 
 # The MCP servers OnIt runs when a config names none. Defined here rather than
-# on OnIt because the CLI has to see the same list *before* it allocates ports
-# and spawns anything — when this lived downstream on OnIt, startup allocated
-# nothing, started no pool, and OnIt then added servers pointing at ports where
-# nobody was listening.
+# on OnIt because the CLI has to register the stdio launch specs before OnIt
+# builds — when this lived downstream on OnIt, a server the CLI never saw had
+# no way to start. Every server is stdio now: a subprocess of this process,
+# running as this user, reachable by no other account on the machine.
 DEFAULT_MCP_SERVERS = [
     {
         'name': 'PromptsMCPServer',
         'description': 'Provides prompt templates for instruction generation',
-        'url': 'http://127.0.0.1:18200/sse',
+        'transport': 'stdio',
+        'module': 'src.mcp.prompts.prompts',
         'enabled': True,
     },
     {
@@ -42,7 +43,9 @@ DEFAULT_MCP_SERVERS = [
     {
         'name': 'ToolsNetMCPServer',
         'description': 'Web search and weather',
-        'url': 'http://127.0.0.1:18201/sse',
+        'transport': 'stdio',
+        'module': 'tasks.tools',
+        'profile': 'net',
         'enabled': True,
     },
 ]
@@ -57,8 +60,9 @@ _SPLIT_SERVERS = frozenset({'ToolsLocalMCPServer', 'ToolsNetMCPServer'})
 def apply_default_mcp_servers(servers: list) -> list:
     """Add any missing default server to ``servers``, in place.
 
-    Idempotent: both the CLI (before allocating ports) and OnIt (which may be
-    built without the CLI) call it, and the second call finds nothing to add.
+    Idempotent: both the CLI (before registering the stdio launch specs) and
+    OnIt (which may be built without the CLI) call it, and the second call
+    finds nothing to add.
     """
     existing = {s.get('name') for s in servers}
     legacy = LEGACY_COMBINED_SERVER in existing

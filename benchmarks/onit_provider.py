@@ -112,32 +112,26 @@ def base_config_data() -> dict[str, Any]:
         "session_path": str(sessions_dir),
         "data_path": str(data_dir),
         "mcp": {
-            # Start the port search well above the interactive agent's range
-            # (18200–18240) so a benchmark run never collides with a running
-            # agent's MCP servers, and the agent's servers never block the
-            # benchmark's port allocation.
-            "port_base": 18400,
             # Names must match the split defaults in src/lib/tools.py
             # (DEFAULT_MCP_SERVERS): apply_default_mcp_servers() adds any
-            # missing default server, and _assign_free_ports() rewrites every
-            # socket-served URL to a freshly allocated port. A name the agent
-            # no longer knows (the old combined "ToolsMCPServer") gets no
-            # rewrite, so it stays pointed at a port nothing listens on and
-            # discovery times out on it.
+            # missing default server, and _ensure_mcp_servers() registers a
+            # stdio launch spec for every server. A name the agent no longer
+            # knows (the old combined "ToolsMCPServer") gets no spec, so it
+            # stays unspawnable and discovery times out on it.
             "servers": [
-                {"name": "PromptsMCPServer", "url": "http://127.0.0.1:18400/sse",
-                 "enabled": True},
+                {"name": "PromptsMCPServer", "transport": "stdio",
+                 "module": "src.mcp.prompts.prompts", "enabled": True},
                 # The current split tools servers (with real modules), not the
-                # legacy combined "ToolsMCPServer" which has no module and so is
-                # never started by the runner. ToolsLocal is stdio (spawned by
-                # the MCP client); ToolsNet is socket-served (started by the
-                # pool). apply_default_mcp_servers() sees these names and adds
-                # nothing, so the list stays exactly as written. ToolsNet sits in
-                # the benchmark's port range (port_base 18400) alongside Prompts.
+                # legacy combined "ToolsMCPServer" which has no module and so
+                # is never spawned. Both are stdio (spawned by the MCP client
+                # on first use): ToolsLocal carries the data_path tools,
+                # ToolsNet the stateless ones. apply_default_mcp_servers()
+                # sees these names and adds nothing, so the list stays exactly
+                # as written.
                 {"name": "ToolsLocalMCPServer", "transport": "stdio",
                  "module": "tasks.tools", "options": {"profile": "local"},
                  "enabled": True},
-                {"name": "ToolsNetMCPServer", "url": "http://127.0.0.1:18401/sse",
+                {"name": "ToolsNetMCPServer", "transport": "stdio",
                  "module": "tasks.tools", "options": {"profile": "net"},
                  "enabled": True},
             ]
@@ -148,7 +142,7 @@ def base_config_data() -> dict[str, Any]:
 def _build_agent_blocking(config_overrides: dict[str, Any] | None = None) -> Any:
     """Construct an OnIt agent. Must run in a thread with no running loop.
 
-    Starts the MCP servers (idempotent — skips ports already bound) then builds
+    Registers the MCP stdio launch specs (idempotent) then builds
     the agent, which discovers tools against those servers. ``config_overrides``
     are shallow-merged onto :func:`base_config_data` (e.g. ``{"data_path": ...}``
     to root the agent's file tools at a per-instance workspace).
