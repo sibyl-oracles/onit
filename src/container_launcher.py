@@ -184,9 +184,8 @@ def _configured_hosts() -> list[str]:
             entry.get("host") if isinstance(entry, dict) else None)
         if host:
             hosts.append(str(host))
-    for key in ("host", "host2"):
-        if serving.get(key):
-            hosts.append(str(serving[key]))
+    if serving.get("host"):
+        hosts.append(str(serving["host"]))
     return hosts
 
 

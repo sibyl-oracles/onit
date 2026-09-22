@@ -93,11 +93,9 @@ ONIT_HOST=http://host.docker.internal:8000/v1
 # VLLM_API_KEY=...              # if vLLM was started with --api-key
 # OPENROUTER_API_KEY=...        # if ONIT_HOST is OpenRouter
 
-# Optional second endpoint — enables load balancing across two servers.
-# Algorithm: add --load-balancer to the service command in docker-compose.yml
+# Additional endpoints go in serving.endpoints (see MODEL_SERVING.md);
+# the algorithm is set with --load-balancer in the service command
 # (sticky / round_robin / random / least_busy; default sticky).
-# ONIT_HOST2=https://ollama.com
-# ONIT_HOST2_KEY=...            # API key for the second endpoint
 
 # ── Web UI login (required unless started with --no-login) ───────────
 GOOGLE_CLIENT_ID=....apps.googleusercontent.com

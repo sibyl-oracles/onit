@@ -49,8 +49,6 @@ LEGACY_SERVING_SECRETS = [
      "OPENAI_API_KEY"),
     ("vllm_api_key",           "vLLM API key (legacy fallback)",
      "VLLM_API_KEY"),
-    ("host2_key",              "Second model server key (legacy fallback)",
-     "ONIT_HOST2_KEY"),
 ]
 
 INTEGRATION_SECRETS = [
@@ -93,8 +91,6 @@ HOST_SETTINGS = [
     ("serving.host",  "LLM endpoint URL (vLLM / OpenRouter / Ollama)",
      "http://localhost:8000/v1"),
     ("serving.model", "Model name (blank = auto-detect from endpoint)", ""),
-    ("serving.host2", "Second LLM endpoint URL (optional, enables load balancing)", ""),
-    ("serving.model2", "Model name on second server (blank = auto-detect)", ""),
 ]
 
 SERVING_SETTINGS = [
@@ -398,7 +394,7 @@ def endpoint_key_source(host: str, extra_keys: tuple = ()) -> str | None:
     or None when nothing authenticates it.
 
     ``extra_keys`` names secrets that apply to this endpoint by position
-    rather than by URL — ``host2_key`` for the legacy second server.
+    rather than by URL.
     """
     if get_endpoint_key(host):
         return "endpoint"
@@ -449,74 +445,49 @@ def _entry_priority(entry: dict) -> int:
         return 0
 
 
-def _entries_from_host_pair(config: dict) -> list[dict]:
-    """Read the legacy serving.host / serving.host2 pair as endpoint entries.
+def _entries_from_host(config: dict) -> list[dict]:
+    """Read the plain serving.host setting as a one-entry endpoint list.
 
     Lets the editor present one list regardless of which shape the config is
     currently written in.
     """
     entries = []
-    for host_path, model_path, key_path in (
-        ("serving.host",  "serving.model",  "serving.host_key"),
-        ("serving.host2", "serving.model2", "serving.host2_key"),
-    ):
-        host = str(_get_nested(config, host_path) or "").strip()
-        if not host:
-            continue
-        entry = {"host": host}
-        model = _get_nested(config, model_path)
-        if model:
-            entry["model"] = model
-        key = _get_nested(config, key_path)
-        if key and key != "EMPTY":
-            entry["host_key"] = key
-        entries.append(entry)
+    host = str(_get_nested(config, "serving.host") or "").strip()
+    if not host:
+        return entries
+    entry = {"host": host}
+    model = _get_nested(config, "serving.model")
+    if model:
+        entry["model"] = model
+    key = _get_nested(config, "serving.host_key")
+    if key and key != "EMPTY":
+        entry["host_key"] = key
+    entries.append(entry)
     return entries
 
 
-def _fits_host_pair(entries: list[dict]) -> bool:
-    """True when entries carry nothing the legacy host/host2 pair can't hold.
-
-    Keeps a plain one- or two-server config in its short, familiar form
-    instead of rewriting it as a list the moment the wizard is run.
-
-    The two hosts must also differ. ``serving.host2`` is read as a second
-    server only while it names a different URL from ``serving.host`` (see
-    OnIt._legacy_endpoints), so two models on one Ollama cloud host would be
-    written in the pair shape and then silently collapse to one on load.
-    """
-    hosts = [normalize_host(e.get("host", "")) for e in entries]
-    return (len(entries) <= 2
-            and len(set(hosts)) == len(hosts)
-            and all(_entry_priority(e) == 0 and not e.get("name")
-                    for e in entries))
-
-
 def _write_endpoints(config: dict, entries: list[dict]) -> None:
-    """Persist entries in the simplest config shape that can express them.
+    """Persist the endpoints in the simplest shape that can express them.
 
-    Whichever shape is written, the other is cleared, so exactly one of them
-    is ever live and the running agent can't read a stale host.
+    One endpoint stays in the plain serving.host form the runtime reads
+    directly; two or more go to the serving.endpoints list. Whichever shape
+    is written, the other is cleared, so exactly one of them is ever live
+    and the running agent can't read a stale host. A key written by hand
+    into the YAML is carried across under the current spelling; the
+    wizard's own keys live in the keychain and appear here as nothing.
     """
     serving = config.setdefault("serving", {})
-    if _fits_host_pair(entries):
+    if len(entries) == 1 and _entry_priority(entries[0]) == 0 \
+            and not entries[0].get("name"):
         serving.pop("endpoints", None)
-        for i, (host_key, model_key, key_key) in enumerate(
-                (("host", "model", "host_key"),
-                 ("host2", "model2", "host2_key"))):
-            if i < len(entries):
-                serving[host_key] = entries[i]["host"]
-                serving[model_key] = entries[i].get("model") or ""
-                literal = entries[i].get("api_key") or entries[i].get("host_key")
-                if literal:
-                    serving[key_key] = literal
-            else:
-                for k in (host_key, model_key, key_key):
-                    serving.pop(k, None)
+        serving["host"] = entries[0]["host"]
+        serving["model"] = entries[0].get("model") or ""
+        literal = entries[0].get("api_key") or entries[0].get("host_key")
+        if literal:
+            serving["host_key"] = literal
+        else:
+            serving.pop("host_key", None)
         return
-    # A key written by hand into the YAML is carried across under the current
-    # spelling; the wizard's own keys live in the keychain and appear here as
-    # nothing at all.
     serving["endpoints"] = [
         {k: v for k, v in (("name", e.get("name")),
                            ("host", e["host"]),
@@ -526,7 +497,7 @@ def _write_endpoints(config: dict, entries: list[dict]) -> None:
          if v not in (None, "")}
         for e in entries
     ]
-    for k in ("host", "model", "host2", "model2", "host2_key"):
+    for k in ("host", "model", "host_key", "host2", "model2", "host2_key"):
         serving.pop(k, None)
 
 
@@ -534,9 +505,9 @@ def _configured_endpoints(config: dict) -> list[tuple]:
     """Enumerate configured endpoints as (host_label, model_label, host,
     model, key_names) tuples.
 
-    Covers both config shapes: a ``serving.endpoints`` list, or the legacy
-    ``serving.host`` / ``serving.host2`` pair. The labels name the setting in
-    the form the user wrote it, so notes point at something they can edit.
+    Covers both config shapes: a ``serving.endpoints`` list, or the plain
+    ``serving.host`` setting. The labels name the setting in the form the
+    user wrote it, so notes point at something they can edit.
     """
     entries = _endpoint_list(config)
     if entries:
@@ -550,9 +521,6 @@ def _configured_endpoints(config: dict) -> list[tuple]:
     found = []
     for host_path, model_path, key_path, extra_keys in (
         ("serving.host",  "serving.model",  "serving.host_key", ()),
-        # The second legacy server takes its own key by position rather than
-        # by URL, so name it alongside whichever one the URL selects.
-        ("serving.host2", "serving.model2", "serving.host2_key", ("host2_key",)),
     ):
         host = str(_get_nested(config, host_path) or "")
         if host:
@@ -734,10 +702,9 @@ def _edit_endpoints(config: dict) -> None:
     """Interactively edit the model endpoints, then write them into config.
 
     Presents one list whether the config currently uses ``serving.endpoints``
-    or the legacy host/host2 pair, and saves back into whichever shape the
-    result fits.
+    or the plain ``serving.host`` setting, and always saves the list shape.
     """
-    entries = _endpoint_list(config) or _entries_from_host_pair(config)
+    entries = _endpoint_list(config) or _entries_from_host(config)
     if not entries:
         print("  No endpoint configured yet — let's add the first one.")
         first = _prompt_entry(None, is_first=True)
@@ -843,7 +810,7 @@ def show_config():
     print("  " + "─" * 50)
 
     print("\n  Model serving")
-    entries = _endpoint_list(config) or _entries_from_host_pair(config)
+    entries = _endpoint_list(config) or _entries_from_host(config)
     _print_endpoint_table(entries, indent="    ")
     print()
     _print_settings(config, SERVING_SETTINGS)

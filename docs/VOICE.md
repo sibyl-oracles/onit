@@ -86,8 +86,10 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9100
 
 ```bash
 onit serve web --voice
-# or against another host:
-onit serve web --voice --voice-url ws://gpu-box:9100/v1/realtime
+# or against another host — voice.url in the config:
+#   voice:
+#     url: ws://gpu-box:9100/v1/realtime
+onit serve web --voice
 ```
 
 A microphone button appears in the composer — but only once

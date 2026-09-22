@@ -162,8 +162,8 @@ async def check_config(agent) -> CheckResult:
         return _result("config", False, "no config loaded", start)
     serving = cfg.get("serving") or {}
     # Two config shapes carry an endpoint: the endpoints list (one entry per
-    # server, with optional per-entry model/priority) and the legacy
-    # host/host2 pair.  A session works through either, so the check does.
+    # server, with optional per-entry model/priority) and the plain
+    # serving.host setting.  A session works through either, so the check does.
     endpoints = serving.get("endpoints") or []
     if endpoints:
         hosts = [e.get("host") if isinstance(e, dict) else e

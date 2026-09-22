@@ -955,8 +955,8 @@ async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
                                      host: str, current_model: str) -> Optional[str]:
     """After a 404 for the configured model, auto-detect what the host serves.
 
-    A stale ``serving.model``/``model2`` (e.g. after the server was redeployed
-    with a different model) 404s on every request even though the host is up.
+    A stale ``serving.model`` (e.g. after the server was redeployed with a
+    different model) 404s on every request even though the host is up.
     Returns the detected model name, or None if detection failed or it matches
     the name that already 404'd.
     """

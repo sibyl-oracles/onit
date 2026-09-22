@@ -313,16 +313,15 @@ class TestEndpointKeyBridge:
         assert "ONIT_ENDPOINT_KEY_HTTP_GPU_1_8000_V1=sk-1" in args
         assert "ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1=sk-2" in args
 
-    def test_the_legacy_host_pair_is_covered_too(self, tmp_path, monkeypatch):
+    def test_the_plain_host_is_covered_too(self, tmp_path, monkeypatch):
         from container_launcher import _collect_endpoint_key_env
         from src import setup as setup_mod
-        self._config(tmp_path, monkeypatch,
-                     {"host": "http://a:8000/v1", "host2": "http://b:8000/v1"})
+        self._config(tmp_path, monkeypatch, {"host": "http://a:8000/v1"})
         monkeypatch.setattr(
             setup_mod, "get_secret",
-            lambda k: "sk-b"
-            if k == setup_mod.endpoint_secret_name("http://b:8000/v1") else None)
-        assert "ONIT_ENDPOINT_KEY_HTTP_B_8000_V1=sk-b" in _collect_endpoint_key_env()
+            lambda k: "sk-a"
+            if k == setup_mod.endpoint_secret_name("http://a:8000/v1") else None)
+        assert "ONIT_ENDPOINT_KEY_HTTP_A_8000_V1=sk-a" in _collect_endpoint_key_env()
 
     def test_an_endpoint_without_a_key_is_not_bridged(self, tmp_path, monkeypatch):
         from container_launcher import _collect_endpoint_key_env

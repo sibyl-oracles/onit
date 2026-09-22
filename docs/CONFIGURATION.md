@@ -70,23 +70,13 @@ serving:
   # top_k: 20
   # presence_penalty: 1.5
   # repetition_penalty: 1.0
-  # Optional second model server (any mix of vLLM / local Ollama or MLX /
-  # OpenRouter / Ollama cloud).
-  # By default new sessions are spread across hosts round-robin, then each
-  # session's inference sticks to its host and fails over to the other
-  # only on timeout/error (the failed host cools down for 60s):
-  # host2: http://localhost:8001/v1
-  # host2_key: sk-...              # optional; 'onit setup' stores host2's key
-                                 # under its URL instead
-  # model2: auto-detected from host2 unless set
+  # Additional model servers (any mix of vLLM / local Ollama or MLX /
+  # OpenRouter / Ollama cloud) go in an endpoints list — see MODEL_SERVING.md.
   # load_balancer: sticky          # or: round_robin, random, least_busy
   # Ollama endpoints (cloud or local) are fallback-only: while any
   # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
   # (or pass --no-ollama-fallback-only) to load-balance across them equally:
   # ollama_fallback_only: true
-  # For more than two servers, to rank them explicitly, or to run several
-  # models on one host (e.g. two Ollama cloud models), use an endpoints list
-  # instead of host/host2 — see MODEL_SERVING.md.
 
 verbose: false
 timeout: 600
@@ -131,6 +121,19 @@ single-user host, or when something outside OnIt has to reach the servers.
 working directory lives there, and OnIt starts it as a subprocess of its own
 and talks to it over a pipe — so it runs as you, exits with you, and no other
 account on the machine can reach it.
+
+An MCP server that already runs somewhere else — not started by OnIt — is
+listed with `external: true`. OnIt neither starts it nor re-ports it; tools are
+discovered from the URL as written:
+
+```yaml
+mcp:
+  servers:
+    - name: MyRemoteServer
+      url: http://gpu-box:8080/sse
+      external: true
+      enabled: true
+```
 
 
 ## Thinking in the browser

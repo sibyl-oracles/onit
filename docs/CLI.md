@@ -31,8 +31,6 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--no-auto` | Be asked about a command policy will not run on its own, instead of approving it automatically (alias: `--ask`) | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
 | `--container` | Run the entire OnIt process inside a hardened Docker container | `false` |
-| `--mcp-sse URL` | Add an external MCP server (SSE transport, repeatable) | — |
-| `--mcp-server URL` | Add an external MCP server (Streamable HTTP transport, repeatable) | — |
 
 ## `onit setup`
 
@@ -89,15 +87,17 @@ whether the last attempt finished or stopped early at a limit. Resuming reads
 it back and tells the agent, so a continued session builds on work that already
 succeeded instead of starting it again. It is deleted with the session.
 
-## `onit ask`
+## The A2A client (was `onit ask`)
 
-Send a single task to a running OnIt A2A server and print the response. Useful for scripting, pipelines, or one-shot queries without starting a local agent. The A2A server itself lives in [legacy/](../legacy/) (`python -m legacy.a2a_server`); the `ask` client is SDK-free and stays in the active CLI.
+The `ask` subcommand was removed: its only bundled server, the A2A server,
+already lives in [legacy/](../legacy/), and the client moved there with it. The
+client is a plain JSON-RPC-over-HTTP implementation (no A2A SDK import) and
+talks to any A2A server:
 
 ```bash
-onit ask "what is the weather in Manila"
-onit ask "summarize this document" --file report.pdf
-onit ask "describe this image" --image photo.jpg
-onit ask "write a script" --server http://192.168.1.10:9001
+python -m legacy.a2a_client "what is the weather in Manila"     --server http://localhost:9001
+python -m legacy.a2a_client "summarize this document" --file report.pdf
+python -m legacy.a2a_client "describe this image" --image photo.jpg
 ```
 
 | Argument / Flag | Description | Default |

@@ -535,8 +535,7 @@ class TestKey:
         # The saved-endpoint note reads the config file; without this the
         # suite would answer from whatever ~/.onit/config.yaml happens to say
         # on the machine running it.
-        self.config = {"serving": {"host": "http://localhost:8000/v1",
-                                   "host2": "http://localhost:8001/v1"}}
+        self.config = {"serving": {"host": "http://localhost:8000/v1"}}
         monkeypatch.setattr(setup_mod, "_load_config", lambda: self.config)
         for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY"):
             monkeypatch.delenv(var, raising=False)
@@ -690,8 +689,9 @@ class TestSave:
 
     @pytest.mark.asyncio
     async def test_a_removed_endpoint_leaves_the_file(self, agent):
-        self._write({"serving": {"host": "http://localhost:8000/v1",
-                                 "host2": "http://localhost:8001/v1"}})
+        self._write({"serving": {"endpoints": [
+            {"host": "http://localhost:8000/v1"},
+            {"host": "http://localhost:8001/v1"}]}})
         await commands.cmd_host(agent, "rm 2")
         commands.cmd_save(agent)
         assert self._saved_hosts() == ["http://localhost:8000/v1"]
@@ -751,23 +751,20 @@ class TestSave:
         commands.cmd_save(agent)
         assert self._read()["serving"]["ollama_fallback_only"] is False
 
-    def test_a_plain_pair_keeps_its_short_shape(self):
-        """A config written as serving.host / serving.host2 comes back with
-        'server1' and 'server2' labels nobody chose. Writing those back would
-        rewrite the file as an endpoint list on a save that changed nothing."""
+    def test_a_plain_single_host_keeps_its_short_shape(self):
+        """A config written as plain serving.host comes back with a 'server1'
+        label nobody chose. Writing that back would rewrite the file as an
+        endpoint list on a save that changed nothing."""
         plain = SimpleNamespace(
             load_balancer=LoadBalancer(
-                [ServerEndpoint(host="http://localhost:8000/v1", name="server1"),
-                 ServerEndpoint(host="http://localhost:8001/v1", name="server2")],
+                [ServerEndpoint(host="http://localhost:8000/v1", name="server1")],
                 "sticky"),
             model_serving={}, session_id="sess-1",
             chat_ui=SimpleNamespace(model_name=""))
-        self._write({"serving": {"host": "http://localhost:8000/v1",
-                                 "host2": "http://localhost:8001/v1"}})
+        self._write({"serving": {"host": "http://localhost:8000/v1"}})
         commands.cmd_save(plain)
         serving = self._read()["serving"]
         assert serving["host"] == "http://localhost:8000/v1"
-        assert serving["host2"] == "http://localhost:8001/v1"
         assert "endpoints" not in serving
 
     def test_a_label_the_user_chose_is_kept(self, agent):
@@ -780,8 +777,9 @@ class TestSave:
 
     @pytest.mark.asyncio
     async def test_it_reports_what_changed(self, agent):
-        self._write({"serving": {"host": "http://localhost:8000/v1",
-                                 "host2": "http://localhost:8001/v1"}})
+        self._write({"serving": {"endpoints": [
+            {"host": "http://localhost:8000/v1"},
+            {"host": "http://localhost:8001/v1"}]}})
         await commands.cmd_host(agent, "add http://gpu-2:8000/v1")
         await commands.cmd_host(agent, "rm 2")
         out = commands.cmd_save(agent)

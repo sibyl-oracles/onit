@@ -30,15 +30,15 @@ The gateways and the A2A server construct the same `OnIt` agent the active
 front ends use, so serving, tools and sessions behave as they did before
 extraction.
 
-## The `onit ask` client stays in the active CLI
+## The `onit ask` client
 
-`onit ask` is a plain JSON-RPC-over-HTTP client (no A2A SDK import), so it
-remains part of the active CLI. It can talk to any A2A server, including
-`python -m legacy.a2a_server`:
+The `ask` subcommand was removed from the active CLI; the client moved here as
+`a2a_client.py`. It is a plain JSON-RPC-over-HTTP client (no A2A SDK import)
+and can talk to any A2A server, including `python -m legacy.a2a_server`:
 
 ```bash
 python -m legacy.a2a_server --port 9001 &
-onit ask "what is the weather in Manila" --server http://localhost:9001
+python -m legacy.a2a_client "what is the weather in Manila"     --server http://localhost:9001
 ```
 
 ## Tests

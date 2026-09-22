@@ -9,7 +9,6 @@ Usage:
     onit sessions                                 # list previous sessions
     onit doctor [--deep]                          # run the live self-check battery
     onit resume [TAG_OR_ID]                       # resume a previous session
-    onit ask "your question"                      # send a task to a remote A2A server
     onit serve web [--port 9000]                  # launch the web UI
     onit serve loop "task" [--period 60]          # repeat a task on a timer
     onit --config my.yaml                         # custom config file
@@ -18,339 +17,21 @@ Usage:
 
 import argparse
 import asyncio
-import base64
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
 import threading
 from pathlib import Path
 
-import requests
 import yaml
 from fastmcp import Client
 
 from .onit import OnIt
 from .lib.tools import (is_stdio_server as _is_stdio_server,
                         register_stdio_servers, apply_default_mcp_servers)
-
-
-def _download_files(text: str, server_url: str) -> str:
-    """Download any files referenced in the response text from the A2A server."""
-    import re
-    # Match /uploads/filename patterns in the text
-    pattern = re.compile(r'/uploads/([^\s\)\]"\'<>`*]+)')
-    downloaded = []
-    for match in pattern.finditer(text):
-        filename = match.group(1)
-        download_url = f"{server_url.rstrip('/')}/uploads/{filename}"
-        try:
-            resp = requests.get(download_url, timeout=60)
-            resp.raise_for_status()
-            local_path = os.path.join(os.getcwd(), os.path.basename(filename))
-            with open(local_path, "wb") as f:
-                f.write(resp.content)
-            downloaded.append(local_path)
-        except Exception as e:
-            downloaded.append(f"Failed to download {filename}: {e}")
-    if downloaded:
-        text += "\n\nDownloaded files:\n" + "\n".join(f"  - {p}" for p in downloaded)
-    return text
-
-
-def _upload_file(url: str, filepath: str) -> str:
-    """Upload a file to the A2A server and return the uploaded filename."""
-    filepath = os.path.abspath(os.path.expanduser(filepath))
-    if not os.path.isfile(filepath):
-        raise FileNotFoundError(f"File not found: {filepath}")
-    filename = os.path.basename(filepath)
-    with open(filepath, 'rb') as f:
-        resp = requests.post(
-            f"{url.rstrip('/')}/uploads/",
-            files={'file': (filename, f)},
-            timeout=60,
-        )
-        resp.raise_for_status()
-    return filename
-
-
-def _build_a2a_parts(task: str, file: str = None, image: str = None) -> list:
-    """Build the A2A message parts list from task text and optional files."""
-    import mimetypes as _mimetypes
-
-    parts = [{"kind": "text", "text": task}]
-
-    if file:
-        filepath = os.path.abspath(os.path.expanduser(file))
-        if not os.path.isfile(filepath):
-            raise FileNotFoundError(f"File not found: {filepath}")
-        mime_type = _mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
-        with open(filepath, 'rb') as f:
-            file_data = base64.b64encode(f.read()).decode('utf-8')
-        parts.append({
-            "kind": "file",
-            "file": {
-                "bytes": file_data,
-                "mimeType": mime_type,
-                "name": os.path.basename(filepath),
-            }
-        })
-
-    if image:
-        mime_types = {
-            '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-            '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
-            '.tiff': 'image/tiff', '.tif': 'image/tiff',
-        }
-        ext = os.path.splitext(image)[1].lower()
-        mime_type = mime_types.get(ext, 'image/png')
-        with open(image, 'rb') as f:
-            image_data = base64.b64encode(f.read()).decode('utf-8')
-        parts.append({
-            "kind": "file",
-            "file": {
-                "bytes": image_data,
-                "mimeType": mime_type,
-                "name": os.path.basename(image),
-            }
-        })
-
-    return parts
-
-
-def _extract_a2a_text(result: dict) -> str | None:
-    """Extract text from an A2A result dict (Task or Message)."""
-    text = None
-    if "status" in result:
-        for artifact in result.get("artifacts", []):
-            for part in artifact.get("parts", []):
-                if part.get("kind") == "text":
-                    text = part["text"]
-                    break
-            if text:
-                break
-        if not text:
-            task_result = result.get("result")
-            if task_result:
-                for part in task_result.get("parts", []):
-                    if part.get("kind") == "text":
-                        text = part["text"]
-                        break
-    if not text and "parts" in result:
-        for part in result.get("parts", []):
-            if part.get("kind") == "text":
-                text = part["text"]
-                break
-    return text
-
-
-class _StreamState:
-    """Mutable state shared between SSE streaming helpers."""
-
-    def __init__(self, stop_timer: threading.Event, timer_thread: threading.Thread):
-        self.stop_timer = stop_timer
-        self.timer_thread = timer_thread
-        self.printed_len: int = 0
-        self.final_text: str | None = None
-        self.raw_result: dict = {}
-        self.spinner_cleared: bool = False
-        self.cursor_shown: bool = False
-
-    def erase_cursor(self) -> None:
-        """Remove the blinking block cursor and restore the terminal cursor."""
-        if self.cursor_shown:
-            sys.stdout.write("\b \b")
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
-            self.cursor_shown = False
-
-    def show_cursor(self) -> None:
-        """Hide terminal cursor and show a blinking white block instead."""
-        if not self.cursor_shown:
-            sys.stdout.write("\033[?25l")
-            sys.stdout.write("\033[5m█\033[0m")
-            sys.stdout.flush()
-            self.cursor_shown = True
-
-    def clear_spinner(self) -> None:
-        """Stop the elapsed-time spinner and clear its line."""
-        if not self.spinner_cleared:
-            self.stop_timer.set()
-            self.timer_thread.join()
-            sys.stderr.write("\r\033[K")
-            sys.stderr.flush()
-            self.spinner_cleared = True
-
-
-def _handle_sse_events(resp: requests.Response, state: _StreamState) -> None:
-    """Process SSE event lines from a streaming A2A response.
-
-    Updates *state* in place with streamed text deltas, the final text,
-    and the raw result dict.
-    """
-    for line in resp.iter_lines(decode_unicode=True):
-        if line is None:
-            continue
-        if not line.startswith("data:"):
-            continue
-        raw = line[5:].strip()
-        if not raw:
-            continue
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-
-        result = event.get("result", {})
-        status = result.get("status", {})
-        event_state = status.get("state", "")
-
-        if event_state == "working":
-            msg = status.get("message", {})
-            for part in msg.get("parts", []):
-                if part.get("kind") == "text":
-                    full = part["text"]
-                    if len(full) > state.printed_len:
-                        state.clear_spinner()
-                        state.erase_cursor()
-                        sys.stdout.write(full[state.printed_len:])
-                        sys.stdout.flush()
-                        state.printed_len = len(full)
-                        state.show_cursor()
-                    break
-
-        elif event_state == "completed":
-            state.raw_result = result
-            state.final_text = _extract_a2a_text(result)
-            if not state.final_text:
-                msg = status.get("message", {})
-                for part in msg.get("parts", []):
-                    if part.get("kind") == "text":
-                        state.final_text = part["text"]
-                        break
-
-        elif "parts" in result:
-            state.raw_result = result
-            state.final_text = _extract_a2a_text(result)
-
-
-def _format_output(state: _StreamState, url: str) -> str:
-    """Produce the final return value after streaming/response is complete.
-
-    Handles the JSON-dump fallback, trailing-text flush for streamed
-    responses, and file downloads.
-    """
-    if state.final_text is None:
-        return json.dumps(state.raw_result, indent=2)
-
-    if state.printed_len > 0:
-        remaining = state.final_text[state.printed_len:]
-        if remaining:
-            sys.stdout.write(remaining)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-    if "/uploads/" in state.final_text:
-        state.final_text = _download_files(state.final_text, url)
-
-    if state.printed_len > 0:
-        return ""
-
-    return state.final_text
-
-
-def _send_task(url: str, task: str, file: str = None, image: str = None) -> str:
-    """Send a task to an OnIt A2A server using SSE streaming.
-
-    Uses ``message/stream`` so the server can push incremental
-    ``TaskStatusUpdateEvent`` (state=working) events.  Each event
-    carries the accumulated text so far; the client prints only the
-    new delta.  The "Waiting ..." spinner is replaced by live output
-    as soon as the first token arrives.
-
-    Falls back to the non-streaming ``message/send`` path if the SSE
-    request fails (e.g. older server without streaming support).
-    """
-    parts = _build_a2a_parts(task, file=file, image=image)
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "message/stream",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": parts,
-                "messageId": "client-001",
-            }
-        },
-    }
-
-    # Elapsed time indicator while waiting for response
-    stop_timer = threading.Event()
-    start = time.monotonic()
-
-    def _show_elapsed():
-        while not stop_timer.is_set():
-            elapsed = int(time.monotonic() - start)
-            h, remainder = divmod(elapsed, 3600)
-            m, s = divmod(remainder, 60)
-            sys.stderr.write(f"\rWaiting... {h:02d}:{m:02d}:{s:02d}")
-            sys.stderr.flush()
-            stop_timer.wait(1.0)
-
-    sys.stderr.write("\rWaiting... 00:00:00")
-    sys.stderr.flush()
-
-    timer_thread = threading.Thread(target=_show_elapsed, daemon=True)
-    timer_thread.start()
-
-    state = _StreamState(stop_timer, timer_thread)
-
-    try:
-        resp = requests.post(
-            url.rstrip("/"),
-            json=payload,
-            headers={"Accept": "text/event-stream"},
-            stream=True,
-            timeout=None,
-        )
-        resp.raise_for_status()
-
-        content_type = resp.headers.get("content-type", "")
-
-        if "text/event-stream" in content_type:
-            _handle_sse_events(resp, state)
-        else:
-            # Non-streaming JSON response (fallback)
-            data = resp.json()
-            error = data.get("error")
-            if error:
-                state.clear_spinner()
-                return f"Error: {error}"
-            state.raw_result = data.get("result", {})
-            state.final_text = _extract_a2a_text(state.raw_result)
-
-    except requests.RequestException:
-        # SSE failed — fall back to non-streaming message/send
-        state.clear_spinner()
-        payload["method"] = "message/send"
-        resp = requests.post(url.rstrip("/"), json=payload, timeout=None)
-        resp.raise_for_status()
-        data = resp.json()
-        error = data.get("error")
-        if error:
-            return f"Error: {error}"
-        state.raw_result = data.get("result", {})
-        state.final_text = _extract_a2a_text(state.raw_result)
-    finally:
-        state.erase_cursor()
-        state.clear_spinner()
-
-    return _format_output(state, url)
 
 
 def _find_default_config() -> str:
@@ -368,57 +49,15 @@ def _find_default_config() -> str:
     return "configs/default.yaml"
 
 
-def _resolve_env_bin(env_name_or_path: str) -> str | None:
-    """Resolve a conda env name or path to its bin directory.
-
-    Accepts either an environment name (e.g. "env_B") or an absolute path
-    (e.g. "/home/user/miniconda3/envs/env_B"). Returns the bin/ directory
-    path if found, or None if the environment cannot be located.
-    """
-    expanded = os.path.expanduser(env_name_or_path)
-
-    # Absolute path given — use bin/ directly
-    if os.path.isabs(expanded):
-        bin_dir = os.path.join(expanded, "bin")
-        return bin_dir if os.path.isdir(bin_dir) else None
-
-    # Try conda to resolve by name
-    try:
-        result = subprocess.run(
-            ["conda", "info", "--envs", "--json"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            import json as _json
-            info = _json.loads(result.stdout)
-            for env_path in info.get("envs", []):
-                if os.path.basename(env_path) == env_name_or_path:
-                    bin_dir = os.path.join(env_path, "bin")
-                    if os.path.isdir(bin_dir):
-                        return bin_dir
-    except Exception:
-        pass
-
-    # Fall back to common conda prefix locations
-    for root in (
-        os.path.expanduser("~/miniconda3"),
-        os.path.expanduser("~/anaconda3"),
-        os.path.expanduser("~/miniforge3"),
-        os.path.expanduser("~/mambaforge"),
-        os.path.expanduser("~/conda"),
-        "/opt/miniconda3",
-        "/opt/anaconda3",
-        "/opt/conda",
-    ):
-        bin_dir = os.path.join(root, "envs", env_name_or_path, "bin")
-        if os.path.isdir(bin_dir):
-            return bin_dir
-
-    return None
-
 
 def _is_external_server(server: dict) -> bool:
-    """Return True if the server was added via --mcp-sse or --mcp-server."""
+    """True for a server OnIt must not start or re-port: it lives elsewhere.
+
+    Marked by ``external: true`` in the config (the old --mcp-sse /
+    --mcp-server flags wrote the same thing as generated names).
+    """
+    if server.get('external'):
+        return True
     name = server.get('name', '')
     return name.startswith('ExternalSSE_') or name.startswith('ExternalMCP_')
 
@@ -431,7 +70,7 @@ def _mcp_servers_ready(config_data: dict, timeout: float = 15.0) -> bool:
     MCP protocol requests, which happens after the ASGI app is fully initialized
     — port-open alone is not sufficient.
 
-    External servers (added via --mcp-sse/--mcp-server) are excluded since
+    External servers (``external: true`` in the config) are excluded since
     they are not managed by this process.
     Returns True if all servers respond within timeout, False otherwise.
     """
@@ -696,19 +335,6 @@ def _build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("session", nargs="?", default="last",
                                help='Session tag, UUID, or "last" (default: last).')
 
-    # ask: send a task to a remote A2A server
-    ask_parser = subparsers.add_parser(
-        "ask",
-        help="Send a task to a remote OnIt A2A server and print the response.")
-    ask_parser.add_argument("task", type=str,
-                            help="Task to send to the A2A server.")
-    ask_parser.add_argument("--file", type=str, default=None,
-                            help="File to upload along with the task.")
-    ask_parser.add_argument("--image", type=str, default=None,
-                            help="Image file for vision processing (model must be a VLM).")
-    ask_parser.add_argument("--server", type=str, default="http://localhost:9001",
-                            help="A2A server URL (default: http://localhost:9001).")
-
     # serve: run OnIt in a server or daemon mode
     serve_parser = subparsers.add_parser("serve",
                                          help="Run OnIt in a server or daemon mode.")
@@ -725,9 +351,6 @@ def _build_parser() -> argparse.ArgumentParser:
     web_p.add_argument("--voice", action="store_true", dest="voice",
                        help="Enable full-duplex speech-to-speech. Requires a "
                             "NemotronLabs VoiceChat container (see docs/VOICE.md).")
-    web_p.add_argument("--voice-url", type=str, default=None, dest="voice_url",
-                       help="VoiceChat realtime websocket URL "
-                            "(default: ws://localhost:9100/v1/realtime).")
 
     # serve loop
     loop_p = serve_sub.add_parser("loop",
@@ -752,13 +375,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=str, default=None,
                         help="Model name to use (e.g. Qwen/Qwen3-30B-A3B-Instruct-2507). "
                              "Skips auto-detection from endpoint.")
-    parser.add_argument("--host2", type=str, default=None,
-                        help="Second LLM serving host URL for load balancing "
-                             "(e.g. another vLLM instance or Ollama cloud). "
-                             "Overrides config and ONIT_HOST2 env var.")
-    parser.add_argument("--model2", type=str, default=None,
-                        help="Model name on the second host. "
-                             "Skips auto-detection from that endpoint.")
     parser.add_argument("--load-balancer", type=str, default=None,
                         dest="load_balancer",
                         choices=["sticky", "round_robin", "random", "least_busy"],
@@ -803,11 +419,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Show tool execution logs.")
 
     # ── Isolation ────────────────────────────────────────────────────────────
-    parser.add_argument("--target-env", type=str, default=None, dest="target_env",
-                        help="Conda environment name or path for code execution "
-                             "(e.g. env_B or ~/miniconda3/envs/env_B). "
-                             "OnIt runs in its own environment while all bash commands "
-                             "use the target environment's Python, pip, and binaries.")
     parser.add_argument("--data-path", "--data_path", type=str, default=None, dest="data_path",
                         help="Working directory for agent files (default: ~/sandbox). "
                              "Overrides data_path in the config YAML.")
@@ -858,13 +469,6 @@ def _build_parser() -> argparse.ArgumentParser:
                              "packages (e.g. pip install name==1.2.3).")
 
     # ── External MCP servers ─────────────────────────────────────────────────
-    parser.add_argument("--mcp-sse", type=str, action="append", default=None,
-                        help="URL of an external MCP server (SSE transport, repeatable). "
-                             "Example: --mcp-sse http://localhost:8080/sse")
-    parser.add_argument("--mcp-server", type=str, action="append", default=None,
-                        help="URL of an external MCP server (Streamable HTTP transport, repeatable). "
-                             "Example: --mcp-server http://localhost:8080/mcp")
-
     return parser
 
 
@@ -915,11 +519,9 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
                 config_data['web_port'] = args.port
             if getattr(args, 'no_login', False):
                 config_data['web_require_auth'] = False
-            if getattr(args, 'voice', False) or getattr(args, 'voice_url', None):
+            if getattr(args, 'voice', False):
                 voice_cfg = dict(config_data.get('voice') or {})
                 voice_cfg['enabled'] = True
-                if getattr(args, 'voice_url', None):
-                    voice_cfg['url'] = args.voice_url
                 config_data['voice'] = voice_cfg
         elif serve_mode == 'loop':
             config_data['loop'] = True
@@ -942,23 +544,18 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     if args.host:
         serving_cfg = config_data.setdefault('serving', {})
         serving_cfg['host'] = args.host
-        # An explicit --host without --host2 means a single endpoint: drop any
-        # second host from config/env so the load balancer can't route
-        # requests to a leftover server (e.g. a vLLM host2 shadowing an
-        # explicitly requested Ollama host, which is fallback-only).
-        if not getattr(args, 'host2', None):
-            for key in ('host2', 'model2', 'host2_key'):
-                serving_cfg.pop(key, None)
-            os.environ.pop('ONIT_HOST2', None)
+        # An explicit --host means a single endpoint: drop any second host
+        # from config/env so the load balancer can't route requests to a
+        # leftover server (e.g. a vLLM host2 shadowing an explicitly
+        # requested Ollama host, which is fallback-only).
+        for key in ('host2', 'model2', 'host2_key'):
+            serving_cfg.pop(key, None)
+        os.environ.pop('ONIT_HOST2', None)
         # Same reasoning for a configured endpoints list — it would otherwise
         # take precedence over the host the user just named on the CLI.
         serving_cfg.pop('endpoints', None)
     if args.model:
         config_data.setdefault('serving', {})['model'] = args.model
-    if getattr(args, 'host2', None):
-        config_data.setdefault('serving', {})['host2'] = args.host2
-    if getattr(args, 'model2', None):
-        config_data.setdefault('serving', {})['model2'] = args.model2
     if getattr(args, 'load_balancer', None):
         config_data.setdefault('serving', {})['load_balancer'] = args.load_balancer
     if getattr(args, 'ollama_fallback_only', None) is not None:
@@ -978,18 +575,6 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         config_data.setdefault('serving', {})['think'] = True
     if args.data_path:
         config_data['data_path'] = args.data_path
-
-    # --mcp-sse / --mcp-server add external MCP servers to the servers list
-    for urls, prefix in [(args.mcp_sse, 'ExternalSSE'), (args.mcp_server, 'ExternalMCP')]:
-        if urls:
-            servers = config_data.setdefault('mcp', {}).setdefault('servers', [])
-            for i, url in enumerate(urls):
-                servers.append({
-                    'name': f'{prefix}_{i}',
-                    'description': f'External MCP server at {url}',
-                    'url': url,
-                    'enabled': True,
-                })
 
     # Check that essential environment variables are set
     serving = config_data.get('serving', {})
@@ -1290,28 +875,6 @@ def main():
     if args.command == "resume":
         args.resume = args.session
 
-    # ask subcommand: send task to remote A2A server and exit
-    if args.command == "ask":
-        if args.image:
-            valid_image_ext = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
-            image_path = os.path.abspath(os.path.expanduser(args.image))
-            if not os.path.isfile(image_path):
-                print(f"Error: Image file not found: {image_path}", file=sys.stderr)
-                sys.exit(1)
-            ext = os.path.splitext(image_path)[1].lower()
-            if ext not in valid_image_ext:
-                print(f"Error: Invalid image file. Supported formats: {', '.join(sorted(valid_image_ext))}",
-                      file=sys.stderr)
-                sys.exit(1)
-            args.image = image_path
-        try:
-            answer = _send_task(args.server, args.task, file=args.file, image=args.image)
-            print(answer)
-        except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        return
-
     config_data = _parse_and_resolve_config(args)
 
     # Session selection.  The terminal chat continues where it left off, so an
@@ -1420,15 +983,6 @@ def main():
                   "--auto to approve.", file=sys.stderr)
     else:
         os.environ.pop('ONIT_AUTO_APPROVE', None)
-
-    if args.target_env:
-        bin_path = _resolve_env_bin(args.target_env)
-        if bin_path:
-            os.environ['ONIT_TARGET_ENV_BIN'] = bin_path
-            print(f"Target env: {args.target_env} → {bin_path}", file=sys.stderr)
-        else:
-            print(f"Warning: could not locate conda env '{args.target_env}'. "
-                  "Check the name or provide an absolute path.", file=sys.stderr)
 
     _setup_servers(config_data)
     _dispatch_mode(config_data)

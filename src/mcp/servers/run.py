@@ -372,7 +372,13 @@ def prepare_server_args(config, port_overrides: dict | None = None):
         if not name:
             logger.warning("Skipping server with no name defined")
             continue
-            
+
+        # An external server lives elsewhere; this pool neither starts nor
+        # ports it (the client connects to the URL as written).
+        if server.get('external'):
+            logger.info(f"Skipping {name}: external server, not managed here")
+            continue
+
         transport = server.get('transport', 'sse')
         # Loopback, not 0.0.0.0: these servers have no authentication of their
         # own, so they must not be reachable from off the machine.

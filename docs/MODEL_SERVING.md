@@ -243,10 +243,9 @@ serving:
 
 ## Multiple model endpoints
 
-`serving.host` / `serving.host2` cover one or two servers. For any number of
-them — or to say explicitly which should be tried first — use a
-`serving.endpoints` list instead. It replaces `host`/`host2` entirely when
-present:
+A single endpoint is the plain `serving.host` setting. For any number of them
+— or to say explicitly which should be tried first — use a `serving.endpoints`
+list instead. It replaces `host` entirely when present:
 
 ```yaml
 serving:
@@ -292,10 +291,7 @@ serving:
 ```
 
 Two models on one host always need an explicit `model`; a second entry for the
-same URL with no model would just auto-detect the same model again. Because the
-legacy `host`/`host2` pair reads `host2` as a second server only while it
-differs from `host`, a list like the above is always written in the `endpoints`
-shape.
+same URL with no model would just auto-detect the same model again.
 
 **Editing endpoints.** `onit setup` opens a small editor for this list — you
 don't have to write the YAML by hand:
@@ -310,10 +306,10 @@ don't have to write the YAML by hand:
 ```
 
 Rows are listed best-first, but the number identifies the endpoint and doesn't
-move when you re-rank. The wizard writes back whichever shape fits: a plain one-
-or two-server config with no priorities stays as `serving.host` / `serving.host2`,
-and it promotes to an `endpoints` list as soon as you add a third server, set a
-priority, name an endpoint, or add a second model on a host already listed.
+move when you re-rank. The wizard writes back whichever shape fits: a single
+server with no priority and no name stays as `serving.host`, and it promotes to
+an `endpoints` list as soon as you add a second server, set a priority, name an
+endpoint, or add a second model on a host already listed.
 
 Adding a model on a host that is already in the list is accepted — give the
 model name at the prompt and the entry is added alongside the first. Only the

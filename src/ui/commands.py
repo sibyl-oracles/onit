@@ -624,9 +624,9 @@ async def cmd_key(agent, arg: str) -> str:
 
 # Labels the code hands out when the user did not choose one: 'serverN' from
 # the config reader, 'manual' from \host. Writing them back would turn every
-# save into a named endpoint list, and a plain one- or two-host config would
-# never again fit the short serving.host / serving.host2 form it was written
-# in. A name the user actually typed is read from the file and kept.
+# save into a named endpoint list, and a plain single-host config would
+# never again fit the short serving.host form it was written in. A name the
+# user actually typed is read from the file and kept.
 _GENERATED_NAME = re.compile(r"^(server\d+|manual\d*)$")
 
 
@@ -640,7 +640,7 @@ def _saved_entries(config: dict) -> list[dict]:
     """The endpoints the config file currently holds, in whichever shape."""
     from .. import setup as onit_setup
     return (onit_setup._endpoint_list(config)
-            or onit_setup._entries_from_host_pair(config))
+            or onit_setup._entries_from_host(config))
 
 
 def _saved_by_identity(config: dict) -> dict:

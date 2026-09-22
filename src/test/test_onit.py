@@ -346,11 +346,14 @@ class TestOnItInitialize:
         assert onit.load_balancer.hosts == ["http://localhost:8000/v1"]
         assert onit.load_balancer.acquire().host == "http://localhost:8000/v1"
 
-    def test_host2_enables_load_balancing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("ONIT_HOST2_KEY", "sk-second-key")
+    def test_second_endpoint_enables_load_balancing(self, tmp_path,
+                                                    monkeypatch):
         cfg = _make_config(tmp_path)
-        cfg["serving"]["host2"] = "https://api.ollama.com"
-        cfg["serving"]["model2"] = "glm-5.1:cloud"
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://localhost:8000/v1"},
+            {"host": "https://api.ollama.com", "model": "glm-5.1:cloud",
+             "api_key": "sk-second-key"},
+        ]
         cfg["serving"]["load_balancer"] = "least_busy"
         with _mock_discover():
             onit = OnIt(config=cfg)
@@ -361,31 +364,32 @@ class TestOnItInitialize:
         assert second.host_key == "sk-second-key"
         assert second.model == "glm-5.1:cloud"
 
-    def test_host2_from_env_var(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("ONIT_HOST2", "http://gpu2:8000/v1")
+    def test_duplicate_endpoint_ignored(self, tmp_path):
         cfg = _make_config(tmp_path)
-        with _mock_discover():
-            onit = OnIt(config=cfg)
-        assert onit.load_balancer.hosts == [
-            "http://localhost:8000/v1", "http://gpu2:8000/v1"]
-
-    def test_duplicate_host2_ignored(self, tmp_path):
-        cfg = _make_config(tmp_path)
-        cfg["serving"]["host2"] = cfg["serving"]["host"]
+        cfg["serving"]["endpoints"] = [
+            {"host": cfg["serving"]["host"]},
+            {"host": cfg["serving"]["host"]},
+        ]
         with _mock_discover():
             onit = OnIt(config=cfg)
         assert len(onit.load_balancer.endpoints) == 1
 
     def test_ollama_fallback_only_defaults_true(self, tmp_path):
         cfg = _make_config(tmp_path)
-        cfg["serving"]["host2"] = "https://api.ollama.com"
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://localhost:8000/v1"},
+            {"host": "https://api.ollama.com"},
+        ]
         with _mock_discover():
             onit = OnIt(config=cfg)
         assert onit.load_balancer.ollama_fallback_only is True
 
     def test_ollama_fallback_only_config_reaches_balancer(self, tmp_path):
         cfg = _make_config(tmp_path)
-        cfg["serving"]["host2"] = "https://api.ollama.com"
+        cfg["serving"]["endpoints"] = [
+            {"host": "http://localhost:8000/v1"},
+            {"host": "https://api.ollama.com"},
+        ]
         cfg["serving"]["ollama_fallback_only"] = False
         with _mock_discover():
             onit = OnIt(config=cfg)
@@ -395,7 +399,7 @@ class TestOnItInitialize:
         seen = {lb.acquire(key=f"s{i}").host for i in range(50)}
         assert seen == {"http://localhost:8000/v1", "https://api.ollama.com"}
 
-    def test_endpoints_list_replaces_host_pair(self, tmp_path):
+    def test_endpoints_list_replaces_the_plain_host(self, tmp_path):
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]
         cfg["serving"]["endpoints"] = [
@@ -529,9 +533,8 @@ class TestOnItInitialize:
             onit = OnIt(config=cfg)
         assert len(onit.load_balancer.endpoints) == 1
 
-    def test_endpoints_list_takes_precedence_over_host_pair(self, tmp_path):
+    def test_endpoints_list_takes_precedence_over_plain_host(self, tmp_path):
         cfg = _make_config(tmp_path)
-        cfg["serving"]["host2"] = "http://legacy2:8000/v1"
         cfg["serving"]["endpoints"] = [{"host": "http://gpu-a:8000/v1"}]
         with _mock_discover():
             onit = OnIt(config=cfg)

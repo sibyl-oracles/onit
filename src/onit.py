@@ -926,11 +926,11 @@ class OnIt(BaseModel):
     def _setup_load_balancer(self) -> None:
         """Build the endpoint load balancer from serving config.
 
-        Two config shapes are accepted. ``serving.endpoints`` is a list of any
-        number of model servers, each entry taking ``host`` plus optional
-        ``name``, ``model``, ``host_key``, and ``priority``. The legacy
-        ``serving.host`` / ``serving.host2`` pair (or ONIT_HOST / ONIT_HOST2)
-        is desugared into the same list, so existing configs are unaffected.
+        ``serving.endpoints`` is a list of any number of model servers, each
+        entry taking ``host`` plus optional ``name``, ``model``, ``host_key``,
+        and ``priority``. With no list, ``serving.host`` (or ONIT_HOST) is
+        read as the single endpoint. A config still carrying the removed
+        ``serving.host2`` pair is reported and the second server is ignored.
 
         Requests are distributed per ``serving.load_balancer`` (sticky assigns
         each new session a random host; round_robin, random, or least_busy
@@ -953,7 +953,7 @@ class OnIt(BaseModel):
                     "usable 'host'. Give each entry a host URL, or fall back "
                     "to serving.host in the config YAML."
                 )
-            endpoints = self._legacy_endpoints(serving)
+            endpoints = self._single_endpoint(serving)
         self.load_balancer = LoadBalancer(
             endpoints, serving.get('load_balancer', 'sticky'),
             ollama_fallback_only=serving.get('ollama_fallback_only', True))
@@ -970,7 +970,7 @@ class OnIt(BaseModel):
         take a second share of the rotation. A repeated host carrying a
         different model is not a duplicate: Ollama cloud is one host serving
         many models. Returns [] when no list is configured, which sends the
-        caller to the legacy host/host2 path.
+        caller to the single-endpoint path.
         """
         if not isinstance(raw, list):
             return []
@@ -1017,33 +1017,25 @@ class OnIt(BaseModel):
         return endpoints
 
     @staticmethod
-    def _legacy_endpoints(serving: dict) -> list:
-        """Desugar the host/host2 config pair into an endpoint list."""
-        endpoints = [ServerEndpoint(
+    def _single_endpoint(serving: dict) -> list:
+        """Read ``serving.host`` as the one configured endpoint.
+
+        A leftover ``serving.host2`` pair from a config written before the
+        flag's removal is reported once and ignored — the endpoints list is
+        the way to run more than one server now.
+        """
+        for legacy_key in ('host2', 'model2', 'host2_key'):
+            if serving.get(legacy_key):
+                logger.warning(
+                    "serving.%s is no longer read: move it into "
+                    "serving.endpoints to use a second model server "
+                    "(see docs/MODEL_SERVING.md).", legacy_key)
+        return [ServerEndpoint(
             host=serving['host'],
             host_key=serving.get('host_key', 'EMPTY'),
             model=serving.get('model'),
             name='server1',
         )]
-        host2 = serving.get('host2') or os.environ.get('ONIT_HOST2')
-        if host2 and host2 != serving['host']:
-            host2_key = serving.get('host2_key')
-            if not host2_key:
-                # The key stored for this URL wins over the positional
-                # host2_key, which predates per-endpoint keys; chat() falls
-                # back to the provider-named secrets when both are absent.
-                try:
-                    from .setup import get_endpoint_key, get_secret
-                    host2_key = get_endpoint_key(host2) or get_secret('host2_key')
-                except Exception:
-                    host2_key = None
-            endpoints.append(ServerEndpoint(
-                host=host2,
-                host_key=host2_key or 'EMPTY',
-                model=serving.get('model2'),
-                name='server2',
-            ))
-        return endpoints
 
     def _setup_session(self) -> None:
         """Create session ID, session file, and data directory.

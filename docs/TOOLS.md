@@ -62,11 +62,15 @@ another's. See [Command Approvals](ISOLATION.md#command-approvals).
 
 Some tools can be switched off via environment variables: `ONIT_DISABLE_WEB_SEARCH` (removes `search`), `ONIT_DISABLE_WEATHER` (removes `get_weather`), and `ONIT_DISABLE_LOCAL_SEARCH` (removes `index_documents` and `local_search`).
 
-Connect to additional external MCP servers:
+Connect to additional external MCP servers through the config (OnIt neither
+starts nor re-ports a server marked external):
 
-```bash
-onit --mcp-sse http://localhost:8080/sse
-onit --mcp-server http://localhost:8080/mcp
+```yaml
+mcp:
+  servers:
+    - name: MyRemoteServer
+      url: http://localhost:8080/sse
+      external: true
 ```
 
 ## Harness tools

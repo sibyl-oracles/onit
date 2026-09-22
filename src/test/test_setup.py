@@ -22,15 +22,12 @@ class TestSettingsSchema:
     def test_model_settings_present(self):
         paths = [dotpath for dotpath, _, _ in SETTINGS]
         for expected in ("serving.host", "serving.model",
-                         "serving.host2", "serving.model2",
                          "serving.load_balancer"):
             assert expected in paths
 
     def test_model_settings_are_optional(self):
         defaults = {dotpath: default for dotpath, _, default in SETTINGS}
         assert defaults["serving.model"] == ""
-        assert defaults["serving.model2"] == ""
-        assert defaults["serving.host2"] == ""
 
 
 class TestProviderNotes:
@@ -67,20 +64,20 @@ class TestProviderNotes:
         assert any("explicit model name" in n for n in notes)
         assert any("gpt-4o" in n for n in notes)
 
-    def test_openrouter_host2_falls_back_to_host_key(self, monkeypatch):
+    def test_openrouter_endpoint_with_host_key(self, monkeypatch):
+        """A legacy host_key still satisfies an OpenRouter endpoint in the
+        plain serving.host shape."""
         _patch_secrets(monkeypatch, {"host_key"})
-        config = {"serving": {"host": "http://localhost:8000/v1",
-                              "host2": "https://openrouter.ai/api/v1",
-                              "model2": "google/gemini-2.5-pro"}}
+        config = {"serving": {"host": "https://openrouter.ai/api/v1",
+                              "model": "google/gemini-2.5-pro"}}
         assert _provider_notes(config) == []
 
-    def test_ollama_host2_checked_too(self, monkeypatch):
+    def test_ollama_host_without_model_checked(self, monkeypatch):
         _patch_secrets(monkeypatch, {"ollama_api_key"})
-        config = {"serving": {"host": "http://localhost:8000/v1",
-                              "host2": "https://ollama.com"}}
+        config = {"serving": {"host": "https://ollama.com"}}
         notes = _provider_notes(config)
         assert len(notes) == 1
-        assert "serving.model2" in notes[0]
+        assert "serving.model" in notes[0]
 
     def test_empty_config_no_notes(self, monkeypatch):
         _patch_secrets(monkeypatch, set())
@@ -141,8 +138,7 @@ class TestSectionGrouping:
         """An endpoint's key is stored per endpoint now; what is left here is
         read for backwards compatibility and never written."""
         keys = {k for k, _, _ in setup_mod.LEGACY_SERVING_SECRETS}
-        assert keys == {"host_key", "openai_api_key", "vllm_api_key",
-                        "host2_key"}
+        assert keys == {"host_key", "openai_api_key", "vllm_api_key"}
 
     def test_the_ollama_key_stayed_prompted(self):
         """It gates the web search tool as well as Ollama endpoints, so it is
@@ -304,11 +300,11 @@ class TestLegacyKeyFallback:
     def test_nothing_anywhere_is_reported_as_nothing(self):
         assert setup_mod.endpoint_key_source("http://a:8000/v1") is None
 
-    def test_a_positional_key_still_counts_for_the_second_host(self):
-        """serving.host2_key belongs to an endpoint by position, not URL."""
-        self.store["host2_key"] = "sk-2"
+    def test_a_positional_key_counts_when_named(self):
+        """An extra key name is checked even when no URL selects it."""
+        self.store["vllm_api_key"] = "sk-2"
         assert setup_mod.endpoint_key_source(
-            "https://openrouter.ai/api/v1", ("host2_key",)) == "host2_key"
+            "https://openrouter.ai/api/v1", ("vllm_api_key",)) == "vllm_api_key"
 
 
 class TestEndpointEditor:
@@ -330,38 +326,26 @@ class TestEndpointEditor:
         # Promoting to a list must retire the settings it supersedes.
         assert "host" not in cfg["serving"]
 
-    def test_reads_the_legacy_host_pair(self, capsys):
-        cfg = {"serving": {"host": "http://a:8000/v1",
-                           "host2": "http://b:8000/v1", "model2": "qwen3"}}
+    def test_reads_the_plain_host_setting(self, capsys):
+        cfg = {"serving": {"host": "http://a:8000/v1", "model": "qwen3"}}
         _drive_editor(cfg, [""])
         out = capsys.readouterr().out
         assert "http://a:8000/v1" in out and "qwen3" in out
 
-    def test_untouched_legacy_config_keeps_its_shape(self):
-        cfg = {"serving": {"host": "http://a:8000/v1",
-                           "host2": "http://b:8000/v1"}}
+    def test_untouched_plain_config_keeps_its_shape(self):
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
         _drive_editor(cfg, [""])
         assert cfg["serving"]["host"] == "http://a:8000/v1"
-        assert cfg["serving"]["host2"] == "http://b:8000/v1"
         assert "endpoints" not in cfg["serving"]
 
     def test_priority_promotes_to_the_list_shape(self):
-        cfg = {"serving": {"host": "http://a:8000/v1",
-                           "host2": "http://b:8000/v1"}}
-        _drive_editor(cfg, ["p 2", "1", ""])
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
+        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "1", "", ""])
         assert cfg["serving"]["endpoints"] == [
             {"host": "http://a:8000/v1", "priority": 0},
             {"host": "http://b:8000/v1", "priority": 1},
         ]
-        assert "host2" not in cfg["serving"]
-
-    def test_delete_drops_the_second_host_and_its_model(self):
-        cfg = {"serving": {"host": "http://a:8000/v1",
-                           "host2": "http://b:8000/v1", "model2": "qwen3"}}
-        _drive_editor(cfg, ["d 2", ""])
-        assert cfg["serving"]["host"] == "http://a:8000/v1"
-        for gone in ("host2", "model2"):
-            assert gone not in cfg["serving"]
+        assert "host" not in cfg["serving"]
 
     def test_last_endpoint_cannot_be_deleted(self, capsys):
         cfg = {"serving": {"host": "http://a:8000/v1"}}
@@ -410,17 +394,6 @@ class TestEndpointEditor:
             {"name": "cloud2", "host": "https://ollama.com",
              "model": "qwen3:cloud", "priority": 0},
         ]
-
-    def test_two_models_on_one_host_do_not_fit_the_host_pair(self):
-        """The legacy host/host2 shape reads host2 as a second server only
-        while it differs from host, so writing two models on one URL there
-        would collapse them back to one on load."""
-        entries = [{"host": "https://ollama.com", "model": "glm-5.3:cloud"},
-                   {"host": "https://ollama.com", "model": "qwen3:cloud"}]
-        assert setup_mod._fits_host_pair(entries) is False
-        # Two genuinely different hosts still keep the short form.
-        assert setup_mod._fits_host_pair(
-            [{"host": "http://a:8000/v1"}, {"host": "http://b:8000/v1"}])
 
     def test_the_same_model_twice_is_still_refused(self, capsys):
         cfg = {"serving": {"endpoints": [
@@ -492,16 +465,13 @@ class TestEndpointEditor:
 
     def test_the_table_says_where_each_key_comes_from(self, capsys):
         setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
-        self.store["vllm_api_key"] = "sk-legacy"
-        cfg = {"serving": {"host": "http://a:8000/v1",
-                           "host2": "http://b:8000/v1"}}
+        cfg = {"serving": {"host": "http://a:8000/v1"}}
         _drive_editor(cfg, [""])
         out = capsys.readouterr().out
         assert "KEY" in out
         rows = {ln.split()[2]: ln for ln in out.splitlines()
                 if "http://" in ln and ln.strip()[0].isdigit()}
         assert "set" in rows["http://a:8000/v1"]
-        assert "vllm_api_key" in rows["http://b:8000/v1"]
 
     def test_bad_row_number_is_reported_not_raised(self, capsys):
         cfg = {"serving": {"host": "http://a:8000/v1"}}
