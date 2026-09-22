@@ -33,6 +33,10 @@ from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
+try:
+    from ...ui.protocol import ChatUIProtocol
+except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
+    from ui.protocol import ChatUIProtocol
 from .verify import (DEFAULT_TRUSTED_DOMAINS, REVISION_MAX_TOKENS,
                      THINKING_VERDICT_MAX_TOKENS,
                      VERDICT_MAX_TOKENS, has_tool_evidence,
@@ -445,7 +449,7 @@ def summarize_metrics(m: dict) -> str:
     return " | ".join(parts)
 
 
-def _log_to_ui_or_verbose(message: str, chat_ui, verbose: bool, level: str = "info",
+def _log_to_ui_or_verbose(message: str, chat_ui: Optional[ChatUIProtocol], verbose: bool, level: str = "info",
                           notify: bool = False) -> None:
     """Record a run event.
 
@@ -1682,7 +1686,7 @@ async def _run_approved(invoke, retry_args: dict, request: dict,
 
 
 async def _resolve_approval(function_name: str, function_arguments: dict,
-                            tool_response: str, invoke, chat_ui, verbose: bool,
+                            tool_response: str, invoke, chat_ui: Optional[ChatUIProtocol], verbose: bool,
                             timeout) -> str:
     """Ask a person about a gated call, then re-issue it or refuse it.
 
@@ -1761,7 +1765,7 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
 
 async def _execute_tool(function_name: str, function_arguments: dict,
                         tool_call_id: str, tool_registry, timeout, data_path,
-                        chat_ui, verbose, messages: list,
+                        chat_ui: Optional[ChatUIProtocol], verbose, messages: list,
                         tool_call_history: list,
                         max_repeated: int,
                         is_structured: bool = False,
@@ -1964,7 +1968,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                 # Build a log handler to forward MCP notifications/message
                 # to the UI in real-time (e.g. sandbox stdout/stderr).
                 _log_handler = None
-                if chat_ui and hasattr(chat_ui, 'tool_log'):
+                if chat_ui:
                     async def _log_handler(msg):
                         chat_ui.tool_log(function_name, msg.data, level=msg.level)
 
@@ -2124,7 +2128,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     return None
 
 
-def _load_images(images: List[str] | str | None, chat_ui, verbose: bool) -> list[str]:
+def _load_images(images: List[str] | str | None, chat_ui: Optional[ChatUIProtocol], verbose: bool) -> list[str]:
     """Read image files from disk and return their base64-encoded bytes."""
     images_bytes: list[str] = []
     if isinstance(images, list):
@@ -2287,7 +2291,7 @@ def _reasoning_text(obj) -> str:
 
 async def _process_streaming_response(
     chat_completion, safety_queue: asyncio.Queue,
-    chat_ui, think: bool, on_first_token=None,
+    chat_ui: Optional[ChatUIProtocol], think: bool, on_first_token=None,
 ) -> tuple[str, str, dict, bool, Any, str | None] | None:
     """Consume a streaming chat completion and return accumulated results.
 
@@ -2337,7 +2341,7 @@ async def _process_streaming_response(
         if delta.tool_calls:
             # The first tool-call delta marks everything streamed so far as
             # narration, not the answer -- fold it before it can read as one.
-            if chat_ui and not folded and hasattr(chat_ui, "stream_fold"):
+            if chat_ui and not folded:
                 folded = True
                 chat_ui.stream_fold(_step_summary(full_content))
             for tc in delta.tool_calls:
@@ -2409,7 +2413,7 @@ _STEP_MAX_CHARS = 120
 
 async def _process_responses_streaming_response(
     events, safety_queue: asyncio.Queue,
-    chat_ui, on_first_token=None,
+    chat_ui: Optional[ChatUIProtocol], on_first_token=None,
 ) -> tuple[str, str, dict, bool, Any, str | None] | None:
     """Consume a Responses-API event stream and return accumulated results.
 
@@ -2461,7 +2465,7 @@ async def _process_responses_streaming_response(
             if idx not in full_tool_calls:
                 full_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
             full_tool_calls[idx]["arguments"] += event.delta
-            if chat_ui and not folded and hasattr(chat_ui, "stream_fold"):
+            if chat_ui and not folded:
                 folded = True
                 chat_ui.stream_fold(_step_summary(full_content))
         elif etype == "response.function_call_arguments.done":
@@ -2564,7 +2568,7 @@ def _step_summary(full_content: str) -> str:
 async def _ollama_process_streaming_response(
     chat_completion,
     safety_queue: asyncio.Queue,
-    chat_ui,
+    chat_ui: Optional[ChatUIProtocol],
     think: bool,
     on_first_token=None,
 ) -> tuple[str, str, list | None, bool, int, str | None] | None:
@@ -2613,7 +2617,7 @@ async def _ollama_process_streaming_response(
                 # Ollama delivers tool calls whole in the final chunk, so the
                 # fold happens here rather than per-delta -- same decision,
                 # only later, because that is all the earlier this path knows.
-                if chat_ui and not folded and hasattr(chat_ui, "stream_fold"):
+                if chat_ui and not folded:
                     folded = True
                     chat_ui.stream_fold(_step_summary(full_content))
                 tool_calls = chunk.message.tool_calls
@@ -3662,7 +3666,7 @@ def _recover_dropped_answer(final: str, prose: str) -> str:
 
 async def _handle_raw_tool_call(
     last_response: str, tool_registry, timeout, data_path,
-    chat_ui, verbose: bool, messages: list,
+    chat_ui: Optional[ChatUIProtocol], verbose: bool, messages: list,
     tool_call_history: list, max_repeated: int,
     session_id: str = "", tool_log: list | None = None,
     harness=None,
@@ -3811,7 +3815,7 @@ def _parse_tool_arguments(tool, verbose: bool) -> dict:
 
 
 async def _execute_tools_in_parallel(
-    calls: list, tool_registry, timeout, data_path, chat_ui, verbose: bool,
+    calls: list, tool_registry, timeout, data_path, chat_ui: Optional[ChatUIProtocol], verbose: bool,
     messages: list, tool_call_history: list, max_repeated: int,
     safety_queue: asyncio.Queue, session_id: str, tool_log: list | None = None,
     harness=None,
@@ -3829,7 +3833,7 @@ async def _execute_tools_in_parallel(
     order the assistant asked for them — completion order is not that order.
     """
     buffers: list = [[] for _ in calls]
-    if chat_ui and hasattr(chat_ui, "start_tool_batch"):
+    if chat_ui:
         # Arguments included: what five concurrent calls are looking for is
         # more use to someone waiting than the fact that there are five.
         chat_ui.start_tool_batch([(name, args) for name, args, _ in calls])
@@ -3850,7 +3854,7 @@ async def _execute_tools_in_parallel(
     )
     results = await gathered
     if results is _SAFETY_ABORT:
-        if chat_ui and hasattr(chat_ui, "end_tool_batch"):
+        if chat_ui:
             chat_ui.end_tool_batch()
         return _SAFETY_ABORT
 
@@ -3868,14 +3872,14 @@ async def _execute_tools_in_parallel(
         messages.extend(buffer)
         if bail is None and isinstance(result, str):
             bail = result
-    if chat_ui and hasattr(chat_ui, "end_tool_batch"):
+    if chat_ui:
         chat_ui.end_tool_batch()
     return bail
 
 
 async def _handle_structured_tool_calls(
     tool_calls: list, message_for_history, tool_registry,
-    timeout, data_path, chat_ui, verbose: bool,
+    timeout, data_path, chat_ui: Optional[ChatUIProtocol], verbose: bool,
     messages: list, tool_call_history: list,
     max_repeated: int, safety_queue: asyncio.Queue,
     session_id: str = "", tool_log: list | None = None,
@@ -3951,7 +3955,7 @@ async def _handle_structured_tool_calls(
 
 async def _compact_context(
     messages: list, client, model: str,
-    max_tokens: int, chat_ui, verbose: bool,
+    max_tokens: int, chat_ui: Optional[ChatUIProtocol], verbose: bool,
     is_ollama: bool = False,
     is_openai: bool = False,
     instruction: str = "",
@@ -4115,7 +4119,7 @@ async def _compact_context(
         + f" → {len(summary):,} char summary",
         chat_ui, verbose, level="info",
     )
-    if chat_ui and hasattr(chat_ui, "show_context_compaction"):
+    if chat_ui:
         chat_ui.show_context_compaction(len(messages_to_summarize), len(summary))
 
     new_messages: list = []
@@ -4184,7 +4188,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
          **kwargs) -> Optional[str]:
 
     tools = _api_tool_payload(tool_registry.get_tool_items()) if tool_registry else []
-    chat_ui = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
+    chat_ui: Optional[ChatUIProtocol] = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
     verbose = kwargs['verbose'] if 'verbose' in kwargs else False
     data_path = kwargs.get('data_path', '')
     session_id = kwargs.get('session_id', '')
@@ -4243,7 +4247,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # The terminal prints its per-answer footer while the run is still going,
     # so it needs the live sink rather than the summary the caller reads once
     # chat() has returned.
-    if chat_ui is not None and hasattr(chat_ui, "set_metrics"):
+    if chat_ui is not None:
         chat_ui.set_metrics(_m.sink)
     # Whether thinking, when enabled, is also spent on the turns that only
     # pick a tool.  A thinking model emits its full reasoning before every
@@ -4381,7 +4385,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
     # Both budgets are final here — the window has been asked for, guessed at,
     # or taken from config — so this is the first point the UI can name them.
-    if chat_ui and hasattr(chat_ui, "set_token_budgets"):
+    if chat_ui:
         chat_ui.set_token_budgets(max_output_tokens=max_tokens,
                                   max_context_tokens=max_context_tokens)
 
@@ -4651,7 +4655,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             return answer
         if safety_queue is not None and not safety_queue.empty():
             return answer
-        if chat_ui and hasattr(chat_ui, "verification_start"):
+        if chat_ui:
             chat_ui.verification_start()
         _t0 = time.monotonic()
         try:
@@ -4682,7 +4686,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             logger.warning("Fact-check pass failed: %s", e)
             checked, note, issues = answer, "", []
         _m.add_verification(time.monotonic() - _t0, len(issues), bool(note))
-        if chat_ui and hasattr(chat_ui, "verification_end"):
+        if chat_ui:
             chat_ui.verification_end(checked, note)
         _schedule_deep_check(checked, msgs, already_found=bool(issues))
         return checked
@@ -4732,7 +4736,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # contract already lives — the same object that was told the check had
         # started is the one owed the outcome.  Persisting it to the session is
         # the caller's half; showing it is this one.
-        if chat_ui and hasattr(chat_ui, "verification_correction"):
+        if chat_ui:
             try:
                 chat_ui.verification_correction(checked, note)
             except Exception as e:
@@ -4786,7 +4790,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # add_log only fills a panel most runs never show, so on its own the
             # run just stops mid-thought with no stated reason.  Tell the UI as
             # well, so a stop the user is watching for is one they are told about.
-            if chat_ui and hasattr(chat_ui, "show_turn_limit"):
+            if chat_ui:
                 chat_ui.show_turn_limit(MAX_CHAT_ITERATIONS)
             state.stop_reason = STOP_TURN_LIMIT
             _partial = state.final_answer_prefix or state.prose_before_tools
@@ -4819,7 +4823,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # Context compaction: check if the previous call used ≥90% of the context window.
         if state.last_prompt_tokens > 0 and max_context_tokens:
             usage_pct = state.last_prompt_tokens / max_context_tokens
-            if chat_ui and hasattr(chat_ui, "set_context_usage"):
+            if chat_ui:
                 chat_ui.set_context_usage(usage_pct * 100, max_context_tokens)
             if usage_pct >= CONTEXT_COMPACT_THRESHOLD:
                 _log_to_ui_or_verbose(
@@ -4839,7 +4843,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         max_context_tokens=max_context_tokens,
                         turns=state.iteration_count,
                         tools_called=len(state.tool_call_history))
-        if chat_ui and hasattr(chat_ui, "set_turn_context"):
+        if chat_ui:
             # Prose written on a turn that follows tool calls is the answer
             # being written; the UI shows it as such rather than as one more
             # indistinguishable phase.
@@ -5010,13 +5014,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         if _stream_usage is not None:
                             state.last_prompt_tokens = _stream_usage.prompt_tokens
                             _completion_tokens = _stream_usage.completion_tokens
-                            if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                            if max_context_tokens and chat_ui:
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         _m.end_api(state.last_prompt_tokens, _completion_tokens,
                                    _finish_reason,
                                    cached_tokens=_cached_tokens_of(_stream_usage))
                         if (not _full_tool_calls and _ui_was_streaming and chat_ui
-                                and hasattr(chat_ui, "stream_fold")
                                 and _looks_like_raw_tool_call(_full_content)):
                             chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
@@ -5063,7 +5066,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     if _usage is not None:
                         state.last_prompt_tokens = _usage.prompt_tokens
                         _completion_tokens = _usage.completion_tokens
-                        if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                        if max_context_tokens and chat_ui:
                             chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                     if _finish_reason == "length":
                         _log_to_ui_or_verbose(
@@ -5201,7 +5204,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         _completion_tokens = _ollama_eval_count
                         if _ollama_prompt_tokens:
                             state.last_prompt_tokens = _ollama_prompt_tokens
-                            if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                            if max_context_tokens and chat_ui:
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         # Before stream_end: the footer it prints reports this
                         # turn, and reads it from the metrics sink.  Ollama's
@@ -5217,7 +5220,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         # same decision made at the only point the raw
                         # path can make it.
                         if (not _ollama_tcs and _ui_was_streaming and chat_ui
-                                and hasattr(chat_ui, "stream_fold")
                                 and _looks_like_raw_tool_call(_full_content)):
                             chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
@@ -5258,7 +5260,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         if _stream_usage is not None:
                             state.last_prompt_tokens = _stream_usage.prompt_tokens
                             _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
-                            if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                            if max_context_tokens and chat_ui:
                                 chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
                         # Before stream_end: the footer it prints reports this
                         # turn, and reads it from the metrics sink.
@@ -5273,7 +5275,6 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         # the same decision made at the only point the raw
                         # path can make it.
                         if (not _full_tool_calls and _ui_was_streaming and chat_ui
-                                and hasattr(chat_ui, "stream_fold")
                                 and _looks_like_raw_tool_call(_full_content)):
                             chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
@@ -5459,7 +5460,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _pec = getattr(chat_completion, "prompt_eval_count", None)
                 if _pec is not None:
                     state.last_prompt_tokens = _pec
-                    if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                    if max_context_tokens and chat_ui:
                         chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
             else:
                 _choice = chat_completion.choices[0]
@@ -5490,7 +5491,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if chat_completion.usage is not None:
                     state.last_prompt_tokens = chat_completion.usage.prompt_tokens
                     _completion_tokens = getattr(chat_completion.usage, "completion_tokens", 0)
-                    if max_context_tokens and chat_ui and hasattr(chat_ui, "set_context_usage"):
+                    if max_context_tokens and chat_ui:
                         chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
 
         # Both paths have converged: the model call for this turn is done.

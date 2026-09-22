@@ -51,6 +51,44 @@ def _mock_discover():
     return patch("src.onit.discover_tools", return_value=ToolRegistry())
 
 
+# ── ChatUIProtocol conformance ──────────────────────────────────────────────
+
+class TestChatUIProtocolConformance:
+    """Every UI handed to chat() carries the full ChatUIProtocol surface.
+
+    chat.py calls these hooks directly behind a truthiness check — it no
+    longer probes with hasattr — so an implementation missing one would
+    crash mid-run rather than silently skip a report.
+    """
+
+    def test_terminal_ui_satisfies_the_protocol(self):
+        from ui.protocol import ChatUIProtocol
+        from ui.text import ChatUI
+        assert isinstance(ChatUI(), ChatUIProtocol)
+
+    def test_streaming_adapter_satisfies_the_protocol(self):
+        from ui.protocol import ChatUIProtocol
+        assert isinstance(StreamingAdapter(), ChatUIProtocol)
+
+    def test_adapter_fold_is_a_noop_not_an_error(self):
+        """chat.py folds a tool-bound turn's narration; a callback client
+        keeps what it streamed, so the hook must accept the call silently."""
+        adapter = StreamingAdapter(on_token=lambda token, full: None)
+        adapter.stream_fold("step summary")
+        adapter.set_token_budgets(max_output_tokens=512, max_context_tokens=4096)
+        adapter.set_turn_context(tools_run=2)
+        adapter.start_tool_batch([("bash", {})])
+        adapter.end_tool_batch()
+
+    def test_adapter_carries_model_name_for_the_session_record(self):
+        """chat() writes the resolved model id onto the UI; _record_trajectory
+        reads it back with getattr.  The attribute must exist beforehand."""
+        adapter = StreamingAdapter()
+        assert adapter.model_name == ""
+        adapter.model_name = "qwen3-30b"
+        assert getattr(adapter, "model_name") == "qwen3-30b"
+
+
 # ── friendly_tool_status / StreamingAdapter.tool_log ────────────────────────
 
 class TestFriendlyToolStatus:

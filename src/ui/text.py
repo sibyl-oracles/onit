@@ -86,6 +86,9 @@ class Message:
     name: str = ""
 
 class ChatUI:
+    """Terminal front end; one of the ChatUIProtocol implementations chat()
+    reports through (see src/ui/protocol.py)."""
+
     def __init__(
         self,
         theme: str = "white",
@@ -702,6 +705,22 @@ class ChatUI:
             f"  ⚡ Context compacted  ({orig_msg_count} messages → {summary_chars:,} char summary)",
             style="bold yellow",
         )
+
+    # StreamingAdapter-only hooks: the terminal renders tool batches and turn
+    # phases directly, so there is nothing to pre-declare here.  They exist as
+    # no-ops so every ChatUIProtocol implementation carries the full surface
+    # and chat() can call without probing.
+    def start_tool_batch(self, calls: list) -> None:
+        """No-op; the terminal shows each tool call as it starts."""
+        pass
+
+    def end_tool_batch(self) -> None:
+        """No-op; the terminal needs no batch boundary."""
+        pass
+
+    def set_turn_context(self, tools_run: int = 0) -> None:
+        """No-op; the terminal labels phases from the stream itself."""
+        pass
 
     def notice(self, message: str,
                level: Literal["info", "warning", "error", "debug"] = "info") -> None:

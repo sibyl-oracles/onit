@@ -48,6 +48,7 @@ from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files, zip_code_files
 from .ui import ChatUI
+from .ui.protocol import ChatUIProtocol
 from .ui.commands import dispatch as dispatch_command
 from .model.serving.chat import (chat, decode_rate, summarize_metrics,
                                 DEFAULT_MAX_TOKENS)
@@ -379,11 +380,13 @@ def _join_words(parts: list[str]) -> str:
 
 
 class StreamingAdapter:
-    """Minimal chat_ui adapter that forwards streaming tokens to a callback.
+    """Callback-backed chat_ui that forwards streaming tokens to a caller.
 
-    Implements the subset of the ChatUI interface used by ``chat()`` so that
-    ``process_task`` callers (web UI, A2A) can receive tokens incrementally
-    without a full terminal UI.
+    Implements the full ChatUIProtocol (src/ui/protocol.py) that ``chat()``
+    reports through, so ``process_task`` callers (web UI, A2A) receive tokens
+    incrementally without a terminal.  Hooks with no callback-side meaning are
+    no-ops; ``ask_approval`` exists only when ``on_approval`` was supplied —
+    chat() probes for it, and its absence refuses every gated command.
     """
 
     def __init__(self, on_token=None, on_complete=None, show_logs=False,
@@ -435,6 +438,10 @@ class StreamingAdapter:
         raise AttributeError(name)
 
     # ── streaming ────────────────────────────────────────────────
+    # Written by chat() once the endpoint's model id is resolved; read back by
+    # _record_trajectory so the session record names what actually answered.
+    model_name: str = ""
+
     def set_metrics(self, sink: dict) -> None:
         """Adopt the run's live token/timing accounting (see TurnMetrics)."""
         self._metrics = sink
@@ -656,6 +663,21 @@ class StreamingAdapter:
 
     def set_context_usage(self, pct: float, max_tokens: int = 0) -> None:
         """No-op for external clients; context % is informational only."""
+        pass
+
+    def set_token_budgets(self, max_output_tokens: int = 0,
+                          max_context_tokens: int = 0) -> None:
+        """No-op for external clients; budgets are informational only."""
+        pass
+
+    def stream_fold(self, summary: str = "") -> None:
+        """No-op for external clients.
+
+        The terminal folds a tool-bound turn's narration into a step marker
+        because it printed that narration live.  A callback client saw the
+        same tokens and keeps them - folding is the receiver's call, and
+        chat() only asks.
+        """
         pass
 
     # ── fact-check (runs after the answer has streamed) ──────────
@@ -1260,7 +1282,7 @@ class OnIt(BaseModel):
         return history[-max_turns:]
 
     def _chat_kwargs(self, *, metrics: dict, run_state: 'RunState',
-                     chat_ui, verbose: bool, data_path: str,
+                     chat_ui: ChatUIProtocol | None, verbose: bool, data_path: str,
                      session_id: str, session_history: list,
                      background_verify=None, stream: bool | None = None,
                      with_prompt_intro: bool = True) -> dict:

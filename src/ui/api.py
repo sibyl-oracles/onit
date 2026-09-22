@@ -17,8 +17,8 @@ FastAPI + SSE web chat UI for OnIt.
 
 A plain FastAPI backend that streams agent output over Server-Sent Events
 and serves a static single-page app from src/ui/static/.  Implements the
-same interface as ChatUI (text.py) so chat.py and onit.py work without
-changes.
+onit.py subset of the ChatUI surface (text.py) so onit.py works unchanged;
+chat() itself talks to a StreamingAdapter built from per-session callbacks.
 
 SSE event schema (see docs/web-ui-plan.md):
     token         {"delta": str}
@@ -473,9 +473,13 @@ class ApiSession:
 
 
 class WebApiUI:
-    """FastAPI web UI server implementing the ChatUI interface subset used
-    by onit.py in web mode (add_message, add_log, tool_log, tool_progress,
-    render, stop_status, console, launch)."""
+    """FastAPI web UI server implementing the onit.py subset of the chat UI
+    surface (add_message, add_log, tool_log, tool_progress, render,
+    stop_status, console, launch).
+
+    Never handed to chat(): web runs report through a StreamingAdapter built
+    from per-session callbacks, so this class does not implement
+    ChatUIProtocol (src/ui/protocol.py) and is not required to."""
 
     def __init__(
         self,
