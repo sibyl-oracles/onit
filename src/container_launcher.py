@@ -40,6 +40,7 @@ from pathlib import Path
 _SECRET_ENV_KEYS = [
     ("host_key", "OPENROUTER_API_KEY"),
     ("ollama_api_key", "OLLAMA_API_KEY"),
+    ("tavily_api_key", "TAVILY_API_KEY"),
     ("vllm_api_key", "VLLM_API_KEY"),
     ("openweathermap_api_key", "OPENWEATHERMAP_API_KEY"),
     ("github_token", "GITHUB_TOKEN"),

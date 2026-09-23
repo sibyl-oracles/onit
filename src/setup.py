@@ -57,6 +57,10 @@ INTEGRATION_SECRETS = [
     # into the per-endpoint keys with the rest.
     ("ollama_api_key",         "Ollama API key (web search + Ollama hosts)",
      "OLLAMA_API_KEY"),
+    # Optional first tier for web search: when set, the search tool tries
+    # Tavily before Ollama and before the DuckDuckGo fallback.
+    ("tavily_api_key",         "Tavily API key (web search, optional first tier)",
+     "TAVILY_API_KEY"),
     ("openweathermap_api_key", "OpenWeatherMap API key (enables weather tool)",
      "OPENWEATHERMAP_API_KEY"),
     ("web_google_client_id",   "Google OAuth2 client ID (for web UI auth)",

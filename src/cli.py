@@ -495,6 +495,12 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
     else:
         os.environ['ONIT_DISABLE_WEB_SEARCH'] = '1'
 
+    # Optional first tier for web search. Without it the search tool still
+    # works via Ollama / DuckDuckGo, so a missing key is not an error.
+    tavily_api_key = resolve_credential(None, 'TAVILY_API_KEY', 'tavily_api_key')
+    if tavily_api_key:
+        os.environ['TAVILY_API_KEY'] = tavily_api_key
+
     weather_api_key = resolve_credential(None, 'OPENWEATHERMAP_API_KEY', 'openweathermap_api_key')
     if not weather_api_key:
         weather_api_key = resolve_credential(None, 'OPENWEATHER_API_KEY', 'openweathermap_api_key')

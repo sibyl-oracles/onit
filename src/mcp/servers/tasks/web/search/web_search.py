@@ -15,22 +15,27 @@
 
 Web Search Tool
 
-Provides web search using Ollama's web search API with DuckDuckGo fallback.
-See: https://ollama.com/blog/web-search
+Provides web search using Tavily (when TAVILY_API_KEY is set), Ollama's web
+search API, and a DuckDuckGo fallback.
+See: https://ollama.com/blog/web-search and https://docs.tavily.com
 
 Features:
-- Primary search via Ollama web search API
-- Automatic fallback to DuckDuckGo if Ollama fails
+- Primary search via Tavily when TAVILY_API_KEY is set (agent-oriented API)
+- Ollama web search API next (needs OLLAMA_API_KEY)
+- Automatic fallback to DuckDuckGo if everything else fails
 - Content cleaning and truncation
 - Configurable result limits
 - Retry logic for transient failures
 """
 
 import json
+import os
 import re
 import html
 import logging
 from typing import Optional
+
+import requests
 
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -81,6 +86,9 @@ class WebSearch:
         self.max_content_length = max_content_length
         self.timeout = timeout
         self.use_fallback = use_fallback
+        # Tavily is the first tier only when a key is configured; without one
+        # the chain is exactly Ollama -> DuckDuckGo as before.
+        self.tavily_api_key = os.environ.get("TAVILY_API_KEY", "").strip()
 
     def _clean_content(self, content: str) -> str:
         """Clean and normalize content from search results."""
@@ -106,6 +114,40 @@ class WebSearch:
             content = content[:self.max_content_length].rsplit(' ', 1)[0] + "..."
 
         return content
+
+    def _search_tavily(self, query: str) -> Optional[list]:
+        """Search using the Tavily API. First tier when TAVILY_API_KEY is set."""
+        if not self.tavily_api_key:
+            return None
+
+        try:
+            response = requests.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": self.tavily_api_key,
+                    "query": query,
+                    "max_results": self.max_results,
+                    "include_answer": False,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            results = []
+            for result in data.get("results", [])[:self.max_results]:
+                results.append({
+                    'title': result.get('title', 'No title'),
+                    'url': result.get('url', ''),
+                    'content': self._clean_content(result.get('content', '')),
+                    'source': 'tavily'
+                })
+
+            return results if results else None
+
+        except Exception as e:
+            logger.warning(f"Tavily search failed: {str(e)}")
+            return None
 
     def _search_ollama(self, query: str) -> Optional[list]:
         """Search using Ollama web search API."""
@@ -162,7 +204,8 @@ class WebSearch:
         """
         Search the web for the given query.
 
-        Tries Ollama first, falls back to DuckDuckGo if configured.
+        Tries Tavily (when TAVILY_API_KEY is set), then Ollama, then falls
+        back to DuckDuckGo if configured.
 
         Args:
             query: The search query string
@@ -175,8 +218,12 @@ class WebSearch:
 
         query = query.strip()
 
-        # Try Ollama first
-        results = self._search_ollama(query)
+        # Try Tavily first (only active when a key is configured)
+        results = self._search_tavily(query)
+
+        # Then Ollama
+        if results is None:
+            results = self._search_ollama(query)
 
         # Fallback to DuckDuckGo if needed
         if results is None and self.use_fallback:
@@ -187,10 +234,12 @@ class WebSearch:
         if results:
             return json.dumps(results, ensure_ascii=False)
         else:
+            tried = (["tavily"] if self.tavily_api_key else []) + \
+                    (["ollama", "duckduckgo"] if self.use_fallback else ["ollama"])
             return json.dumps({
                 "error": "Search failed - no results from any provider",
                 "query": query,
-                "providers_tried": ["ollama", "duckduckgo"] if self.use_fallback else ["ollama"]
+                "providers_tried": tried
             })
 
     def search_with_metadata(self, query: str) -> dict:
@@ -209,10 +258,16 @@ class WebSearch:
         query = query.strip()
         source_used = None
 
-        # Try Ollama first
-        results = self._search_ollama(query)
+        # Try Tavily first (only active when a key is configured)
+        results = self._search_tavily(query)
         if results:
-            source_used = "ollama"
+            source_used = "tavily"
+
+        # Then Ollama
+        if results is None:
+            results = self._search_ollama(query)
+            if results:
+                source_used = "ollama"
 
         # Fallback to DuckDuckGo if needed
         if results is None and self.use_fallback:

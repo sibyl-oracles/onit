@@ -35,6 +35,9 @@ Any OpenAI-compatible endpoint. Two hosted options, no hardware needed — pick 
 export OLLAMA_API_KEY=...                                  # key from ollama.com
 onit --host https://api.ollama.com --model glm-5.3:cloud
 
+# Optional: Tavily as the first web-search tier (free 1,000 credits/mo)
+export TAVILY_API_KEY=...                                  # key from app.tavily.com
+
 # OpenRouter — one key, many models, paid per token
 export OPENROUTER_API_KEY=...                              # key from openrouter.ai
 onit --host https://openrouter.ai/api/v1 --model google/gemini-2.5-pro
@@ -122,6 +125,7 @@ Run it on a schedule with `onit serve loop "re-audit and diff against audit.md" 
 | --- | --- | --- |
 | `GITHUB_TOKEN` | Automated git workflows — clone, commit, push, PRs, CI fixes | Important |
 | `OLLAMA_API_KEY` | Ollama cloud models + web search | Core |
+| `TAVILY_API_KEY` | Web search — optional first tier, tried before Ollama | Optional — free 1,000 credits/mo |
 | `OPENROUTER_API_KEY` | OpenRouter models | Core (alternative to Ollama) |
 | `OPENWEATHER_API_KEY` | Weather tool | Optional — free anyway |
 
