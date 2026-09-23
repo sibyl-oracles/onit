@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from model.serving.interpreter import shutdown_session
+from model.serving.state import RunState
 from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _is_planning_response, _build_messages,
                                 _trim_history, _is_acknowledgment_response,
@@ -20,7 +21,11 @@ from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _build_planning_continuation_prompt,
                                 _is_noop_tool_call, _is_content_free_response,
                                 _content_residue, _is_answering_a_nudge,
+                                _signals_pending_work,
                                 _ACK_CONTINUATION_PROMPT,
+                                _CONTINUATION_AFTER_NUDGE_PROMPT,
+                                _NO_THINK_ACT_PROMPT,
+                                _NO_THINK_RETRY_PROMPT,
                                 _extract_final_response, _looks_incomplete,
                                 _output_unaccounted, _log_to_ui_or_verbose,
                                 _reasoning_text, _is_reasoning_only,
@@ -1038,6 +1043,64 @@ class TestIsAnsweringANudge:
 
     def test_no_user_turn(self):
         assert not _is_answering_a_nudge([{"role": "system", "content": "rules"}])
+
+    def test_no_think_retry_prompt(self):
+        assert _is_answering_a_nudge(
+            [{"role": "user", "content": _NO_THINK_RETRY_PROMPT}])
+
+    def test_no_think_act_prompt(self):
+        assert _is_answering_a_nudge(
+            [{"role": "user", "content": _NO_THINK_ACT_PROMPT}])
+
+    def test_continuation_after_nudge_prompt(self):
+        assert _is_answering_a_nudge(
+            [{"role": "user", "content": _CONTINUATION_AFTER_NUDGE_PROMPT}])
+
+
+class TestSignalsPendingWork:
+    """The detector behind the declined-nudge recovery: a reply to a harness
+    nudge that says the task is unfinished is a continue request, not an
+    answer.  Scoped to nudge replies on purpose — every phrase here also
+    occurs in honest answers about the world."""
+
+    def test_the_log_failure_is_caught(self):
+        """Verbatim shape from the 23 Sep session: the model argued with the
+        final-answer nudge and named the work it could not do."""
+        reply = ("The user wants me to write the final answer now. But wait — "
+                 "I haven't actually made the changes yet. The instruction "
+                 "says do not call any more tools, but the task is to modify "
+                 "cmd_setup and I haven't edited the file.")
+        assert _signals_pending_work(reply) is True
+
+    def test_tool_constraint_phrases_are_caught(self):
+        assert _signals_pending_work(
+            "I can't call tools anymore, so here is the plan as text.")
+        assert _signals_pending_work(
+            "Since tool calls are no longer allowed, the patch is below.")
+        assert _signals_pending_work(
+            "I cannot apply the change under this constraint.")
+
+    def test_incomplete_work_phrases_are_caught(self):
+        assert _signals_pending_work("The work is incomplete: the tests still need writing.")
+        assert _signals_pending_work("I have not made the edits yet.")
+        assert _signals_pending_work("There is still one step left to do.")
+
+    def test_a_genuine_answer_is_not_caught(self):
+        """An answer about the world may contain these words about someone
+        else's work; the detector must not turn it into a continuation."""
+        assert _signals_pending_work(
+            "The maintainers haven't merged the fix upstream; pin 1.2.0.") is False
+        assert _signals_pending_work(
+            "The repo is complete: setup, README and tests are all in place.") is False
+        assert _signals_pending_work(
+            "All done. The patch is applied and the suite passes.") is False
+
+    def test_thinking_is_stripped_before_matching(self):
+        assert _signals_pending_work(
+            "</think>I still need to edit the file.</think>Final answer: everything is done.") is False
+
+    def test_empty_is_not_caught(self):
+        assert _signals_pending_work("") is False
 
 
 # ── blank required tool arguments ──────────────────────────────────────────
@@ -3143,11 +3206,22 @@ class TestLooksIncomplete:
         "Three takeaways:\n\n- **The naturalness floor at",
         "6. **Add the missing test layer:** (a) parity test per graph (max abs diff",
         "Run it with `onit --host",
-        "Here is the script:\n\n```python\nx = 1",
+        # An answer cut off inside a fenced block, long enough to be worth
+        # resuming — the 23 Sep failure shape.
+        "Here is the script:\n\n```python\n" + ("x = 1\n" * 40),
         "See the table in [the appendix",
     ])
     def test_unclosed_pairs_are_incomplete(self, text):
         assert _looks_incomplete(text) is True
+
+    @pytest.mark.parametrize("text", [
+        # Below _FENCE_MIN_CHARS: a short reply that ends on a lone fence is
+        # handed back as-is rather than resumed — there is little enough of it
+        # that a resume turn costs more than it saves.
+        "Here is the script:\n\n```python\nx = 1",
+    ])
+    def test_a_short_unclosed_fence_is_left_alone(self, text):
+        assert _looks_incomplete(text) is False
 
     @pytest.mark.parametrize("text", [
         "All done.",
@@ -4090,3 +4164,258 @@ class TestIsOpenAIResponsesModel:
         assert not _is_openai_responses_model("gpt-4o")
         assert not _is_openai_responses_model("o3")
         assert not _is_openai_responses_model("")
+
+
+# ── a declined nudge: "the task isn't done" is a continue request ────────────
+
+def _module_registry(names=("search",)):
+    """A minimal tool registry at module scope, for the end-to-end classes
+    below (the class-scoped _registry helpers live inside their classes)."""
+    registry = MagicMock()
+    registry.tools = set(names)
+    registry.get_tool_items.return_value = [
+        {"type": "function",
+         "function": {"name": n, "description": "d",
+                      "parameters": {"type": "object", "properties": {}}}}
+        for n in names]
+    registry.tool_accepts_param.return_value = False
+    registry.blank_required_args.return_value = []
+    registry.parameters_schema.return_value = {}
+    return registry
+
+
+class TestNudgeDeclineRecovery:
+    """The failure this fixes, from the 23 Sep session: a thinking-only turn
+    got the final-answer nudge, the model replied by arguing that the task was
+    unfinished and started writing the patch as prose, and that argument was
+    handed back as the final answer — ending an unfinished task on its own
+    statement that it was unfinished.
+
+    Now a reply to a harness nudge that signals pending work gets its tools
+    back once, and the run continues."""
+
+    async def _run(self, tmp_path, completions, **kwargs):
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=completions)
+        registry = _module_registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="result")
+        state = RunState()
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry,
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path),
+                                run_state=state, **kwargs)
+        return result, client, state
+
+    @pytest.mark.asyncio
+    async def test_an_argued_reply_gets_its_tools_back(self, tmp_path):
+        """Thinking-only turn, then the model argues with the nudge instead of
+        answering: the run must continue, not end on the argument."""
+        arguing = ("I haven't actually made the changes yet. The task is to "
+                   "modify cmd_setup and I haven't edited the file. The "
+                   "instruction says do not call any more tools, but the "
+                   "work is incomplete.")
+        tc = _mock_tool_call("search", '{"query": "next step"}', "c2")
+        completions = [
+            # Turn 1: thinking only (empty content, reasoning field full).
+            _mock_completion_with_usage("", completion_tokens=4000,
+                                        reasoning=_THINKING,
+                                        finish_reason="length"),
+            # Turn 2: the argued reply to the nudge.
+            _mock_completion_with_finish(content=arguing),
+            # Turn 3: the model acts.
+            _mock_completion(content=None, tool_calls=[tc]),
+            # Turn 4: the answer.
+            _mock_completion("The change is applied and verified."),
+        ]
+        result, client, state = await self._run(tmp_path, completions)
+        assert result == "The change is applied and verified."
+        assert state.nudge_decline_count == 1
+        # The continue-after-nudge prompt reached the conversation.
+        sent = client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        assert any(m.get("role") == "user"
+                   and "task is not finished" in str(m.get("content", ""))
+                   for m in sent), sent
+
+    @pytest.mark.asyncio
+    async def test_a_thinking_turn_mid_task_gets_the_act_prompt(self, tmp_path):
+        """With tools in the payload the no-think retry must not forbid tool
+        calls — the model's thinking ended on a tool it was about to call."""
+        tc = _mock_tool_call("search", '{"query": "next"}', "c1")
+        completions = [
+            _mock_completion_with_usage("", completion_tokens=4000,
+                                        reasoning=_THINKING,
+                                        finish_reason="length"),
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion("Answer after acting."),
+        ]
+        result, client, state = await self._run(tmp_path, completions)
+        assert result == "Answer after acting."
+        # The retry prompt left the tool door open.
+        sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        retry = [m for m in sent if m.get("role") == "user"][-1]
+        assert retry["content"] == _NO_THINK_ACT_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_a_plain_question_keeps_the_answer_only_prompt(self, tmp_path):
+        """No tools in the payload: the retry stays answer-only, where
+        forbidding tools costs nothing."""
+        completions = [
+            _mock_completion_with_usage("", completion_tokens=4000,
+                                        reasoning=_THINKING,
+                                        finish_reason="length"),
+            _mock_completion("The plain answer."),
+        ]
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=completions)
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1",
+                                instruction="plain question",
+                                tool_registry=None,
+                                safety_queue=asyncio.Queue(),
+                                verify_answers=False)
+        assert result == "The plain answer."
+        sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        retry = [m for m in sent if m.get("role") == "user"][-1]
+        assert retry["content"] == _NO_THINK_RETRY_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_answer_to_a_nudge_is_returned(self, tmp_path):
+        """A reply to a nudge that does not signal pending work is an answer,
+        and must reach the user with no extra turn spent."""
+        tc = _mock_tool_call("search", '{"query": "q"}', "c1")
+        completions = [
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion("The task is complete: all files are written."),
+        ]
+        result, client, state = await self._run(tmp_path, completions)
+        assert result == "The task is complete: all files are written."
+        assert state.nudge_decline_count == 0
+        assert client.chat.completions.create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_second_argument_is_returned_as_is(self, tmp_path):
+        """The budget is one: a model that argues again after being handed its
+        tools back has said its piece, and the reply is not swallowed."""
+        arguing = ("I still need to edit the file and I can't call tools.")
+        tc2 = _mock_tool_call("search", '{"query": "q2"}', "c2")
+        completions = [
+            # Turn 1: thinking only — the model gets the act prompt.
+            _mock_completion_with_usage("", completion_tokens=4000,
+                                        reasoning=_THINKING,
+                                        finish_reason="length"),
+            # Turn 2: the model argues instead of acting.
+            _mock_completion_with_finish(content=arguing),
+            # Turn 3: handed its tools back, it calls one...
+            _mock_completion(content=None, tool_calls=[tc2]),
+            # ...and argues again.  Budget spent, reply returned as-is.
+            _mock_completion_with_finish(content=arguing),
+        ]
+        result, client, state = await self._run(tmp_path, completions)
+        assert result == arguing
+        assert state.nudge_decline_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_budget_can_be_disabled(self, tmp_path):
+        """max_nudge_decline_recoveries=0 restores the old behavior: a
+        declined nudge is returned as the final answer."""
+        arguing = ("I still need to edit the file and I can't call tools.")
+        tc = _mock_tool_call("search", '{"query": "q"}', "c1")
+        completions = [
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion_with_finish(content=arguing),
+        ]
+        result, client, state = await self._run(
+            tmp_path, completions, max_nudge_decline_recoveries=0)
+        assert result == arguing
+        assert state.nudge_decline_count == 0
+
+    @pytest.mark.asyncio
+    async def test_an_unkempt_reply_to_a_real_user_turn_is_an_answer(self, tmp_path):
+        """The same wording after a genuine user turn is an answer about the
+        task, not a declined nudge — the structural test is scoped to nudges."""
+        reply = "The fix hasn't been applied upstream; pin the older version."
+        tc = _mock_tool_call("search", '{"query": "q"}', "c1")
+        completions = [
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion_with_finish(content=reply),
+        ]
+        result, client, state = await self._run(tmp_path, completions)
+        assert result == reply
+        assert state.nudge_decline_count == 0
+
+
+class TestUnterminatedFenceResume:
+    """An answer cut off inside a fenced code block used to be handed back as
+    if it were finished — the exact shape of the 23 Sep failure, where the
+    model's patch-as-prose ended mid-code-block and the run recorded it as
+    answered.  With enough text behind the open fence, the reply is a resume."""
+
+    @pytest.mark.asyncio
+    async def test_a_reply_cut_inside_a_fence_is_resumed(self, tmp_path):
+        # A patch written as prose and cut off inside its code block — the
+        # shape of the 23 Sep failure.  The body must not repeat a short span:
+        # a degenerate loop is the repetition guard's failure, not this one's,
+        # and that guard would trim the text and resume it instead.
+        body = ("Here is the change:\n\n```python\ndef cmd_setup(args) -> None:\n"
+                "    from rich.console import Console\n    console = Console()\n"
+                "    dest = Path(args.config or Path.home() / '.baby-onit'\n"
+                "                             / 'config.yaml').expanduser()\n"
+                "    old = load_config(args.config) if dest.is_file() else {}\n"
+                "    for key in ('github_token', 'huggingface_token'):\n"
+                "        answer = Prompt.ask(f'{key}', default=old.get(key, ''))\n"
+                "        if answer:\n"
+                "            old[key] = answer\n"
+                "    dest.write_text(yaml.safe_dump(old, sort_keys=False))\n"
+                "    console.print('[bold]baby-onit setup[/]  enter a number")
+        tc = _mock_tool_call("search", '{"query": "q"}', "c1")
+        completions = [
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion_with_finish(content=body),
+            _mock_completion_with_finish(content="    return old\n```\n\nSetup is preserved."),
+        ]
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=completions)
+        registry = _module_registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="result")
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry,
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path),
+                                max_nudge_decline_recoveries=0,
+                                verify_answers=False)
+        # The pieces were stitched into one answer, fence closed.
+        assert result.count("Here is the change:") == 1
+        assert result.count("```") % 2 == 0
+        assert "Setup is preserved." in result
+
+    @pytest.mark.asyncio
+    async def test_a_closed_fence_is_returned_as_the_answer(self, tmp_path):
+        body = "Here is the change:\n\n```python\nx = 1\n```"
+        tc = _mock_tool_call("search", '{"query": "q"}', "c1")
+        completions = [
+            _mock_completion(content=None, tool_calls=[tc]),
+            _mock_completion_with_finish(content=body),
+        ]
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=completions)
+        registry = _module_registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="result")
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry,
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path),
+                                verify_answers=False)
+        assert result == body
+        assert client.chat.completions.create.call_count == 2

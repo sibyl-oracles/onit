@@ -113,6 +113,12 @@ class RunState:
     # has proven the recovery does not work, and the run should end on the
     # guard's own actionable message.
     repeat_recovery_count: int = 0
+    # Times the loop has handed the tools back to a model that answered a
+    # harness nudge by saying the task is unfinished instead of answering.
+    # Bounded by MAX_NUDGE_DECLINE_RECOVERIES in chat(): the first argument is
+    # information, a model that argues again after getting its tools back has
+    # said its piece, and the reply is then returned as-is.
+    nudge_decline_count: int = 0
 
     # ── the shape of the next API call ──────────────────────────────────────
     force_tool_call: bool = False
@@ -207,6 +213,7 @@ class RunState:
         self.final_continuation_count = other.final_continuation_count
         self.repetition_continuation_count = other.repetition_continuation_count
         self.repeat_recovery_count = other.repeat_recovery_count
+        self.nudge_decline_count = other.nudge_decline_count
         self.stop_reason = other.stop_reason
         # The compaction cursor is per-run: the summary describes this run's
         # transcript, and the next run's messages start from a different
@@ -233,6 +240,7 @@ class RunState:
             "final_continuation_count": self.final_continuation_count,
             "repetition_continuation_count": self.repetition_continuation_count,
             "repeat_recovery_count": self.repeat_recovery_count,
+            "nudge_decline_count": self.nudge_decline_count,
             "stop_reason": self.stop_reason,
             "task_count": self.task_count,
             "total_turns": self.total_turns,
@@ -249,6 +257,7 @@ class RunState:
         for name in ("iteration_count", "planning_continuation_count",
                      "ack_continuation_count", "final_continuation_count",
                      "repetition_continuation_count", "repeat_recovery_count",
+                     "nudge_decline_count",
                      "task_count", "total_turns"):
             try:
                 setattr(state, name, int(data.get(name, 0) or 0))

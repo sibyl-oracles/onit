@@ -3002,15 +3002,29 @@ def _is_answering_a_nudge(messages: list) -> bool:
     resume the task — so a content-free reply to one of them is a refusal to
     resume.  After a genuine user turn the same reply may be a real answer, so
     the structural test is scoped to this case.
+
+    A tool result is skipped over, and so is the assistant tool-call message
+    that asked for it: the last *user* turn before them is still the prompt
+    that set the model going, so a reply that follows a tool call is still
+    answering a harness turn when that prompt was one of these.  This is what
+    lets the declined-nudge recovery fire after a tool call as well as before
+    one — the model answered the nudge by calling a tool, the tool answered,
+    and the model then said the task is unfinished anyway.
     """
     for msg in reversed(messages):
-        if not isinstance(msg, dict) or msg.get("role") != "user":
+        if not isinstance(msg, dict):
             continue
+        if msg.get("role") in ("tool", "assistant"):
+            continue
+        if msg.get("role") != "user":
+            break
         content = msg.get("content")
         if not isinstance(content, str):
             return False
         return (content in (_ACK_CONTINUATION_PROMPT, _FINAL_CONTINUATION_PROMPT,
-                            _REPEAT_RECOVERY_PROMPT)
+                            _REPEAT_RECOVERY_PROMPT, _NO_THINK_RETRY_PROMPT,
+                            _NO_THINK_ACT_PROMPT,
+                            _CONTINUATION_AFTER_NUDGE_PROMPT)
                 or content.startswith("[CONTEXT COMPACTED]")
                 or "Use this exact JSON format:" in content)
     return False
@@ -3247,6 +3261,72 @@ _NO_THINK_RETRY_PROMPT = (
     "now, directly and in full. Do not reason further, do not restate the "
     "question, and do not call any more tools."
 )
+
+# The tools-aware counterpart, used when the run has tools of its own.  The
+# answer-only prompt above forbids tool calls, which is right for a plain
+# question and a trap for a task mid-flight: a model whose thinking ended on
+# "next I edit the file" is told to answer without the tool it just planned,
+# argues with the instruction instead of complying, and the run ends on that
+# argument as if it were the answer.  This prompt leaves both doors open, so
+# the honest move — act, or answer if the work is already done — is always
+# available.  With no tools in the payload the "call a tool" half is vacuous
+# and the plain retry is used instead.
+_NO_THINK_ACT_PROMPT = (
+    "You have already done the thinking for this task. Act now: call the next "
+    "tool you need to finish the task, or write the final answer in full if "
+    "the work is complete. Do not reason further and do not restate the "
+    "question."
+)
+
+# Prompt handed to a model that answered a harness nudge by arguing that the
+# task is not finished instead of answering.  The nudge asked for an answer;
+# the reply named the work still missing.  That is a continue request wearing
+# an answer's clothes — handing it back ends the task on the model's own
+# statement that it is unfinished, so the tools it says it needs are handed
+# back with it.
+_CONTINUATION_AFTER_NUDGE_PROMPT = (
+    "You replied that the task is not finished. Continue it now: call the "
+    "next tool you need and keep working. Give the final answer only when "
+    "the task is done."
+)
+
+# What a reply says when the work behind it is not finished.  Matched only
+# against replies to harness nudges — a narrow window — and budgeted, so a
+# false positive costs one extra turn, not the answer.  The bare "haven't"
+# is deliberately absent: it reads on third parties in honest answers ("the
+# maintainers haven't merged it") as often as on the task.  The first-person
+# forms below are what a declined nudge actually says.
+_PENDING_WORK_PHRASES = (
+    # The model says it cannot act under the constraint the nudge named.
+    "can't call", "cannot call", "can't run", "cannot run",
+    "can't apply", "cannot apply", "can't edit", "cannot edit",
+    "no more tools", "not allowed to call", "tool calls are no longer",
+    "cannot make the changes", "can't make the changes",
+    # The model says its own work is not done.
+    "i haven't", "i have not", "we haven't", "we have not",
+    "hasn't been", "has not been",
+    "not been made", "not done", "not yet", "isn't complete",
+    "not complete", "incomplete", "still need", "left to do", "yet to",
+    "before i can",
+)
+
+
+def _signals_pending_work(text: str) -> bool:
+    """True when a reply says the task behind it is unfinished.
+
+    The detector for a declined nudge: the model was told to answer now and
+    answered by explaining what it has not done yet.  Deliberately narrow —
+    it runs only on replies to harness-written prompts, where the cost of a
+    false positive is one budgeted continuation and the cost of a miss is a
+    task that ends on the model's own "this is incomplete".
+    """
+    if not text:
+        return False
+    body = text.split("</think>")[-1].strip() if "</think>" in text else text.strip()
+    if not body:
+        return False
+    lower = body.lower()
+    return any(p in lower for p in _PENDING_WORK_PHRASES)
 
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -4342,6 +4422,11 @@ def _trim_repetition(text: str) -> str:
 _UNCLOSED_PAIRS = (("(", ")"), ("[", "]"))
 # A fenced code block's opening or closing line, in either markdown spelling.
 _FENCE_RE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.MULTILINE)
+# An answer cut off inside a fenced block, with the closing fence dropped
+# together with the tail, is still recoverable — but only when there is
+# enough of it to be worth resuming.  Below this the reply is short enough
+# to hand back as-is.
+_FENCE_MIN_CHARS = 200
 
 
 # Chars per token when turning delivered text back into a token count.  Low on
@@ -4397,8 +4482,15 @@ def _looks_incomplete(text: str) -> bool:
     body = (text or "").rstrip()
     if not body:
         return False
+    # An odd fence count is an answer cut off inside a code block: the model
+    # was mid-block when the budget ran out, and the closing fence went with
+    # the tail.  A finished answer never ends inside a block it opened, so
+    # with enough text behind it this is a resume, not a reply.  The length
+    # floor keeps a short reply that happens to end on a lone fence line from
+    # looping — there is little enough of it that handing it back costs less
+    # than a resume turn.
     if len(_FENCE_RE.findall(body)) % 2:
-        return True
+        return len(body) >= _FENCE_MIN_CHARS
     line = body.rsplit("\n", 1)[-1].strip()
     # A closing fence is the most common way for a good answer to end, and its
     # three backticks read as an unclosed span to the checks below.
@@ -5571,6 +5663,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # has proven the recovery does not work — the run should then end on the
     # guard's own actionable message rather than burn turns restating it.
     MAX_REPEAT_RECOVERIES = max(0, _as_int(kwargs.get('max_repeat_recoveries', 2)))
+    # Max times to hand the tools back to a model that answered a harness
+    # nudge by saying the task is unfinished instead of answering.  Bounded
+    # low, like every recovery budget: the first argument is information ("I
+    # still need to edit the file"), a model that argues again after being
+    # handed its tools back has said its piece, and the reply is then returned
+    # as-is rather than loop on the same argument.
+    MAX_NUDGE_DECLINE_RECOVERIES = max(
+        0, _as_int(kwargs.get('max_nudge_decline_recoveries', 1)))
     # Continuation token budget: thinking models can emit thousands of reasoning tokens
     # before the tool-call JSON, so give them the full max_tokens when think=True.
     # Without thinking, 512 is still enough for any tool-call JSON payload.
@@ -5947,10 +6047,21 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if _reasoning_note:
                     messages.append({"role": "assistant",
                                      "content": _reasoning_note})
-                messages.append({"role": "user", "content": _NO_THINK_RETRY_PROMPT})
+                # Tools-aware retry: a run that has tools is mid-task, and an
+                # answer-only prompt forbids exactly the move its thinking was
+                # leading to.  The act prompt leaves both doors open — call the
+                # next tool, or answer if the work is done.  Without tools the
+                # "call a tool" half is vacuous and the plain retry is right.
+                messages.append({"role": "user",
+                                 "content": (_NO_THINK_ACT_PROMPT if tools
+                                             else _NO_THINK_RETRY_PROMPT)})
                 _log_to_ui_or_verbose(
-                    "The model reasoned but never wrote an answer; asking once "
-                    "more with thinking switched off...",
+                    ("The model reasoned but never wrote an answer; asking "
+                     "once more with thinking switched off — it may act or "
+                     "answer..."
+                     if tools else
+                     "The model reasoned but never wrote an answer; asking once "
+                     "more with thinking switched off..."),
                     chat_ui, verbose, level="info", notify=True,
                 )
                 continue
@@ -6060,6 +6171,34 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # resumed, dropping whatever this turn repeated of them.
             if state.final_answer_prefix:
                 _final = _stitch_continuation(state.final_answer_prefix, _final)
+
+            # A declined nudge: the previous user turn was harness-written and
+            # the reply answers it by stating the task is unfinished instead of
+            # answering.  Handing that back ends the task on the model's own
+            # "this is incomplete" — the exact failure the nudge budgets exist
+            # to prevent — so the tools are handed back once and the run
+            # continues.  Budgeted low like every recovery: a model that argues
+            # a second time after being handed its tools back has said its
+            # piece, and the reply is then returned as-is (it is at least an
+            # honest account of where the work stands).
+            if (_is_answering_a_nudge(messages)
+                    and _signals_pending_work(_final)
+                    and state.nudge_decline_count < MAX_NUDGE_DECLINE_RECOVERIES):
+                state.nudge_decline_count += 1
+                state.force_compact = False
+                state.active_max_tokens = max_tokens
+                _log_to_ui_or_verbose(
+                    "Model replied that the task is unfinished instead of "
+                    f"answering; handing the tools back "
+                    f"({state.nudge_decline_count}/"
+                    f"{MAX_NUDGE_DECLINE_RECOVERIES})...",
+                    chat_ui, verbose, level="info", notify=True,
+                )
+                messages.append({"role": "assistant", "content": _content})
+                messages.append({"role": "user",
+                                 "content": _CONTINUATION_AFTER_NUDGE_PROMPT})
+                continue
+
             # The loop budget is spent and the model is still looping.  Hand
             # back the first copy of the span rather than the whole thing: the
             # user asked for an answer, not for the loop.  The stop reason says

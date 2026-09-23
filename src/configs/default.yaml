@@ -66,6 +66,13 @@ serving:
   # task continues; a model that re-loops after this many recoveries ends the
   # run on the guard's own stop message.
   # max_repeat_recoveries: 2
+  # Times to hand the tools back to a model that answered a harness nudge
+  # ("write the final answer now, do not call any more tools") by saying the
+  # task is unfinished instead of answering. The reply is a continue request
+  # wearing an answer's clothes: the first one gets its tools back and the
+  # task continues; a model that argues again after that has said its piece,
+  # and the reply is returned as-is.
+  # max_nudge_decline_recoveries: 1
   #
   # ── Harness tools ─────────────────────────────────────────────────────────
   # The tools the model can call to inspect and manage its own context:
