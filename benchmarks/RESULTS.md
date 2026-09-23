@@ -77,6 +77,10 @@ registered tasks, all on the agent's own preferred endpoint
   full-tier 0.902/0.899 rows below predate the surviving-log problem and stay
   excluded from the pin). A duplicate-log quirk (two `.eval` files per task,
   agreeing within 0.01) is noted for the runner to consolidate.
+* **The sampled-tier rows (0.940/0.970/0.990) are on glm-5.3-flash:cloud**
+  (simpleqa/humaneval/mbpp), not on the pinned `Qwen/Qwen3.8-27B` baseline —
+  they are cloud-endpoint reference points, not pin-gated regression-gate
+  numbers.
 * GAIA: the dataset was cached locally on 2026-09-06 (validation 165 rows +
   test 83 rows, parquet snapshots under `~/.cache/huggingface/`), so the task
   now loads **offline** (`HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1`) without a
