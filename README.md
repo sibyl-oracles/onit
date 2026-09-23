@@ -17,12 +17,14 @@ rest of the clock.
 Python **3.10–3.12** (3.12 recommended), in its own environment:
 
 ```bash
-conda create -n onit python=3.12 -y && conda activate onit
 git clone https://github.com/sibyl-oracles/onit.git
-cd onit && pip install -U --upgrade-strategy eager -e '.[all]'
+cd onit
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -U --upgrade-strategy eager -e '.[all]'
 ```
 
-(`uv venv` works too. Install from source, not the PyPI wheel, which lags.)
+(`conda`/`pip` work the same way. Install from source, not the PyPI wheel, which lags.)
 
 ### 2. Point OnIt at a model
 
