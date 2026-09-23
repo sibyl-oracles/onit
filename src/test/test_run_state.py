@@ -149,6 +149,11 @@ class TestSerialization:
         assert back.total_turns == 9
         assert back.tool_call_history == [("bash", '{"command":"ls"}')]
 
+    def test_round_trip_preserves_the_repeat_recovery_count(self):
+        state = RunState(repeat_recovery_count=2)
+        back = RunState.from_dict(json.loads(json.dumps(state.to_dict())))
+        assert back.repeat_recovery_count == 2
+
     def test_history_comes_back_as_tuples(self):
         """JSON has no tuples.  The live list is counted against tuple keys, so
         a list read back would never match one and the repeated-call detector

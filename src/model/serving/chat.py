@@ -2129,6 +2129,31 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     return None
 
 
+def _trim_repeat_streak(tool_call_history: list) -> int:
+    """Drop the identical trailing calls a bail just fired on.
+
+    The bail is a verdict on the streak, not on the run: the calls before it
+    may have been fine, and the next call the model makes will be a different
+    one.  Left in place, the streak survives the recovery — the very next
+    identical call would re-bail at once, and the recovery turn would have
+    bought nothing.  Trimming the tail restarts the count at zero, the same
+    fresh start every other budget in this loop gets.
+
+    Returns how many entries were dropped (0 when the history is empty).
+    """
+    if not tool_call_history:
+        return 0
+    _last = tool_call_history[-1]
+    _n = 0
+    for _prev in reversed(tool_call_history):
+        if _prev != _last:
+            break
+        _n += 1
+    if _n:
+        del tool_call_history[-_n:]
+    return _n
+
+
 def _load_images(images: List[str] | str | None, chat_ui: Optional[ChatUIProtocol], verbose: bool) -> list[str]:
     """Read image files from disk and return their base64-encoded bytes."""
     images_bytes: list[str] = []
@@ -2984,7 +3009,8 @@ def _is_answering_a_nudge(messages: list) -> bool:
         content = msg.get("content")
         if not isinstance(content, str):
             return False
-        return (content in (_ACK_CONTINUATION_PROMPT, _FINAL_CONTINUATION_PROMPT)
+        return (content in (_ACK_CONTINUATION_PROMPT, _FINAL_CONTINUATION_PROMPT,
+                            _REPEAT_RECOVERY_PROMPT)
                 or content.startswith("[CONTEXT COMPACTED]")
                 or "Use this exact JSON format:" in content)
     return False
@@ -3190,6 +3216,26 @@ _REPETITION_CONTINUATION_PROMPT = (
     "You are repeating the same text over and over. Stop. Do not repeat any of "
     "the text above. Say something new, or if the task is finished, give the "
     "final answer once and stop."
+)
+
+# Prompt handed to a model whose identical tool call just tripped the
+# repeated-call guard.  The guard's own bail names the failure; this prompt is
+# what turns it into a recovery instead of a dead end: it arrives as a user
+# turn the model must answer, and it asks for a *different* action rather than
+# a restated one.  The task is restated because a model that has just been
+# told off tends to answer the telling-off instead of the work.
+_REPEAT_RECOVERY_PROMPT = (
+    "Your last tool call just repeated an earlier call exactly — same tool, "
+    "same arguments — and returned the same result, so the run was stopped to "
+    "break the loop. The task is not done. Change strategy now:\n"
+    "- Use what the earlier results already gave you instead of calling the "
+    "same tool again (read a trimmed result back with result_read or "
+    "result_grep if you need the part that was cut).\n"
+    "- Or take a genuinely different step: different arguments, a different "
+    "tool, a smaller subtask, or run_code to combine what you have.\n"
+    "- Or, if the task cannot be finished from here, say plainly what is "
+    "blocking it and give the user the best answer you have.\n"
+    "Do not call the same tool with the same arguments again."
 )
 
 # Prompt for the one retry given to a turn that reasoned and never answered.
@@ -5518,6 +5564,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # budget (finish_reason=length).  Each resume grants another max_tokens of
     # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
     MAX_FINAL_CONTINUATIONS = kwargs.get('max_final_continuations', 3)
+    # Max times to convert a repeated-call bail into a strategy-change prompt
+    # instead of ending the run.  Bounded low, like every recovery budget: the
+    # first bail is information ("this exact call keeps returning the same
+    # thing"), the second is a warning, and a model that re-loops after both
+    # has proven the recovery does not work — the run should then end on the
+    # guard's own actionable message rather than burn turns restating it.
+    MAX_REPEAT_RECOVERIES = max(0, _as_int(kwargs.get('max_repeat_recoveries', 2)))
     # Continuation token budget: thinking models can emit thousands of reasoning tokens
     # before the tool-call JSON, so give them the full max_tokens when think=True.
     # Without thinking, 512 is still enough for any tool-call JSON payload.
@@ -5751,6 +5804,21 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools,
                              runs=_tool_log)
             if bail:
+                # Same recovery as the structured path below: a bail is a
+                # verdict on the loop, not on the task, and the first one
+                # becomes a strategy-change prompt.
+                if state.repeat_recovery_count < MAX_REPEAT_RECOVERIES:
+                    state.repeat_recovery_count += 1
+                    _trim_repeat_streak(state.tool_call_history)
+                    _log_to_ui_or_verbose(
+                        f"Repeated tool call loop stopped; recovering "
+                        f"{state.repeat_recovery_count}/{MAX_REPEAT_RECOVERIES}"
+                        " — asking the model to change strategy.",
+                        chat_ui, verbose, level="warning", notify=True,
+                    )
+                    messages.append({"role": "user",
+                                     "content": _REPEAT_RECOVERY_PROMPT})
+                    continue
                 state.stop_reason = STOP_REPEATED_TOOL_CALL
                 return bail
             if should_continue:
@@ -6071,5 +6139,26 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             state.stop_reason = STOP_SAFETY_ABORT
             return None
         if bail:
+            # A bail is a verdict on the loop, not on the task.  The first one
+            # becomes a strategy-change prompt — the same recovery the
+            # planning and repetition guards get — and the run continues; only
+            # a model that re-loops after being told to change course ends the
+            # run here, on the guard's own actionable message.  The streak is
+            # trimmed with the recovery so the next call starts from a clean
+            # count: leaving it would re-bail on the very next identical call
+            # and the recovery turn would have bought nothing.
+            if state.repeat_recovery_count < MAX_REPEAT_RECOVERIES:
+                state.repeat_recovery_count += 1
+                _trim_repeat_streak(state.tool_call_history)
+                _log_to_ui_or_verbose(
+                    f"Repeated tool call loop stopped ({bail[:80]}...); "
+                    f"recovering {state.repeat_recovery_count}/"
+                    f"{MAX_REPEAT_RECOVERIES} — asking the model to change "
+                    "strategy.",
+                    chat_ui, verbose, level="warning", notify=True,
+                )
+                messages.append({"role": "user",
+                                 "content": _REPEAT_RECOVERY_PROMPT})
+                continue
             state.stop_reason = STOP_REPEATED_TOOL_CALL
             return bail

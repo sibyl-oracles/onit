@@ -60,6 +60,12 @@ serving:
   # block mid-answer). Each resume grants another max_tokens, bounding a long
   # answer at ~(N+1)*max_tokens.
   # max_final_continuations: 3
+  # Times to convert a repeated-call stop (the same tool call with the same
+  # arguments returning the same result) into a strategy-change prompt instead
+  # of ending the run. The first bail asks the model to change course and the
+  # task continues; a model that re-loops after this many recoveries ends the
+  # run on the guard's own stop message.
+  # max_repeat_recoveries: 2
   #
   # ── Harness tools ─────────────────────────────────────────────────────────
   # The tools the model can call to inspect and manage its own context:

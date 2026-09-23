@@ -107,6 +107,12 @@ class RunState:
     ack_continuation_count: int = 0
     final_continuation_count: int = 0
     repetition_continuation_count: int = 0
+    # Times the loop has converted a repeated-call bail into a strategy-change
+    # prompt instead of ending the run.  Bounded by MAX_REPEAT_RECOVERIES in
+    # chat(): a model that keeps re-looping after being told to change course
+    # has proven the recovery does not work, and the run should end on the
+    # guard's own actionable message.
+    repeat_recovery_count: int = 0
 
     # ── the shape of the next API call ──────────────────────────────────────
     force_tool_call: bool = False
@@ -200,6 +206,7 @@ class RunState:
         self.ack_continuation_count = other.ack_continuation_count
         self.final_continuation_count = other.final_continuation_count
         self.repetition_continuation_count = other.repetition_continuation_count
+        self.repeat_recovery_count = other.repeat_recovery_count
         self.stop_reason = other.stop_reason
         # The compaction cursor is per-run: the summary describes this run's
         # transcript, and the next run's messages start from a different
@@ -225,6 +232,7 @@ class RunState:
             "ack_continuation_count": self.ack_continuation_count,
             "final_continuation_count": self.final_continuation_count,
             "repetition_continuation_count": self.repetition_continuation_count,
+            "repeat_recovery_count": self.repeat_recovery_count,
             "stop_reason": self.stop_reason,
             "task_count": self.task_count,
             "total_turns": self.total_turns,
@@ -240,7 +248,7 @@ class RunState:
             return state
         for name in ("iteration_count", "planning_continuation_count",
                      "ack_continuation_count", "final_continuation_count",
-                     "repetition_continuation_count",
+                     "repetition_continuation_count", "repeat_recovery_count",
                      "task_count", "total_turns"):
             try:
                 setattr(state, name, int(data.get(name, 0) or 0))

@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from model.serving.chat import (
     MAX_TOOL_RESPONSE,
     TOOL_RESPONSE_BUDGETS,
+    _REPEAT_RECOVERY_PROMPT,
     _REPEAT_STEER_AFTER,
     _REPEAT_STREAK_BAIL,
     _build_client_timeout,
@@ -362,10 +363,145 @@ class TestRepeatedCallSteering:
                    new_callable=AsyncMock, return_value="test-model"):
             result = await chat(host="http://localhost:8000/v1", instruction="hi",
                                 tool_registry=registry, safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path))
+                                data_path=str(tmp_path),
+                                max_repeat_recoveries=0)
         assert result is not None
         assert "rephrase" not in result.lower()
         assert "change approach" in result
+
+
+# ── B4: a proven loop recovers once before the run ends ─────────────────────
+
+class TestRepeatRecovery:
+    """A repeated-call bail is a verdict on the loop, not on the task.
+
+    The guard used to return its stop message as the final answer, which ended
+    a task that may have been one different call away from done.  Now the
+    first bail becomes a strategy-change prompt — the same recovery the
+    planning and repetition guards get — and the run continues; only a model
+    that re-loops after being told to change course ends the run.
+    """
+
+    async def _run(self, tmp_path, completions, **kwargs):
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(side_effect=completions)
+        registry = _registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="same")
+        state = RunState()
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry,
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path),
+                                run_state=state, **kwargs)
+        return result, client, state
+
+    @pytest.mark.asyncio
+    async def test_the_first_bail_becomes_a_strategy_change_prompt(self, tmp_path):
+        """Bail, then the model changes course and answers: the task lives."""
+        tc = _mock_tool_call("search", '{"query": "same"}', "c1")
+        completions = [
+            *[_mock_completion(content=None, tool_calls=[tc])
+              for _ in range(_REPEAT_STREAK_BAIL)],
+            _mock_completion("Recovered answer."),
+        ]
+        result, client, state = await self._run(tmp_path, completions)
+        assert result == "Recovered answer."
+        assert state.repeat_recovery_count == 1
+        # The recovery prompt reached the conversation as a user turn.
+        sent = client.chat.completions.create.call_args_list[-1].kwargs["messages"]
+        assert any(m.get("role") == "user" and "Change strategy" in str(m.get("content", ""))
+                   for m in sent)
+
+    @pytest.mark.asyncio
+    async def test_the_streak_is_trimmed_so_the_next_loop_starts_fresh(self, tmp_path):
+        """After a recovery the count restarts at zero: the next identical
+        call needs its own full streak to bail again, rather than re-bailing
+        on the first repeat."""
+        tc = _mock_tool_call("search", '{"query": "same"}', "c1")
+        completions = [
+            *[_mock_completion(content=None, tool_calls=[tc])
+              for _ in range(_REPEAT_STREAK_BAIL)],
+            _mock_completion("Recovered answer."),
+        ]
+        _, _, state = await self._run(tmp_path, completions)
+        assert state.tool_call_history == []
+
+    @pytest.mark.asyncio
+    async def test_a_model_that_reloops_ends_on_the_guard_message(self, tmp_path):
+        """Two recoveries spent, still looping: the run ends on the guard's
+        own actionable message, and the state says why."""
+        tc = _mock_tool_call("search", '{"query": "same"}', "c1")
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content=None, tool_calls=[tc]))
+        registry = _registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="same")
+        state = RunState()
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry,
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path), run_state=state)
+        assert result is not None
+        assert "change approach" in result
+        assert state.stop_reason == "repeated_tool_call"
+        assert state.repeat_recovery_count == 2
+
+    @pytest.mark.asyncio
+    async def test_recovery_budget_zero_keeps_the_old_dead_end(self, tmp_path):
+        """max_repeat_recoveries=0 restores the old behavior exactly: the bail
+        ends the run on the first proven loop."""
+        tc = _mock_tool_call("search", '{"query": "same"}', "c1")
+        client = AsyncMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content=None, tool_calls=[tc]))
+        registry = _registry()
+        registry.__getitem__.return_value = AsyncMock(return_value="same")
+        state = RunState()
+        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await chat(host="http://localhost:8000/v1", instruction="hi",
+                                tool_registry=registry,
+                                safety_queue=asyncio.Queue(),
+                                data_path=str(tmp_path), run_state=state,
+                                max_repeat_recoveries=0)
+        assert "change approach" in result
+        assert state.repeat_recovery_count == 0
+        assert state.stop_reason == "repeated_tool_call"
+
+    @pytest.mark.asyncio
+    async def test_a_recovered_run_that_then_answers_records_no_loop_stop(self, tmp_path):
+        """stop_reason describes how the run *ended*.  A run that recovered
+        and answered is an answered run, not a stopped one."""
+        tc = _mock_tool_call("search", '{"query": "same"}', "c1")
+        completions = [
+            *[_mock_completion(content=None, tool_calls=[tc])
+              for _ in range(_REPEAT_STREAK_BAIL)],
+            _mock_completion("Recovered answer."),
+        ]
+        _, _, state = await self._run(tmp_path, completions)
+        assert state.stop_reason == "answered"
+
+    def test_the_recovery_prompt_is_recognized_as_a_nudge(self):
+        """A content-free reply to the recovery prompt is a refusal to resume,
+        and the ack-guard must see it that way."""
+        from model.serving.chat import _is_answering_a_nudge
+        assert _is_answering_a_nudge(
+            [{"role": "user", "content": _REPEAT_RECOVERY_PROMPT}]) is True
+
+    def test_trim_repeat_streak_drops_only_the_identical_tail(self):
+        from model.serving.chat import _trim_repeat_streak
+        history = [("a", "1"), ("b", "2"), ("a", "1"), ("a", "1"), ("a", "1")]
+        dropped = _trim_repeat_streak(history)
+        assert dropped == 3
+        assert history == [("a", "1"), ("b", "2")]
+        assert _trim_repeat_streak([]) == 0
 
 
 # ── S4: incremental compaction ──────────────────────────────────────────────

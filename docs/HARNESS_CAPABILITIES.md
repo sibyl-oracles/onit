@@ -556,6 +556,15 @@ Two additions beyond the plan:
   instead of an apology. The user watched it stream past; discarding it because the loop
   ran long is a second failure on top of the first.
 
+**Later addition — the repeated-call bail recovers before it ends the run.** The
+repeated-call guard's stop message ("Stopped: … use it, or change approach.") used to be
+returned as the final answer, which ended a task that may have been one different call
+away from done. Now the first bail is converted into a strategy-change prompt — the same
+recovery the planning and repetition guards get — and the run continues; only a model that
+re-loops after `max_repeat_recoveries` (default 2) attempts ends the run on the guard's own
+message. The streak is trimmed with each recovery so the count restarts at zero, and
+`RunState.repeat_recovery_count` records how many were spent.
+
 ---
 
 ## 6. Phase 4 — Result store (pass by reference)

@@ -2826,12 +2826,14 @@ class TestRunCodeInChat:
     async def test_a_repeated_run_code_still_trips_the_loop_guard(self, tmp_path):
         """It is dispatched ahead of the registry, not ahead of the loop's own
         protections."""
+        # Recovery off: the guard must end the run, not convert the bail into
+        # another turn — that behavior has its own tests (TestRepeatRecovery).
         calls = [_mock_completion_with_finish(
             content=None,
             tool_calls=[_mock_tool_call("run_code", '{"code": "1"}')])] * 4
         answer, client = await self._run(
             tmp_path, calls, code_execution=True, session_id="chat-4",
-            max_repeated_tool_calls=2)
+            max_repeated_tool_calls=2, max_repeat_recoveries=0)
         assert "change approach" in answer
         await shutdown_session("chat-4")
 
