@@ -184,6 +184,23 @@ Telegram, Viber and A2A moved to [legacy/](legacy/).
 [Web authentication](docs/WEB_AUTHENTICATION.md) · [Docker](docs/DOCKER.md) ·
 [Architecture](docs/ARCHITECTURE.md) · [Testing](docs/TESTING.md) · [Benchmarks](benchmarks/README.md)
 
+## Size
+
+| Category | Files | Lines |
+|---|---|---|
+| **Production code** (`src/`, excl. tests) | 61 `.py` | **34,602** (25,884 code, 4,414 comments, 4,305 blank) |
+| Frontend (`src/ui/static/`, excl. vendor) | 6 | 3,274 |
+| Prompt templates + configs (YAML) | 6 | 471 |
+| **Test suites** (`src/test/`, `benchmarks/test_*`, `legacy/test/`) | 48 `.py` | 27,001 |
+| Benchmarks (non-test) | 14 `.py` | 1,765 |
+| Legacy (non-test) | 8 `.py` | 1,482 |
+| Docs (`docs/`, README, RELEASE) | 26 `.md` | 7,172 |
+| **Total Python** (all `.py`, excl. `__pycache__`) | 211 | **72,332** |
+
+Production code by module: `mcp` 9,929 · `model` 9,327 · `ui` 7,324 · `onit.py` 2,191 · `setup.py` 936 · `learn` 1,127 · `lib` 882 · `cli.py` 857 · `type` 940 · `container_launcher.py` 574 · `sessions.py` 486 · `__init__.py` 29.
+
+*Recompute:* `find src -name '*.py' -not -path '*/__pycache__/*' -not -path 'src/test/*' -exec cat {} + | wc -l`
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
