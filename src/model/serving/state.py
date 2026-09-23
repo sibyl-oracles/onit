@@ -119,6 +119,13 @@ class RunState:
     # information, a model that argues again after getting its tools back has
     # said its piece, and the reply is then returned as-is.
     nudge_decline_count: int = 0
+    # Consecutive resume attempts that added nothing to the answer (empty or
+    # byte-identical). Reset whenever a resume makes progress. Bounded by
+    # MAX_FINAL_STALLS in chat(): one stalled resume is a hiccup worth
+    # retrying, a second in a row is a model that cannot continue from the
+    # prefix, and the run should end on its warning rather than burn the
+    # remaining resume budget on copies of text already on screen.
+    final_stall_count: int = 0
 
     # ── the shape of the next API call ──────────────────────────────────────
     force_tool_call: bool = False
@@ -214,6 +221,7 @@ class RunState:
         self.repetition_continuation_count = other.repetition_continuation_count
         self.repeat_recovery_count = other.repeat_recovery_count
         self.nudge_decline_count = other.nudge_decline_count
+        self.final_stall_count = other.final_stall_count
         self.stop_reason = other.stop_reason
         # The compaction cursor is per-run: the summary describes this run's
         # transcript, and the next run's messages start from a different
@@ -241,6 +249,7 @@ class RunState:
             "repetition_continuation_count": self.repetition_continuation_count,
             "repeat_recovery_count": self.repeat_recovery_count,
             "nudge_decline_count": self.nudge_decline_count,
+            "final_stall_count": self.final_stall_count,
             "stop_reason": self.stop_reason,
             "task_count": self.task_count,
             "total_turns": self.total_turns,
@@ -257,7 +266,7 @@ class RunState:
         for name in ("iteration_count", "planning_continuation_count",
                      "ack_continuation_count", "final_continuation_count",
                      "repetition_continuation_count", "repeat_recovery_count",
-                     "nudge_decline_count",
+                     "nudge_decline_count", "final_stall_count",
                      "task_count", "total_turns"):
             try:
                 setattr(state, name, int(data.get(name, 0) or 0))

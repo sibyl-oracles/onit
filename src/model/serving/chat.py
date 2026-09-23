@@ -5656,6 +5656,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # budget (finish_reason=length).  Each resume grants another max_tokens of
     # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
     MAX_FINAL_CONTINUATIONS = kwargs.get('max_final_continuations', 3)
+    # Max *consecutive* resumes that added nothing (empty or byte-identical
+    # reply) before the run stops on the stall warning instead of spending the
+    # remaining resume budget on copies of text already on screen.  One stall
+    # is retried — a hiccup turn must not end the answer mid-sentence — a
+    # second in a row is a model that cannot continue from the prefix.
+    MAX_FINAL_STALLS = max(0, _as_int(kwargs.get('max_final_stalls', 1)))
     # Max times to convert a repeated-call bail into a strategy-change prompt
     # instead of ending the run.  Bounded low, like every recovery budget: the
     # first bail is information ("this exact call keeps returning the same
@@ -5990,17 +5996,42 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # repeated text dropped.  Both the "is it still cut off?" question
             # and the "did resuming achieve anything?" one are asked of this.
             _stitched = _stitch_continuation(state.final_answer_prefix, _partial)
+            # An empty reply while a partial answer is pending is a failed
+            # resume, not a finished one: with finish_reason="stop", no usage
+            # and no unclosed pair there is no other evidence, and without
+            # this the empty turn fell through every guard and was handed
+            # back as the final answer — the run "completing" with "".
+            _empty_resume = (not _partial.strip()
+                             and bool(state.final_answer_prefix))
+            # A stalled resume is evidence of its own: the model was asked to
+            # continue from the prefix and came back with nothing new.  That
+            # is not an answer finishing — it is the resume failing — and
+            # with finish_reason="stop" and no usage it is the only evidence
+            # there is.  Without it the stall fell through to the
+            # final-answer return and the run ended mid-sentence.
+            _stalled = (bool(state.final_answer_prefix)
+                        and len(_stitched) <= len(state.final_answer_prefix))
             _cut_short = (_finish_reason == "length"
                           or _looks_incomplete(_stitched)
-                          or _swallowed)
+                          or _swallowed
+                          or _empty_resume
+                          or _stalled)
             # Two turns that look truncated but that resuming cannot mend, and
             # that resuming actively makes worse — each pass costs a full
             # generation and adds another copy of text already on screen.
             _thinking_only = _is_reasoning_only(_content, _full_reasoning, _full_content)
-            # Only text already written can be repeated: a first turn that came
-            # back empty is a hiccup worth one resume, not a stall.
-            _stalled = (bool(state.final_answer_prefix)
-                        and len(_stitched) <= len(state.final_answer_prefix))
+            # A resume that added nothing: the reply was empty, or it repeated
+            # text the prefix already holds.  One such turn is a hiccup — the
+            # model may continue cleanly on the next ask — but it must not end
+            # the run while resume budget remains, which is what handing it
+            # back as the final answer did.  Counted, not fatal: see the
+            # stall retry below.
+            if _stalled:
+                state.final_stall_count += 1
+            elif _partial.strip():
+                # Progress resets the count: the stall budget is for
+                # consecutive no-ops, not for the lifetime of the run.
+                state.final_stall_count = 0
             if (_cut_short and not _thinking_only and not _stalled
                     and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
                 state.final_continuation_count += 1
@@ -6023,6 +6054,28 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     _why = f"finish_reason={_finish_reason}, text ends mid-sentence"
                 _log_to_ui_or_verbose(
                     f"Final response truncated ({_why}); resuming "
+                    f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
+                    chat_ui, verbose, level="info", notify=True,
+                )
+                continue
+            if (_cut_short and not _thinking_only and _stalled
+                    and state.final_stall_count <= MAX_FINAL_STALLS
+                    and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
+                # The resume came back empty or as a copy of the prefix.  One
+                # retry with the same continuation prompt, still inside the
+                # resume budget: a hiccup turn (a host that dropped the body,
+                # a thinking model that answered in the wrong field) costs one
+                # attempt instead of the whole answer.  The stall counter
+                # bounds it — a second consecutive no-op ends the run below —
+                # so a model that cannot continue from the prefix is not
+                # handed the remaining budget to burn on copies.
+                state.final_continuation_count += 1
+                state.force_compact = False
+                state.active_max_tokens = max_tokens
+                messages.append({"role": "user", "content": _FINAL_CONTINUATION_PROMPT})
+                _log_to_ui_or_verbose(
+                    f"Resume added nothing (stall {state.final_stall_count}/"
+                    f"{MAX_FINAL_STALLS}); asking once more "
                     f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
                     chat_ui, verbose, level="info", notify=True,
                 )
@@ -6222,6 +6275,21 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 )
             else:
                 state.stop_reason = STOP_ANSWERED
+            if not _final.strip() and state.final_answer_prefix.strip():
+                # The last turn said nothing and the budget is spent.  The
+                # partial answer the earlier turns wrote is all there is:
+                # handing back "" would report the run as empty rather than
+                # incomplete, and the prefix is answer text the user already
+                # watched stream past.  The warning travels with it.
+                _final = state.final_answer_prefix
+                state.stop_reason = (STOP_REPETITION_LOOP
+                                     if state.stop_reason == STOP_ANSWERED
+                                     else state.stop_reason)
+                _log_to_ui_or_verbose(
+                    "The final turn returned nothing; returning the answer "
+                    "as written so far — it may stop mid-sentence.",
+                    chat_ui, verbose, level="warning", notify=True,
+                )
             # The one exit that hands back an answer about the world.  Every
             # other return above is the loop reporting on itself — a limit hit,
             # a model that cannot call tools — and there is nothing in those to

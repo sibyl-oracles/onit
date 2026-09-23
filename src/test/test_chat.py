@@ -3312,6 +3312,128 @@ class TestResumeIncompleteAnswer:
         assert mock_client.chat.completions.create.call_count == 3  # 1 + 2
 
 
+class TestStalledResume:
+    """A resume that adds nothing must not end the run mid-sentence.
+
+    The failure this fixes: turn one writes a partial answer and is cut off;
+    the resume turn comes back empty (or as a copy of the prefix) and the run
+    hands that partial back as if it were the finished answer.  One stalled
+    resume is a hiccup worth retrying; a second in a row is a model that
+    cannot continue from the prefix, and the run ends on its warning.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_empty_resume_turn_does_not_end_the_run(self):
+        """The resume comes back with nothing; the next ask gets the answer."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(
+                content="Takeaways:\n\n- **The naturalness floor at",
+                finish_reason="stop"),
+            _mock_completion_with_finish(content="", finish_reason="stop"),
+            _mock_completion_with_finish(
+                content=" 4.4 UTMOS** is the new baseline.",
+                finish_reason="stop"),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="What is the SOTA in TTS?",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_ack_continuations=0,
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 3
+        assert result == ("Takeaways:\n\n- **The naturalness floor at"
+                          " 4.4 UTMOS** is the new baseline.")
+
+    @pytest.mark.asyncio
+    async def test_a_repeating_resume_gets_one_more_attempt(self):
+        """The resume hands back a copy of the prefix; the retry completes it."""
+        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+                "quarter, and throughput is unchanged at 42 tokens per second (")
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(content=para, finish_reason="length"),
+            _mock_completion_with_finish(content=para, finish_reason="stop"),
+            _mock_completion_with_finish(
+                content="95th percentile 38.)", finish_reason="stop"),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Summarize the run.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_ack_continuations=0,
+                verify_answers=False,
+            ), timeout=30)
+
+        assert mock_client.chat.completions.create.call_count == 3
+        assert result.count("naturalness floor") == 1
+        assert result.endswith("(95th percentile 38.)")
+
+    @pytest.mark.asyncio
+    async def test_consecutive_stalls_are_bounded(self):
+        """Every resume repeats the prefix: the run ends, not loops forever."""
+        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+                "quarter, and throughput is unchanged at 42 tokens per second (")
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.repeat(_mock_completion_with_finish(
+                content=para, finish_reason="stop")))
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Summarize the run.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_ack_continuations=0,
+                verify_answers=False,
+            ), timeout=30)
+
+        # 1 initial + 1 resume + 1 stall retry, then the second consecutive
+        # stall ends the run — the remaining budget is not burned on copies.
+        assert mock_client.chat.completions.create.call_count == 3
+        assert result.count("naturalness floor") == 1
+
+    @pytest.mark.asyncio
+    async def test_an_empty_final_answer_is_not_returned(self):
+        """Budget spent on empty resumes: the partial is handed back, not \"\"."""
+        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+                "quarter, and throughput is unchanged at 42 tokens per second (")
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=[
+            _mock_completion_with_finish(content=para, finish_reason="length"),
+            _mock_completion_with_finish(content="", finish_reason="stop"),
+            _mock_completion_with_finish(content="", finish_reason="stop"),
+        ])
+
+        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
+             patch("model.serving.chat._resolve_model_id",
+                   new_callable=AsyncMock, return_value="test-model"):
+            result = await asyncio.wait_for(chat(
+                host="http://localhost:8000/v1",
+                instruction="Summarize the run.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_ack_continuations=0,
+                verify_answers=False,
+            ), timeout=30)
+
+        assert result.strip() == para.strip()
+
+
 # ── thinking, whatever the host calls it ────────────────────────────────────
 
 class TestReasoningText:
@@ -3643,8 +3765,10 @@ class TestThinkingIsNotAPartialAnswer:
                 verify_answers=False,  # count the loop's calls, not the checker's
             ), timeout=30)
 
-        # 1 initial + 1 resume that repeated itself, rather than 1 + 3.
-        assert mock_client.chat.completions.create.call_count == 2
+        # 1 initial + 1 resume that repeated itself + 1 stall retry, rather
+        # than 1 + 3: the retry is the hiccup allowance, and the second
+        # consecutive stall ends the run.
+        assert mock_client.chat.completions.create.call_count == 3
         assert result.count("naturalness floor") == 1
 
 
