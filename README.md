@@ -14,9 +14,13 @@ rest of the clock.
 
 ### 1. Install
 
-Python **3.10–3.12** (3.12 recommended), in its own environment:
+Python **3.10–3.12** (3.12 recommended), in its own environment, using
+[`uv`](https://docs.astral.sh/uv/):
 
 ```bash
+# one-time: install uv (macOS/Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 git clone https://github.com/sibyl-oracles/onit.git
 cd onit
 uv venv --python 3.12
@@ -24,7 +28,22 @@ source .venv/bin/activate
 uv pip install -U --upgrade-strategy eager -e '.[all]'
 ```
 
-(`conda`/`pip` work the same way. Install from source, not the PyPI wheel, which lags.)
+Install from source, not the PyPI wheel, which lags.
+
+<details>
+<summary>Prefer <code>conda</code>?</summary>
+
+Same steps in a conda environment:
+
+```bash
+git clone https://github.com/sibyl-oracles/onit.git
+cd onit
+conda create -n onit python=3.12 -y
+conda activate onit
+pip install -U --upgrade-strategy eager -e '.[all]'
+```
+
+</details>
 
 ### 2. Point OnIt at a model
 
