@@ -704,10 +704,11 @@ class TestChatKwargs:
         with _mock_discover():
             onit = OnIt(config=cfg)
         metrics, run_state = {}, RunState()
+        history = [{"task": "earlier", "response": "answer"}]
         kwargs = onit._chat_kwargs(
             metrics=metrics, run_state=run_state, chat_ui=None,
             verbose=False, data_path=str(tmp_path), session_id="s1",
-            session_history=[])
+            session_history=history)
         assert kwargs['metrics'] is metrics
         assert kwargs['run_state'] is run_state
         assert kwargs['chat_ui'] is None
@@ -716,6 +717,11 @@ class TestChatKwargs:
         assert kwargs['max_tokens'] == 1024
         assert kwargs['max_context_tokens'] is None
         assert kwargs['stream'] == onit.stream
+        # The history the caller loaded must reach chat(): chat() replays it
+        # ahead of the task, and a builder that drops it silently strips every
+        # session of its conversation — the model then answers "continue" with
+        # no idea what to continue (regression from 83d9d94).
+        assert kwargs['session_history'] is history
         # Optional keys stay out entirely when there is nothing to put in
         # them — chat() keys off presence, not value.
         assert 'prompt_intro' not in kwargs

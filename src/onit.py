@@ -1320,6 +1320,7 @@ class OnIt(BaseModel):
             'verbose': verbose,
             'data_path': data_path,
             'session_id': session_id,
+            'session_history': session_history,
             'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
             'max_context_tokens': self.model_serving.get('max_context_tokens', None),
             'stream': self.stream if stream is None else stream,
