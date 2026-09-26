@@ -14,7 +14,7 @@ serving:
   max_context_tokens: 131072   # set it when the server doesn't report its own
                                # (unreported and unset falls back to 262144)
   think: true                  # reasoning mode; off by default
-  max_tokens: 131072
+  max_tokens: 32768
 
 theme: white          # or "dark"
 timeout: 600
@@ -60,8 +60,11 @@ serving:
   #   think: false
   #   temperature: 0.7
   #   top_p: 0.8
-  max_tokens: 131072  # max output tokens per response (default; clamped to
-                      # whatever is left of the context window per request)
+  max_tokens: 32768   # max output tokens per response (shipped default;
+                      # clamped to whatever is left of the context window
+                      # per request). 32768 fits any single answer and keeps
+                      # the context-compaction threshold healthy (~90%);
+                      # raise it only for genuinely huge single responses.
   # Both budgets are also CLI flags, which accept a k/M suffix:
   #   onit --max-tokens 1M --max-context-tokens 1M
   # Sampling parameters (all optional — sensible defaults apply):

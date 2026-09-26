@@ -19,6 +19,7 @@ Provider is auto-detected from the host URL.
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import importlib
 import logging
@@ -3958,10 +3959,21 @@ class _ModelCaller:
                 # Streaming path: iterate chunks, populate shared variables
                 if stream:
                     if is_ollama:
-                        stream_result = await _ollama_process_streaming_response(
-                            chat_completion, safety_queue, chat_ui, _turn_think,
-                            on_first_token=_m.first_token,
-                        )
+                        try:
+                            stream_result = await _ollama_process_streaming_response(
+                                chat_completion, safety_queue, chat_ui, _turn_think,
+                                on_first_token=_m.first_token,
+                            )
+                        finally:
+                            # The processor returns None on a safety abort and
+                            # raises on cancellation (\bye mid-turn); either way
+                            # the chain is abandoned mid-flight.  Draining here
+                            # closes it while the loop can still run the
+                            # generators' finally blocks -- at interpreter exit
+                            # shutdown_asyncgens would log httpx2's
+                            # "aclose(): asynchronous generator is already
+                            # running" instead.
+                            await _drain_stream(chat_completion)
                         if stream_result is None:
                             return None
                         (_full_content, _full_reasoning, _ollama_tcs,
@@ -4016,10 +4028,16 @@ class _ModelCaller:
                             _content = _full_content
                             _message_for_history = {"role": "assistant", "content": _full_content}
                     else:
-                        stream_result = await _process_streaming_response(
-                            chat_completion, safety_queue, chat_ui, _turn_think,
-                            on_first_token=_m.first_token,
-                        )
+                        try:
+                            stream_result = await _process_streaming_response(
+                                chat_completion, safety_queue, chat_ui, _turn_think,
+                                on_first_token=_m.first_token,
+                            )
+                        finally:
+                            # Same contract as the Ollama branch above: the
+                            # abandoned chain is closed here, on abort or
+                            # cancellation, not left for shutdown_asyncgens.
+                            await _drain_stream(chat_completion)
                         if stream_result is None:
                             return None
                         _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
@@ -4599,6 +4617,8 @@ async def _handle_raw_tool_call(
     return False, None
 
 
+_STREAM_DRAIN_CHUNK_CAP = 10_000  # drain cap: a hostile stream must not pin shutdown
+
 _SAFETY_ABORT = object()  # sentinel distinct from None
 
 
@@ -4625,6 +4645,43 @@ class _VerifyStopped(Exception):
     pass the same way a failed call does — the draft the user already read is
     what they keep, and a stop request never costs them an answer.
     """
+
+
+async def _drain_stream(stream) -> None:
+    """Finish a chat-completions stream the loop abandoned without reading.
+
+    Three paths leave the chain half-read: the safety queue fired between
+    chunks, the turn was cancelled (\\bye, a new question), or the processor
+    returned early on a malformed chunk.  The processor returns without a
+    ``finally``, so the generator chain -- AsyncStream.__aiter__ ->
+    SSEDecoder.aiter_bytes -> httpx2 Response.aiter_bytes -- stays suspended
+    with the socket open.  Nothing else holds a reference, so the loop's
+    shutdown_asyncgens hook closes it at interpreter exit; if the chain is
+    suspended inside ``contextlib.aclosing`` at the time, httpx2's
+    ``aclose(): asynchronous generator is already running`` traceback is
+    logged during "Exiting chat session...".
+
+    Draining is the close that works: reading to exhaustion lets each
+    generator's ``finally`` run in order, releases the connection, and
+    cannot raise.  A bounded cap keeps a hostile or endless stream from
+    pinning shutdown; past it, aclose() is the fallback and the worst case
+    is back to today's behaviour -- one logged traceback at exit.
+    """
+    if stream is None or isinstance(stream, types.CoroutineType):
+        return
+    try:
+        chunks = 0
+        with contextlib.suppress(Exception):
+            async for _ in stream:
+                chunks += 1
+                if chunks >= _STREAM_DRAIN_CHUNK_CAP:
+                    break
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                await close()
+    except Exception as e:  # noqa: BLE001 -- cleanup must never fail the turn
+        logger.debug("Stream drain failed: %s", e)
 
 
 async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float = 0.25):
