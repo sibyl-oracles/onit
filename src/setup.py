@@ -116,6 +116,22 @@ _HOST_SETTINGS = {dotpath for dotpath, _, _ in HOST_SETTINGS}
 # Default host offered when configuring the very first endpoint.
 DEFAULT_HOST = "http://localhost:8000/v1"
 
+# The endpoints most installs want, one per provider.  Numbered, because a
+# number is faster to type than a URL and names the provider at the same
+# time: at the endpoint prompt "1" means the local Ollama, "4" means
+# OpenRouter.  The URLs are the canonical spellings — the same ones the
+# key-addressing and the provider rules key off.
+ENDPOINT_PRESETS = (
+    ("ollama",      "http://localhost:11434"),
+    ("vllm",        "http://localhost:8000/v1"),
+    ("sglang",      "http://localhost:30000/v1"),
+    ("openrouter",  "https://openrouter.ai/api/v1"),
+    ("vercel",      "https://ai-gateway.vercel.sh/v1"),
+    ("openai",      "https://api.openai.com/v1"),
+    ("claude",      "https://api.anthropic.com/v1"),
+    ("ollama-cloud","https://api.ollama.com"),
+)
+
 # Example endpoints shown at the top of the wizard, one per provider.
 ENDPOINT_EXAMPLES = (
     "vLLM: http://localhost:8000/v1  |  "
@@ -570,6 +586,67 @@ def _provider_notes(config: dict) -> list[str]:
 
 # ── Endpoint editor ─────────────────────────────────────────────────
 
+def known_endpoints(config: dict) -> list[dict]:
+    """Every endpoint this machine knows about, configured or not.
+
+    The union of three things: the endpoints in the config (both shapes),
+    the built-in presets, and every host that has an API key stored for it
+    — the last one is what makes a key set up weeks ago, on a machine whose
+    config was since rewritten, still visible instead of silently orphaned.
+
+    Each entry: ``host`` (normalized), ``model``, ``key`` (where the key
+    comes from, or None), ``configured`` (in the config), ``preset`` (its
+    preset name, or None).  Configured rows come first, in preference
+    order; the rest in the order they were found.
+    """
+    out: dict[str, dict] = {}
+
+    def _add(host: str, model: str | None, configured: bool,
+             preset: str | None = None) -> None:
+        host = normalize_host(host)
+        if not host:
+            return
+        ep = out.setdefault(host, {"host": host, "model": model or "",
+                                   "key": None, "configured": False,
+                                   "preset": None})
+        if configured:
+            ep["configured"] = True
+            if model:
+                ep["model"] = model
+        if preset and not ep["preset"]:
+            ep["preset"] = preset
+
+    for entry in _endpoint_list(config) or _entries_from_host(config):
+        _add(entry.get("host", ""), entry.get("model"), True)
+    for name, url in ENDPOINT_PRESETS:
+        _add(url, "", False, name)
+    for name in _file_secrets_names():
+        if name.startswith(_ENDPOINT_SECRET_PREFIX):
+            _add(name[len(_ENDPOINT_SECRET_PREFIX):], "", False)
+
+    for ep in out.values():
+        ep["key"] = endpoint_key_source(ep["host"])
+    configured = [e for e in out.values() if e["configured"]]
+    rest = [e for e in out.values() if not e["configured"]]
+    return configured + rest
+
+
+def _file_secrets_names() -> list[str]:
+    """The secret names in the 0600 fallback file — [] when it is absent.
+
+    Reading only the names, never the values: the point is to find which
+    endpoints have a key stored, not to print the keys.
+    """
+    try:
+        if os.path.isfile(_SECRETS_PATH):
+            with open(_SECRETS_PATH, "r") as f:
+                data = yaml.safe_load(f) or {}
+            return list(data) if isinstance(data, dict) else []
+    except Exception:
+        pass
+    return []
+
+
 _ENDPOINT_HELP = (
     "  Commands: [a]dd  [e]dit N  [d]elete N  [p]riority N  [Enter] done")
 
@@ -621,6 +698,26 @@ def entry_key_label(entry: dict) -> str:
         in_config=bool(entry.get("api_key") or entry.get("host_key")))
 
 
+def _print_known_endpoints(config: dict, indent: str = "    ") -> None:
+    """The endpoints not in the config: presets and stored-key hosts.
+
+    The config table above shows what will serve; this shows what *could* —
+    a preset one number away at the prompt, or a host whose key is stored
+    but whose entry fell out of the config.  Nothing is printed when there
+    is nothing beyond the config, so a fully configured machine sees no
+    extra section.
+    """
+    rows = [ep for ep in known_endpoints(config) if not ep["configured"]]
+    if not rows:
+        return
+    print(f"{indent}Known but not configured (a number at the endpoint "
+          f"prompt adds a preset):")
+    for ep in rows:
+        label = ep["preset"] or ("stored key" if ep["key"] else "")
+        key = (f"key: {ep['key']}" if ep["key"] else "no key")
+        print(f"{indent}  {ep['host']:<38} {key:<24} {label}")
+
+
 def _prompt_endpoint_key(host: str, previous_host: str | None) -> None:
     """Ask for one endpoint's API key and store it in the keychain.
 
@@ -642,6 +739,24 @@ def _prompt_endpoint_key(host: str, previous_host: str | None) -> None:
         store_endpoint_key(host, value)
 
 
+def _resolve_host_input(text: str, default: str) -> str | None:
+    """A host prompt's answer: a preset number, a URL, or the default.
+
+    Presets are numbered, so "1" adds the local Ollama without typing the
+    URL; a URL is taken as written; an empty answer keeps the default.
+    Returns None when nothing usable was given.
+    """
+    text = (text or "").strip()
+    if text.isdigit():
+        index = int(text) - 1
+        if 0 <= index < len(ENDPOINT_PRESETS):
+            return ENDPOINT_PRESETS[index][1]
+        print(f"    Presets are 1-{len(ENDPOINT_PRESETS)} — that number "
+              f"names none of them.")
+        return None
+    return text or default or None
+
+
 def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
     """Collect one endpoint's fields, pre-filled when editing.
 
@@ -650,8 +765,12 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
     entry = dict(entry or {})
     previous_host = entry.get("host")
     host_default = entry.get("host") or (DEFAULT_HOST if is_first else "")
-    host = input(f"    Endpoint URL [{host_default or 'required'}]: ").strip()
-    host = host or host_default
+    preset_hint = ", or a number: " + "  ".join(
+        f"{i}={name}" for i, (name, _) in enumerate(ENDPOINT_PRESETS, 1)
+    ) if not entry.get("host") else ""
+    host = input(f"    Endpoint URL [{host_default or 'required'}"
+                 f"{preset_hint}]: ").strip()
+    host = _resolve_host_input(host, host_default)
     if not host:
         print("    No URL given — nothing added.")
         return None
@@ -817,6 +936,7 @@ def show_config():
     entries = _endpoint_list(config) or _entries_from_host(config)
     _print_endpoint_table(entries, indent="    ")
     print()
+    _print_known_endpoints(config)
     _print_settings(config, SERVING_SETTINGS)
     # Only shown once one is actually holding something up: on a fresh install
     # every endpoint carries its own key and this section is noise.

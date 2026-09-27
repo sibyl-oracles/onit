@@ -221,6 +221,10 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--keep-session", action="store_true", default=False,
                                help="Keep the throwaway session the check creates "
                                     "(visible in 'onit sessions').")
+    doctor_parser.add_argument("--endpoints", action="store_true", default=False,
+                               help="Also smoke-test every known endpoint "
+                                    "(config, presets, stored keys) with a model "
+                                    "listing. Exits 1 if any endpoint fails.")
 
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
@@ -548,6 +552,64 @@ def _dispatch_mode(config_data: dict) -> None:
     asyncio.run(onit.run())
 
 
+_ENDPOINT_PROBE_TIMEOUT = 20
+
+
+def _probe_all_endpoints(args: argparse.Namespace, config_data: dict) -> int:
+    """Smoke-test every known endpoint with a model listing; return the
+    number that failed.
+
+    The battery's own endpoint check only reaches the endpoint this session
+    is assigned — the one that will serve.  This reaches the rest: the
+    presets and every host with a stored key, so a dead key or an
+    unreachable server is reported here, once, instead of the next time it
+    is pointed at.  Each probe is bounded (a model listing is a small
+    request; 20s covers a cold start), and rows print as they land, so one
+    slow endpoint shows progress instead of a frozen terminal.
+
+    A probe that cannot run at all — no config, no endpoints — is a skip,
+    not a failure, and counts nothing.
+    """
+    from .setup import known_endpoints
+    from .model.serving.chat import list_models
+
+    # Both imported here, so both are patchable at their home modules — the
+    # same reason _run_doctor imports run_checks inside the function.
+    endpoints = known_endpoints(config_data or {})
+    if not endpoints:
+        print("  endpoints: none known — run 'onit setup' to configure one")
+        return 0
+
+    async def _probe(ep: dict) -> tuple:
+        label = ep.get("preset") or ("config" if ep["configured"]
+                                     else "stored key")
+        try:
+            names = await asyncio.wait_for(
+                list_models(ep["host"], timeout=_ENDPOINT_PROBE_TIMEOUT),
+                _ENDPOINT_PROBE_TIMEOUT)
+            return (ep, label, f"ok — {len(names)} model(s)", None)
+        except Exception as e:
+            detail = (f"timed out after {_ENDPOINT_PROBE_TIMEOUT}s"
+                      if isinstance(e, asyncio.TimeoutError)
+                      else f"{type(e).__name__}: {e}"[:160])
+            return (ep, label, None, detail)
+
+    async def _run_all() -> list:
+        results = []
+        tasks = [asyncio.create_task(_probe(ep)) for ep in endpoints]
+        for fut in asyncio.as_completed(tasks):
+            ep, label, ok, err = await fut
+            mark = "✓" if ok else "✗"
+            print(f"  {mark} {ep['host']:<40} [{label}] "
+                  f"{ok or err}")
+            results.append((ep, ok, err))
+        return results
+
+    results = asyncio.run(_run_all())
+    failed = sum(1 for _, ok, _ in results if not ok)
+    return failed
+
+
 def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
     """Run the self-check battery against a throwaway session; return exit code.
 
@@ -616,6 +678,18 @@ def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
         print(render_report(results, deep=args.deep))
 
     failed = sum(1 for r in results if r.state == "fail")
+
+    # --endpoints: the battery's endpoint check only reaches the endpoint
+    # this session is assigned; this reaches every known one, so a dead
+    # key or an unreachable server is reported here, once.
+    if getattr(args, "endpoints", False):
+        if not args.json:
+            print()
+            print("  Endpoint smoke test (model listing, "
+                  f"{_ENDPOINT_PROBE_TIMEOUT}s each)")
+            print("  " + "─" * 50)
+        failed += _probe_all_endpoints(args, config_data)
+
     return 1 if failed else 0
 
 

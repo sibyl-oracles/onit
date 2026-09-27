@@ -116,9 +116,18 @@ every check passed and 1 when any check failed**, so it can gate a deploy.
 ```bash
 onit doctor                 # 13 fast checks, a few seconds
 onit doctor --deep          # + live model reply and a tool-calling turn (costs tokens)
+onit doctor --endpoints     # + smoke-test every known endpoint (config, presets,
+                            #   stored keys) with a model listing; 20s each
 onit doctor --json          # machine-readable report (stdout is pure JSON)
 onit doctor --keep-session  # keep the throwaway session for inspecting a failure
 ```
+
+The battery's own endpoint check only reaches the endpoint this session is
+assigned — the one that will serve. `--endpoints` reaches the rest: every
+preset, every host with a stored key, so a dead key or an unreachable server
+is reported once, here, instead of the next time it is pointed at. A failed
+probe fails the run (exit 1); a machine with no known endpoints at all skips
+the section rather than failing it.
 
 The battery starts this process's own MCP servers on freshly allocated ports,
 so it runs beside a live session without touching it, and it works on a

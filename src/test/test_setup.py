@@ -490,3 +490,115 @@ class TestEndpointEditor:
             {"host": "http://a:8000/v1", "priority": 3}]}}
         _drive_editor(cfg, ["p 1", "high", ""])
         assert cfg["serving"]["endpoints"][0]["priority"] == 3
+
+
+# ── Presets and known endpoints ────────────────────────────────────────────────
+
+class TestEndpointPresets:
+    def test_the_eight_providers_are_preset(self):
+        names = [name for name, _ in setup_mod.ENDPOINT_PRESETS]
+        for expected in ("ollama", "vllm", "sglang", "openrouter",
+                         "vercel", "openai", "claude", "ollama-cloud"):
+            assert expected in names
+
+    def test_preset_urls_are_canonical(self):
+        urls = dict(setup_mod.ENDPOINT_PRESETS)
+        assert urls["openrouter"] == "https://openrouter.ai/api/v1"
+        assert urls["openai"] == "https://api.openai.com/v1"
+        assert urls["vercel"] == "https://ai-gateway.vercel.sh/v1"
+        assert urls["claude"] == "https://api.anthropic.com/v1"
+        assert urls["ollama"] == "http://localhost:11434"
+        assert urls["vllm"] == "http://localhost:8000/v1"
+        assert urls["sglang"] == "http://localhost:30000/v1"
+        assert urls["ollama-cloud"] == "https://api.ollama.com"
+
+    def test_a_number_resolves_to_its_preset(self):
+        assert setup_mod._resolve_host_input("1", "") == "http://localhost:11434"
+        assert setup_mod._resolve_host_input("4", "") == \
+            "https://openrouter.ai/api/v1"
+
+    def test_a_number_out_of_range_is_rejected(self, capsys):
+        assert setup_mod._resolve_host_input("99", "") is None
+        assert "names none of them" in capsys.readouterr().out
+
+    def test_a_url_is_taken_as_written(self):
+        assert setup_mod._resolve_host_input("http://gpu:8000/v1", "") == \
+            "http://gpu:8000/v1"
+
+    def test_blank_keeps_the_default(self):
+        assert setup_mod._resolve_host_input("", "http://d:1") == "http://d:1"
+
+    def test_adding_by_number_writes_the_preset_url(self):
+        cfg = {}
+        # first add: host "4" (openrouter), key blank, model blank, name
+        # blank, priority 0 — then done
+        _drive_editor(cfg, ["4", "", "", "", "0", ""])
+        assert cfg["serving"]["host"] == "https://openrouter.ai/api/v1"
+
+
+class TestKnownEndpoints:
+    def test_configured_rows_come_first_and_are_marked(self):
+        cfg = {"serving": {"endpoints": [
+            {"host": "http://a:8000/v1", "priority": 2},
+            {"host": "http://b:8000/v1", "priority": 1}]}}
+        eps = setup_mod.known_endpoints(cfg)
+        assert eps[0]["host"] == "http://a:8000/v1"
+        assert eps[0]["configured"] and eps[1]["configured"]
+        assert not any(e["configured"] for e in eps[2:])
+
+    def test_presets_appear_even_when_unconfigured(self):
+        eps = setup_mod.known_endpoints({"serving":
+                                         {"host": "http://a:8000/v1"}})
+        hosts = {e["host"]: e for e in eps}
+        assert hosts["https://openrouter.ai/api/v1"]["preset"] == "openrouter"
+        assert not hosts["https://openrouter.ai/api/v1"]["configured"]
+
+    def test_a_stored_key_makes_its_host_known(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(setup_mod, "_SECRETS_PATH",
+                            str(tmp_path / "secrets.yaml"))
+        setup_mod._file_store_secret(
+            "endpoint_key:http://stored:9999/v1", "sk-test")
+        eps = setup_mod.known_endpoints({"serving":
+                                         {"host": "http://a:8000/v1"}})
+        stored = [e for e in eps
+                  if e["host"] == "http://stored:9999/v1"]
+        assert len(stored) == 1
+        assert stored[0]["key"] == "endpoint"
+        assert not stored[0]["configured"]
+
+    def test_a_host_is_listed_once(self):
+        cfg = {"serving": {"host": "http://localhost:8000/v1"}}
+        eps = setup_mod.known_endpoints(cfg)
+        hosts = [e["host"] for e in eps]
+        assert hosts.count("http://localhost:8000/v1") == 1
+        # The vllm preset and the configured host are the same endpoint.
+        assert eps[hosts.index("http://localhost:8000/v1")]["configured"]
+
+    def test_the_key_is_where_it_comes_from(self, monkeypatch):
+        monkeypatch.setattr(setup_mod, "get_endpoint_key",
+                            lambda host: "sk-x"
+                            if host == "https://api.openai.com/v1" else None)
+        monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
+        monkeypatch.setattr("os.environ.get",
+                            lambda k, d=None: None)
+        eps = {e["host"]: e for e in
+               setup_mod.known_endpoints({})}
+        assert eps["https://api.openai.com/v1"]["key"] == "endpoint"
+        assert eps["https://openrouter.ai/api/v1"]["key"] is None
+
+    def test_the_known_section_prints_only_the_unconfigured(self, capsys):
+        cfg = {"serving": {"host": "http://localhost:8000/v1"}}
+        setup_mod._print_known_endpoints(cfg)
+        out = capsys.readouterr().out
+        assert "openrouter" in out
+        assert "http://localhost:8000/v1" not in out
+
+    def test_nothing_prints_when_everything_is_configured(self, capsys,
+                                                          monkeypatch):
+        monkeypatch.setattr(setup_mod, "known_endpoints",
+                            lambda cfg: [
+                                {"host": "http://a:8000/v1", "model": "",
+                                 "key": "endpoint", "configured": True,
+                                 "preset": None}])
+        setup_mod._print_known_endpoints({})
+        assert capsys.readouterr().out == ""

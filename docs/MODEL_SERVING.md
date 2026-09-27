@@ -293,6 +293,25 @@ serving:
 Two models on one host always need an explicit `model`; a second entry for the
 same URL with no model would just auto-detect the same model again.
 
+**Preset endpoints.** The setup wizard's endpoint prompt takes a number for
+any of the built-in presets, so a common endpoint is one keystroke instead of
+a URL:
+
+| # | Preset | URL |
+|---|--------|-----|
+| 1 | ollama | `http://localhost:11434` |
+| 2 | vllm | `http://localhost:8000/v1` |
+| 3 | sglang | `http://localhost:30000/v1` |
+| 4 | openrouter | `https://openrouter.ai/api/v1` |
+| 5 | vercel | `https://ai-gateway.vercel.sh/v1` |
+| 6 | openai | `https://api.openai.com/v1` |
+| 7 | claude | `https://api.anthropic.com/v1` |
+| 8 | ollama-cloud | `https://api.ollama.com` |
+
+`onit setup --show` lists the presets and every host that has a key stored
+for it but is not in the config — a key set up weeks ago stays visible
+instead of silently orphaned.
+
 **Editing endpoints.** `onit setup` opens a small editor for this list — you
 don't have to write the YAML by hand:
 

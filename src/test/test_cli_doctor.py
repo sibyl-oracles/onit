@@ -348,3 +348,99 @@ class TestDoctorAgentContract:
         from src.sessions import delete_session
         params = list(inspect.signature(delete_session).parameters)
         assert params[:2] == ["session_id", "sessions_dir"]
+
+# ── doctor --endpoints: the smoke test over every known endpoint ─────────────
+
+
+class TestDoctorEndpoints:
+    """The --endpoints flag probes every known endpoint, not just the one
+    the battery is assigned, and a failed probe fails the run."""
+
+    def _ep(self, host, configured=True, preset=None):
+        return {"host": host, "model": "", "key": "endpoint",
+                "configured": configured, "preset": preset}
+
+    def test_flag_is_accepted(self, doctor_env):
+        import src.setup as setup_mod
+        import src.model.serving.chat as chat_mod
+
+        async def fake_list(host, timeout=15.0):
+            return ["m1"]
+        with patch.object(setup_mod, "known_endpoints",
+                          return_value=[self._ep("http://a:8000/v1")]), \
+                patch.object(chat_mod, "list_models", fake_list):
+            out = _run(["doctor", "--endpoints"])
+        assert out["code"] == 0
+
+    def test_probes_every_known_endpoint(self, doctor_env):
+        import src.setup as setup_mod
+        import src.model.serving.chat as chat_mod
+        eps = [self._ep("http://a:8000/v1"),
+               self._ep("https://openrouter.ai/api/v1",
+                        configured=False, preset="openrouter")]
+        probed = []
+
+        async def fake_list(host, timeout=15.0):
+            probed.append(host)
+            return ["m1"]
+        with patch.object(setup_mod, "known_endpoints", return_value=eps), \
+                patch.object(chat_mod, "list_models", fake_list):
+            out = _run(["doctor", "--endpoints"])
+        assert out["code"] == 0
+        assert sorted(probed) == ["http://a:8000/v1",
+                                  "https://openrouter.ai/api/v1"]
+
+    def test_a_failed_probe_fails_the_run(self, doctor_env, capsys):
+        import src.setup as setup_mod
+        import src.model.serving.chat as chat_mod
+        eps = [self._ep("http://ok:8000/v1"),
+               self._ep("http://dead:8000/v1", configured=False,
+                        preset="vllm")]
+
+        async def fake_list(host, timeout=15.0):
+            if "dead" in host:
+                raise ConnectionError("refused")
+            return ["m1"]
+        with patch.object(setup_mod, "known_endpoints", return_value=eps), \
+                patch.object(chat_mod, "list_models", fake_list):
+            out = _run(["doctor", "--endpoints"])
+        assert out["code"] == 1
+        out_text = capsys.readouterr().out
+        assert "http://dead:8000/v1" in out_text
+        assert "refused" in out_text
+
+    def test_all_probes_pass_keeps_the_run_green(self, doctor_env):
+        import src.setup as setup_mod
+        import src.model.serving.chat as chat_mod
+        eps = [self._ep("http://a:8000/v1"),
+               self._ep("http://b:8000/v1")]
+
+        async def fake_list(host, timeout=15.0):
+            return ["m1", "m2"]
+        with patch.object(setup_mod, "known_endpoints", return_value=eps), \
+                patch.object(chat_mod, "list_models", fake_list):
+            out = _run(["doctor", "--endpoints"])
+        assert out["code"] == 0
+
+    def test_no_known_endpoints_is_a_skip_not_a_failure(self, doctor_env,
+                                                        capsys):
+        import src.setup as setup_mod
+        with patch.object(setup_mod, "known_endpoints", return_value=[]):
+            out = _run(["doctor", "--endpoints"])
+        assert out["code"] == 0
+        assert "none known" in capsys.readouterr().out
+
+    def test_without_the_flag_nothing_is_probed(self, doctor_env):
+        import src.setup as setup_mod
+        import src.model.serving.chat as chat_mod
+        probed = []
+
+        async def fake_list(host, timeout=15.0):
+            probed.append(host)
+            return ["m1"]
+        with patch.object(chat_mod, "list_models", fake_list):
+            out = _run(["doctor"])
+        assert out["code"] == 0
+        # The battery's own endpoint check is stubbed out by the fixture's
+        # fake agent, so a plain run must not reach list_models at all.
+        assert probed == []

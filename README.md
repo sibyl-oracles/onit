@@ -76,7 +76,15 @@ key: `ollama pull qwen3:30b`, then `onit --host http://localhost:11434/v1 --mode
 vLLM, SGLang, and MLX work the same way — [docs/RUN_A_MODEL_SERVER.md](docs/RUN_A_MODEL_SERVER.md).
 
 To make it stick, `onit setup` walks through URL, key, and model once; keys go into
-your OS keychain, never into a file.
+your OS keychain, never into a file. The endpoint prompt takes a number for any of
+the built-in presets — `1` local Ollama, `2` vLLM, `3` SGLang, `4` OpenRouter,
+`5` Vercel AI Gateway, `6` OpenAI, `7` Claude, `8` Ollama cloud — or a URL of your
+own. Point OnIt at as many of them as you like: a `serving.endpoints` list ranks
+them, and requests fail over down the list when one is down.
+
+`onit doctor --endpoints` smoke-tests every endpoint you know about — the ones in
+your config, the presets, and any host with a stored key — with a model listing,
+so a dead key or an unreachable server is reported once, here, instead of mid-task.
 
 ### 3. Run
 
