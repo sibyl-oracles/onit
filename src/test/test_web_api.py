@@ -1579,7 +1579,7 @@ class TestTokenStatsOnDone:
                               data_path="/Users/rowel/sandbox")
         assert out["token_stats"] == (
             "model space-bunny-alpha · provider ollama · "
-            "dir /Users/rowel/sandbox · 4,698,819 tok "
+            "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
             "(4,665,239 in / 33,580 out) · 316.6s")
         # The counts ship raw too, so a client that wants its own presentation
         # is not forced to parse the sentence.

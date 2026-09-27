@@ -1255,15 +1255,24 @@ class TestTokenFooter:
         assert sink["prompt_tokens_total"] == 0
         assert sink["completion_tokens"] == 0
 
-    def test_line_names_the_model_the_endpoint_and_the_directory(self):
+    def test_line_names_the_model_the_endpoint_the_directory_and_the_version(self):
         line = format_token_footer(
             {"prompt_tokens_total": 4_665_239, "completion_tokens": 33_580},
             model="stealth/space-bunny-alpha", provider="ollama",
-            data_path="/Users/rowel/sandbox", elapsed=316.6)
+            data_path="/Users/rowel/sandbox", version="0.1.5a",
+            elapsed=316.6)
         assert line == (
             "model stealth/space-bunny-alpha · provider ollama · "
-            "dir /Users/rowel/sandbox · 4,698,819 tok "
+            "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
             "(4,665,239 in / 33,580 out) · 316.6s")
+
+    def test_version_drops_out_when_unknown(self):
+        """A build without readable package metadata still gets a line."""
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5},
+            version="", elapsed=2.0)
+        assert line == "105 tok (100 in / 5 out) · 2.0s"
+        assert "v" not in line.split(" · ")[0]
 
     def test_unknown_fields_drop_out_rather_than_print_empty_labels(self):
         line = format_token_footer(

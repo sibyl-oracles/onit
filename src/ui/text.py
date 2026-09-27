@@ -179,6 +179,12 @@ class ChatUI:
         self._url_buf = ""  # URL chars swallowed in state 3, kept to restore a non-link
         self._link_state = 0  # 0=normal, 1=in label [..., 2=after ](, eating URL
         self._metrics: dict = {}  # live TurnMetrics sink; the source of tok/s
+        # The last run's stats line, kept so it survives the console.clear()
+        # that the prompt loop issues before every redraw.  Printed at the end
+        # of a streamed turn it is transient by nature; the panel redraw is
+        # the durable place, and without this the numbers were gone the moment
+        # the user pressed Enter for the next task.
+        self._last_run_stats: str = ""
         self._stream_start_time = 0.0  # monotonic time when streaming started
         # Monotonic time the current turn was submitted.  The web UI times a
         # turn from the request, not from the first token, so tool calls and
@@ -426,7 +432,8 @@ class ChatUI:
 
             header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
             footer = self._render_footer_rule(subtitle, subtitle_align)
-            return Group(header, Text(""), content, footer)
+            return Group(header, Text(""), content, footer,
+                         *self._stats_group())
 
         except Exception as e:
             # Fallback rendering on error - ensures UI doesn't crash
@@ -450,6 +457,22 @@ class ChatUI:
             Text(f"{lead}OnIt v{ONIT_VERSION} ━━", style="blue"),
         )
         return grid
+
+    def _stats_group(self) -> list:
+        """The remembered stats line as its own full-width row under the rule.
+
+        Deliberately not folded into the rule's subtitle.  A Rule is asked to
+        fill whatever width is left after the version cell and ellipsizes
+        anything longer: measured at 100 columns the subtitle kept the
+        endpoint and dropped the token counts, and an 80-column terminal would
+        have lost the model as well.  A plain Text row wraps instead of
+        vanishing, so the numbers stay readable at any width.
+        """
+        stats = self._stats_line()
+        if not stats:
+            return []
+        return [Align.left(Text(stats, style="dim"))]
+
 
     def _render_welcome_panel(self) -> Group:
         """Render welcome message when no messages exist."""
@@ -1218,8 +1241,43 @@ class ChatUI:
         Everything the turn spends before the first token — instruction
         assembly, tool calls, retries — belongs to the elapsed time the user
         experiences, so the clock starts here rather than at ``stream_start``.
+
+        The previous run's stats line is dropped here, not left to be cleared
+        after being printed: until a new turn records its own, the panel would
+        otherwise quote the previous answer's model and tokens as though they
+        described the one just asked.
         """
         self._turn_start_time = time.monotonic()
+        self._last_run_stats = ""
+
+    def record_run_stats(self, metrics: dict | None = None, *,
+                         elapsed: float | None = None,
+                         token_rate: bool = True) -> str:
+        """Build and remember the run's stats line; return it.
+
+        One place renders it, so the line under a streamed answer, the line
+        under a non-streamed one, and the line in the redrawn panel cannot
+        drift apart.  Held on the UI because the panel redraw happens after
+        the printed line is gone, and the numbers have to survive that.
+
+        ``token_rate=False`` keeps the decode rate off the line: the meta line
+        above it already carries one, and a run that reaches here through the
+        non-streamed path has its rate quoted in that meta line instead.
+        """
+        from src.model.serving.chat import decode_rate, format_token_footer
+        m = self._metrics if metrics is None else metrics
+        if elapsed is None:
+            elapsed = self._turn_elapsed()
+        self._last_run_stats = format_token_footer(
+            m, model=self.model_name, provider=self.provider_name,
+            data_path=self.data_path, version=ONIT_VERSION,
+            elapsed=elapsed,
+            tok_s=decode_rate(m) if token_rate else 0.0)
+        return self._last_run_stats
+
+    def _stats_line(self) -> str:
+        """The remembered stats line, or '' when the last run reported none."""
+        return self._last_run_stats
 
     def _turn_elapsed(self) -> float:
         """Seconds since the turn was submitted, or since the stream started."""
@@ -1458,15 +1516,13 @@ class ChatUI:
         # arguments never printed at all -- neither of which reaches
         # stream_token(), and both of which the clock was already charging for.
         # elapsed is the whole turn, matching what the web UI reports.
-        from src.model.serving.chat import decode_rate, format_token_footer
+        from src.model.serving.chat import decode_rate
         tok_s = decode_rate(self._metrics)
         # The per-run stats line, under the meta line: what was run, where, and
         # what it cost in tokens.  Built from the live sink, so it reflects the
-        # turn that just ended rather than a figure recomputed at the end.
-        stats = format_token_footer(
-            self._metrics, model=self.model_name,
-            provider=self.provider_name, data_path=self.data_path,
-            elapsed=self._turn_elapsed())
+        # turn that just ended rather than a figure recomputed at the end, and
+        # remembered so the redraw that follows can show it again.
+        stats = self.record_run_stats()
         meta = elapsed or self.format_meta(self._turn_elapsed(), tok_s)
         if meta:
             footer += f"  {meta}"

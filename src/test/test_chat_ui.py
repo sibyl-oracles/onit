@@ -760,6 +760,9 @@ class TestRunStatsLine:
         out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", buf.getvalue())
         assert "4,698,819 tok (4,665,239 in / 33,580 out)" in out
         assert "model stealth/space-bunny-alpha · provider ollama" in out
+        # The build that produced the run is named too, so the line is
+        # reproducible without knowing which checkout it came from.
+        assert "v0.1.5a" in out
         # The rate stays on the meta line; the stats line does not repeat it.
         assert "100.0 tok/s" not in out.split("tok (")[1]
 

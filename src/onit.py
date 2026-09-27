@@ -1967,6 +1967,16 @@ class OnIt(BaseModel):
         # Show local codebase path when sandbox generated code files
         if has_code_files(self.data_path):
             self.chat_ui.data_path = self.data_path
+        # Record the run's stats for the panel footer.  A streamed turn has
+        # already done this in stream_end(); recording again here is what gives
+        # a non-streamed turn a line at all, and it reads the same sink either
+        # way.  After the data_path update above, so the line names the
+        # directory the run actually wrote to.  The meta line already carries
+        # elapsed and rate on this path, so they are left off rather than
+        # quoted twice.
+        if hasattr(self.chat_ui, "record_run_stats"):
+            self.chat_ui.record_run_stats(
+                self.last_metrics, elapsed=0.0, token_rate=False)
         try:
             with open(self.session_path, "a", encoding="utf-8") as f:
                 session_data = {

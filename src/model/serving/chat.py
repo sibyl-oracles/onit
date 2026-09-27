@@ -467,8 +467,8 @@ def provider_label(host: str) -> str:
 
 
 def format_token_footer(m: dict, *, model: str = "", provider: str = "",
-                        data_path: str = "", elapsed: float = 0.0,
-                        tok_s: float = 0.0) -> str:
+                        data_path: str = "", version: str = "",
+                        elapsed: float = 0.0, tok_s: float = 0.0) -> str:
     """One stats line for a finished run: model, endpoint, tokens, time.
 
     ``4,698,819 tok (4,665,239 in / 33,580 out) · 316.6s`` — the in/out split
@@ -477,6 +477,10 @@ def format_token_footer(m: dict, *, model: str = "", provider: str = "",
     expensive in generation, the second in prefill, and only the split says
     which.  Everything except the tokens is optional and drops out when
     unknown, so a caller with nothing but a sink still gets a useful line.
+
+    ``version`` sits after the directory: which build produced the run is part
+    of what the run was, and it is the one field that is constant for a given
+    install, so it anchors the line without crowding the per-run numbers.
     """
     prompt_tokens = _as_int((m or {}).get("prompt_tokens_total"))
     completion_tokens = _as_int((m or {}).get("completion_tokens"))
@@ -488,6 +492,8 @@ def format_token_footer(m: dict, *, model: str = "", provider: str = "",
         parts.append(f"provider {provider}")
     if data_path:
         parts.append(f"dir {data_path}")
+    if version:
+        parts.append(f"v{version}")
     if total > 0:
         parts.append(f"{total:,} tok ({prompt_tokens:,} in / "
                      f"{completion_tokens:,} out)")

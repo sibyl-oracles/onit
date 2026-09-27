@@ -348,6 +348,10 @@ def _timing_summary(metrics: dict, elapsed: float, *, model_name: str = "",
         return {}
     accounted = (metrics.get("model_s", 0.0) + metrics.get("tool_s", 0.0)
                  + metrics.get("instruction_s", 0.0))
+    try:
+        from src import __version__ as _ONIT_VERSION
+    except Exception:  # package metadata unavailable (e.g. standalone import)
+        _ONIT_VERSION = ""
     return {
         "turns": metrics.get("turn_count", 0),
         "tool_calls": metrics.get("tool_calls", 0),
@@ -365,7 +369,7 @@ def _timing_summary(metrics: dict, elapsed: float, *, model_name: str = "",
         # instead of each one reformatting the two counts its own way.
         "token_stats": format_token_footer(
             metrics, model=model_name, provider=provider_name,
-            data_path=data_path, elapsed=elapsed),
+            data_path=data_path, version=_ONIT_VERSION, elapsed=elapsed),
     }
 
 
