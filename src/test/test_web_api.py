@@ -1555,3 +1555,37 @@ class TestApprovalEndpoint:
                              headers={"X-Session-Id": sid})
         assert second.json()["ok"] is False
         assert future.result() == "once"
+
+
+# ── per-run token stats on the done event ─────────────────────────────────
+
+class TestTokenStatsOnDone:
+    """The browser shows the same line the terminal prints.
+
+    The string is rendered server-side and sent whole: two front ends
+    formatting the same two counts their own way is how they drift apart.
+    """
+
+    def test_done_carries_the_rendered_line_and_the_raw_counts(self):
+        from ui.api import _timing_summary
+        metrics = {"turn_count": 5, "tool_calls": 4, "model_s": 300.0,
+                   "tool_s": 10.0, "instruction_s": 1.0, "prefill_s": 100.0,
+                   "decode_s": 200.0, "compaction_s": 0.0,
+                   "prompt_tokens_max": 500_000,
+                   "prompt_tokens_total": 4_665_239,
+                   "completion_tokens": 33_580}
+        out = _timing_summary(metrics, 316.6, model_name="space-bunny-alpha",
+                              provider_name="ollama",
+                              data_path="/Users/rowel/sandbox")
+        assert out["token_stats"] == (
+            "model space-bunny-alpha · provider ollama · "
+            "dir /Users/rowel/sandbox · 4,698,819 tok "
+            "(4,665,239 in / 33,580 out) · 316.6s")
+        # The counts ship raw too, so a client that wants its own presentation
+        # is not forced to parse the sentence.
+        assert out["prompt_tokens_total"] == 4_665_239
+        assert out["completion_tokens"] == 33_580
+
+    def test_a_run_with_no_metrics_sends_no_line(self):
+        from ui.api import _timing_summary
+        assert _timing_summary({}, 1.0) == {}

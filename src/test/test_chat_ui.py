@@ -210,7 +210,31 @@ class TestLateCorrection:
 
 # ── turn timing ─────────────────────────────────────────────────────────────
 
+def _meta_line(output: str) -> str:
+    """The footer rule line, which is where the per-turn meta text lives.
+
+    The run's token stats print on a separate line beneath it, so "the last
+    line printed" is no longer a way to find the meta: a test that wants the
+    timing has to name which of the two it means.  The footer is identified by
+    its 40-dash rule rather than by the box-drawing corner, which every panel
+    border also uses.  Rich wraps the rule on a narrow console, so the meta text
+    can continue onto the next line; everything up to the stats line is meta.
+    """
+    lines = [re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", ln) for ln in
+             output.splitlines()]
+    for line in lines:
+        # What follows the rule on its own line is the meta text.  Rich
+        # re-wraps, so this can also be the start of the line, but the run of
+        # dashes is the reliable marker -- the box-drawing corner alone is also
+        # on every panel border.
+        tail = re.split(r"└─{10,}", line, maxsplit=1)
+        if len(tail) == 2 and tail[1].strip():
+            return tail[1].strip()
+    return ""
+
+
 class TestTurnTiming:
+
     def test_meta_matches_the_web_ui_shape(self):
         """The browser prints '12.35s · 21.5 tok/s'; the terminal must agree."""
         assert ChatUI.format_meta(12.345, 21.47) == "12.35s · 21.5 tok/s"
@@ -243,7 +267,9 @@ class TestTurnTiming:
         chat_ui._turn_start_time -= 3.0
         chat_ui._stream_start_time -= 3.0
         chat_ui.stream_end()
-        footer = buf.getvalue().splitlines()[-1]
+        # The meta line is the one drawn on the footer rule; the run's token
+        # stats print on their own line beneath it.
+        footer = _meta_line(buf.getvalue())
         assert re.search(r"\d+\.\d\ds · 30\.0 tok/s", footer), footer
 
     def test_footer_rate_counts_the_thinking_the_model_streamed(self, chat_ui):
@@ -260,7 +286,7 @@ class TestTurnTiming:
             chat_ui.stream_think_token("x")
         chat_ui.stream_token("hello")
         chat_ui.stream_end()
-        footer = buf.getvalue().splitlines()[-1]
+        footer = _meta_line(buf.getvalue())
         assert "100.0 tok/s" in footer, footer
 
     def test_explicit_elapsed_wins_over_the_measured_one(self, chat_ui):
@@ -715,3 +741,34 @@ class TestIntermediateFold:
         ui.stream_end()
         out = capsys.readouterr().out
         assert "\x1b[6n" not in out
+
+
+class TestRunStatsLine:
+    """Under the meta line, the run's token stats: what it cost, in and out."""
+
+    def test_prints_the_split_under_the_footer(self, chat_ui):
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        chat_ui.model_name = "stealth/space-bunny-alpha"
+        chat_ui.provider_name = "ollama"
+        chat_ui.set_metrics({"prompt_tokens_total": 4_665_239,
+                             "completion_tokens": 33_580, "decode_s": 30.0})
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end()
+        out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", buf.getvalue())
+        assert "4,698,819 tok (4,665,239 in / 33,580 out)" in out
+        assert "model stealth/space-bunny-alpha · provider ollama" in out
+        # The rate stays on the meta line; the stats line does not repeat it.
+        assert "100.0 tok/s" not in out.split("tok (")[1]
+
+    def test_no_stats_line_when_the_run_reported_nothing(self, chat_ui):
+        buf = io.StringIO()
+        chat_ui.console = Console(file=buf, width=120)
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end()
+        out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", buf.getvalue())
+        assert "tok (" not in out

@@ -22,7 +22,9 @@ from model.serving.chat import (
     _handle_structured_tool_calls,
     _resolve_model_id,
     chat,
+    provider_label,
     decode_rate,
+    format_token_footer,
     reset_endpoint_caches,
     summarize_metrics,
 )
@@ -1210,3 +1212,117 @@ class TestMixedBatchPartition:
         )
         # Both writes ran, in the order the model asked for them.
         assert order == ["/r", "/w1", "/w2"]
+
+
+# ── per-run token stats line ─────────────────────────────────────────────
+
+class TestTokenFooter:
+    """The one line under a finished answer: what ran, where, at what cost.
+
+    A total alone cannot tell a run that thought hard from one that re-read the
+    same tool results forty times, so the line is built around the in/out
+    split rather than a sum.
+    """
+
+    def test_splits_input_from_output_across_every_turn(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        for _ in range(3):
+            m.start_api()
+            m.first_token()
+            m.end_api(10_000, 1_000, "stop")
+        # Three turns of 10k prompt each is 30k billed in, not 10k: the peak
+        # alone understates a tool loop by the turn count.
+        assert sink["prompt_tokens_total"] == 30_000
+        assert sink["prompt_tokens_max"] == 10_000
+        assert sink["completion_tokens"] == 3_000
+        assert "33,000 tok (30,000 in / 3,000 out)" in format_token_footer(sink)
+
+    def test_totals_are_kept_when_the_provider_reports_no_cache(self):
+        """cached_tokens is optional; the prompt total is not."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(4_200, 300, "stop")  # cached_tokens omitted entirely
+        assert sink["prompt_tokens_total"] == 4_200
+
+    def test_garbage_usage_does_not_poison_the_total(self):
+        """usage.prompt_tokens is absent on some providers and None on others."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(None, None, "stop")
+        assert sink["prompt_tokens_total"] == 0
+        assert sink["completion_tokens"] == 0
+
+    def test_line_names_the_model_the_endpoint_and_the_directory(self):
+        line = format_token_footer(
+            {"prompt_tokens_total": 4_665_239, "completion_tokens": 33_580},
+            model="stealth/space-bunny-alpha", provider="ollama",
+            data_path="/Users/rowel/sandbox", elapsed=316.6)
+        assert line == (
+            "model stealth/space-bunny-alpha · provider ollama · "
+            "dir /Users/rowel/sandbox · 4,698,819 tok "
+            "(4,665,239 in / 33,580 out) · 316.6s")
+
+    def test_unknown_fields_drop_out_rather_than_print_empty_labels(self):
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0)
+        assert line == "105 tok (100 in / 5 out) · 2.0s"
+
+    def test_a_run_with_turns_but_no_usage_says_so(self):
+        """"0 tok" reads as a free run; the provider simply did not report."""
+        assert "tok not reported" in format_token_footer({"turn_count": 4})
+
+    def test_nothing_known_prints_no_line_at_all(self):
+        assert format_token_footer({}) == ""
+        assert format_token_footer(None) == ""
+
+    def test_tok_s_is_only_shown_when_it_was_measured(self):
+        sink = {"completion_tokens": 900, "decode_s": 30.0,
+                "prompt_tokens_total": 0}
+        assert "30.0 tok/s" in format_token_footer(sink, tok_s=30.0)
+        assert "tok/s" not in format_token_footer(sink, tok_s=0.0)
+
+
+class TestProviderLabel:
+    """The host is what the config holds and what an error quotes -- too long
+    for a one-line footer.  This collapses the common endpoints to a word and
+    leaves anything else identifiable rather than guessing."""
+
+    @pytest.mark.parametrize("host,expected", [
+        ("http://localhost:11434", "ollama"),
+        ("http://127.0.0.1:8000", "ollama"),
+        ("http://localhost:8000/v1", "openai-compat"),
+        ("https://api.openai.com/v1", "openai"),
+        ("https://openrouter.ai/api/v1", "openrouter"),
+        ("https://api.anthropic.com/v1", "claude"),
+        ("https://ollama.com/v1", "ollama-cloud"),
+    ])
+    def test_known_endpoints_get_a_word(self, host, expected):
+        assert provider_label(host) == expected
+
+    def test_an_unrecognized_host_stays_identifiable(self):
+        assert provider_label("https://llm.internal.corp") == "llm.internal.corp"
+
+    def test_any_openai_shaped_host_is_labelled_as_one(self):
+        """/v1 is the shape, not the vendor: a self-hosted gateway serving
+        OpenAI's API under /v1 is one, whatever its hostname."""
+        assert provider_label("https://llm.internal.corp/v1") == "openai-compat"
+
+    def test_no_host_is_a_question_mark_not_a_crash(self):
+        assert provider_label("") == "?"
+        assert provider_label(None) == "?"
+
+
+class TestSummarizeReportsTheTotal:
+    """The log line and the on-screen line must not disagree about cost."""
+
+    def test_says_what_the_run_cost_not_only_its_peak_prompt(self):
+        sink = {"turn_count": 2, "tool_calls": 1, "model_s": 10.0,
+                "tool_s": 1.0, "prefill_s": 4.0, "decode_s": 6.0,
+                "prompt_tokens_max": 10_000, "prompt_tokens_total": 20_000,
+                "completion_tokens": 2_000}
+        text = summarize_metrics(sink)
+        assert "22,000 tok (20,000 in / 2,000 out)" in text
+        assert "peak prompt 10,000 tok" in text

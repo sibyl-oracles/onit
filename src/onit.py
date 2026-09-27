@@ -441,6 +441,10 @@ class StreamingAdapter:
     # Written by chat() once the endpoint's model id is resolved; read back by
     # _record_trajectory so the session record names what actually answered.
     model_name: str = ""
+    # Short endpoint label for the stats footer, set by chat() alongside
+    # model_name.  Declared here so a UI without a chat() of its own can still
+    # name the provider that answered.
+    provider_name: str = ""
 
     def set_metrics(self, sink: dict) -> None:
         """Adopt the run's live token/timing accounting (see TurnMetrics)."""
@@ -1489,6 +1493,11 @@ class OnIt(BaseModel):
         if stats is not None:
             stats["metrics"] = _metrics
             stats["tokens_per_second"] = decode_rate(_metrics)
+            # What answered, for the run's stats line.  Set here rather than
+            # read back off the adapter because a run without a UI has none,
+            # and the web footer is built after chat() has returned.
+            stats["model_name"] = getattr(_adapter, "model_name", "") or ""
+            stats["provider_name"] = getattr(_adapter, "provider_name", "") or ""
         logger.info("task timing: instruction %.2fs | %s",
                     _instruction_s, summarize_metrics(_metrics))
 

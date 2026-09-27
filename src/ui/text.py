@@ -162,6 +162,7 @@ class ChatUI:
         self._thinking_stop_event: Optional[threading.Event] = None
         self._thinking_thread: Optional[threading.Thread] = None
         self.model_name = ""  # auto-detected model name, set by chat()
+        self.provider_name = ""  # short endpoint label for the stats footer
         self.data_path = ""  # set when code files are saved to a data directory
         self._context_pct: float = 0.0  # context window usage 0-100, updated after each LLM call
         self._context_max_tokens: int = 0  # max context window size in tokens
@@ -1457,8 +1458,15 @@ class ChatUI:
         # arguments never printed at all -- neither of which reaches
         # stream_token(), and both of which the clock was already charging for.
         # elapsed is the whole turn, matching what the web UI reports.
-        from src.model.serving.chat import decode_rate
+        from src.model.serving.chat import decode_rate, format_token_footer
         tok_s = decode_rate(self._metrics)
+        # The per-run stats line, under the meta line: what was run, where, and
+        # what it cost in tokens.  Built from the live sink, so it reflects the
+        # turn that just ended rather than a figure recomputed at the end.
+        stats = format_token_footer(
+            self._metrics, model=self.model_name,
+            provider=self.provider_name, data_path=self.data_path,
+            elapsed=self._turn_elapsed())
         meta = elapsed or self.format_meta(self._turn_elapsed(), tok_s)
         if meta:
             footer += f"  {meta}"
@@ -1469,6 +1477,8 @@ class ChatUI:
             self.console.print(t)
         else:
             self.console.print(footer, style=self.theme.styles.get("assistant", "magenta"))
+        if stats:
+            self.console.print(stats, style="dim")
         # Warn when context is getting full (≥75%)
         if self._context_pct >= 90:
             self.console.print(

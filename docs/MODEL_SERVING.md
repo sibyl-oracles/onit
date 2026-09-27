@@ -356,3 +356,45 @@ The web UI serves with the instruct-mode row regardless of what is set here —
 one turn in a browser is not where reasoning pays for itself. See
 [Thinking in the browser](CONFIGURATION.md#thinking-in-the-browser).
 
+
+## Per-run token statistics
+
+Every finished task prints one line of accounting underneath the answer — in
+the terminal and in the browser, with the same text:
+
+```
+model stealth/space-bunny-alpha · provider ollama · dir /Users/rowel/sandbox · 4,698,819 tok (4,665,239 in / 33,580 out) · 316.6s
+```
+
+**The in/out split is the point of the line.** A total alone cannot tell a run
+that thought hard from one that re-read the same tool results forty times: the
+first is expensive in generation, the second in prefill, and only the split says
+which. `in` is the sum of every turn's prompt — not the largest one. A tool loop
+re-prefills a prompt that grows with each tool result, and the provider bills
+all of it, so a 40-turn run's real input cost is roughly 40× its peak prompt.
+`out` is what the model generated, including reasoning and tool-call arguments
+that are never displayed.
+
+`provider` is a short label derived from the endpoint host — `ollama`,
+`ollama-cloud`, `openai-compat`, `openai`, `openrouter`, `claude`, `vercel` —
+because the full host is too long for a status line. An endpoint that is not
+recognized is shown as its hostname rather than guessed at. When the model id
+is served by more than one endpoint, the label names the one that actually
+answered the run, not the first in the config.
+
+The counts come from the provider's own `usage` report. A provider that does
+not report usage produces `tok not reported` rather than `0 tok`, which would
+read as a free run.
+
+In the browser the same string arrives on the `done` event as
+`timing.token_stats`, alongside the raw `timing.prompt_tokens_total` and
+`timing.completion_tokens` for clients that want their own presentation. The
+browser's own timing line (`12.34s · 21.5 tok/s`) is unchanged: the rate is the
+decode rate over the whole run, while the stats line is the run's total cost.
+
+The per-turn detail (which turn pre-filled how much, cache hit rate, compaction
+time) stays in the log, not on screen:
+
+```bash
+grep "task timing" logs/onit.log
+```

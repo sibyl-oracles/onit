@@ -301,7 +301,8 @@ class TurnMetrics:
         sink.update(turns=self.turns, turn_count=0, tool_calls=0,
                     model_s=0.0, tool_s=0.0, prefill_s=0.0, decode_s=0.0,
                     compaction_s=0.0, compactions=0, api_retries=0,
-                    prompt_tokens_max=0, completion_tokens=0)
+                    prompt_tokens_max=0, prompt_tokens_total=0,
+                    completion_tokens=0)
         self._api_start = 0.0
         self._ttft = None
 
@@ -345,6 +346,11 @@ class TurnMetrics:
         s["model_s"] = round(s["model_s"] + elapsed, 3)
         s["completion_tokens"] += completion_tokens
         s["prompt_tokens_max"] = max(s["prompt_tokens_max"], prompt_tokens)
+        # Every turn's prompt, summed, because a run's cost is the sum and not
+        # the peak: a 40-turn loop re-prefills a prompt that grows with each
+        # tool result, and the peak alone would understate it ~20x.  The
+        # provider bills all of them.
+        s["prompt_tokens_total"] += prompt_tokens
         if cached_tokens is not None:
             # Prefix-cache hit rate is the health signal of the whole
             # instruction-split design: a warm cache turns most of the
@@ -426,6 +432,76 @@ def decode_rate(m: dict) -> float:
     return tokens / seconds
 
 
+def provider_label(host: str) -> str:
+    """Short human label for an endpoint, the way the status line names it.
+
+    The host is what the config holds and what an error quotes, which makes it
+    too long to sit in a one-line footer.  This collapses the endpoints people
+    actually run to a word, and leaves anything unrecognized as its own
+    hostname so an unfamiliar endpoint is still identifiable rather than
+    mislabelled as something it is not.
+    """
+    h = (host or "").lower()
+    if not h:
+        return "?"
+    if "api.ollama.com" in h or "ollama.com" in h or "ollama.ai" in h:
+        return "ollama-cloud"
+    if "api.anthropic.com" in h:
+        return "claude"
+    if "localhost" in h or "127.0.0.1" in h or "0.0.0.0" in h:
+        # A local server is OpenAI-shaped when it is served under /v1 (vLLM,
+        # SGLang, LM Studio) and Ollama-shaped otherwise.
+        return "openai-compat" if "/v1" in h else "ollama"
+    if "openrouter" in h:
+        return "openrouter"
+    if "api.openai.com" in h:
+        return "openai"
+    if "vercel" in h:
+        return "vercel"
+    if "/v1" in h:
+        return "openai-compat"
+    # Whatever it is, minus the scheme and any path -- the host part is what
+    # identifies an unfamiliar endpoint, and the scheme is not it.
+    rest = h.split("://", 1)[-1]
+    return rest.split("/")[0] or "?"
+
+
+def format_token_footer(m: dict, *, model: str = "", provider: str = "",
+                        data_path: str = "", elapsed: float = 0.0,
+                        tok_s: float = 0.0) -> str:
+    """One stats line for a finished run: model, endpoint, tokens, time.
+
+    ``4,698,819 tok (4,665,239 in / 33,580 out) · 316.6s`` — the in/out split
+    is the point of it.  A single total cannot distinguish a run that thought
+    hard from one that re-read the same tool results forty times: the first is
+    expensive in generation, the second in prefill, and only the split says
+    which.  Everything except the tokens is optional and drops out when
+    unknown, so a caller with nothing but a sink still gets a useful line.
+    """
+    prompt_tokens = _as_int((m or {}).get("prompt_tokens_total"))
+    completion_tokens = _as_int((m or {}).get("completion_tokens"))
+    total = prompt_tokens + completion_tokens
+    parts = []
+    if model:
+        parts.append(f"model {model}")
+    if provider:
+        parts.append(f"provider {provider}")
+    if data_path:
+        parts.append(f"dir {data_path}")
+    if total > 0:
+        parts.append(f"{total:,} tok ({prompt_tokens:,} in / "
+                     f"{completion_tokens:,} out)")
+    elif total == 0 and m and m.get("turn_count"):
+        # A run that recorded turns but no usage: the provider does not report
+        # it.  Saying so beats printing "0 tok", which reads as a free run.
+        parts.append("tok not reported")
+    if tok_s and tok_s > 0:
+        parts.append(f"{tok_s:.1f} tok/s")
+    if elapsed and elapsed > 0:
+        parts.append(f"{elapsed:.1f}s")
+    return " · ".join(parts)
+
+
 def summarize_metrics(m: dict) -> str:
     """One-line rendering of a TurnMetrics sink, for logs and status lines."""
     if not m or not m.get("turn_count"):
@@ -436,9 +512,14 @@ def summarize_metrics(m: dict) -> str:
         f"model {m['model_s']:.1f}s (prefill {m['prefill_s']:.1f}s, "
         f"decode {m['decode_s']:.1f}s)",
         f"tools {m['tool_s']:.1f}s",
-        f"peak prompt {m['prompt_tokens_max']:,} tok",
-        f"generated {m['completion_tokens']:,} tok",
     ]
+    _pt, _ct = m.get("prompt_tokens_total", 0), m.get("completion_tokens", 0)
+    if _pt or _ct:
+        # The in/out split first, the peak after it: the split is what the run
+        # cost, the peak is what the largest single turn had to carry.
+        parts.append(f"{_pt + _ct:,} tok ({_pt:,} in / {_ct:,} out)")
+    if m.get("prompt_tokens_max"):
+        parts.append(f"peak prompt {m['prompt_tokens_max']:,} tok")
     if m.get("compactions"):
         parts.append(f"{m['compactions']} compaction(s) {m['compaction_s']:.1f}s")
     _pt_sum, _ct_sum = m.get("prompt_tokens_sum", 0), m.get("cached_tokens", 0)
@@ -5618,6 +5699,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
     if chat_ui:
         chat_ui.model_name = model
+        # The endpoint that actually answered, labelled for the footer.  Set
+        # next to the model because both are per-run facts the UI prints; the
+        # host itself is too long for that line and only useful in logs.
+        chat_ui.provider_name = provider_label(host)
     _log_to_ui_or_verbose(f"Starting chat with model: {model}", chat_ui, verbose, level="info")
 
     # Query vLLM for the model's maximum context window if not provided in config.

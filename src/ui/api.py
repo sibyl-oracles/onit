@@ -54,7 +54,10 @@ from src.learn import append_rating as _append_rating
 from src.learn import normalize_rating as _normalize_rating
 from src.learn import read_session as _read_trajectory
 from src.learn import recording_enabled as _recording_enabled
-from src.model.serving.chat import summarize_metrics
+from src.model.serving.chat import (
+    format_token_footer,
+    summarize_metrics,
+)
 from src.sessions import _turn_count_from_jsonl as _session_turn_count
 from src.sessions import delete_session as _delete_session_index
 from src.sessions import get_session_owner as _get_session_owner
@@ -333,7 +336,8 @@ def _email_of(mailto_url: str) -> str:
     return urllib.parse.unquote(rest).strip().lower()
 
 
-def _timing_summary(metrics: dict, elapsed: float) -> dict:
+def _timing_summary(metrics: dict, elapsed: float, *, model_name: str = "",
+                    provider_name: str = "", data_path: str = "") -> dict:
     """Where the wall clock went, small enough to ride along on ``done``.
 
     The per-turn detail stays in the log: this is the shape a client can show
@@ -355,7 +359,13 @@ def _timing_summary(metrics: dict, elapsed: float) -> dict:
         "compaction_s": metrics.get("compaction_s", 0.0),
         "other_s": round(max(elapsed - accounted, 0.0), 2),
         "prompt_tokens_max": metrics.get("prompt_tokens_max", 0),
+        "prompt_tokens_total": metrics.get("prompt_tokens_total", 0),
         "completion_tokens": metrics.get("completion_tokens", 0),
+        # Pre-rendered so every client shows the same line the terminal does,
+        # instead of each one reformatting the two counts its own way.
+        "token_stats": format_token_footer(
+            metrics, model=model_name, provider=provider_name,
+            data_path=data_path, elapsed=elapsed),
     }
 
 
@@ -1134,7 +1144,11 @@ class WebApiUI:
                 "files": self._file_infos(file_paths, session.session_id),
                 "elapsed": round(elapsed, 2),
                 "tok_s": round(tok_s, 1),
-                "timing": _timing_summary(metrics, elapsed),
+                "timing": _timing_summary(
+                    metrics, elapsed,
+                    model_name=stats.get("model_name", ""),
+                    provider_name=stats.get("provider_name", ""),
+                    data_path=session.data_path),
                 # Which turn a rating on this answer refers to. The agent has
                 # already appended to the session file by now, so its line
                 # count is this answer's number.

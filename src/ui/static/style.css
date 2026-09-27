@@ -267,6 +267,17 @@ textarea { font-family: var(--font); }
   color: var(--text-faint);
 }
 
+/* The per-run token line under the timing line. Fainter still: it answers
+   "what did that cost" and is not part of the reply, so it must not read as
+   content. Fixed at the foot of the block so the two meta rows read as one
+   unit rather than stranding the stats between the answer and its actions. */
+.msg-meta-stats {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.75;
+  word-break: break-word;
+}
+
 /* Copy and feedback on an answer. Quiet until hovered: they are an offer, not
    a prompt, and a row of buttons under every reply competes with the reply. */
 .msg-rate {

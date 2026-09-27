@@ -605,7 +605,7 @@
     root.appendChild(wrap);
   }
 
-  function addMeta(root, elapsed, tokS) {
+  function addMeta(root, elapsed, tokS, tokenStats) {
     const parts = [];
     if (elapsed) parts.push(`${elapsed}s`);
     if (tokS) parts.push(`${tokS} tok/s`);
@@ -614,6 +614,15 @@
     meta.className = "msg-meta";
     meta.textContent = parts.join(" · ");
     root.appendChild(meta);
+    // The per-run token line, rendered server-side so the browser and the
+    // terminal print the same string. Skipped for a client with nothing to
+    // report (voice turns) rather than shown as an empty row.
+    if (tokenStats) {
+      const stats = document.createElement("div");
+      stats.className = "msg-meta msg-meta-stats";
+      stats.textContent = tokenStats;
+      root.appendChild(stats);
+    }
   }
 
   // The answer as rich text, for the clipboard. Markdown source pasted into a
@@ -1204,7 +1213,7 @@
           renderMarkdown(streamBlock, streamText);
         }
         addFileChips(turn.root, d.files);
-        addMeta(turn.root, d.elapsed, d.tok_s);
+        addMeta(turn.root, d.elapsed, d.tok_s, d.timing && d.timing.token_stats);
         addActions(turn.root, {
           text: answer, node: turn.content, turn: d.turn, rating: null,
         });
