@@ -25,7 +25,7 @@ git clone https://github.com/sibyl-oracles/onit.git
 cd onit
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install -U --upgrade-strategy eager -e '.[all]'
+uv pip install -U -e '.[all]'
 ```
 
 Install from source, not the PyPI wheel, which lags.
