@@ -526,6 +526,31 @@ class ChatUI:
         """
         return re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
 
+    @staticmethod
+    def _url_looks_like_url(url: str) -> bool:
+        """Decide whether the text buffered after ``](`` is a real link target.
+
+        Real URLs start with a scheme (``https://``, ``file://`` …) or are
+        relative paths / fragments.  Anything else — code arguments like
+        ``args``, ``t + 1``, ``"key"`` — is code the filter must not eat.
+        """
+        if not url:
+            return False
+        u = url.strip()
+        if "://" in u:  # https://, http://, file://, data:, mailto: …
+            return True
+        if u.startswith("#"):  # same-page fragment
+            return True
+        # Relative path or bare domain: must not contain spaces or code
+        # operators, and must not be a lone identifier.
+        if re.search(r'[\s(){}<>"\']', u):
+            return False
+        if re.match(r'^[\w.-]+\.[a-zA-Z]{2,}(/\S*)?$', u):
+            return True
+        if u.startswith(('/', './', '../')):
+            return True
+        return False
+
     def _render_assistant_message(self, content: Text, msg_content: str, msg_time: str, msg_elapsed: str) -> None:
         """
         Render an assistant message to the content Text object.
@@ -1446,8 +1471,18 @@ class ChatUI:
                         self._link_state = 0
             elif self._link_state == 3:
                 if ch == ')':
-                    # End of URL — emit only the label
-                    out.append(self._link_buf)
+                    # End of URL — emit only the label, but only when the
+                    # "URL" actually looks like one.  Code such as
+                    # d["key"](args) or f(t) reaches here too; eating it
+                    # truncates the answer, so give it back verbatim.
+                    if self._url_looks_like_url(self._url_buf):
+                        out.append(self._link_buf)
+                    else:
+                        out.append('[')
+                        out.append(self._link_buf)
+                        out.append('](')
+                        out.append(self._url_buf)
+                        out.append(ch)
                     self._link_buf = ""
                     self._url_buf = ""
                     self._link_state = 0
@@ -1463,8 +1498,46 @@ class ChatUI:
                     self._link_buf = ""
                     self._url_buf = ""
                     self._link_state = 0
+                elif ch in '([{':
+                    # A URL never contains an opening bracket: this is code
+                    # (e.g. d["key"](args) or f[i](t), not a link.  Give back
+                    # everything swallowed so far, then re-process this char
+                    # from the top — it may itself open a new label.
+                    out.append('[')
+                    out.append(self._link_buf)
+                    out.append('](')
+                    out.append(self._url_buf)
+                    self._link_buf = ""
+                    self._url_buf = ""
+                    self._link_state = 0
+                    if ch == '[':
+                        self._link_state = 1
+                    else:
+                        out.append(ch)
                 else:
                     self._url_buf += ch
+        # If the stream ended while we were still inside a label or a
+        # would-be URL, the pattern never completed: what we are holding is
+        # plain text and must be shown, or the answer prints short.
+        if self._link_state == 1:
+            out.append('[')
+            out.append(self._link_buf)
+            self._link_buf = ""
+            self._link_state = 0
+        elif self._link_state == 2:
+            out.append('[')
+            out.append(self._link_buf)
+            out.append(']')
+            self._link_buf = ""
+            self._link_state = 0
+        elif self._link_state == 3:
+            out.append('[')
+            out.append(self._link_buf)
+            out.append('](')
+            out.append(self._url_buf)
+            self._link_buf = ""
+            self._url_buf = ""
+            self._link_state = 0
         return "".join(out)
 
     def _flush_filters(self) -> str:

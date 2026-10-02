@@ -349,6 +349,25 @@ class TestStreamedAnswerIsComplete:
         out = _stream(chat_ui, ["Cited ", "[label][ref]", " here.\n"], capsys)
         assert "Cited [label][ref] here." in out
 
+    def test_dict_access_call_in_code_is_not_eaten(self, chat_ui, capsys):
+        """d["key"](args) looks like a markdown link to the filter; the call
+        must survive, not be swallowed as a URL."""
+        out = _stream(chat_ui, ['x = d["key"](args)\n', "print(x)\n"], capsys)
+        assert 'x = d["key"](args)' in out
+        assert "print(x)" in out
+
+    def test_nested_brackets_in_code_survive(self, chat_ui, capsys):
+        out = _stream(chat_ui, ["x = [i for i in range(10)]\n", "y = f(x)\n"], capsys)
+        assert "x = [i for i in range(10)]" in out
+        assert "y = f(x)" in out
+
+    def test_open_paren_inside_swallowed_url_aborts_the_link(self, chat_ui, capsys):
+        """A '(' inside the 'URL' part means it was never a link (code like
+        f[i](t)); everything swallowed so far must be given back."""
+        out = _stream(chat_ui, ["f[i](t", " + 1)\n", "done\n"], capsys)
+        assert "f[i](t + 1)" in out
+        assert "done" in out
+
 
 class TestNotice:
     def test_a_warning_is_printed_not_just_logged(self, chat_ui):
