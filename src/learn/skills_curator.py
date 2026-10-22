@@ -45,8 +45,8 @@ import time
 
 import yaml
 
-from .skills import (ACTIVE, PROBATION, apply_deltas, read_manifest,
-                     read_pin, skill_dir, skills_dir, write_manifest,
+from .skills import (ACTIVE, apply_deltas, read_manifest,
+                     read_pin, skill_dir, write_manifest,
                      write_pin)
 from .skills_gate import read_skill_sources, run_gate
 
@@ -311,7 +311,7 @@ def _keep_previous_pin(config_data: dict | None = None) -> None:
     the one promotion that could not be undone, which is the worst
     possible moment for that to be true.
     """
-    from .skills import pinned_path, write_pin
+    from .skills import pinned_path
 
     path = pinned_path(config_data)
     try:

@@ -45,8 +45,6 @@ succeeding.  A group that keeps failing is not a skill -- it is a bug
 that recurs, and promoting it would promote the bug.
 """
 
-import collections
-import os
 
 from .trajectory import iter_records
 

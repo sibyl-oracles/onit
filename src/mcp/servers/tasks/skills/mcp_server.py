@@ -40,10 +40,8 @@ import json
 import logging
 import os
 import sys
-from typing import Annotated, Any, Optional
 
 from fastmcp import FastMCP
-from pydantic import Field
 
 logging.basicConfig(level=logging.ERROR,
                     format='%(asctime)s - %(levelname)s - %(message)s')
