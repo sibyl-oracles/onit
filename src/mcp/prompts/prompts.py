@@ -66,6 +66,7 @@ async def build_assistant_instruction(task: str,
                                 result_store_available: str | bool = False,
                                 code_execution_available: str | bool = False,
                                 prior_attempts: str = None,
+                                playbook: str = None,
                                 agent_name: str = "OnIt",
                                 developer: str = "Rowel Atienza",
                                 max_documents: str | int = DEFAULT_MAX_DOCUMENTS) -> str:
@@ -101,6 +102,8 @@ async def build_assistant_instruction(task: str,
       code_execution_available = False
    if not prior_attempts or prior_attempts == "null":
       prior_attempts = None
+   if not playbook or playbook == "null":
+      playbook = None
    if not agent_name or agent_name == "null":
       agent_name = "OnIt"
    if not developer or developer == "null":
@@ -449,6 +452,28 @@ When an answer includes a table, format it so it survives being copy-pasted as p
    rules = (topic_block + sandbox_block + no_install_block + policy_block
             + research_block + injection_block + harness_block + result_block
             + code_block + tables_block + instructions_block)
+   # The playbook (Loop B) goes at the *tail* of the static half, as the
+   # last thing before INSTRUCTION_SPLIT.  Two reasons, and they pull in
+   # the same direction:
+   #
+   #  * it is standing knowledge, so it belongs in the half that does not
+   #    change from one request to the next -- and the only place that
+   #    survives a prefix-cache hit;
+   #  * putting it last means that when it *does* change, the change is
+   #    at the far end of the cached prefix, so the invalidation costs
+   #    the smallest possible slice of the cache.  A playbook at the
+   #    *front* would invalidate everything behind it.
+   #
+   # The playbook is version-pinned per session, so within a session
+   # these bytes do not move.  A session that swapped the playbook
+   # mid-conversation would re-pay the standing payload for the rest of
+   # that conversation, which is the cost this placement exists to
+   # avoid.
+   #
+   # Empty at autonomy levels 0 and 1, where a run must be byte-for-byte
+   # identical to a run with no memory at all.
+   playbook_block = playbook if playbook else ""
+
    # The file server URL carries the session's upload id, and the task is the
    # task, so both are volatile.  A template that interpolates the task has
    # already placed it and does not get a second copy.
@@ -465,10 +490,11 @@ When an answer includes a table, format it so it survives being copy-pasted as p
       # its own working directory, and adding a second statement of it would
       # change what every existing template renders.
       if any(field in template for field in _VOLATILE_FIELDS):
-         return rules + INSTRUCTION_SPLIT + header + tail
-      return header + rules + INSTRUCTION_SPLIT + tail
+         return rules + playbook_block + INSTRUCTION_SPLIT + header + tail
+      return header + rules + playbook_block + INSTRUCTION_SPLIT + tail
 
-   return header + rules + INSTRUCTION_SPLIT + context_block + tail
+   return (header + rules + playbook_block + INSTRUCTION_SPLIT + context_block
+           + tail)
 
 
 # Registered directly rather than through a forwarding wrapper: fastmcp derives
