@@ -48,5 +48,16 @@ serve_logs/
 # Eval
 *.eval
 
+# The ruler: a locally drawn holdout is a local artifact, not source.  The
+# split that ships is the one the repository pins deliberately, and a
+# holdout drawn on one machine from one machine's corpus would be
+# meaningless on another.
+benchmarks/eval/holdout.jsonl
+benchmarks/eval/dev.jsonl
+benchmarks/eval/split.json
+benchmarks/eval/baseline.json
+
 # Local search index artifacts
 local_search/
+# Scratch commit-message file, written while committing.
+tmp_commit_msg.txt

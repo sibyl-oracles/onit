@@ -1,0 +1,46 @@
+feat(learn): the playbook — Loop B's store, curator, and injection
+
+The main event.  Layer 0 records what happened; Loop A recalls the
+last time this came up; this is the *generalisation*.  Not "last time
+you asked this, the search was slow" but "when a search returns a file
+whose name matches and whose excerpts do not, open it anyway — the
+opening is a poor proxy for the tail".
+
+A bullet is one itemized tactic with a trigger, a provenance, and
+counters.  The store is `src/learn/playbook.py`: the item schema, the
+Reflector (`reflect`), the Curator (`curate`), delta-only updates
+(`apply_deltas`), decay, and the token-capped selection (`select`).
+
+**Delta-only (I2).**  The curator applies *operations* — insert,
+update, deprecate — to identified items.  It never regenerates the
+file.  A wholesale rewrite erodes the knowledge that was there,
+because the rewrite is written by a model that saw a *sample* of the
+history and did not see the item it dropped.  A delta names the item
+it touched, so a dropped item is a decision rather than an oversight.
+
+**Token-capped.**  The whole point of the playbook is to be *read*,
+and everything in the prompt is paid for on every request.  The budget
+is hard, and a bullet that does not fit is not injected — the same
+rule the recall path follows, for the same reason: a truncated list is
+indistinguishable from a complete one.
+
+**Version-pinned per session.**  The playbook rides at the tail of
+the *static* half of the instruction, where the prefix cache lives.
+If the playbook changed mid-session, the bytes ahead of it would be
+identical but the cache would miss for the rest of the conversation.
+So a session pins a version, and the pin is what the trajectory
+record carries, so a later run can ask "did the runs that saw v7 do
+better than the runs that saw v6?"  That question is the only way this
+loop gets an honest verdict.
+
+**Privacy.**  A bullet distilled from one user's sessions must never
+reach another's.  The default scope is `owner:<hash>`; promotion to
+`global` requires derivation from three or more distinct owners, or
+from benchmark runs, plus a redaction pass.  OnIt already runs
+multi-tenant in web mode, so this is a hard requirement and not a
+nicety.
+
+`onit learn --playbook` shows what would be injected, `--reflect`
+runs the offline pass, and `--rollback` restores the previous version.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

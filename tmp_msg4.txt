@@ -1,0 +1,84 @@
+feat(learn): the skill library — Loop C's miner, gate, and server
+
+The playbook distils tactics — prose the model reads.  This is the
+other thing: when the agent keeps solving the same subtask with the
+same ad-hoc fragment, the fragment becomes a tool.  A tactic you have
+to remember is a tactic you will forget; a tool is a capability.
+
+A skill is code the agent wrote, for the agent, to run with the agent's
+privileges.  That is the sharpest edge in the whole track — everything
+else here changes what the agent *knows*, and this changes what it
+*can do* — so the gate is not a formality.
+
+**Mining without storing anything sensitive.**  Trajectories redact
+argument *values* on purpose; the values are where file paths, search
+queries and the occasional pasted credential live.  But each call also
+carries an `args_digest` — the SHA-256 of the full argument mapping.
+Two calls with the same digest made the same call with the same
+arguments, and two calls with different digests did not.
+
+So the miner groups by `(tool, args_digest)` and counts the distinct
+*sessions* each group spans.  It never needs the values to find the
+repetition, and it never writes them down.  On the real corpus that
+yields 36 candidates with 36 unique names.
+
+Sessions rather than calls, because one session calling something
+twenty times is one agent working, while twenty sessions calling it
+once each is a pattern the agent does not know it has.  And a group
+that keeps failing is not a skill — it is a bug that recurs, and
+promoting it would promote the bug.
+
+**The gate is five checks, and all five must pass.**  The manifest is
+well formed (a skill with no description is a skill the model cannot
+choose).  The source is clean (standard library only; no `subprocess`,
+no `eval`, no `os.system`, no `pickle`; and no reaching for the
+ruler).  The dependencies are permitted (a new dependency is refused
+outright when installs are sealed).  The tests are there and parse.  And
+the benchmark delta is not negative — a skill that makes things worse is
+not a skill.
+
+The gate does not run the code.  It reads it, and hands the running to
+the sandbox, which is a separate process under the container path with
+the command policy in force.  A validator that executes the thing it
+is validating has already lost.
+
+**The pin is the allowlist, and it is written last.**  A skill is
+written, gated, and only then pinned, in that order, every time.  A
+skill that fails the gate exists on disk and is not in the pin, so it
+is not served.  `pinned.yaml` names what may be served and the MCP
+server serves exactly those, so there is no path from "exists on disk"
+to "in the model's schema" except through the gate.
+
+The previous pin is copied aside before the new one is written, so a
+promotion is undone by restoring a file.  A pin that does not exist yet
+is copied aside as an empty pin too — "nothing was pinned" is a state
+worth returning to, and without that the first promotion of a
+deployment's life would be the one promotion that could not be undone.
+
+**The draft raises.**  A mined skill cannot be the original fragment —
+the values were redacted on purpose — so the synthesised body raises
+`NotImplementedError` rather than pretending to work.  A skill that is
+honest about being a draft is one an operator can finish; a skill that
+silently does nothing is one that gets pinned and then trusted.
+
+The tool's signature is built from the manifest's declared schema, and
+the handler is compiled rather than given a `__signature__`: pydantic
+resolves a function's annotations from its globals, and a parameter
+name that only exists in the schema is not in the globals.
+
+`onit learn --skills` walks the chain: mine, synthesize, gate, pin,
+rollback.  Each step runs on its own so an operator can read the gate's
+verdict before letting anything be served.
+
+The documents move with it.  The RFC's build order gains a status
+column; the five gaps of the October review are marked closed with the
+file that closes each; the risk table gains a status column with a
+legend that distinguishes *built* from *partial*, because a gate that
+has never fired has not been shown to hold.
+
+And the recommendation changes from "build the ruler before the loop"
+to "run the measurement, before building anything else".  The ruler
+exists; the measurement does not; those are different states, and only
+the second one decides whether any of this is worth having.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

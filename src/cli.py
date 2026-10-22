@@ -170,6 +170,361 @@ def _token_count(text: str) -> int:
     return int(value)
 
 
+def _learn_draw_holdout(args, config_data: dict) -> None:
+    """Draw and freeze the holdout and the dev split.
+
+    The one command that writes the ruler.  It is deliberately explicit and
+    deliberately refuses to write inside the agent's own writable surface:
+    a holdout the agent can edit is not a holdout, and the whole point of
+    freezing it is that the thing being measured cannot reach it.
+
+    Exit codes: 0 on success, 1 when there is nothing to draw or the draw
+    would land inside the agent's surface.
+    """
+    from .learn.eval import (MIN_DEV_ITEMS, MIN_HOLDOUT_ITEMS, build_split,
+                             eval_dir, is_outside_agent_surface, write_split)
+
+    split = build_split(config_data=config_data,
+                        model=getattr(args, "model", None),
+                        holdout_ratio=getattr(args, "holdout_ratio", 0.4),
+                        max_items=getattr(args, "max_items", 400))
+
+    counts = split["counts"]
+    if not counts["candidates"]:
+        print("Nothing to draw from. The corpus holds no usable recorded "
+              "tasks (a task needs text and an answer; a task owned by a "
+              "tenant is never eligible for a shared split).", file=sys.stderr)
+        sys.exit(1)
+
+    if not is_outside_agent_surface(eval_dir(config_data), config_data):
+        print("I7: the eval directory (%s) lies inside the agent's writable "
+              "surface. The holdout cannot be frozen there -- the agent "
+              "could edit its own exam. Point 'learn.eval.path' at a "
+              "read-only mount outside learn.path, or unset it to use the "
+              "repository's benchmarks/eval/." % eval_dir(config_data),
+              file=sys.stderr)
+        sys.exit(1)
+
+    if getattr(args, "dry_run", False):
+        print("Would draw %d holdout and %d dev items from %d candidates "
+              "(model=%s)." % (counts["holdout"], counts["dev"],
+                               counts["candidates"], split["model"] or "any"))
+        print("Target: %s" % eval_dir(config_data))
+        print("Nothing written (--dry-run).")
+        return
+
+    try:
+        written = write_split(split, config_data)
+    except PermissionError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    print("Froze %d holdout items and %d dev items in %s"
+          % (written["holdout_items"], written["dev_items"],
+             written["holdout"]))
+    if written["holdout_items"] < MIN_HOLDOUT_ITEMS:
+        print("  Note: %d holdout items is below the %d needed for the "
+              "holdout's stderr to mean anything -- a loop that cannot lose "
+              "on it cannot win on it either."
+              % (written["holdout_items"], MIN_HOLDOUT_ITEMS))
+    if written["dev_items"] < MIN_DEV_ITEMS:
+        print("  Note: %d dev items is below the %d needed to iterate "
+              "against." % (written["dev_items"], MIN_DEV_ITEMS))
+
+
+def _learn_playbook(args, config_data: dict) -> None:
+    """Show, reflect over, or roll back the playbook (Loop B).
+
+    Three jobs, one subcommand, because they are three views of the same
+    store:
+
+    * ``--playbook`` shows what is in it and what would be injected;
+    * ``--reflect`` runs the offline pass over the recorded corpus and
+      applies the deltas it finds (this is the Curator);
+    * ``--rollback`` restores the previous version, which is what makes
+      the change reversible (I3).
+
+    Reflection is offline and explicit.  It never runs on the hot path
+    of a task, and it never reads the holdout (I1): the holdout is the
+    ruler, and a loop that read it would be grading its own homework.
+    """
+    from .learn import playbook as pb
+
+    if getattr(args, "rollback", False):
+        _learn_playbook_rollback(args, config_data)
+        return
+
+    if getattr(args, "reflect", False):
+        _learn_playbook_reflect(args, config_data)
+        return
+
+    playbook = pb.load(config_data, owner=None)
+    items = playbook["items"]
+    if not items:
+        print("The playbook is empty. It fills up when the reflect pass "
+              "has contrasting runs to learn from -- 'onit learn --reflect'.")
+        return
+    print("Playbook v%d -- %d bullet(s)" % (playbook["version"], len(items)))
+    print()
+    for item in items:
+        print("  [%s] %s" % (item["status"], item["text"]))
+        if item.get("trigger"):
+            print("      trigger: %s   used %d, helped %d, hurt %d"
+                  % (item["trigger"], item.get("used", 0),
+                     item.get("helped", 0), item.get("hurt", 0)))
+    print()
+    budget = pb.DEFAULT_TOKEN_BUDGET
+    selected = pb.select(items, token_budget=budget)
+    print("%d of %d fit the %d-token budget and would be injected."
+          % (len(selected), len(items), budget))
+
+
+def _learn_playbook_reflect(args, config_data: dict) -> None:
+    """The offline Reflector/Curator pass over the recorded corpus."""
+    from .learn import playbook as pb
+    from .learn.corpus import label_corpus, read_sessions
+    from .learn.recall import ALL_OWNERS
+    from .learn.trajectory import iter_records
+
+    sessions = read_sessions(config_data)
+    if not sessions:
+        print("No trajectories on disk, so there is nothing to reflect on.")
+        return
+
+    # The labels come first: a contrast needs two sides, and without the
+    # implicit signals every run is on the same side of it.
+    label_corpus(config_data)
+
+    records = [r for r in iter_records(config_data)
+               if r.get("owner") is None]
+    if not records:
+        print("No owner-less records to reflect on. Scoped records belong "
+              "to a tenant and are reflected into that tenant's own "
+              "playbook.")
+        return
+
+    deltas = pb.reflect(records, scope=pb.SCOPE_GLOBAL)
+    if not deltas:
+        print("Reflected over %d record(s) and found no contrast worth a "
+              "bullet: no cluster had both a run that went well and a run "
+              "that went badly." % len(records))
+        return
+
+    if getattr(args, "dry_run", False):
+        print("Would apply %d delta(s):" % len(deltas))
+        for delta in deltas:
+            print("  + %s" % delta["text"])
+        return
+
+    before = pb.load(config_data)
+    after = pb.curate(before, deltas, config_data=config_data)
+    added = len(after["items"]) - len(before["items"])
+    print("Reflected over %d record(s); applied %d delta(s), %d new "
+          "bullet(s). Playbook is now v%d."
+          % (len(records), len(deltas), added, after["version"]))
+    for delta in deltas:
+        print("  + %s" % delta["text"])
+
+
+def _learn_playbook_rollback(args, config_data: dict) -> None:
+    """Restore the previous playbook version (I3).
+
+    The rollback works by keeping the previous file beside the live one.
+    Nothing is ever mutated in place, so "undo" is a file copy rather
+    than a reconstruction, and the rolled-back file is still there to
+    roll forward from.
+    """
+    from .learn import playbook as pb
+
+    path = pb.global_path(config_data)
+    backup = path + ".prev"
+    if not os.path.isfile(backup):
+        print("No previous version to roll back to. The playbook has only "
+              "ever had one version.")
+        return
+    try:
+        with open(backup, "r", encoding="utf-8") as f:
+            previous = json.load(f)
+    except (OSError, ValueError) as e:
+        print("The previous version could not be read: %s" % e,
+              file=sys.stderr)
+        sys.exit(1)
+    pb.write_playbook(path, previous)
+    print("Rolled the playbook back to v%s." % previous.get("version", "?"))
+
+
+def _learn_lifecycle(args, config_data: dict) -> None:
+    """Report, apply, or undo the tool-lifecycle policy.
+
+    The actuator that ``src/learn/lifecycle.py``'s policy needed and
+    never had.  Three jobs:
+
+    * report what the policy decides, whether or not it is enabled to
+      act -- a deployment should be able to see the policy's mind
+      before letting it change anything;
+    * apply the decisions, which withholds a tool from the *registry*
+      (it is not deleted, and the next session can have it back);
+    * restore a withheld tool.
+
+    Withholding is reversible by construction.  That is what makes
+    automating it safe at all: the agent can never permanently destroy
+    capability.
+    """
+    from .learn import actuator
+
+    if getattr(args, "restore", None):
+        ok = actuator.restore(args.restore, config_data)
+        if not ok:
+            print("Nothing to restore for %r." % args.restore,
+                  file=sys.stderr)
+            sys.exit(1)
+        print("Restored %s. It will be offered again from the next session."
+              % args.restore)
+        return
+
+    decisions = actuator.evaluate(config_data)
+    if getattr(args, "apply", False):
+        result = actuator.apply(config_data)
+        withheld = result["withheld"]
+        if not withheld:
+            if not actuator.lifecycle_enabled(config_data):
+                print("The lifecycle actuator is off. Enable it with "
+                      "'learn.lifecycle.enabled: true' in the config, and "
+                      "set the autonomy level to 'adapt' or higher.")
+            else:
+                print("Nothing was due.")
+            return
+        print("Withheld %d tool(s): %s" % (len(withheld), ", ".join(withheld)))
+        print("Reversible: 'onit learn --lifecycle --restore TOOL'.")
+        return
+
+    print(actuator.format_report(decisions))
+    if decisions and not actuator.lifecycle_enabled(config_data):
+        print()
+        print("The actuator is off, so none of this has been applied. Turn")
+        print("it on with 'learn.lifecycle.enabled: true' and the autonomy")
+        print("level at 'adapt' or higher, or apply it by hand with")
+        print("'--apply'.")
+
+
+def _learn_skills(args, config_data: dict) -> None:
+    """List, mine, gate, pin, and roll back the skill library.
+
+    The skill library is Loop C: the fragments the agent kept solving
+    the same way, promoted to tools.  The order of the operations here
+    is the order of the safety story -- a skill is written, gated, and
+    only then pinned -- and each of them can be run on its own so that
+    an operator can look before they leap.
+    """
+    from .learn import skills_curator, skills_mining
+
+    action = getattr(args, "skills_action", None) or "list"
+
+    if action == "list":
+        summary = skills_curator  # noqa: F841  (import check)
+        from .learn.skills import list_skills, summarize as summarize_skills
+        items = list_skills(config_data)
+        summary = summarize_skills(config_data)
+        if not items:
+            print("No skills yet.  A skill is a tool call the agent kept "
+                  "repeating, promoted to a tool.")
+            print("Find them with 'onit learn --skills mine'.")
+            return
+        print("Skills (%d, %d pinned, pin v%d)"
+              % (summary["skills"], summary["pinned"],
+                 summary["pin_version"]))
+        for item in items:
+            manifest = item["manifest"]
+            mark = "*" if item["pinned"] else " "
+            status = (item.get("pin") or {}).get("status") or "unpinned"
+            print("  %s %-28s v%-3s %-12s %s"
+                  % (mark, item["name"][:28], manifest.get("version", "?"),
+                     status, str(manifest.get("description") or "")[:60]))
+        if summary["pinned"]:
+            print()
+            print("  * = pinned, and therefore served to the model.")
+        return
+
+    if action == "mine":
+        candidates = skills_mining.mine_store(config_data)
+        print(skills_mining.format_candidates(candidates))
+        return
+
+    if action == "synthesize":
+        name = getattr(args, "skill_name", None)
+        if not name:
+            print("Which skill?  --synthesize NAME")
+            sys.exit(1)
+        candidates = skills_mining.mine_store(config_data)
+        match = None
+        for candidate in candidates:
+            if candidate["name"] == name or candidate["digest"] == name:
+                match = candidate
+                break
+        if match is None:
+            print("No mined candidate is called %r.  Run "
+                  "'onit learn --skills mine' to see them." % name)
+            sys.exit(1)
+        skill = skills_curator.synthesize(match, name=name,
+                                           config_data=config_data)
+        print("Wrote the draft skill %s." % skill["name"])
+        print("  %s" % skill["dir"])
+        print("It is not served yet.  Gate it with "
+              "'onit learn --skills gate %s'." % skill["name"])
+        return
+
+    if action == "gate":
+        name = getattr(args, "skill_name", None)
+        if not name:
+            print("Which skill?  --gate NAME")
+            sys.exit(1)
+        delta = getattr(args, "delta", None)
+        require = not getattr(args, "no_benchmark", False)
+        result = skills_curator.gate_skill(name, config_data=config_data,
+                                           delta=delta,
+                                           require_benchmark=require)
+        for check, entry in (result.get("checks") or {}).items():
+            mark = "ok  " if entry["passed"] else "FAIL"
+            print("  %s %-14s %s" % (mark, check, entry.get("reason") or ""))
+        if result["passed"]:
+            print("The gate is green.  Pin it with "
+                  "'onit learn --skills pin %s'." % name)
+        else:
+            print()
+            print("Not pinnable: %s" % result["reason"])
+        return
+
+    if action == "pin":
+        name = getattr(args, "skill_name", None)
+        if not name:
+            print("Which skill?  --pin NAME")
+            sys.exit(1)
+        delta = getattr(args, "delta", None)
+        require = not getattr(args, "no_benchmark", False)
+        result = skills_curator.promote(name, config_data=config_data,
+                                        delta=delta,
+                                        require_benchmark=require)
+        if result["pinned"]:
+            print("Pinned %s.  It will be served to the model." % name)
+            print("Reversible: 'onit learn --skills rollback'.")
+        else:
+            print("Not pinned.  %s" % result["reason"])
+            sys.exit(1)
+        return
+
+    if action == "rollback":
+        result = skills_curator.rollback(config_data)
+        if result["rolled_back"]:
+            print("Rolled the skill pin back.")
+        else:
+            print("Could not roll back: %s" % result["reason"])
+            sys.exit(1)
+        return
+
+    print("Unknown --skills action %r." % action, file=sys.stderr)
+    sys.exit(1)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -215,6 +570,90 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_parser.add_argument("--events", action="store_true",
                               help="Print the loop event log (tool lifecycle and "
                                    "the like) instead of the task summary.")
+    learn_parser.add_argument("--eval", action="store_true",
+                              help="Print the state of the ruler: the holdout, "
+                                   "the dev split and the pinned baseline.")
+    learn_parser.add_argument("--holdout", action="store_true",
+                              help="Draw a holdout and a dev split from the "
+                                   "recorded corpus and freeze them outside "
+                                   "the agent's writable surface.")
+    learn_parser.add_argument("--model", type=str, default=None,
+                              metavar="NAME",
+                              help="With --holdout, restrict the draw to one "
+                                   "model. A split that mixes models mixes "
+                                   "two agents into one measurement.")
+    learn_parser.add_argument("--holdout-ratio", type=float, default=0.4,
+                              metavar="R",
+                              help="Fraction of the corpus held out (0-1).")
+    learn_parser.add_argument("--max-items", type=int, default=400,
+                              metavar="N",
+                              help="Cap on how many tasks the draw considers.")
+    learn_parser.add_argument("--dry-run", action="store_true",
+                              help="With --holdout, report what would be "
+                                   "drawn and write nothing.")
+    learn_parser.add_argument("--signals", action="store_true",
+                              help="Report the implicit outcome signals "
+                                   "mined from the corpus: how many records "
+                                   "carry a usable label and how many do "
+                                   "not.")
+    learn_parser.add_argument("--write-signals", action="store_true",
+                              help="With --signals, materialise the derived "
+                                   "labels to a file beside the store. The "
+                                   "trajectories themselves are never "
+                                   "rewritten.")
+    learn_parser.add_argument("--playbook", action="store_true",
+                              help="Show the playbook: what is in it, and "
+                                   "what would be injected.")
+    learn_parser.add_argument("--reflect", action="store_true",
+                              help="Run the offline Reflector over the "
+                                   "recorded corpus and apply the deltas "
+                                   "it finds (the Curator).")
+    learn_parser.add_argument("--rollback", action="store_true",
+                              help="Restore the previous playbook version.")
+    learn_parser.add_argument("--lifecycle", action="store_true",
+                              help="Report the tool-lifecycle decisions: "
+                                   "which tools have failed often enough to "
+                                   "earn an update, or gone unused long "
+                                   "enough to earn an archive.")
+    learn_parser.add_argument("--apply", action="store_true",
+                              help="With --lifecycle, act on the decisions: "
+                                   "withhold the tools the policy says to "
+                                   "withhold. Reversible.")
+    learn_parser.add_argument("--restore", type=str, default=None,
+                              metavar="TOOL",
+                              help="With --lifecycle, bring a withheld tool "
+                                   "back.")
+
+    # Loop C: the skill library.  The actions are a chain -- mine,
+    # synthesize, gate, pin, rollback -- and each can be run on its own
+    # so that an operator can look at the gate's verdict before letting
+    # anything be served.
+    learn_parser.add_argument("--skills", action="store_true",
+                              help="The skill library: the tool calls the "
+                                   "agent kept repeating, promoted to "
+                                   "tools. With --skills-action, runs one "
+                                   "step of the chain.")
+    learn_parser.add_argument("--skills-action", type=str, default=None,
+                              choices=["list", "mine", "synthesize", "gate",
+                                       "pin", "rollback"],
+                              help="With --skills: what to do. 'list' (the "
+                                   "default), 'mine' (find the recurring "
+                                   "fragments), 'synthesize' (write a "
+                                   "draft), 'gate' (run the five checks), "
+                                   "'pin' (serve it), 'rollback' (unpin).")
+    learn_parser.add_argument("--skill-name", type=str, default=None,
+                              metavar="NAME",
+                              help="With --skills-action: the skill to act "
+                                   "on.")
+    learn_parser.add_argument("--delta", type=float, default=None,
+                              help="With --skills-action gate/pin: the "
+                                   "benchmark delta measured for the "
+                                   "skill. The gate refuses a negative one.")
+    learn_parser.add_argument("--no-benchmark", action="store_true",
+                              help="With --skills-action gate/pin: allow a "
+                                   "skill that has not been measured. The "
+                                   "gate says so rather than pretending "
+                                   "it passed.")
 
     # doctor: run the live self-check battery from the shell, no session needed
     doctor_parser = subparsers.add_parser(
@@ -810,6 +1249,39 @@ def main():
                       "tool loads/updates/archives).")
                 return
             print(json.dumps(events, indent=2))
+            return
+        if args.holdout:
+            _learn_draw_holdout(args, config_data)
+            return
+        if args.lifecycle:
+            _learn_lifecycle(args, config_data)
+            return
+        if args.skills:
+            _learn_skills(args, config_data)
+            return
+        if args.playbook or args.reflect or args.rollback:
+            _learn_playbook(args, config_data)
+            return
+        if args.signals:
+            from .learn.corpus import (format_summary, label_corpus,
+                                       write_labels)
+            summary = label_corpus(config_data)
+            if getattr(args, "write_signals", False):
+                path = write_labels(config_data)
+                if path is None:
+                    print("Could not write the derived labels — recording "
+                          "is off, or the learned path is not writable.",
+                          file=sys.stderr)
+                    sys.exit(1)
+                print("Wrote %s" % path)
+            if getattr(args, "json", False):
+                print(json.dumps(summary, indent=2))
+            else:
+                print(format_summary(summary))
+            return
+        if args.eval:
+            from .learn.eval import summarize as eval_summary
+            print(json.dumps(eval_summary(config_data), indent=2))
             return
         print(format_status(config_data))
         return

@@ -303,6 +303,18 @@ mcp:
       profile: net
       enabled: true
 
+    # Loop C: the skills the agent promoted for itself (docs/SELF_IMPROVEMENT.md
+    # 4.4).  It serves only the skills named in `pinned.yaml`, so an unpinned
+    # skill is invisible to the model.  It is disabled by default because the
+    # autonomy level has to be `extend` before a skill may be served at all --
+    # the server would start and find an empty pin, and a server that serves
+    # nothing is a process the agent pays for and does not use.
+    - name: SkillsMCPServer
+      description: Skills the agent promoted for itself
+      transport: stdio
+      module: src.mcp.servers.tasks.skills
+      enabled: false
+
     # External MCP servers using Streamable HTTP transport (URLs should NOT end in /sse)
     # - name: SandboxMCPServer
     #   description: Sandbox code execution server

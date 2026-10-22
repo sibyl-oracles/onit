@@ -1,0 +1,35 @@
+feat(learn): the ruler, the recall path, and the outcome signals
+
+The three cheap deliverables of the build order, in one commit
+because none of them is a loop on its own: the ruler that measures
+them, the retrieval that feeds the model, and the labels that tell
+the retrieval which episodes were worth retrieving.
+
+**The ruler** (`src/learn/eval.py`).  A holdout drawn from the
+recorded corpus, a dev split for iteration, and a pinned baseline --
+all of them written *outside* the agent's writable surface, enforced by
+`assert_outside_agent_surface()` rather than by convention.  I1 says
+no loop reads the holdout; I7 says no loop can write it.  Together
+they are the difference between a self-improving system and a
+self-certifying one.
+
+**The recall** (`src/learn/recall.py`).  BM25 over the trajectories,
+reusing the retrieval kit from `toolkit.py`, ranked by the outcome
+signal so the agent's own failures do not come back as lessons.  The
+recalled episodes ride in the *volatile* half of the prompt, because
+episodes are per-task and would thrash the prefix cache otherwise.
+
+**The signals** (`src/learn/signals.py`, `src/ui/rating.py`).  The
+corpus had 1,010 records and zero ratings; what it did have was 820
+verifier labels and a body of runs whose outcome could be read off the
+conversation -- a rephrase is a failure, an acceptance is a success.
+The derived labels land in a file *beside* the trajectories, never
+over them, so the audit trail survives.  `onit learn --signals`
+reports how many records carry a usable label; `--write-signals`
+materialises them.
+
+`\rate` in the text UI is the other half: a rating path for the
+interface that has one, so the corpus is not waiting on a human to
+remember to click a button.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
