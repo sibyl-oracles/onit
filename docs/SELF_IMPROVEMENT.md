@@ -1,12 +1,17 @@
 # Self-Improving OnIt — Literature Review and Scaffold Proposal
 
-**Status**: Phase 0 and Phase 0.5 implemented (see §5). Phase 1 in progress. Phases 2–4 are
-proposal / RFC.
+**Status**: Deliverables 1–6 of §5.0 are **built** — the ruler, Loop A, the implicit
+signals, Loop B, the lifecycle actuator and Loop C.  Loop D (evolution) is not
+started, by design.  None of it has been shown to *win*: the code exists, the
+tests pass, the paths are reachable — and the A/B that would make the claim
+stronger has not been run.  See §5.0 and §5.1.
 **Date**: October 2026 · *Revised October 22, 2026 — full codebase review against `main`
 (commit `0f50822`) and against the live corpus. Every count in this document was
 re-measured; the previous revision's figures (209 records, 23 sessions, "~29 usable") are
 two months stale and are corrected in place. The data gate that had been holding Phase 1
 is now open — the blocker is the missing ruler, not the missing data. See §3.0.*
+*Amended October 23, 2026 — the six deliverables are built and the test suite that
+holds them is in place; §5.1 records what is measured and what is not.*
 *Previous revisions: August 20, 2026 (Phase 0.5 closed out) · August 09, 2026.*
 **Companions**: [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md) — the harness track,
 now complete. [`SELF_IMPROVEMENT_GAPS.md`](SELF_IMPROVEMENT_GAPS.md) — the standing gap
@@ -893,6 +898,13 @@ a measured A/B, and that A/B has not been run — so the honest statement is tha
 the loop is *built and wired*, and the loop is *unproven*.  Those are different
 claims, and the difference is the whole subject of this document.
 
+**What "the tests pass" is worth, exactly.**  §5.1 records this in full: the
+suite is 2,915 tests with the `src/learn/` package at 93% line coverage, and
+it establishes that the scaffold is wired, bounded, reversible and
+unreachable-by-the-agent.  It does not establish that the agent is better,
+and it is not intended to — nothing in a unit test can.  The A/B is the
+instrument that answers that, and it is the next piece of work.
+
 **The one thing that was true before and is not now.**  Through October 22, 2026,
 `autonomy()` returned `min(level, OBSERVE)`, so every injection path that gated
 on `autonomy() >= ADAPT` was unreachable code.  Loops A and B could be committed,
@@ -1159,6 +1171,77 @@ default: `onit learn --skills pin NAME` without a `--delta` says no.
 - Every promotion is a PR with the fitness record attached.
 
 ---
+
+### 5.1 What the tests actually establish *(added October 23, 2026)*
+
+The six deliverables are built.  This subsection records **what the test
+suite proves about them and what it does not**, because the two are easy
+to confuse and the difference is the subject of this document.
+
+**The suite.** 2,915 passing, 2 skipped, across the repository.  The
+`src/learn/` package went from 88% line coverage to **93%** when these
+were added:
+
+| Module | Before | After | What the gap was |
+|---|---:|---:|---|
+| `_search.py` | 48% | **99%** | The BM25 *fallback* — the path that only runs when the optional toolkit is missing, and therefore the path nobody reproduces before shipping. |
+| `skills.py` | 78% | **98%** | The pin's delta operations, the manifest validation rules, and the name rules — the three things that decide what the model is allowed to call. |
+| `playbook.py` | 90% | 91% | The delta operations and the selection ordering. |
+| `signals.py` | 91% | **96%** | The degenerate inputs and the determinism property. |
+| `recall.py` | 95% | **96%** | The budget edge and the outcome ranking. |
+| `eval.py` | 93% | 93% | The write paths and the sealed checks. |
+| `actuator.py` | 88% | 88% | The write side of the withholding. |
+
+**Five new test files, and why each exists.**  The per-module test files
+that shipped with each deliverable check that module's own contract.
+These five check the things that only exist *between* modules, which is
+where the failures that matter live:
+
+- [`test_learn_invariants.py`](../src/test/test_learn_invariants.py) — the
+  cross-cutting invariants (I1, I2, I3, I4, I7), written adversarially:
+  each test tries to *break* an invariant rather than confirm it.
+- [`test_learn_signal_properties.py`](../src/test/test_learn_signal_properties.py) —
+  the implicit signals as **properties**, with generated inputs rather
+  than a list of examples.  The failure mode of a heuristic labeler is
+  not a case someone thought of; it is a case nobody thought of.
+- [`test_learn_chain.py`](../src/test/test_learn_chain.py) — the whole chain
+  end to end: record → label → split → mine → gate → promote → serve → roll
+  back.  A chain test is the only kind that catches a signature that
+  drifted or a path that is right in isolation and wrong in sequence.
+- [`test_learn_search.py`](../src/test/test_learn_search.py) — the search
+  fallback, checked against the toolkit it mirrors.  The two must fold
+  plurals *identically*, quirks included ("this" → "thi" in both),
+  because a query folded one way against a document folded another is a
+  match that silently misses.
+- [`test_learn_skill_store.py`](../src/test/test_learn_skill_store.py) — the pin,
+  the deltas, the manifest rules and the name rules.
+
+**One real bug, found by the new tests.**  The skills gate's screen for
+paths outside the agent's writable surface matched a forbidden directory
+name only when a *quote* came immediately before it.  A real path has a
+*separator* before the directory name, so `open('/x/eval/dev.jsonl')` and
+`open('../eval/dev.jsonl')` both passed the gate — which is the I7 hole
+(§4.0), open to any skill that wanted to read the measuring instrument.
+The screen now matches the name as a **path component**, so
+`'/x/eval/dev.jsonl'` is refused while `'myeval/x'` and `'evaluate'` are
+not.  The regression test is in `test_learn_invariants.py`.
+
+**What the tests do not establish.**  They say nothing about whether any
+of this *helps*.  A test suite that proves the recall path is wired,
+that the playbook is token-capped, that the pin is reversible and that
+the ruler is unreachable by the agent is a statement about the *scaffold*.
+Whether the scaffold makes the agent better is a measurement, and the
+measurement has not been made.  That is the next piece of work, and it
+is the only piece that matters for the claim this document is about.
+
+**The one thing the tests cannot do.**  They cannot run the A/B.  The
+holdout exists and the gate can read it, but the gate reads a
+*reported* delta: `onit learn --skills pin NAME --delta D` refuses
+without one, and there is no code path that produces the delta for it
+yet.  Until the benchmark harness runs the candidate against the pinned
+baseline and reports the number, the promotion gate is a door with
+nothing behind it — which is the correct state for it to be in, and
+much better than a gate that says yes to everything.
 
 ## 6. Measuring it honestly
 

@@ -11,6 +11,19 @@ not a gap in the code — **it is the measurement.**  The A/B on the holdout has
 run, so every loop is *built and unproven*.  The table below marks each row; the
 detailed per-gap prose is kept for history and is now describing a past state.
 
+**Updated Oct 23 2026, after the test suite was built.**  The six deliverables now
+have a suite that holds them: **2,915 tests pass, 2 skipped**, and the `src/learn/`
+package sits at **93%** line coverage (up from 88%).  Five new files check the things
+that exist only *between* the modules — the cross-cutting invariants, the signals as
+properties, the whole chain end to end, the BM25 fallback, and the skill store.  That
+work found and fixed **one real bug**: the skills gate's path screen matched a
+forbidden directory name only when a quote came immediately before it, so
+`open('/x/eval/dev.jsonl')` passed — the I7 hole, open to any skill that wanted to
+read the measuring instrument.  It is fixed and regression-tested.  What the suite
+does *not* do is measure the agent: it proves the scaffold is wired, capped,
+reversible and unreachable-by-the-agent, and says nothing about whether any of it
+makes the agent better.  See §5.1 of the RFC.
+
 **The three things that were believed and turned out otherwise:**
 
 1. *"The recurring bash fragments are unrecoverable from the current corpus, because

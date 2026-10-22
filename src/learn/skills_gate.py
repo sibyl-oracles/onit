@@ -208,6 +208,32 @@ def _imports(tree: ast.AST) -> list:
     return names
 
 
+# A path part is mentioned when it appears as a whole path component --
+# bounded by a separator or the edge of the string -- and not when it is
+# merely a substring of a longer word.
+#
+# The earlier version of this screen matched the part only when a quote
+# came immediately before it, so `open('/x/eval/dev.jsonl')` and
+# `open('../eval/dev.jsonl')` both slipped through: the separator, not a
+# quote, is what precedes the directory name in a real path.  The screen
+# has to see the *directory*, not the literal.
+_PATH_PART_RE = (
+    r"(?:^|[/\\\s'\"`(=]){part}(?:[/\\\s'\"`).,]|$)")
+
+
+def _mentions_path_part(part: str, source: str) -> bool:
+    """Whether ``source`` refers to ``part`` as a path component.
+
+    ``eval`` matches ``'/x/eval/dev.jsonl'`` and ``'eval/x'`` and
+    ``"open(eval_dir())"``; it does not match ``'myeval/x'`` or
+    ``'evaluate'``, which are ordinary words.
+    """
+    if not part:
+        return False
+    pattern = _PATH_PART_RE.format(part=re.escape(part))
+    return bool(re.search(pattern, source))
+
+
 def check_source(source: str, *, forbidden_paths: list | None = None) -> tuple:
     """Check 2: the source is clean.
 
@@ -253,7 +279,7 @@ def check_source(source: str, *, forbidden_paths: list | None = None) -> tuple:
     # path built at runtime never mentions it in an import.
     paths = forbidden_paths or []
     for part in FORBIDDEN_PATH_PARTS:
-        if re.search(r"[\"']%s" % re.escape(part), source):
+        if _mentions_path_part(part, source):
             return False, ("the source refers to %r, which is outside the "
                            "agent's writable surface" % part), detail
     for path in paths:
