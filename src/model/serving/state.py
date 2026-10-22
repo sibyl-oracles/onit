@@ -153,6 +153,36 @@ class RunState:
     compaction_summarized_upto: int = 0
 
     # ── how it ended, and the session-level totals ──────────────────────────
+    # ── what the agent was told beyond the task ────────────────────────
+    # The learned context injected for this run: the recalled episodes and
+    # the playbook version they came with.  It lives here rather than as a
+    # parameter because it is a property of *the run*, not of one call to
+    # the model: every turn of the run sees the same episodes, and the
+    # trajectory record has to name them so a later run can ask whether
+    # being shown them helped.
+    #
+    # Empty at autonomy 1 (observe) and non-empty at 2 (adapt).  A run at
+    # level 0 or 1 must produce byte-identical requests to one that has no
+    # memory at all, so this defaults to "" and is only ever set when a
+    # loop is live.
+    learned_context: str = ""
+    learned_episodes: list = field(default_factory=list)
+    playbook_version: Optional = None
+
+    # The playbook (Loop B) and the bullets it was made of.
+    #
+    # The playbook is a *static* block: it rides at the tail of the
+    # instruction's static half, where the prefix cache lives, so it must
+    # not change between the turns of one session.  The text is therefore
+    # built once and pinned here, and the same bytes are used for every
+    # turn of the run.
+    #
+    # ``playbook_items`` names the bullets that were shown, so the run
+    # can be credited or blamed for them afterwards.  Without it the
+    # counters on the bullets would be guesswork.
+    playbook_context: str = ""
+    playbook_items: list = field(default_factory=list)
+
     stop_reason: str = ""
     # Only meaningful on the persisted copy; see merge().
     task_count: int = 0

@@ -2312,7 +2312,9 @@ def _trim_history(session_history: list,
 
 def _build_messages(instruction: str, images_bytes: list[str],
                     prompt_intro: str, session_history: list | None,
-                    system_rules: str = "") -> list[dict]:
+                    system_rules: str = "",
+                    learned_context: str = "") -> list:
+
     """Assemble the initial message list for the API call.
 
     Includes the system message, session history, the current user instruction,
@@ -2336,6 +2338,14 @@ def _build_messages(instruction: str, images_bytes: list[str],
     numbers) drift into the static half invalidates the cache and re-pays the
     standing payload on every turn of every task.  `test_request_prefix_is_byte_stable`
     in test_chat.py holds this contract; S3's `cache_hit_pct` measures it live.
+
+    ``learned_context`` is the recalled-episodes block (Loop A) and the
+    playbook block (Loop B).  It is injected into the **volatile** half,
+    immediately before the task, and never into the system message: the
+    episodes are per-task, so putting them in the prefix would change the
+    cached bytes on every task of every session and give back the whole
+    benefit of the cache.  It is empty at autonomy levels 0 and 1, where a
+    run must be byte-for-byte identical to one with no memory at all.
     """
     if images_bytes:
         system_content = (
@@ -2359,6 +2369,15 @@ def _build_messages(instruction: str, images_bytes: list[str],
         for entry in _trim_history(session_history):
             messages.append({"role": "user", "content": entry["task"]})
             messages.append({"role": "assistant", "content": entry["response"]})
+
+    # The learned context rides immediately ahead of the task, in the
+    # volatile half.  It is reference material: the model must read it
+    # and not answer it, or a weak model replies about prior runs
+    # instead of doing the task.
+    if learned_context:
+        instruction = (learned_context + "\n"
+                       + "## Current task\n"
+                       + instruction)
 
     # Current instruction goes last so the model responds to it
     if images_bytes:
@@ -5669,9 +5688,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # The standing rules go to the system message, where they stay put across
     # requests; only the session context and the task ride in the user message.
     system_rules, task_instruction = split_instruction(instruction)
+    # The learned context (Loop A recall, Loop B playbook) rides in the
+    # volatile half, ahead of the task.  It comes off the run state,
+    # which the caller populated; chat() does not go looking for it, so
+    # a run at autonomy 0 or 1 sends exactly the bytes it always did.
+    _run_state = kwargs.get('run_state', None)
+    _learned_context = getattr(_run_state, 'learned_context', '') or ''
     messages = _build_messages(task_instruction, images_bytes, prompt_intro,
                                kwargs.get('session_history', None),
-                               system_rules=system_rules)
+                               system_rules=system_rules,
+                               learned_context=_learned_context)
 
     # Size the first read from the standing payload.  The client below is
     # built before the first API call, so this estimate — chars/4 over the

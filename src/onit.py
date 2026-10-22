@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Union, Any
 from urllib.parse import urlparse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from fastmcp import Client
 
 import logging
@@ -217,6 +217,62 @@ _TOOL_LOG_PHRASES = [
 # reflection of the call.
 _OPAQUE_TOOLS = ("bash",)
 _OPAQUE_STATUS = "Working…"
+
+
+def _task_from_instruction(instruction: str) -> str:
+    """The task text out of a built instruction.
+
+    The prompt builder puts the task under a "## Task" heading
+    (``mcp/prompts/prompts.py``).  The agent session receives the built
+    instruction rather than the raw task, and Loop A needs the task text to
+    retrieve similar episodes -- so it is read back out here.
+
+    Returns "" when the heading is absent, which is the honest answer: no
+    task, no recall, rather than a guess at one.  The text is truncated and
+    cut at the next heading, because a custom template may put something
+    after the task block.
+    """
+    marker = "\n## Task\n"
+    if not instruction or marker not in instruction:
+        return ""
+    tail = instruction.split(marker, 1)[1]
+    for stop in ("\n## ", "\n[[onit:"):
+        cut = tail.find(stop)
+        if cut >= 0:
+            tail = tail[:cut]
+    return tail.strip()[:2000]
+
+
+def _withhold_archived_tools(tool_registry, config_data) -> None:
+    """Take the archived tools out of a session's registry.
+
+    Two gates, and both have to open.  The actuator must be *enabled*
+    (``learn.lifecycle.enabled``) and the autonomy level must be at least
+    ``adapt``: withholding a tool is a real change to what the agent can
+    do, and a deployment that has not asked for it should not get it.
+
+    Best-effort throughout.  An archive that cannot be read means "nothing
+    is withheld", which is the safe direction, and a withholding that fails
+    must not stop the session from starting.
+
+    This is a module-level function rather than a method because the
+    registry is an argument, not a piece of ``self`` -- the tool registry
+    is built and populated by the MCP layer, and a caller that only has a
+    registry (a test, a second harness) should be able to ask the same
+    question of it.
+    """
+    try:
+        from .learn.actuator import withheld_tools
+        withheld = withheld_tools(config_data)
+        if not withheld or tool_registry is None:
+            return
+        dropped = tool_registry.withhold(withheld)
+        if dropped:
+            print("  Withheld by the lifecycle policy: %s"
+                  % ", ".join(sorted(dropped)))
+            print("  (reversible — 'onit learn --lifecycle --restore TOOL')")
+    except Exception as e:
+        logger.debug("archived tools not withheld: %s", e)
 
 
 def friendly_tool_status(name: str, data) -> str:
@@ -759,6 +815,17 @@ class OnIt(BaseModel):
     verbose: bool = Field(default=True)
     session_id: str | None = Field(default=None)
     session_path: str = Field(default="~/.onit/sessions")
+    # The playbook pin for this session (Loop B).  Set once, on the first
+    # task that has a playbook, and read by every task after it: the
+    # block is a static one, and static bytes are the whole point.
+    #
+    # Private attributes rather than fields: these are per-session state
+    # that must not be validated, serialized, or copied into the config
+    # on construction.
+    _playbook_pinned: bool = PrivateAttr(default=False)
+    _playbook_context: str = PrivateAttr(default="")
+    _playbook_items: list = PrivateAttr(default_factory=list)
+    _playbook_version: Any = PrivateAttr(default=None)
     data_path: str = Field(default="")
     template_path: str | None = Field(default=None)
     topic: str | None = Field(default=None)
@@ -960,6 +1027,12 @@ class OnIt(BaseModel):
         """Discover tools from MCP servers (excluding the prompts server)."""
         tool_servers = [s for s in self.mcp_servers if s.get('name') != 'PromptsMCPServer']
         self.tool_registry = asyncio.run(discover_tools(tool_servers))
+        # The lifecycle actuator (Loop C's tool half).  A tool the policy
+        # has archived is not *offered* -- it is out of the registry the
+        # model sees -- but it is not deleted, and the next session can
+        # have it back.  The withholding is reversible by construction,
+        # which is what makes automating it safe at all.
+        _withhold_archived_tools(self.tool_registry, self.config_data)
         # List discovered tools
         for tool_name in self.tool_registry:
             print(f"  - {tool_name}")
@@ -1290,7 +1363,8 @@ class OnIt(BaseModel):
                      chat_ui: ChatUIProtocol | None, verbose: bool, data_path: str,
                      session_id: str, session_history: list,
                      background_verify=None, stream: bool | None = None,
-                     with_prompt_intro: bool = True) -> dict:
+                     with_prompt_intro: bool = True,
+                     task: str | None = None) -> dict:
         """Build the kwargs dict handed to chat().
 
         One builder for every chat() caller — process_task, run_loop,
@@ -1313,6 +1387,10 @@ class OnIt(BaseModel):
                 ``stream`` setting; a value overrides it.
             with_prompt_intro: False drops the configured prompt intro
                 from the kwargs, leaving chat()'s default in place.
+            task: The task being run, when the caller knows it.  Used only
+                to retrieve Loop A's recalled episodes; a caller that has
+                no task to hand gets no recall, which is the right answer
+                rather than a guess at one.
 
         Returns:
             The kwargs dict for chat().
@@ -1336,7 +1414,122 @@ class OnIt(BaseModel):
             kwargs['prompt_intro'] = self.prompt_intro
         if background_verify is not None:
             kwargs['background_verify'] = background_verify
+        self._attach_learned_context(run_state, session_id, task)
+        self._attach_playbook(run_state, session_id)
         return kwargs
+
+    def _attach_learned_context(self, run_state: Any, session_id: str,
+                                 task: str | None = None) -> None:
+        """Put Loop A's recalled episodes on the run state, if any.
+
+        Called from ``_chat_kwargs`` so that every path into the model gets
+        the same treatment: there is one place that decides what the agent
+        is told, and a second place would be a second opinion.
+
+        The block is built once per run, not once per turn: the episodes
+        are a property of the task, and re-retrieving them for every turn
+        of a ten-turn run would spend the same tokens ten times to say the
+        same thing.
+
+        Best-effort and never fatal.  A store that cannot be read, a
+        tokenizer that raises, a budget that cannot be computed -- all of
+        them mean "no memory this run", never "the task failed".  At
+        autonomy 0 and 1 this is a no-op, and the run's requests are
+        byte-for-byte what they were before any of this existed.
+        """
+        try:
+            from .learn.config import ADAPT, autonomy
+            if autonomy(self.config_data) < ADAPT:
+                return
+            from .learn.recall import build_context
+            owner = None
+            try:
+                from .sessions import get_session_owner
+                owner = get_session_owner(session_id,
+                                         os.path.dirname(self.session_path))
+            except Exception:
+                owner = None
+            model = self.model_serving.get('model') or None
+            context = build_context(
+                task or "",
+                config_data=self.config_data,
+                owner=owner,
+                model=model)
+            if not context['text']:
+                return
+            run_state.learned_context = context['text']
+            run_state.learned_episodes = context['ids']
+        except Exception as e:
+            logger.debug("learned context not attached: %s", e)
+
+    def _pin_playbook(self, session_id: str) -> str:
+        """The playbook block for this session, pinned on first use.
+
+        The playbook is a *static* block: it rides at the tail of the
+        instruction's static half, where the prefix cache lives.  That
+        makes one rule load-bearing, and it is the reason the block is
+        pinned rather than rebuilt: the bytes must not move between the
+        turns of one session, or the cache misses for the rest of the
+        conversation.
+
+        So it is built once per *session*, not once per turn and not once
+        per task.  The first task of a session picks the version; every
+        later task of the same session uses the same one, and the version
+        number is what the trajectory record carries, so a later run can
+        ask whether the runs that saw v7 did better than the runs that
+        saw v6.
+
+        The pin lives on the OnIt instance, not in the run state, because
+        it has to outlive the run: a run state is per-task, and a
+        per-task playbook would change the static bytes per task and
+        cost the cache on every task of every session.
+
+        Best-effort, like every other loop here: a playbook that cannot
+        be read means "no playbook", never "the task failed".
+        """
+        if self._playbook_pinned:
+            return self._playbook_context
+        try:
+            from .learn.config import ADAPT, autonomy
+            if autonomy(self.config_data) < ADAPT:
+                return ""
+            from .learn.playbook import build_context
+            owner = None
+            try:
+                from .sessions import get_session_owner
+                owner = get_session_owner(session_id,
+                                         os.path.dirname(self.session_path))
+            except Exception:
+                owner = None
+            context = build_context(config_data=self.config_data, owner=owner)
+            self._playbook_pinned = True
+            self._playbook_context = context['text']
+            self._playbook_items = list(context['ids'])
+            self._playbook_version = context['version']
+            return self._playbook_context
+        except Exception as e:
+            logger.debug("playbook not pinned: %s", e)
+            return ""
+
+    def _attach_playbook(self, run_state: Any, session_id: str) -> None:
+        """Put the pinned playbook on the run state, for the record.
+
+        The *text* is already in the instruction by the time this runs;
+        what this adds is the bookkeeping: which version, and which
+        bullets.  Without the bullet ids the run cannot be credited or
+        blamed for the playbook it was shown, and the counters on the
+        bullets would be guesswork.
+        """
+        try:
+            from .learn.config import ADAPT, autonomy
+            if autonomy(self.config_data) < ADAPT:
+                return
+            self._pin_playbook(session_id)
+            run_state.playbook_context = self._playbook_context
+            run_state.playbook_items = list(self._playbook_items)
+            run_state.playbook_version = self._playbook_version
+        except Exception as e:
+            logger.debug("playbook not attached: %s", e)
 
     async def run(self) -> None:
         """Run the OnIt agent session"""
@@ -1471,7 +1664,8 @@ class OnIt(BaseModel):
             data_path=effective_data_path,
             session_id=effective_session_id,
             session_history=self.load_session_history(session_path=effective_session_path),
-            background_verify=_deep_checks.append if correction_callback else None)
+            background_verify=_deep_checks.append if correction_callback else None,
+            task=task)
         last_response = await _chat_with_failover(
             self, instruction=instruction, kwargs=kwargs,
             safety_queue=effective_safety_queue,
@@ -1714,9 +1908,87 @@ class OnIt(BaseModel):
                 # than re-derived, so the two records of how a run ended cannot
                 # drift apart (docs/HARNESS_CAPABILITIES.md §8.2, step 6).
                 stop_reason=getattr(run_state, "stop_reason", None),
+                # What the agent was shown, so a later run can ask whether
+                # being shown it helped.  This is the credit-assignment
+                # hook: without it, "did the recall work" is a question
+                # with no data behind it.
+                playbook_version=getattr(run_state, "playbook_version", None),
+                episodes_used=list(getattr(run_state, "learned_episodes", None)
+                                   or []),
+                # Which playbook bullets the run was shown, so the run
+                # can be credited or blamed for them afterwards.
+                playbook_items=list(getattr(run_state, "playbook_items", None)
+                                    or []),
             )
+            # Credit the playbook bullets this run was shown.  The
+            # counters on a bullet are the only thing that lets a later
+            # run ask whether the bullet earned its place, so this is
+            # where the loop closes.  Best-effort: a playbook that
+            # cannot be written back is not a failed task.
+            self._credit_playbook(run_state, metrics)
         except Exception as e:
             logger.debug("trajectory not recorded: %s", e)
+
+    def _credit_playbook(self, run_state: Any, metrics: dict) -> None:
+        """Credit or blame the playbook bullets this run was shown.
+
+        The credit is coarse -- every bullet shown in a good run gets it
+        -- and that is deliberate: it is the honest strength of the
+        evidence.  A run that went well is evidence that the bullets it
+        was shown were not harmful; it is not proof that any one of them
+        was the reason.
+
+        The signal is the one the user gave, not the one a model gave.
+        The verifier's verdict is a model reading an answer; the
+        implicit signal is what the user did next, and it is the one
+        piece of evidence the agent cannot influence.
+
+        The write is to the *owner's* playbook when there is one, and to
+        the global one otherwise -- the same scope the bullets were
+        drawn from, so the counters land on the bullets they belong to.
+        """
+        try:
+            items = list(getattr(run_state, "playbook_items", None) or [])
+            if not items:
+                return
+            from .learn.config import ADAPT, autonomy
+            if autonomy(self.config_data) < ADAPT:
+                return
+            from .learn.playbook import (attribute, decay, global_path,
+                                         load, owner_path, read_playbook,
+                                         write_playbook)
+            signals = run_state.__dict__.get("signals") or {}
+            helped = hurt = 0
+            # The run's own outcome, read the same way the corpus
+            # labelling reads it.
+            verifier = (metrics or {}).get("verify_issues")
+            if (metrics or {}).get("verify_s"):
+                if int(verifier or 0) > 0:
+                    hurt = 1
+                else:
+                    helped = 1
+            if helped == 0 and hurt == 0:
+                # No evidence either way: the bullet was used, which is
+                # worth knowing, but it is not credited or blamed.
+                helped = 0
+                hurt = 0
+            owner = None
+            try:
+                from .sessions import get_session_owner
+                owner = get_session_owner(getattr(self, "session_id", None) or "",
+                                         os.path.dirname(self.session_path))
+            except Exception:
+                owner = None
+            path = (owner_path(owner, self.config_data) if owner
+                    else global_path(self.config_data))
+            playbook = read_playbook(path)
+            if not playbook["items"]:
+                return
+            attribute(playbook["items"], items, helped=helped, hurt=hurt)
+            decay(playbook["items"])
+            write_playbook(path, playbook)
+        except Exception as e:
+            logger.debug("playbook not credited: %s", e)
 
     async def run_loop(self) -> None:
         """Run the OnIt agent in loop mode, executing a task repeatedly."""
@@ -1753,7 +2025,8 @@ class OnIt(BaseModel):
                     session_id=self.session_id,
                     session_history=self.load_session_history(),
                     stream=False,
-                    with_prompt_intro=False)
+                    with_prompt_intro=False,
+                    task=self.task)
                 endpoint = self.load_balancer.acquire(key=self.session_id)
                 last_response = None
                 try:
@@ -1865,6 +2138,12 @@ class OnIt(BaseModel):
             # session file.  Empty on the first task of a new session, which
             # is the common case and costs nothing.
             "prior_attempts": self._prior_run_note(session_path),
+            # The playbook (Loop B).  It is a static block, so it is
+            # pinned per session rather than rebuilt per task -- see
+            # _pin_playbook.  Empty at autonomy 0 and 1, and empty when
+            # there is no playbook to inject.
+            "playbook": self._pin_playbook(
+                getattr(self, "session_id", None) or ""),
         }
         if self.prompt_in_process:
             return await build_assistant_instruction(**args)
@@ -2180,7 +2459,8 @@ class OnIt(BaseModel):
                     data_path=self.data_path,
                     session_id=self.session_id,
                     session_history=self.load_session_history(),
-                    background_verify=self.pending_deep_checks.append)
+                    background_verify=self.pending_deep_checks.append,
+                    task=_task_from_instruction(instruction))
 
                 last_response = await _chat_with_failover(
                     self, instruction=instruction, kwargs=kwargs,

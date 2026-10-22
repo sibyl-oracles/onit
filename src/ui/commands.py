@@ -63,6 +63,9 @@ COMMANDS = (
             "'deep' adds a real model reply and a tool-calling turn "
             "(costs tokens)."),
     Command("setup", "", "Show the endpoints, keys and paths this session is using."),
+    Command("rate", "[up|down|clear] [n]",
+            "Rate an answer: the newest one, or number n. The strongest "
+            "outcome signal there is."),
     Command("model", "[name | -]",
             "Switch model; bare, list what the endpoint serves; '-' for "
             "auto-detect."),
@@ -120,9 +123,20 @@ def unknown(name: str) -> str:
 # ── rendering helpers ───────────────────────────────────────────────────────
 
 def render_help() -> str:
-    width = max(len(c.usage) for c in COMMANDS)
+    # The usage column is sized to the longest usage string, but capped:
+    # one command with a long argument list would otherwise push every
+    # other summary so far right that the list stops being readable in an
+    # 80-column terminal.  A usage longer than the cap is printed on its
+    # own line, with its summary underneath.
+    cap = 34
+    width = min(max(len(c.usage) for c in COMMANDS), cap)
     lines = ["Commands"]
-    lines += [f"  {c.usage:<{width}}  {c.summary}" for c in COMMANDS]
+    for command in COMMANDS:
+        if len(command.usage) <= width:
+            lines.append(f"  {command.usage:<{width}}  {command.summary}")
+        else:
+            lines.append(f"  {command.usage}")
+            lines.append(f"  {'':<{width}}  {command.summary}")
     lines.append("")
     lines.append("Anything else is sent to the model, so a message may still "
                  "start with a backslash.")
@@ -829,6 +843,9 @@ async def dispatch(agent, text: str) -> str | None:
             return await cmd_key(agent, arg)
         if name == "save":
             return cmd_save(agent)
+        if name == "rate":
+            from .rating import cmd_rate
+            return cmd_rate(agent, arg)
         if name == "doctor":
             return await cmd_doctor(agent, arg)
     except Exception as e:

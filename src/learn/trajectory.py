@@ -209,7 +209,8 @@ def build_record(*, session_id: str, turn: int, task: str, response: str,
                  model: str | None = None,
                  stop_reason: str | None = None,
                  playbook_version=None,
-                 episodes_used: list | None = None) -> dict:
+                 episodes_used: list | None = None,
+                 playbook_items: list | None = None) -> dict:
     """Assemble one task record.  Pure: writes nothing, raises nothing."""
     metrics = metrics or {}
     return {
@@ -234,6 +235,10 @@ def build_record(*, session_id: str, turn: int, task: str, response: str,
         "learned_context": {
             "playbook_version": playbook_version,
             "episodes_used": list(episodes_used or []),
+            # Which playbook bullets the run was shown.  Without these the
+            # run cannot be credited or blamed for the playbook, and the
+            # counters on the bullets would be guesswork.
+            "playbook_items": list(playbook_items or []),
         },
     }
 
@@ -367,14 +372,37 @@ def read_session(session_id: str, config_data: dict | None = None) -> list[dict]
             signals["user_rating"] = rating.get("rating")
             if rating.get("comment"):
                 signals["user_comment"] = rating["comment"]
+            # Where the verdict came from: the terminal's "\rate", the web
+            # UI's thumb, or a gateway.  A loop that wants to weight the
+            # evidence needs to know which, and the answer is written on
+            # the rating line rather than derived from it.
+            if rating.get("source"):
+                signals["user_rating_source"] = rating["source"]
     return tasks
 
 
-def iter_records(config_data: dict | None = None):
+def iter_records(config_data: dict | None = None, *, owner: str | None = None,
+                 model: str | None = None):
     """Every task record on disk, oldest session file first.
 
     The entry point for the loops that come after this one — reflection,
-    skill mining, holdout construction — none of which exist yet.
+    skill mining, holdout construction.
+
+    ``owner`` scopes the result to one session owner (the hashed pseudonym
+    ``owner_hash()`` produces, or None for owner-less records).  ``model``
+    scopes it to one model.
+
+    Both filters exist because the corpus is neither single-tenant nor
+    single-model: twelve models are represented, and in web mode each
+    session carries its owner's hash.  A loop that reads *every* record and
+    then filters afterwards still has read another tenant's data, so the
+    filter is here, at the point the record is produced, rather than
+    downstream.
+
+    The default is unfiltered, and that is deliberate: this function is also
+    what ``onit learn`` reports on, and a status report that hid another
+    tenant's tasks would be lying about what is on disk.  Every *retrieval*
+    path passes an explicit filter; the reporting path does not.
     """
     directory = trajectory_dir(config_data)
     try:
@@ -385,4 +413,8 @@ def iter_records(config_data: dict | None = None):
         if not name.endswith(".jsonl"):
             continue
         for record in read_session(name[:-len(".jsonl")], config_data):
+            if owner is not None and record.get("owner") != owner:
+                continue
+            if model is not None and record.get("model") != model:
+                continue
             yield record
