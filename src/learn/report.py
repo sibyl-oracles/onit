@@ -24,7 +24,8 @@ worth having even if none of the later loops are ever built.
 
 from collections import Counter, defaultdict
 
-from .config import autonomy, level_name, recording_enabled, trajectory_dir
+from .config import (autonomy, capped, level_name, recording_enabled,
+                     requested_level, trajectory_dir)
 from .trajectory import iter_records
 
 
@@ -105,6 +106,16 @@ def format_status(config_data: dict | None = None) -> str:
         f"  recording  {'on' if recording_enabled(config_data) else 'off'}",
         f"  path       {directory}",
     ]
+
+    # The cap, said out loud.  A config that asks for a rung the code does
+    # not implement gets the highest rung that does -- and the operator is
+    # told, because a run that silently believes it is evolving is worse
+    # than a run that is honestly only adapting.
+    if capped(config_data):
+        asked = requested_level(config_data)
+        lines.append(f"  requested  {level_name(asked)} ({asked}) -- "
+                     f"capped to {level_name(level)}; that rung is not "
+                     f"implemented yet")
 
     if not recording_enabled(config_data):
         lines += ["", "Recording is off, so nothing is being written.",

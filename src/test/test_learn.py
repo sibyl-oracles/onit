@@ -62,8 +62,36 @@ class TestAutonomy:
     def test_a_level_beyond_what_exists_is_capped(self):
         """Asking for `evolve` today must not produce a run that believes it is
         evolving.  It gets what is built, and the config keeps its meaning when
-        the rest lands."""
-        assert learn_config.autonomy({"learn": {"autonomy": "evolve"}}) == learn_config.OBSERVE
+        the rest lands.
+
+        October 22, 2026: the cap moved from `observe` to `adapt` when Loops A
+        and B shipped.  `evolve` and `extend` are still not built, so they
+        still cap -- to the highest rung that is.
+        """
+        cfg = {"learn": {"autonomy": "evolve"}}
+        assert learn_config.autonomy(cfg) == learn_config.ADAPT
+        assert learn_config.requested_level(cfg) == learn_config.EVOLVE
+        assert learn_config.capped(cfg) is True
+
+    def test_the_cap_is_loud(self):
+        """A silent cap is the bug: a run that believes it is evolving and is
+        not.  The request and the grant must be distinguishable."""
+        cfg = {"learn": {"autonomy": "extend"}}
+        assert learn_config.autonomy(cfg) == learn_config.ADAPT
+        assert learn_config.requested_level(cfg) == learn_config.EXTEND
+        assert learn_config.capped(cfg) is True
+
+    def test_a_level_within_the_cap_is_not_flagged(self):
+        cfg = {"learn": {"autonomy": "adapt"}}
+        assert learn_config.autonomy(cfg) == learn_config.ADAPT
+        assert learn_config.requested_level(cfg) == learn_config.ADAPT
+        assert learn_config.capped(cfg) is False
+
+    def test_adapt_is_now_reachable(self):
+        """Loops A and B inject at `adapt`; before this moved, their
+        injection paths were unreachable code."""
+        assert learn_config.autonomy({"learn": {"autonomy": "adapt"}}) == learn_config.ADAPT
+        assert learn_config.autonomy({"learn": {"autonomy": "adapt"}}) >= learn_config.ADAPT
 
     def test_bare_boolean_config(self):
         assert learn_config.autonomy({"learn": False}) == learn_config.OFF
@@ -196,7 +224,18 @@ class TestRecord:
         recorded with it, and that comparison is the point of recording."""
         record = traj.build_record(session_id="s1", turn=1, task="t", response="r")
         assert record["learned_context"] == {"playbook_version": None,
-                                             "episodes_used": []}
+                                             "episodes_used": [],
+                                             "playbook_items": []}
+
+    def test_the_record_names_the_playbook_bullets_the_run_was_shown(self):
+        # Without the bullet ids the run cannot be credited or blamed for
+        # the playbook it was shown, and the counters would be guesswork.
+        record = traj.build_record(session_id="s1", turn=1, task="t",
+                                   response="r", playbook_version=7,
+                                   playbook_items=["pb-aaa", "pb-bbb"])
+        assert record["learned_context"]["playbook_version"] == 7
+        assert record["learned_context"]["playbook_items"] == ["pb-aaa",
+                                                               "pb-bbb"]
 
 
 class TestWriter:

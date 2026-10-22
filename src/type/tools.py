@@ -833,6 +833,35 @@ class ToolRegistry:
             "Reorder mcp.servers to change which one wins.",
             tool_name, tool_url, self.urls[tool_name][0])
 
+    def withhold(self, tool_names) -> list:
+        """Take a set of tool names out of the registry, reversibly.
+
+        Returns the names that were actually withheld.  Nothing is
+        deleted: the handler stays in ``handlers``, so the tool is still
+        reachable by name@url and still on disk.  What changes is that
+        the tool is no longer *offered* — it is out of ``tools``, out of
+        ``order``, and out of the schema the model is shown.
+
+        That distinction is the whole point.  The lifecycle actuator
+        decides that a tool is not earning its schema tokens; the tool
+        is not destroyed, and the next session can have it back.
+
+        The order list is rebuilt rather than spliced, so the surviving
+        tools keep their relative order — the order is what the model
+        sees, and reordering it unsettles the model and breaks the
+        server's prefix cache.
+        """
+        withheld = []
+        for name in (tool_names or []):
+            if name not in self.tools:
+                continue
+            self.tools.discard(name)
+            self.order = [t for t in self.order if t != name]
+            self.urls.pop(name, None)
+            self._contracts.pop(name, None)
+            withheld.append(name)
+        return withheld
+
     def get_url(self, tool_name: str) -> str | None:
         """A URL serving this tool — any of them, since they are replicas."""
         if tool_name not in self.urls:

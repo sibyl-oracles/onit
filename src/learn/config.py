@@ -25,8 +25,13 @@ config file, printed in a benchmark row, and raised one rung at a time:
     3  extend    validated skills are served as tools
     4  evolve    scaffold variants may be proposed (never auto-merged)
 
-Only levels 0 and 1 are implemented; the higher rungs are named here so that
-the setting a deployment writes today keeps its meaning when they land.
+Levels 0 through 2 are implemented.  The higher rungs are named here so that
+the setting a deployment writes today keeps its meaning when they land, and so
+that a config asking for a rung that does not exist yet gets the *highest*
+implemented rung rather than the lowest -- degrading a request to "observe"
+would silently turn "remember this" into "do nothing", which is the opposite
+of what the operator asked for.
+
 ``ONIT_LEARN`` overrides the config file, which is what benchmark baselines and
 one-off reproductions use to pin a run to a known level.
 """
@@ -46,7 +51,15 @@ _NAMES = {"off": OFF, "observe": OBSERVE, "adapt": ADAPT,
 
 # Level implemented today.  A config asking for more gets what exists, rather
 # than a run that silently believes it is learning more than it is.
-_MAX_IMPLEMENTED = OBSERVE
+#
+# This was OBSERVE until October 22, 2026, when Loops A (recall) and B
+# (the playbook) shipped.  Leaving it at OBSERVE made their injection paths
+# unreachable: every one of them gates on ``autonomy() >= ADAPT``, so the
+# committed code could never run.  The cap is the right idea -- the agent
+# must not be able to talk itself into a rung it has not earned -- but the
+# cap has to be *loud* (see :func:`requested_level`), because a silent cap
+# is a run that believes it is adapting and is not.
+_MAX_IMPLEMENTED = ADAPT
 
 # Truthy/falsy spellings accepted from the environment, where everything is a
 # string and "0" is not falsy on its own.
@@ -95,6 +108,40 @@ def autonomy(config_data: dict | None = None) -> int:
     return min(level, _MAX_IMPLEMENTED)
 
 
+def requested_level(config_data: dict | None = None) -> int:
+    """The level the operator *asked* for, before the cap.
+
+    This is what makes the cap honest.  ``autonomy()`` returns the level
+    that will actually be honoured; this returns the level that was
+    requested.  When the two differ, the deployment asked for a rung that
+    does not exist yet, and the difference is worth saying out loud --
+    otherwise a run believes it is evolving when it is only adapting,
+    and nobody notices until a scaffold change nobody authorized shows up
+    in a prompt.
+    """
+    level = _coerce(os.environ.get("ONIT_LEARN"))
+    if level is None:
+        learn = (config_data or {}).get("learn")
+        if isinstance(learn, dict):
+            level = _coerce(learn.get("autonomy"))
+            if level is None and learn.get("enabled") is False:
+                level = OFF
+        else:
+            level = _coerce(learn)
+    if level is None:
+        level = DEFAULT_AUTONOMY
+    return level
+
+
+def capped(config_data: dict | None = None) -> bool:
+    """Whether the requested level is above what is implemented.
+
+    True means the operator asked for more than the code does, and the
+    run is running at a lower level than the config says.
+    """
+    return requested_level(config_data) > _MAX_IMPLEMENTED
+
+
 def level_name(level: int) -> str:
     """Name of an autonomy level, for logs and benchmark rows."""
     for name, value in _NAMES.items():
@@ -122,6 +169,26 @@ def redact_tool_args(config_data: dict | None = None) -> bool:
     if env is not None:
         return str(env).strip().lower() not in _FALSE
     return True
+
+
+def learn_root(config_data: dict | None = None) -> str:
+    """The root of the learned store.
+
+    ``~/.onit/learned`` by default.  The trajectories live in a
+    subdirectory of it, the playbook in another, and the skills in a
+    third -- the RFC's layout, and the reason the store can be read at
+    a glance.
+
+    Like :func:`trajectory_dir`, the config wins over the environment:
+    the path is deployment layout, and an operator who moves the store
+    moves all of it at once.
+    """
+    learn = (config_data or {}).get("learn")
+    if isinstance(learn, dict) and learn.get("path"):
+        base = str(learn["path"])
+    else:
+        base = os.environ.get("ONIT_LEARN_PATH", "~/.onit/learned")
+    return os.path.abspath(os.path.expanduser(base))
 
 
 def trajectory_dir(config_data: dict | None = None) -> str:
