@@ -200,3 +200,15 @@ null result goes in `RESULTS.md` and the loop does not ship.
 - `src/learn/lifecycle.py` — the tool-lifecycle policy, and `src/learn/actuator.py` — the actuator that finally acts on it
 - `src/learn/trajectory.py` — `owner_hash()` and an `iter_records()` that filters by owner and model at the point the record is produced
 - `benchmarks/` + `RESULTS.md` — existing fitness function; `baselines/full.json` pinned 2026-09-05. Sampled-tier rows (Sep 06 2026): simpleqa 0.940, humaneval 0.970, mbpp 0.990, on `glm-5.3-flash:cloud` with learn off. The holdout is now drawable with `onit learn --holdout` — and the A/B on it has not been run
+
+
+---
+
+*Amended October 23, 2026 (second pass) — the four blockers recorded above are
+now fixed. The holdout no longer leaks into recall or reflection (158/160 → 0/160
+on the real corpus), the benchmark no longer writes into the operator's corpus,
+the model-based Reflector exists alongside the mechanical one, and the eval
+runner exists. Three pre-existing bugs were found on the way — the split file was
+written and never read back, the cluster sort counted keys instead of records,
+and the runner never awaited its agent factory. `docs/SELF_IMPROVEMENT.md` §5.2
+has the details. What remains unrun is the A/B itself.*

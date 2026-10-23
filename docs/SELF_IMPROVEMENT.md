@@ -12,6 +12,12 @@ two months stale and are corrected in place. The data gate that had been holding
 is now open — the blocker is the missing ruler, not the missing data. See §3.0.*
 *Amended October 23, 2026 — the six deliverables are built and the test suite that
 holds them is in place; §5.1 records what is measured and what is not.*
+*Revised October 23, 2026 (second pass) — the four blockers that made the A/B
+unrunnable are now fixed: the holdout no longer leaks into recall or reflection,
+the benchmark no longer pollutes the corpus, the model-based Reflector exists,
+and the eval runner exists. §5.2 records what was broken, what it now does, and
+the three pre-existing bugs found on the way. The A/B is still unrun — it now
+can be run.*
 *Previous revisions: August 20, 2026 (Phase 0.5 closed out) · August 09, 2026.*
 **Companions**: [`HARNESS_CAPABILITIES.md`](HARNESS_CAPABILITIES.md) — the harness track,
 now complete. [`SELF_IMPROVEMENT_GAPS.md`](SELF_IMPROVEMENT_GAPS.md) — the standing gap
@@ -883,13 +889,15 @@ last.
 
 | # | Deliverable | Size | Status | Why here |
 |---|---|---|---|---|
-| 1 | **Holdout + baseline + the I1/I7 ownership invariant** | days | **built** | Without it, nothing after it is measurable. It also converts "the agent feels better" into a number the agent doesn't own. |
-| 2 | **Recall (Loop A)** | ~3 days | **built** | Smallest change that closes the loop end-to-end. Reuses `toolkit.py` BM25. A/B on the holdout; **ship only if it wins** — the null result is the common one. |
+| 1 | **Holdout + baseline + the I1/I7 ownership invariant** | days | **built, and readable** | Without it, nothing after it is measurable. It also converts "the agent feels better" into a number the agent doesn't own. *The split file was written and never read back — three pre-existing bugs, now fixed (§5.2).* |
+| 2 | **Recall (Loop A)** | ~3 days | **built** | Smallest change that closes the loop end-to-end. Reuses `toolkit.py` BM25. A/B on the holdout; **ship only if it wins** — the null result is the common one. *The holdout no longer leaks into it (§5.2).* |
 | 3 | **Implicit signals + text-UI rating** | ~2 days | **built** | Turns 888 weakly-labeled records into a training set. Retroactive on existing data. |
-| 4 | **Playbook (Loop B)** | ~3 weeks | **built** | The main event. Reflector + Curator, delta-only updates, token-capped, version-pinned per session. |
+| 4 | **Playbook (Loop B)** | ~3 weeks | **built** | The main event. Reflector + Curator, delta-only updates, token-capped, version-pinned per session. *The mechanical Reflector could only emit templates; the model-based one now exists (§5.2).* |
 | 5 | **Lifecycle actuator, or delete `lifecycle.py`** | days | **built** | Either make the dead policy live or stop it reading as done. |
 | 6 | **Skills (Loop C)** | ~4 weeks | **built** | Never core rewrites — coded extensions only. |
 | 7 | **Evolve (Loop D)** | ~6 weeks | **not started** | Only after A and B show reproducible wins. |
+| 8 | **The eval runner — the instrument** | ~1 week | **built** | *Added October 23.* Without it the ruler is a file nobody replays. Now: `onit learn --eval-run [--ab]`. |
+| 9 | **Run the A/B** | hours | **not run** | The one thing left. It needs a model endpoint and a drawn holdout, and both are the operator's to provide. |
 
 **What "built" means, and what it does not.**  It means the code exists, the tests
 pass, and the path is reachable from a config file.  It does **not** mean any
@@ -899,11 +907,18 @@ the loop is *built and wired*, and the loop is *unproven*.  Those are different
 claims, and the difference is the whole subject of this document.
 
 **What "the tests pass" is worth, exactly.**  §5.1 records this in full: the
-suite is 2,915 tests with the `src/learn/` package at 93% line coverage, and
+suite is 3,024 tests with the `src/learn/` package at 91% line coverage, and
 it establishes that the scaffold is wired, bounded, reversible and
 unreachable-by-the-agent.  It does not establish that the agent is better,
 and it is not intended to — nothing in a unit test can.  The A/B is the
-instrument that answers that, and it is the next piece of work.
+instrument that answers that.
+
+**The A/B can now be run.**  It could not, until October 23: the holdout
+leaked into the agent's own prompt (§5.2, blocker 1), so any measurement
+would have reported the answer key; and there was no code path that
+replayed a split and graded the answer at all (§5.2, blocker 2).  Both are
+fixed.  What remains is the run itself, which needs an endpoint and a
+drawn holdout.
 
 **The one thing that was true before and is not now.**  Through October 22, 2026,
 `autonomy()` returned `min(level, OBSERVE)`, so every injection path that gated
@@ -1242,6 +1257,160 @@ yet.  Until the benchmark harness runs the candidate against the pinned
 baseline and reports the number, the promotion gate is a door with
 nothing behind it — which is the correct state for it to be in, and
 much better than a gate that says yes to everything.
+
+### 5.2 The four blockers, and what unblocked them *(added October 23, 2026)*
+
+The six deliverables were built, and the A/B was still unrunnable.  Four
+structural problems stood between the code and a measurement, and the
+first of them would have produced a **fake win** rather than a failure.
+
+#### Blocker 1 — the holdout leaked into the agent's own prompt
+
+`recall()` searched the whole trajectory store, and the holdout is drawn
+*from* that store.  So on a holdout item, the agent was handed its own
+previous answer before it was asked the question.  Measured on the real
+corpus: **158 of 160 holdout items recalled a run of their own
+question.**  Any A/B measured on that split would have been reporting
+the answer key.
+
+The obvious fix — exclude the holdout's *record ids* — is not enough,
+and this is the part worth stating plainly.  The corpus holds the same
+question asked many times: "weather today" was asked 21 times, "marikina
+river water level latest" 6.  Those 21 runs are one question with 21
+answers, and the holdout excluded exactly one of them.  The other 20
+stayed in the recall pool, each carrying the answer.
+
+So the exclusion is by **question**, not by record.  `eval.task_key()`
+normalises a task to its identity as a question (case, punctuation and
+whitespace removed), and `eval.holdout_exclusions()` returns both sets —
+the ids *and* the question keys.  Every loop that reads the corpus now
+goes through one predicate, `eval.is_excluded()`.
+
+| | before | after |
+|---|---:|---:|
+| holdout items recalling their own question | 158 / 160 | **0 / 160** |
+
+The loops that read the corpus and now exclude the holdout: `recall()`,
+`reflect()`, skill mining, and the tool-lifecycle statistics.  The
+exclusion is *on by default* in each, so a new loop that forgets to ask
+for it is the only way to leak — and the test suite pins the default.
+
+The second half of the leak was subtler, and the final verification
+pass found it.  A bullet's `provenance` named the **session**, and a
+session file holds one record per turn — so a session could contain a
+turn whose question was in the holdout *and* a turn whose question was
+not.  The exclusion dropped the holdout turn correctly, but the
+surviving turn's session id still pointed at a session that contained
+one.  The holdout's *answer* was never in a lesson; its *existence* was
+in the pointer that says where the lesson came from, and the pointer is
+what someone checking "did this come from the exam?" would follow.  The
+provenance is now the record id (`session_id#turn`) — the same identity
+the exclusion set is keyed on, so a bullet's provenance can be checked
+against the exclusion set directly.  Measured on the real corpus: 27 of
+57 sessions held both kinds of turn; the leak is closed.
+
+#### Blocker 2 — there was no eval runner
+
+`eval.py` held the ruler as *data*; nothing replayed it.  There was no
+code path that took a holdout item, asked the agent the question, and
+graded the answer.
+
+`src/learn/runner.py` is that path, and `src/learn/ab.py` drives it:
+
+```
+onit learn --eval-run                 # one arm, the numbers
+onit learn --eval-run --ab             # both arms, and the difference
+onit learn --eval-run --eval-split holdout --eval-limit 50
+```
+
+The agent is driven through `OnIt.process_task` — the same entry point
+the benchmark provider uses — so a number produced here means what it
+would mean in a real run.  The grader is a **separate model** with no
+tools (`src/learn/llm.py`): a judge that could run the agent's tools
+would not be a judge.
+
+Two things the runner refuses to get wrong:
+
+- **The arms do not contaminate each other.**  Each gets its own
+  `learn.path`, so the treatment arm's recall pool is the control arm's
+  recorded runs and nothing else.  Neither arm writes into the
+  operator's own corpus.
+- **The comparison carries an error bar.**  The delta between the arms
+  is reported with the sum of the two arms' standard errors, and a delta
+  that does not clear it is reported as **not significant** — with the
+  instruction to ship nothing on that evidence.
+
+#### Blocker 3 — benchmark runs polluted the corpus they were measured against
+
+`benchmarks/config.py`'s `resolve_learn()` set `autonomy` but not
+`learn.path`, so a benchmark's trajectories landed in
+`~/.onit/learned/trajectories` — the same corpus the recall path
+reads.  A run at `ONIT_LEARN=adapt` would have fed benchmark traffic
+straight back into the path under test.
+
+`resolve_learn()` now sets `learn.path` to the benchmark's own store,
+beside its data root, overridable with `ONIT_BENCH_LEARN_PATH`.
+
+#### Blocker 4 — the Reflector could only produce templates
+
+The mechanical Reflector clusters runs by their tool signature and
+contrasts the good ones against the bad ones.  But a cluster *is* a
+tool signature, so within a cluster the good runs and the bad runs ran
+the same tools — and the "a tool the good runs used and the bad runs did
+not" branch was **empty by construction**.  Measured on the real corpus:
+that branch fired **0 times** in 677 clusters.  Every bullet came from
+the weakest branch, which is why the playbook read as four near-identical
+templates with a tool name in them.
+
+Three fixes, in order of how much they matter:
+
+1. **The cluster key is now the shape of the task** (`playbook.task_shape()`
+   — the first three content words), and the contrast runs along the
+   tools *inside* a cluster.  Two runs of the same kind of question are
+   comparable; that is what a contrast needs.  Branches 1 and 2 now fire
+   **48 times** where they fired 0.
+2. **The model-based Reflector exists** (`src/learn/reflector.py`).  It
+   hands a model two contrasting runs and asks for the difference a
+   person reading both transcripts would name — the arguments, the
+   order, the reasoning — and parses the reply strictly.  The model is
+   injected as an `ask` callable, so it is testable without a network
+   and it never borrows the agent's tool registry.
+3. **`onit learn --reflect` now runs the model-based reflector first**
+   and the mechanical one second, with `--mechanical-only` and
+   `--model-only` to choose.  The mechanical bullets are weaker, so they
+   go last, and a run with no model available still reflects.
+
+#### Three pre-existing bugs found on the way
+
+These were not introduced by the work above; they were *found* by it,
+and each one had made the ruler unusable.
+
+| # | Bug | Effect |
+|---|---|---|
+| 1 | `write_split()` wrote `split.json` with only the metadata — the `holdout` and `dev` lists were stripped out and never written, and the file was double-encoded through the JSONL writer. | `read_split()` returned **empty lists for every split ever drawn**. The split filter had nothing to filter on, and the CLI's `--eval` reported 0/0 for a split that existed on disk. |
+| 2 | `cluster()`'s sort used `len(buckets)` — the number of *keys* — instead of `len(buckets[key])`, the number of *records*. | The "largest cluster first" order was alphabetical by accident. |
+| 3 | `run_arm()` called `make_agent(config)` without awaiting it, and the real factory is async (the agent's constructor cannot run inside a running event loop). | Every item recorded an error, both arms scored zero, and **a run that measured nothing looked exactly like a run that measured a null result**. |
+| 4 | A bullet's `provenance` named the *session* (`session_id`) rather than the *run* (`session_id#turn`). A session file holds one record per turn, and 27 of the corpus's 57 sessions hold both a holdout turn and a surviving one. | The holdout's answer was never in a lesson — the exclusion dropped that turn correctly — but the pointer that says where a lesson came from named a session that contained a holdout run. **The holdout's existence leaked through its provenance**, and the provenance is exactly what an audit follows. The provenance is now the record id, the same identity the exclusion set is keyed on, so a bullet's provenance can be checked against the exclusion set directly. |
+
+Bug 1 is the one to remember: the ruler had been written and never read
+back.  The holdout existed on disk and `onit learn --eval` said `0`
+because the file it read was not the file that had been written.
+
+#### What is still missing
+
+**The A/B has not been run.**  It can now be run, and it has not been:
+that needs a model endpoint and a drawn holdout, and both are the
+operator's to provide.  Until it is run, the honest statement is
+unchanged — the scaffold is built, the instrument is built, the
+measurement is *not made*.
+
+And the measurement has a shape it will not have had before: the
+holdout exclusion is by question, so a holdout item is genuinely
+unfamiliar to the agent even when the corpus contains the same question
+twenty times.  That makes the holdout smaller and the result harder to
+win — which is the right direction for an instrument that has to be
+believed.
+
 
 ## 6. Measuring it honestly
 
