@@ -131,11 +131,22 @@ class TestHoldoutIsolation:
         The recall path reads the *trajectory store*, never the split
         files, so it cannot touch the holdout even by accident.  This
         test pins that: the holdout file may contain text the recall
-        would happily match, and the holdout's own id must never come
-        back.
+        would happily match, and neither the holdout's own id nor its
+        *question* may come back.
+
+        The question is the stronger half of the contract, and it is
+        the half that matters.  The corpus holds the same question asked
+        many times -- "weather today" was asked 21 times -- and every
+        one of those runs carries an answer to it.  Excluding only the
+        record id the split happened to pick would leave the other
+        twenty in the pool, and the agent would be handed the answer
+        key before it was asked the question.
         """
         marker = "ZZQQXX-unique-holdout-marker"
+        # A sibling run: same question, different record id, same answer.
         _write_record(learned, _record(session="s1", task=marker,
+                                       response="the answer"))
+        _write_record(learned, _record(session="s2", task=marker,
                                        response="the answer"))
         directory = ruler.eval_dir(learned)
         os.makedirs(directory, exist_ok=True)
@@ -143,9 +154,39 @@ class TestHoldoutIsolation:
             f.write(json.dumps({"id": "h1", "task": marker,
                                 "response": "held out"}) + "\n")
         episodes = recall.recall(marker, config_data=learned)
-        assert episodes, "recall found nothing, so the test proves nothing"
+        # The exclusion is by question, so the two store runs of the
+        # holdout's question are excluded too.  Recall finds nothing
+        # here, and that is the correct answer: the only thing it could
+        # have found was the answer to the question being asked.
         for episode in episodes:
             assert episode["id"] != "h1", "recall returned a holdout item"
+            assert episode["id"] not in ("s1#1", "s2#1"), (
+                "recall returned a run of the holdout's own question")
+
+    def test_recall_still_finds_the_runs_it_may_learn_from(self, learned):
+        """The exclusion must not swallow the corpus.
+
+        A holdout is a *question* set aside, not a corpus-wide mute.
+        If the exclusion were too broad, recall would return nothing for
+        everything, and the treatment arm would be measuring an agent
+        with amnesia -- which is a null result for the wrong reason, and
+        is indistinguishable from "recall does not help".
+        """
+        _write_record(learned, _record(session="s1", turn=1,
+                                       task="a completely different question",
+                                       response="a long enough answer"))
+        _write_record(learned, _record(session="s2", turn=1,
+                                       task="an unrelated question entirely",
+                                       response="a long enough answer"))
+        directory = ruler.eval_dir(learned)
+        os.makedirs(directory, exist_ok=True)
+        with open(ruler.holdout_path(learned), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "h1", "task": "the held out question",
+                                "response": "held out"}) + "\n")
+        episodes = recall.recall("a completely different question",
+                                 config_data=learned)
+        assert episodes, ("recall found nothing for an unrelated question: "
+                          "the exclusion is too broad")
 
     def test_the_gate_screen_names_the_holdout(self):
         """A skill that even mentions the holdout is refused.

@@ -262,7 +262,8 @@ def recall(task: str, *, config_data: dict | None = None,
            owner: str | None = None, model: str | None = None,
            top_k: int = DEFAULT_TOP_K,
            token_budget: int = DEFAULT_TOKEN_BUDGET,
-           include_unjudged: bool = True) -> list:
+           include_unjudged: bool = True,
+           exclude_holdout: bool = True) -> list:
     """The episodes worth putting in front of the model for ``task``.
 
     Returns a list of dicts: ``{"id", "score", "outcome", "summary"}``.
@@ -298,6 +299,22 @@ def recall(task: str, *, config_data: dict | None = None,
         records = list(iter_records(config_data, owner=owner, model=model))
     if not records:
         return []
+
+    # The holdout is not recalled from.  A holdout item is a question the
+    # agent has already answered, and the answer sits in the corpus under
+    # the same question -- sometimes twenty times over, because the same
+    # question was asked many times.  Recalling it would hand the agent
+    # its own answer before it is asked, and every A/B measured on that
+    # split would be reporting the answer key, not the agent.
+    #
+    # The exclusion is by question, not by record id, and that is the whole
+    # point: excluding the id the split happened to pick leaves its
+    # twenty siblings in the pool.
+    if exclude_holdout:
+        from .eval import filter_excluded
+        records = filter_excluded(records, config_data)
+        if not records:
+            return []
 
     ranked = rank_episodes(task, records)
     if not ranked:

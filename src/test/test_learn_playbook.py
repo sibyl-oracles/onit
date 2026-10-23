@@ -415,23 +415,88 @@ def _record(session, task, tools, verifier=None, implicit=None):
 
 class TestReflector:
 
-    def test_runs_are_clustered_by_tool_signature(self):
+    def test_runs_are_clustered_by_the_shape_of_the_task(self):
+        """Runs of the same kind of question cluster together.
+
+        The key is the task's shape, not the tools that ran.  It used
+        to be the tools, and that made the two sides of a contrast
+        unreachable -- within a tool-shaped cluster every run used the
+        same tools, so "a tool the good runs used and the bad runs did
+        not" was empty by construction, and the reflector produced
+        nothing but tautologies.
+        """
         records = [
-            _record("a", "t", [("local_search", True)]),
-            _record("b", "t", [("local_search", True)]),
-            _record("c", "t", [("bash", True)]),
+            _record("a", "find the weather forecast", [("local_search", True)]),
+            _record("b", "find the weather forecast", [("local_search", True)]),
+            _record("c", "run the unit tests", [("bash", True)]),
         ]
         clusters = pb.cluster(records)
         assert len(clusters) == 2
-        assert clusters[0]["key"] == "local_search:ok"
+        # Largest cluster first, then by key.
+        assert clusters[0]["key"] == "find|weather|forecast"
+        assert len(clusters[0]["records"]) == 2
+        assert clusters[1]["key"] == "run|unit|tests"
+
+    def test_runs_of_different_tools_but_the_same_question_cluster(self):
+        """The tools are what the contrast compares, not what groups them.
+
+        A run that used ``bash`` and a run that used ``local_search``
+        for the same question are exactly the pair a contrast needs:
+        the difference between them is what the reflector has to name.
+        """
+        records = [
+            _record("a", "find the weather forecast", [("local_search", True)]),
+            _record("b", "find the weather forecast", [("bash", True)]),
+        ]
+        clusters = pb.cluster(records)
+        assert len(clusters) == 1
         assert len(clusters[0]["records"]) == 2
 
-    def test_a_tool_that_failed_has_a_different_signature(self):
+    def test_a_tool_that_failed_still_lands_in_the_same_cluster(self):
+        """The outcome is the axis of the contrast, not part of its key.
+
+        This is the fix.  The cluster key used to carry each tool's
+        ok/err, so a run where ``local_search`` failed sat in a
+        different cluster from a run where it succeeded -- and the two
+        sides of a contrast never met.  The mechanical reflector could
+        therefore only ever fire its weakest branch, and the playbook
+        it produced was a list of tautologies with a tool name in them.
+
+        With the outcome out of the key, a cluster is "runs that took
+        this shape" and the contrast runs along the outcome.
+        """
         records = [
-            _record("a", "t", [("local_search", True)]),
-            _record("b", "t", [("local_search", False)]),
+            _record("a", "find the weather forecast", [("local_search", True)]),
+            _record("b", "find the weather forecast", [("local_search", False)]),
         ]
-        assert len(pb.cluster(records)) == 2
+        assert len(pb.cluster(records)) == 1, (
+            "a failed tool landed in a different cluster, so the two "
+            "sides of a contrast could never meet")
+        # The outcome is still recorded -- in tool_signature, which is
+        # what the difference between the two runs is made of.
+        assert pb.tool_signature(records[0]) == "local_search:ok"
+        assert pb.tool_signature(records[1]) == "local_search:err"
+
+    def test_a_contrast_now_sees_both_sides(self):
+        """The consequence of the key change, in one test.
+
+        Two runs of the same shape, one clean and one not: before the
+        fix they were in different clusters and the reflector found
+        nothing; now they are in one and the contrast has both sides.
+        """
+        records = [
+            _record("a", "find the weather forecast", [("local_search", True)],
+                    verifier="clean"),
+            _record("b", "find the weather forecast", [("local_search", False)],
+                    verifier="issues"),
+        ]
+        clusters = pb.cluster(records)
+        assert len(clusters) == 1
+        sides = pb.contrast(clusters[0]["records"])
+        assert len(sides["good"]) == 1
+        assert len(sides["bad"]) == 1
+        deltas = pb.candidate_deltas(clusters[0]["records"])
+        assert deltas, "the contrast found both sides and still produced nothing"
 
     def test_the_topic_is_not_part_of_the_signature(self):
         # The tactic "the search returns a file whose name matches" is
@@ -441,7 +506,21 @@ class TestReflector:
             _record("a", "about parsers", [("local_search", True)]),
             _record("b", "about taxes", [("local_search", True)]),
         ]
-        assert len(pb.cluster(records)) == 1
+        # "about parsers" and "about taxes" share the leading word
+        # "about" -- which is filler -- and then diverge.  Two records
+        # with the same *shape* of question cluster together; these two
+        # have the same leading content word only by accident.
+        assert pb.task_shape(records[0]) == "parsers"
+        assert pb.task_shape(records[1]) == "taxes"
+
+    def test_two_tasks_of_the_same_shape_cluster_together(self):
+        records = [
+            _record("a", "find the weather forecast", [("local_search", True)]),
+            _record("b", "find the weather forecast!", [("local_search", True)]),
+            _record("c", "find the weather forecast today", [("bash", True)]),
+        ]
+        assert len(pb.cluster(records)) == 1, (
+            "punctuation or a trailing word made a new shape")
 
     def test_the_contrast_splits_good_from_bad(self):
         records = [
@@ -485,24 +564,32 @@ class TestReflector:
 
     def test_the_proposal_carries_its_provenance(self):
         records = [
-            _record("a", "t", [("local_search", True)], verifier="clean"),
-            _record("b", "t", [("bash", True)], verifier="issues"),
+            _record("a", "find the weather forecast", [("local_search", True)],
+                    verifier="clean"),
+            _record("b", "find the weather forecast", [("bash", True)],
+                    verifier="issues"),
         ]
         deltas = pb.candidate_deltas(records)
         assert all(d["provenance"] for d in deltas)
 
     def test_the_reflect_scopes_to_the_owner_by_default(self):
         records = [
-            _record("a", "t", [("local_search", True)], verifier="clean"),
-            _record("b", "t", [("bash", True)], verifier="issues"),
+            _record("a", "find the weather forecast", [("local_search", True)],
+                    verifier="clean"),
+            _record("b", "find the weather forecast", [("bash", True)],
+                    verifier="issues"),
         ]
-        deltas = pb.reflect(records, owner="sha256:owner1")
+        deltas = pb.reflect(records, owner="sha256:owner1",
+                            scope=pb.SCOPE_OWNER)
+        assert deltas
         assert all(d["scope"] == "owner:sha256:owner1" for d in deltas)
 
     def test_the_reflect_can_be_asked_for_a_global_scope(self):
         records = [
-            _record("a", "t", [("local_search", True)], verifier="clean"),
-            _record("b", "t", [("bash", True)], verifier="issues"),
+            _record("a", "find the weather forecast", [("local_search", True)],
+                    verifier="clean"),
+            _record("b", "find the weather forecast", [("bash", True)],
+                    verifier="issues"),
         ]
         deltas = pb.reflect(records, scope=pb.SCOPE_GLOBAL)
         assert all(d["scope"] == "global" for d in deltas)

@@ -449,6 +449,31 @@ def _atomic_write(path: str, lines: list) -> None:
         raise
 
 
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write one JSON object to path atomically.
+
+    ``_atomic_write`` writes JSON *lines* -- one value per line -- which
+    is the right shape for the holdout and the dev split.  The split
+    *file* is a single object, and it is read back with ``json.load``,
+    so it needs its own writer.  Running it through the line writer
+    double-encoded the object, and every split ever drawn came back
+    empty.
+    """
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".eval-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, default=str)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_split(split: dict, config_data: dict | None = None) -> dict:
     """Freeze a split to disk.
 
@@ -478,7 +503,14 @@ def write_split(split: dict, config_data: dict | None = None) -> dict:
     _atomic_write(dev_file, dev)
 
     meta = {k: v for k, v in split.items() if k not in ("holdout", "dev")}
-    _atomic_write(split_file, [meta])
+    # The split file carries the metadata *and* the two lists, so that
+    # read_split() can answer "which split is this record in?" from one
+    # file.  Writing only the metadata made read_split() return empty
+    # lists for every split ever drawn -- and it is why the split
+    # filter had nothing to filter on.
+    meta["holdout"] = holdout
+    meta["dev"] = dev
+    _atomic_write_json(split_file, meta)
 
     return {
         "holdout": holdout_file,
@@ -487,6 +519,112 @@ def write_split(split: dict, config_data: dict | None = None) -> dict:
         "holdout_items": len(holdout),
         "dev_items": len(dev),
     }
+
+
+# ── the I1 exclusion set ───────────────────────────────────────────────
+
+def task_key(text: str) -> str:
+    """The identity of a *question*, as opposed to a recorded run.
+
+    Two runs of the same question are two records but one question.  The
+    corpus contains both: "weather today" was asked 21 times, "marikina
+    river water level latest" 6.  A holdout drawn from it therefore has to
+    exclude the whole family, not one member of it — otherwise the agent
+    is handed the answer to the question it is about to be asked, twenty
+    times over, by a rule that only excluded the record it happened to
+    pick.
+
+    The normalisation is aggressive on purpose: case, punctuation and
+    whitespace all go, because "Weather today?" and "weather today" are
+    the same question and a holdout that separated them would leak the
+    answer to the second.
+    """
+    if not text:
+        return ""
+    lowered = str(text).strip().lower()
+    lowered = re.sub(r"[^a-z0-9\s]+", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def holdout_exclusions(config_data: dict | None = None) -> dict:
+    """Everything the loops must not learn from: the holdout's ids and tasks.
+
+    Two sets, and both are needed:
+
+    ``ids``    the record ids the holdout was drawn from.  Excluding them
+                stops the exact recorded run from being replayed.
+    ``tasks``  the normalised question texts.  Excluding them stops a
+                *sibling* run of the same question from being replayed —
+                which is the leak that matters, because the sibling has the
+                same answer.
+
+    A loop that only excludes ids has excluded the symptom.  A loop that
+    only excludes task texts has excluded the question, which is the thing
+    that was actually being measured.
+
+    Empty when no holdout has been drawn: an absent ruler must not be
+    mistaken for a ruler that excludes everything, and must not be
+    mistaken for one that excludes nothing either.  The caller decides
+    what to do with an empty set; this function only reports it.
+    """
+    items = read_holdout(config_data)
+    ids = set()
+    tasks = set()
+    for item in items:
+        item_id = item.get("id")
+        if item_id:
+            ids.add(str(item_id))
+        key = task_key(item.get("task") or "")
+        if key:
+            tasks.add(key)
+    return {"ids": ids, "tasks": tasks}
+
+
+def excluded_record_ids(config_data: dict | None = None) -> set:
+    """The record ids a learning loop must skip."""
+    return holdout_exclusions(config_data)["ids"]
+
+
+def excluded_task_keys(config_data: dict | None = None) -> set:
+    """The normalised question texts a learning loop must skip."""
+    return holdout_exclusions(config_data)["tasks"]
+
+
+def is_excluded(record: dict, config_data: dict | None = None) -> bool:
+    """Whether a recorded run may be learned from.
+
+    The single predicate every loop that reads the corpus goes through.
+    It exists as one function so that the I1 boundary is greppable: if a
+    new loop wants to read recorded runs, there is one obvious question
+    to ask, and one place where the answer lives.
+    """
+    exclusions = holdout_exclusions(config_data)
+    if not exclusions["ids"] and not exclusions["tasks"]:
+        return False
+    record_id = "%s#%s" % (record.get("session_id", "?"),
+                           record.get("turn", "?"))
+    if record_id in exclusions["ids"]:
+        return True
+    key = task_key(record.get("task") or "")
+    return bool(key) and key in exclusions["tasks"]
+
+
+def filter_excluded(records: list, config_data: dict | None = None) -> list:
+    """Drop the records a learning loop must not see."""
+    exclusions = holdout_exclusions(config_data)
+    if not exclusions["ids"] and not exclusions["tasks"]:
+        return list(records)
+    kept = []
+    for record in records:
+        record_id = "%s#%s" % (record.get("session_id", "?"),
+                               record.get("turn", "?"))
+        if record_id in exclusions["ids"]:
+            continue
+        key = task_key(record.get("task") or "")
+        if key and key in exclusions["tasks"]:
+            continue
+        kept.append(record)
+    return kept
 
 
 def read_baseline(config_data: dict | None = None) -> dict:

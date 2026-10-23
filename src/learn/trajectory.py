@@ -381,8 +381,68 @@ def read_session(session_id: str, config_data: dict | None = None) -> list[dict]
     return tasks
 
 
+def _session_names(directory: str) -> list:
+    """The session file names in a trajectory directory, sorted."""
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    return [n[:-len(".jsonl")] for n in names if n.endswith(".jsonl")]
+
+
+def _split_membership(config_data: dict | None = None) -> dict:
+    """Which records belong to which split, by id and by question.
+
+    Two indexes, because a split is drawn from recorded *runs* but the
+    corpus contains repeated *questions*: "weather today" was asked 21
+    times, and those 21 runs are one question with 21 answers.  Indexing
+    by id alone would put 20 of them outside the holdout, and a loop
+    could then be shown the answer to the question it is about to be
+    asked.  The question index is what closes that.
+
+    The set is read once per walk, not once per record: this runs over
+    the whole corpus on every filtered read.
+    """
+    from .eval import read_split, task_key
+
+    split = read_split(config_data)
+    by_id = set()
+    by_task = set()
+    for bucket, name in (("holdout", "holdout"), ("dev", "dev")):
+        for item in (split.get(name) or []):
+            item_id = item.get("id")
+            if item_id:
+                by_id.add((bucket, str(item_id)))
+            key = task_key(item.get("task") or "")
+            if key:
+                by_task.add((bucket, key))
+    return {"by_id": by_id, "by_task": by_task}
+
+
+def _record_split(record: dict, membership: dict) -> str | None:
+    """Which split a record belongs to, by id first and question second.
+
+    The question is the fallback for the reason above: a record that
+    asked a holdout question is a holdout record whatever its own id
+    says.
+    """
+    record_id = "%s#%s" % (record.get("session_id", "?"),
+                           record.get("turn", "?"))
+    for bucket, member in membership["by_id"]:
+        if member == record_id:
+            return bucket
+    from .eval import task_key
+    key = task_key(record.get("task") or "")
+    if key:
+        for bucket, member in membership["by_task"]:
+            if member == key:
+                return bucket
+    return None
+
+
 def iter_records(config_data: dict | None = None, *, owner: str | None = None,
-                 model: str | None = None):
+                 model: str | None = None, split: str | None = None,
+                 exclude_holdout: bool = False):
     """Every task record on disk, oldest session file first.
 
     The entry point for the loops that come after this one — reflection,
@@ -405,16 +465,22 @@ def iter_records(config_data: dict | None = None, *, owner: str | None = None,
     path passes an explicit filter; the reporting path does not.
     """
     directory = trajectory_dir(config_data)
-    try:
-        names = sorted(os.listdir(directory))
-    except OSError:
-        return
-    for name in names:
-        if not name.endswith(".jsonl"):
-            continue
-        for record in read_session(name[:-len(".jsonl")], config_data):
+    # The split membership is resolved once, before the walk.  Resolving it
+    # per record would re-read the split file a thousand times over a
+    # thousand-record corpus, and the split does not change mid-walk.
+    membership = None
+    if split or exclude_holdout:
+        membership = _split_membership(config_data)
+    for name in _session_names(directory):
+        for record in read_session(name, config_data):
             if owner is not None and record.get("owner") != owner:
                 continue
             if model is not None and record.get("model") != model:
                 continue
+            if membership is not None:
+                bucket = _record_split(record, membership)
+                if exclude_holdout and bucket == "holdout":
+                    continue
+                if split and bucket != split:
+                    continue
             yield record

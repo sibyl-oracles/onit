@@ -140,6 +140,21 @@ def _slug(text: str) -> str:
     return "-".join(words[:6]) or "untitled"
 
 
+# The words a task shape is built from, and the ones that carry no
+# information about it.
+_SHAPE_WORD_RE = re.compile(r"[a-z0-9]+")
+_SHAPE_FILLER = frozenset({
+    "the", "and", "for", "you", "your", "with", "that", "this", "those",
+    "from", "into", "are", "was", "were", "has", "have", "had", "not",
+    "but", "its", "his", "her", "our", "their", "them", "then", "than",
+    "when", "what", "which", "who", "how", "why", "can", "could", "would",
+    "should", "will", "shall", "may", "might", "must", "get", "got",
+    "please", "thanks", "thank", "me", "my", "us", "all", "any", "some",
+    "there", "here", "about", "onto", "over", "under", "again",
+    "also", "just", "very", "much", "more", "most", "less", "least",
+})
+
+
 def bullet_id(text: str, trigger: str | None = None,
               scope: str = SCOPE_GLOBAL) -> str:
     """The id a bullet gets, derived from its text, trigger and scope.
@@ -553,18 +568,36 @@ def build_context(config_data: dict | None = None, owner: str | None = None,
 # ── the reflector ────────────────────────────────────────────────────────
 
 def cluster(records: list) -> list:
-    """Group records by what they did, not by what they were about.
+    """Group records by the *shape* of what they did.
 
-    The grouping key is the *tool signature* — which tools ran, in what
-    order, and whether they succeeded.  Two runs of the same task shape
-    that used different tools are different episodes, and the difference
-    is the thing worth learning from.
+    The grouping key is the *shape of the task* -- the kind of question
+    that was asked.  Two runs of the same kind of question are
+    comparable; two runs of different kinds are not, whatever they
+    have in common.
+
+    The key used to be the tool signature, and that was the bug.  Within
+    a cluster every run used the same tools, so the "a tool the good
+    runs used and the bad runs did not" branch of
+    :func:`candidate_deltas` was empty by construction -- and the only
+    branch that ever fired was the weakest one, which produced a
+    playbook of tautologies with a tool name in them.
+
+    Now the cluster is "runs that took this shape of question", and the
+    contrast inside it runs along the tools: what the good ones did
+    that the bad ones did not.  That is the comparison the reflector
+    was always trying to make.
+
+    The topic is not part of the key beyond its shape.  The tactic
+    "the search tool returns a file whose name matches but whose
+    excerpts do not" is the same tactic whether the file was about
+    parsers or about taxes, and grouping by topic would keep it from
+    ever being learned twice.
 
     Returns a list of ``{"key", "records"}`` dicts, largest first.
     """
     buckets: dict = {}
     for record in records:
-        key = tool_signature(record)
+        key = task_shape(record)
         buckets.setdefault(key, []).append(record)
     return [{"key": key, "records": buckets[key]}
             for key in sorted(buckets, key=lambda k: (-len(buckets[k]), k))]
@@ -586,6 +619,42 @@ def tool_signature(record: dict) -> str:
             parts.append("%s:%s" % (name, "ok" if call.get("ok", True)
                                     else "err"))
     return "|".join(parts) or "(no tools)"
+
+
+def shape_signature(record: dict) -> str:
+    """The signature of a run with the outcome removed.
+
+    Which tools ran, in what order.  Not whether they worked: that is
+    the thing the contrast is about, and putting it in the key meant
+    the two sides of a contrast never met.
+    """
+    parts = []
+    for turn in (record.get("trajectory") or []):
+        for call in (turn.get("tools") or []):
+            parts.append(call.get("name") or "?")
+    return "|".join(parts) or "(no tools)"
+
+
+def task_shape(record: dict) -> str:
+    """The shape of the question a run answered.
+
+    The leading content words of the task, in order, lowercased and
+    stripped of the punctuation that varies between two people asking
+    the same thing.  Deliberately a *shape* and not the whole task:
+    "the weather in Manila today" and "weather in Manila today please"
+    are the same shape, and two runs of the same question asked on
+    different days are the same shape too.
+
+    Filler words are dropped because they carry no information about
+    the kind of task: "the", "a", "is", "for", "me", "please" appear in
+    almost every task and would merge unrelated ones.
+    """
+    words = _SHAPE_WORD_RE.findall((record.get("task") or "").lower())
+    content = [w for w in words if w not in _SHAPE_FILLER and len(w) > 2]
+    # Three words, not four, and a prefix rather than a bag: a shape is
+    # "the kind of question", and the words that trail it are the
+    # difference between two instances of one kind, not two kinds.
+    return "|".join(content[:3]) or "(no task)"
 
 
 def contrast(cluster_records: list) -> dict:
@@ -611,6 +680,24 @@ def contrast(cluster_records: list) -> dict:
         elif implicit == "good" or verifier == "clean":
             good.append(record)
     return {"good": good, "bad": bad}
+
+
+def _record_ref(record: dict) -> str:
+    """A precise pointer to one recorded run.
+
+    ``session_id`` alone is not precise enough.  A session file holds
+    one record per turn, and a session can contain a turn whose
+    question is in the holdout *and* a turn whose question is not.
+    Naming the session would point an audit at a session that contains
+    a holdout run -- the holdout's answer would not be in the lesson,
+    but its existence would be in the pointer that says where the
+    lesson came from.
+
+    ``session_id#turn`` is the same identity ``eval._record_id`` uses,
+    and the one the holdout's exclusion set is keyed on, so a bullet's
+    provenance can be checked against the exclusion set directly.
+    """
+    return "%s#%s" % (record.get("session_id", "?"), record.get("turn", "?"))
 
 
 def candidate_deltas(cluster_records: list) -> list:
@@ -658,7 +745,7 @@ def candidate_deltas(cluster_records: list) -> list:
             "text": ("When this kind of task comes up, %s worked in the runs "
                      "that went well and did not appear in the ones that "
                      "did not." % tool),
-            "provenance": [r.get("session_id", "?") for r in good[:3]],
+            "provenance": [_record_ref(r) for r in good[:3]],
         })
     for tool in sorted(bad_tools - good_tools):
         deltas.append({
@@ -667,7 +754,7 @@ def candidate_deltas(cluster_records: list) -> list:
             "text": ("When this kind of task comes up, %s was present in "
                      "the runs that went badly and absent from the ones "
                      "that went well." % tool),
-            "provenance": [r.get("session_id", "?") for r in bad[:3]],
+            "provenance": [_record_ref(r) for r in bad[:3]],
         })
     # The same tool, used badly: it failed in the runs that went badly
     # and worked in the ones that went well.  This is the most specific
@@ -680,8 +767,8 @@ def candidate_deltas(cluster_records: list) -> list:
                      "the runs that went well and failed in the ones that "
                      "did not — check how it is called before relying on "
                      "it." % tool),
-            "provenance": ([r.get("session_id", "?") for r in bad[:3]]
-                           + [r.get("session_id", "?") for r in good[:3]]),
+            "provenance": ([_record_ref(r) for r in bad[:3]]
+                           + [_record_ref(r) for r in good[:3]]),
         })
     return deltas
 
@@ -709,7 +796,9 @@ def _succeeded_set(records: list) -> set:
 
 
 def reflect(records: list, *, owner: str | None = None,
-            scope: str = SCOPE_GLOBAL) -> list:
+            scope: str = SCOPE_GLOBAL,
+            exclude_holdout: bool = True,
+            config_data: dict | None = None) -> list:
     """The deltas the whole corpus suggests.
 
     The offline pass the RFC calls the Reflector, in its mechanical
@@ -721,6 +810,16 @@ def reflect(records: list, *, owner: str | None = None,
     ``global`` explicitly — promotion to global is a decision with
     conditions on it, not a default.
     """
+    # The holdout is not reflected on.  A bullet distilled from a
+    # holdout run is a bullet written from the exam, and it is then
+    # injected into the agent that is being examined on that exam.  The
+    # exclusion is by question, for the reason the recall path has it:
+    # the same question asked twenty times is one question with twenty
+    # answers, and excluding one of them leaks the other nineteen.
+    if exclude_holdout:
+        from .eval import filter_excluded
+        records = filter_excluded(records, config_data)
+
     deltas = []
     for group in cluster(records):
         for delta in candidate_deltas(group["records"]):

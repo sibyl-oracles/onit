@@ -255,8 +255,14 @@ def suggest_name(candidate: dict) -> str:
 
 
 def mine_store(config_data: dict | None = None, **kwargs) -> list:
-    """Mine the recorded corpus for skill candidates."""
-    records = list(iter_records(config_data))
+    """Mine the recorded corpus for skill candidates.
+
+    The holdout is excluded, for the reason every loop that reads the
+    corpus excludes it: a skill distilled from a holdout run is a skill
+    written from the exam, and it is then served to the agent being
+    examined on that exam.
+    """
+    records = list(iter_records(config_data, exclude_holdout=True))
     return mine(records, **kwargs)
 
 

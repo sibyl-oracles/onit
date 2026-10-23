@@ -80,7 +80,7 @@ def episodes_since(ts: str, config_data: dict | None = None) -> int:
 def _tool_calls(config_data: dict | None = None) -> dict:
     """Per-tool call/error counts across every recorded trajectory."""
     stats = defaultdict(lambda: {"calls": 0, "errors": 0})
-    for record in iter_records(config_data):
+    for record in iter_records(config_data, exclude_holdout=True):
         for turn in record.get("trajectory") or []:
             for call in turn.get("tools") or []:
                 name = call.get("name")

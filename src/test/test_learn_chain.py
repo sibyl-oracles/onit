@@ -243,9 +243,10 @@ class TestPlaybookReachesThePrompt:
         """Reflect → curate → build_context, in one go.
 
         The runs have to land in the *same* cluster, because a cluster
-        is a tool signature and the contrast is inside it.  The good
-        runs and the bad runs ran the same tools; one of them also ran
-        a tool the other did not, and that difference is the lesson.
+        is a shape of question and the contrast is inside it.  The good
+        runs and the bad runs asked the same kind of question; one of
+        them also ran a tool the other did not, and that difference is
+        the lesson.
         """
         for index in range(3):
             _session(
@@ -257,9 +258,11 @@ class TestPlaybookReachesThePrompt:
         for index in range(3):
             _session(
                 world, "bad%d" % index,
-                ["deploy the service badly %d" % index],
+                ["deploy the service %d" % index],
                 verdict="issues",
                 tools=[{"name": "bash", "args_digest": "g" * 64,
+                        "ok": True},
+                       {"name": "grep", "args_digest": "g" * 64,
                         "ok": True}])
 
         records = list(trajectory.iter_records(world))

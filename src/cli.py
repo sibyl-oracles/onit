@@ -170,6 +170,90 @@ def _token_count(text: str) -> int:
     return int(value)
 
 
+def _learn_eval_run(args, config_data: dict) -> None:
+    """Replay a split through the real agent and grade the answers.
+
+    This is the instrument.  Everything else in the plan changes the
+    agent; this is what says whether the change helped.
+
+    Without ``--ab`` it runs one arm and reports the numbers, which is
+    how you find out whether the instrument works before spending a
+    second arm on it.  With ``--ab`` it runs the control and the
+    treatment and prints the difference with an error bar.
+
+    The split is the dev split unless asked otherwise.  The holdout is
+    read once per candidate, at promotion time: a first run that spends
+    it has nothing left to promote against, and the whole point of a
+    holdout is that it is not spent twice.
+    """
+    import asyncio
+    import shutil
+
+    from .learn.ab import (DEFAULT_LIMIT, DEFAULT_SPLIT, base_config_for_run,
+                           default_root, run_ab)
+    from .learn.runner import format_comparison, summarise
+
+    split = getattr(args, "eval_split", None) or DEFAULT_SPLIT
+    limit = getattr(args, "eval_limit", None) or DEFAULT_LIMIT
+
+    from .learn.eval import read_dev, read_holdout
+    items = read_holdout(config_data) if split == "holdout" else read_dev(config_data)
+    if not items:
+        print("The %s split is empty. Draw one with 'onit learn --holdout' "
+              "first." % split)
+        sys.exit(1)
+    items = items[:limit]
+    print("Replaying %d item(s) from the %s split." % (len(items), split))
+
+    root = getattr(args, "eval_out", None) or default_root()
+    owned = not getattr(args, "eval_out", None)
+    base = base_config_for_run(config_data)
+
+    try:
+        if getattr(args, "ab", False):
+            result = asyncio.run(run_ab(items, root=root, base_config=base,
+                                        limit=limit))
+            print()
+            print(format_comparison(result,
+                                    label="A/B on the %s split:" % split))
+            out = os.path.join(root, "comparison.json")
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump({k: v for k, v in result.items()
+                           if k != "results"}, f, indent=2, default=str)
+            print()
+            print("Results: %s" % out)
+        else:
+            from .learn.runner import run_arm
+            from .learn.llm import make_ask
+            from .learn.ab import _make_agent
+
+            try:
+                ask = asyncio.run(make_ask(base))
+            except Exception as e:
+                print("No grader available (%s); answers will be recorded "
+                      "but not graded." % e)
+                ask = None
+            results = asyncio.run(run_arm(
+                items, arm="off", root=root, base_config=base,
+                make_agent=_make_agent, ask=ask, limit=limit))
+            summary = summarise(results)
+            print()
+            print("  n=%d  correct=%d  wrong=%d  not-attempted=%d  "
+                  "ungraded=%d  errors=%d  accuracy=%.3f"
+                  % (summary["n"], summary["correct"], summary["incorrect"],
+                     summary["not_attempted"], summary["ungraded"],
+                     summary["errors"], summary["accuracy"]))
+            out = os.path.join(root, "arms", "off", "results.json")
+            print("Results: %s" % out)
+    finally:
+        if owned and not getattr(args, "eval_out", None):
+            # The arm stores are throwaway working state.  Keeping them
+            # would put benchmark traffic next to the operator's own
+            # corpus, which is the confusion this command exists to
+            # prevent.
+            shutil.rmtree(root, ignore_errors=True)
+
+
 def _learn_draw_holdout(args, config_data: dict) -> None:
     """Draw and freeze the holdout and the dev split.
 
@@ -279,6 +363,35 @@ def _learn_playbook(args, config_data: dict) -> None:
           % (len(selected), len(items), budget))
 
 
+def _reflect_with_model(args, config_data: dict, records: list) -> list:
+    """The model-based Reflector: read two runs, name the difference.
+
+    Best-effort throughout.  A missing endpoint, an unreachable model or
+    a response that is not the shape that was asked for all yield no
+    deltas rather than an error: the reflection is an enhancement, and
+    the mechanical pass is still there to do what it can.
+    """
+    import asyncio
+
+    from .learn.llm import make_ask
+    from .learn.reflector import reflect_corpus
+
+    try:
+        ask = asyncio.run(make_ask(config_data))
+    except Exception as e:
+        print("Model reflection unavailable (%s). Falling back to the "
+              "mechanical reflector." % e)
+        return []
+
+    try:
+        return asyncio.run(reflect_corpus(ask, records,
+                                          config_data=config_data))
+    except Exception as e:
+        print("Model reflection failed (%s). Falling back to the "
+              "mechanical reflector." % e)
+        return []
+
+
 def _learn_playbook_reflect(args, config_data: dict) -> None:
     """The offline Reflector/Curator pass over the recorded corpus."""
     from .learn import playbook as pb
@@ -303,7 +416,28 @@ def _learn_playbook_reflect(args, config_data: dict) -> None:
               "playbook.")
         return
 
-    deltas = pb.reflect(records, scope=pb.SCOPE_GLOBAL)
+    # Two reflectors, and the difference matters.  The mechanical one
+    # names the difference between the tools that ran; the model-based
+    # one reads the two runs and names the difference between what they
+    # *did*.  The mechanical one alone produces tautologies -- "the same
+    # tool, used badly" -- because a cluster is a tool signature, so its
+    # two sides always ran the same tools.  With a model, the contrast
+    # becomes about arguments, order and reasoning.
+    #
+    # The model is asked first, and the mechanical pass only fills in
+    # what the model did not cover.  The mechanical bullets are weaker,
+    # so they go last, and a run with no model available still reflects
+    # -- just less well than it could have.
+    deltas = []
+    if not getattr(args, "mechanical_only", False):
+        deltas.extend(_reflect_with_model(args, config_data, records))
+
+    if not getattr(args, "model_only", False):
+        # The holdout is excluded inside reflect() itself, so that every
+        # caller gets the boundary and not just this one.
+        deltas.extend(pb.reflect(records, scope=pb.SCOPE_GLOBAL,
+                                  config_data=config_data))
+
     if not deltas:
         print("Reflected over %d record(s) and found no contrast worth a "
               "bullet: no cluster had both a run that went well and a run "
@@ -608,6 +742,41 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="Run the offline Reflector over the "
                                    "recorded corpus and apply the deltas "
                                    "it finds (the Curator).")
+    learn_parser.add_argument("--mechanical-only", action="store_true",
+                              help="With --reflect: use only the mechanical "
+                                   "reflector, which names the difference "
+                                   "between the tools that ran. No model "
+                                   "call, so no model cost.")
+    learn_parser.add_argument("--model-only", action="store_true",
+                              help="With --reflect: use only the model-based "
+                                   "reflector, which reads two contrasting "
+                                   "runs and names what the failing one "
+                                   "did differently.")
+    learn_parser.add_argument("--eval-run", action="store_true",
+                              help="Replay a split through the real agent "
+                                   "and grade the answers: the ruler, "
+                                   "used. Writes a per-item result file and "
+                                   "prints the headline numbers.")
+    learn_parser.add_argument("--eval-split", type=str, default="dev",
+                              choices=["dev", "holdout"],
+                              help="With --eval-run, which split to replay. "
+                                   "Defaults to dev: the holdout is read "
+                                   "once per candidate, at promotion time.")
+    learn_parser.add_argument("--eval-limit", type=int, default=None,
+                              help="With --eval-run, how many items to "
+                                   "replay. Defaults to 20, which is "
+                                   "enough to find out whether the "
+                                   "instrument works.")
+    learn_parser.add_argument("--ab", action="store_true",
+                              help="With --eval-run, run both arms -- the "
+                                   "control at autonomy off and the "
+                                   "treatment at adapt -- and compare "
+                                   "them with an error bar.")
+    learn_parser.add_argument("--eval-out", type=str, default=None,
+                              metavar="DIR",
+                              help="With --eval-run, where to write the run's "
+                                   "results. Defaults to a temporary "
+                                   "directory.")
     learn_parser.add_argument("--rollback", action="store_true",
                               help="Restore the previous playbook version.")
     learn_parser.add_argument("--lifecycle", action="store_true",
@@ -1258,6 +1427,9 @@ def main():
             return
         if args.skills:
             _learn_skills(args, config_data)
+            return
+        if args.eval_run:
+            _learn_eval_run(args, config_data)
             return
         if args.playbook or args.reflect or args.rollback:
             _learn_playbook(args, config_data)
