@@ -245,8 +245,28 @@ def learn_level() -> str:
 
 
 def resolve_learn() -> dict:
-    """OnIt's ``learn`` config block for a benchmark run."""
-    return {"autonomy": learn_level()}
+    """OnIt's ``learn`` config block for a benchmark run.
+
+    The store is the benchmark's own, not the agent's.  This is not a
+    tidiness decision: the corpus under ``~/.onit/learned/trajectories``
+    is what the learning loops read, so a benchmark that wrote into it
+    would be feeding its own traffic back into the recall path that is
+    under test.  The arm being measured would be measuring itself.
+
+    So the trajectories a benchmark run records go to a directory beside
+    the benchmark's data root, and the loops that read them read *that*
+    directory.  A run at ``ONIT_LEARN=off`` records nothing at all; a run
+    at ``ONIT_LEARN=adapt`` records into the bench store and recalls from
+    it, and both arms are unaffected by whatever the operator's own
+    corpus happens to contain.
+
+    The path is overridable with ``ONIT_BENCH_LEARN_PATH`` so a
+    deployment can point the bench store at a mounted volume.
+    """
+    store = os.environ.get("ONIT_BENCH_LEARN_PATH")
+    if not store:
+        store = str(bench_data_root() / "learned")
+    return {"autonomy": learn_level(), "path": store}
 
 
 def bench_timeout() -> int:
