@@ -822,10 +822,21 @@ class OnIt(BaseModel):
     # Private attributes rather than fields: these are per-session state
     # that must not be validated, serialized, or copied into the config
     # on construction.
+    #
+    # The cache is keyed by *owner*, not by session.  One OnIt instance
+    # serves every session in web mode (``chat_ui._onit = self``), so a
+    # single-slot cache would hand the first session's playbook to every
+    # other session on the same instance -- and a playbook carries
+    # owner-private bullets.  One entry per owner keeps the pin static
+    # within an owner (the reason it is cached at all) without crossing
+    # the tenant boundary.
     _playbook_pinned: bool = PrivateAttr(default=False)
     _playbook_context: str = PrivateAttr(default="")
     _playbook_items: list = PrivateAttr(default_factory=list)
     _playbook_version: Any = PrivateAttr(default=None)
+    # The owner the current pin belongs to, and the per-owner cache.
+    _playbook_owner: Any = PrivateAttr(default=None)
+    _playbook_by_owner: dict = PrivateAttr(default_factory=dict)
     data_path: str = Field(default="")
     template_path: str | None = Field(default=None)
     topic: str | None = Field(default=None)
@@ -1484,28 +1495,53 @@ class OnIt(BaseModel):
         per-task playbook would change the static bytes per task and
         cost the cache on every task of every session.
 
+        The instance is shared -- in web mode one OnIt sits behind every
+        session -- and a playbook carries owner-private bullets, so the
+        pin is cached *per owner*, not per instance.  A single slot would
+        hand the first session's playbook to every other session on the
+        same instance, and the private bullets of one tenant would ride
+        in the prompts of another.
+
         Best-effort, like every other loop here: a playbook that cannot
         be read means "no playbook", never "the task failed".
         """
-        if self._playbook_pinned:
+        owner = None
+        try:
+            from .sessions import get_session_owner
+            owner = get_session_owner(session_id,
+                                     os.path.dirname(self.session_path))
+        except Exception:
+            owner = None
+        # The cache is keyed by the owner, with ``None`` for the
+        # ownerless default, so the global playbook and each private
+        # one each get their own slot.
+        key = owner
+        if self._playbook_pinned and self._playbook_owner == key:
             return self._playbook_context
         try:
             from .learn.config import ADAPT, autonomy
             if autonomy(self.config_data) < ADAPT:
                 return ""
             from .learn.playbook import build_context
-            owner = None
-            try:
-                from .sessions import get_session_owner
-                owner = get_session_owner(session_id,
-                                         os.path.dirname(self.session_path))
-            except Exception:
-                owner = None
+            cached = self._playbook_by_owner.get(key)
+            if cached is not None:
+                self._playbook_pinned = True
+                self._playbook_context = cached["text"]
+                self._playbook_items = list(cached["ids"])
+                self._playbook_version = cached["version"]
+                self._playbook_owner = key
+                return self._playbook_context
             context = build_context(config_data=self.config_data, owner=owner)
+            self._playbook_by_owner[key] = {
+                "text": context['text'],
+                "ids": list(context['ids']),
+                "version": context['version'],
+            }
             self._playbook_pinned = True
             self._playbook_context = context['text']
             self._playbook_items = list(context['ids'])
             self._playbook_version = context['version']
+            self._playbook_owner = key
             return self._playbook_context
         except Exception as e:
             logger.debug("playbook not pinned: %s", e)
