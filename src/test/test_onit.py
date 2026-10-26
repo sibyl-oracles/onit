@@ -1225,13 +1225,24 @@ class TestRecordTrajectory:
         assert records[0]["task"] == "find the policy"
         assert records[0]["turn"] == 1
         assert records[0]["tools_available"] == ["bash", "search"]
-        assert records[0]["signals"] == {
+        # The signals the recorder *wrote*.  The implicit label is not
+        # among them: it is derived when the record is read, because it
+        # can only be computed over a session's records together.
+        stored = dict(records[0]["signals"])
+        derived = {"implicit": stored.pop("implicit", None),
+                   "implicit_source": stored.pop("implicit_source", None)}
+        assert stored == {
             "tool_errors": 1, "retries": 1, "truncations": 0, "compactions": 0,
             # No run state was supplied, so how the loop ended is unknown
             # rather than assumed to have been fine.
             "stop_reason": "",
             "user_rating": None, "verifier": None,
         }
+        # And the derived label is present on read: a single-task
+        # session ends, and an ended session is the weakest possible
+        # sign of acceptance.
+        assert derived["implicit"] == "good"
+        assert derived["implicit_source"] == "session-end"
 
     def test_how_the_run_ended_is_taken_from_its_state(self, tmp_path):
         """The metrics cannot say whether the loop finished or gave up; the

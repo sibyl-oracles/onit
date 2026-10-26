@@ -33,29 +33,47 @@ outside the record and can be thrown away and rebuilt.
 
 import os
 
-from .config import trajectory_dir
+from .config import learn_root, trajectory_dir
 from .signals import label_records, summarize as summarize_labels
-from .trajectory import read_session
+from .trajectory import _is_session_name, read_session
 
-# Where the derived labels live.  Inside the learned tree, because it is
-# derived from the learned tree — but it is a *file*, not a trajectory,
-# and nothing in the write path treats it as one.
+# Where the derived labels live.  Beside the trajectories, because it is
+# derived from the trajectories - but it is a *file*, not a trajectory, and
+# the trajectory walk must never see it.
+#
+# It used to live *inside* the trajectory directory, and that was a real
+# bug: the walk lists every "*.jsonl" in that directory, so the label
+# rows were read back as if they were recorded runs.  A store of 1,022
+# tasks reported 2,044.  The label rows carry no response and no turn, so
+# they were recalled as episodes of an agent that had never answered
+# anything.  The file is derived, and derived things live outside the
+# record they are derived from.
 LABELS_NAME = "labels.jsonl"
 
 
 def labels_path(config_data: dict | None = None) -> str:
     """Path of the derived label file."""
-    return os.path.join(trajectory_dir(config_data), LABELS_NAME)
+    return os.path.join(learn_root(config_data), LABELS_NAME)
 
 
 def _session_ids(config_data: dict | None = None) -> list:
-    """Every session file on disk, oldest first."""
+    """Every session file on disk, oldest first.
+
+    The file *name* is not enough to decide what a ".jsonl" file in the
+    trajectory directory is.  The store keeps its own derived files
+    there - the event log, and older installs a labels.jsonl - and a
+    walk that treats every one of them as a session inflates the
+    corpus with rows that are not runs.  A name that is not a session
+    id is skipped here, and the record shape is checked when the file
+    is read.
+    """
     directory = trajectory_dir(config_data)
     try:
         names = sorted(os.listdir(directory))
     except OSError:
         return []
-    return [n[:-len(".jsonl")] for n in names if n.endswith(".jsonl")]
+    return [n[:-len(".jsonl")] for n in names
+            if n.endswith(".jsonl") and _is_session_name(n[:-len(".jsonl")])]
 
 
 def read_sessions(config_data: dict | None = None) -> dict:

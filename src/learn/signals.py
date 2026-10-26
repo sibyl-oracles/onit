@@ -437,6 +437,37 @@ def label_session(records: list) -> list:
     return labels
 
 
+def rating_verdict(record: dict) -> str:
+    """The verdict a human rating implies: "good", "bad" or "".
+
+    A click is the strongest evidence in the corpus: it is the one
+    thing the agent cannot influence and cannot argue with.  It was
+    nevertheless invisible to every loop, because ``label_records``
+    deliberately leaves a rated record's ``signals.implicit`` alone
+    (a click beats a heuristic) and ``contrast`` read only the
+    heuristic field.  A thumbs-down was written, shown in the status
+    report, and consumed by nothing.
+
+    This reads the rating directly, so a record that carries one can
+    be placed on a side of a contrast without a heuristic standing in
+    for it.  It returns "" when there is no rating, which means "the
+    human said nothing" - not "the human was satisfied".
+    """
+    signals = record.get("signals") or {}
+    rating = signals.get("user_rating")
+    if rating is None:
+        return ""
+    try:
+        value = int(rating)
+    except (TypeError, ValueError):
+        return ""
+    if value > 0:
+        return "good"
+    if value < 0:
+        return "bad"
+    return ""
+
+
 def label_records(records: list) -> list:
     """Annotate records with an implicit label, in place.
 
@@ -455,6 +486,13 @@ def label_records(records: list) -> list:
         signals = record.setdefault("signals", {})
         if signals.get("user_rating") is not None:
             signals.setdefault("implicit_source", "explicit-rating")
+            continue
+        # A label that is already on the record is authoritative.  The
+        # heuristic reads the *next* task, and a record whose verdict
+        # was written down - by the verifier, by a backfill, by an
+        # operator - knows more than the heuristic does.  Overwriting
+        # it would silently replace a measurement with a guess.
+        if signals.get("implicit") is not None:
             continue
         signals["implicit"] = label
         if label == "unknown":

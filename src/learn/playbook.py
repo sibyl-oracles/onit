@@ -675,6 +675,18 @@ def contrast(cluster_records: list) -> dict:
         signals = record.get("signals") or {}
         verifier = signals.get("verifier")
         implicit = signals.get("implicit")
+        # A human click outranks both heuristics.  It is the one
+        # verdict the agent could not influence, so a thumbs-down
+        # belongs on the bad side even when the verifier called the
+        # answer clean, and a thumbs-up belongs on the good side even
+        # when the heuristic found nothing.
+        rating = signals.get("user_rating")
+        if rating is not None and rating < 0:
+            bad.append(record)
+            continue
+        if rating is not None and rating > 0:
+            good.append(record)
+            continue
         if implicit == "bad" or verifier == "issues":
             bad.append(record)
         elif implicit == "good" or verifier == "clean":

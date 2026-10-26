@@ -169,16 +169,35 @@ def _outcome_of(record: dict) -> str:
 def _implicit_of(record: dict) -> str:
     """The implicit verdict for an episode: "good", "bad" or "unknown".
 
-    Read off the record's ``signals.implicit``, which the corpus
-    labelling pass fills in.  A record read straight off disk has no
-    such field until it has been through
-    :func:`src.learn.corpus.label_corpus`, and a record with an explicit
-    human rating is deliberately left unlabelled rather than given a
-    heuristic one.
+    Read off the record's ``signals.implicit``, which is filled in
+    when the record is read.  A record with an explicit human rating
+    is deliberately left unlabelled rather than given a heuristic one
+    - a click beats a heuristic - so the rating is consulted here
+    directly, and the click wins.
+
+    Without this, the one verdict the agent could not influence was
+    the one verdict the recall path ignored.
+
+    The *source* of the label decides how much it counts.  "good" read
+    off a follow-up or a click is the user saying something; "good"
+    inferred from a session that simply ended is the absence of a
+    complaint, which is not a verdict at all.  The second must not
+    outrank a fact-check that found something, or a clean answer would
+    rank beside a corrected one.
     """
     signals = record.get("signals") or {}
     verdict = signals.get("implicit")
-    return verdict if verdict in ("good", "bad") else "unknown"
+    if verdict in ("good", "bad"):
+        source = signals.get("implicit_source")
+        if verdict == "good" and source == "session-end":
+            # Silence is not acceptance.  Leave the verifier to decide.
+            return "unknown"
+        return verdict
+    from .signals import rating_verdict
+    rated = rating_verdict(record)
+    if rated:
+        return rated
+    return "unknown"
 
 
 def _rank_key(record: dict) -> int:

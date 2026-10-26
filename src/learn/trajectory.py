@@ -58,6 +58,11 @@ KIND_EVENT = "event"
 
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
+# A session id, as the store writes it.  Used to tell a session file
+# from another ".jsonl" file that happens to live in the same directory.
+_UUID_NAME = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
 # Long enough that two distinct argument sets colliding is not a practical
 # concern, short enough to read in a terminal.
 _DIGEST_CHARS = 16
@@ -357,7 +362,7 @@ def read_session(session_id: str, config_data: dict | None = None) -> list[dict]
                     continue  # a torn line loses one record, not the file
                 if record.get("kind") == KIND_RATING:
                     ratings[record.get("turn")] = record
-                elif record.get("kind", KIND_TASK) == KIND_TASK:
+                elif _is_task_record(record):
                     tasks.append(record)
     except FileNotFoundError:
         return []
@@ -378,7 +383,84 @@ def read_session(session_id: str, config_data: dict | None = None) -> list[dict]
             # the rating line rather than derived from it.
             if rating.get("source"):
                 signals["user_rating_source"] = rating["source"]
+    _label_in_place(tasks)
     return tasks
+
+
+def _label_in_place(records: list) -> list:
+    """Give each record the implicit label, at read time.
+
+    The implicit signal is read off the task that *follows* one, so it
+    can only be computed over a session's records together.  That is
+    why this is here, in the reader, rather than in a separate pass
+    that a caller might forget to run.
+
+    It used to live in ``corpus.label_corpus``, which annotated the
+    records it had in memory and returned.  Nothing wrote them back,
+    and the one production caller then re-read the corpus from disk --
+    so the labels were gone by the time the reflector saw the records.
+    The result was a contrast with no bad side: the runs existed, the
+    labels existed, and the two never met.
+
+    Labelling on read makes the label a property of the record, which
+    is what every consumer already assumed it was.
+    """
+    if not records:
+        return records
+    from .signals import label_records
+    label_records(records)
+    return records
+
+
+def _is_task_record(record: dict) -> bool:
+    """Whether a line in a session file is a recorded run.
+
+    A session file holds three kinds of line: the task records, the
+    rating lines, and the event log's own entries.  The task record is
+    the one with a response - it is the only line that records
+    something the agent actually said.
+
+    The check is on the record's *shape*, not on its "kind" field
+    alone.  A record written by an older build may carry no "kind" at
+    all, and a derived file that lands beside the trajectories carries
+    a "task" and a "turn" but no response, because it is a label, not
+    a run.  Requiring a response is what separates the two.
+    """
+    if not isinstance(record, dict):
+        return False
+    kind = record.get("kind", KIND_TASK)
+    if kind != KIND_TASK:
+        return False
+    return record.get("response") is not None
+
+
+def _is_session_name(name: str) -> bool:
+    """Whether a file name in the trajectory directory is a session file.
+
+    The directory holds more than sessions: the event log is
+    "loop.jsonl", and older installs left a "labels.jsonl" beside the
+    trajectories.  Both end in ".jsonl", and a walk that accepted every
+    one of them read the event log and the label rows back as recorded
+    runs - a store of 1,022 tasks reporting 2,044.
+
+    The name is not a reliable discriminator.  A session id is whatever
+    the caller passed to ``record_task``, and the store has always
+    accepted any string: the tests use "s1", and the agent uses a UUID.
+    Filtering on "is it a UUID" would reject the first and quietly
+    drop sessions written by anything that names its own.
+
+    So the name is only screened for the two files the store itself
+    owns, and the real test is applied to each line when the file is
+    read: a task record has a response, and nothing else does.
+    """
+    if name in _DERIVED_NAMES:
+        return False
+    return True
+
+
+# The files the store keeps in the trajectory directory that are not
+# sessions.  Both are derived, and both are disposable.
+_DERIVED_NAMES = frozenset({"loop", "labels"})
 
 
 def _session_names(directory: str) -> list:
@@ -387,7 +469,8 @@ def _session_names(directory: str) -> list:
         names = sorted(os.listdir(directory))
     except OSError:
         return []
-    return [n[:-len(".jsonl")] for n in names if n.endswith(".jsonl")]
+    return [n[:-len(".jsonl")] for n in names
+            if n.endswith(".jsonl") and _is_session_name(n[:-len(".jsonl")])]
 
 
 def _split_membership(config_data: dict | None = None) -> dict:
