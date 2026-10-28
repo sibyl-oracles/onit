@@ -3817,11 +3817,11 @@ class TestDefaultTokenBudgets:
 
     @pytest.mark.asyncio
     async def test_unreported_window_falls_back_to_the_default(self, tmp_path):
-        """262144 assumed; the 16384 output default reserves ~6% of it, so the
-        compaction threshold sits near 0.89 rather than clamping to 0.50."""
+        """262144 assumed; the 32768 output default reserves ~17% of it, so the
+        compaction threshold sits at 0.825 rather than clamping to 0.50."""
         from model.serving.chat import (DEFAULT_MAX_TOKENS,
                                         DEFAULT_MAX_CONTEXT_TOKENS)
-        assert DEFAULT_MAX_TOKENS == 16384
+        assert DEFAULT_MAX_TOKENS == 32768
         assert DEFAULT_MAX_CONTEXT_TOKENS == 262144
         kwargs = await self._first_call_kwargs(tmp_path, detected=None)
         assert kwargs["max_tokens"] == DEFAULT_MAX_TOKENS

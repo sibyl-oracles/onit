@@ -21,7 +21,8 @@ serving:
   #   temperature: 0.7    # instruct-mode sampling, to match (MODEL_SERVING.md)
   #   top_p: 0.8
   # Max output tokens per response. 32768 fits any single answer and keeps the
-  # context-compaction threshold healthy (~90%) on large-context models.
+  # context-compaction threshold healthy (0.70 on a 128k window, 0.825 on a
+  # 256k one) on large-context models.
   max_tokens: 32768
   # max_context_tokens: 1048576  # model's context window; auto-detected from vLLM if unset
   # num_ctx: 32768  # Ollama only: context window (prompt+output). Ollama defaults this

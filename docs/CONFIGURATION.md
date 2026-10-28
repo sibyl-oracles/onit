@@ -63,8 +63,9 @@ serving:
   max_tokens: 32768   # max output tokens per response (shipped default;
                       # clamped to whatever is left of the context window
                       # per request). 32768 fits any single answer and keeps
-                      # the context-compaction threshold healthy (~90%);
-                      # raise it only for genuinely huge single responses.
+                      # the context-compaction threshold healthy (0.70 on a
+                      # 128k window, 0.825 on a 256k one); raise it only for
+                      # genuinely huge single responses.
   # Both budgets are also CLI flags, which accept a k/M suffix:
   #   onit --max-tokens 1M --max-context-tokens 1M
   # Sampling parameters (all optional — sensible defaults apply):

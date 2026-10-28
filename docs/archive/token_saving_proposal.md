@@ -12,6 +12,21 @@ New tests: `src/test/test_speed_plan.py` (33 tests).
 `Σ_turns(prefill + decode) + Σ tool time + compaction LLM calls + verify fast pass + instruction build`.
 Every proposal below names which term it attacks.
 
+> **Superseded in part — 2026-10-28.** `DEFAULT_MAX_TOKENS` was raised from
+> 16384 to **32768** after this plan was executed. The reasoning in §0 and §C
+> below is kept as the record of that decision; the reasoning that still
+> holds is the *shape* of it, not the number:
+>
+> * **Still true:** 131072 is the value to stay away from. It clamps the
+>   compaction threshold to 0.50 on any window ≤ 256k and re-creates the
+>   window-overflow retry loop. 32768 leaves the threshold at 0.70 on a
+>   128k window and 0.825 on a 256k one.
+> * **Changed:** the specific figure 16384 and the "0.89 threshold" it
+>   bought. 32768 is the new default, and the shipped `configs/default.yaml`
+>   already said 32768 — the code constant is what had drifted.
+> * **Unchanged:** the decay dials, the producer caps, and the compaction
+>   transcript bound. Nothing in this plan was reverted.
+
 ---
 
 ## 0. Status of the 2026-09-17 plan (commit `4d9100f`)
@@ -293,6 +308,10 @@ the token savings.
   Count *consecutive* identical calls (streak ≥ 5 = loop) instead.
 
 ### C. What not to undo
+
+> **Superseded 2026-10-28:** the figure 16384 below was raised to 32768.
+> The *reason* the number is not 131072 still holds, and so does everything
+> else in this section. See the note at the top of this file.
 
 Keep `DEFAULT_MAX_TOKENS=16384` and the 0.89 threshold (reverting to 131072
 re-creates the 0.50 clamp and adds a window-overflow retry loop on 128k–256k

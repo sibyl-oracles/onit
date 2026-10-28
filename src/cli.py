@@ -893,7 +893,7 @@ def _build_parser() -> argparse.ArgumentParser:
                              "128k or 1M. Each request is still clamped to what "
                              "is left of the context window. Overrides "
                              "serving.max_tokens in the config YAML "
-                             "(default: 131072).")
+                             "(default: 32768).")
     parser.add_argument("--max-context-tokens", type=_token_count, default=None,
                         dest="max_context_tokens", metavar="N",
                         help="Context window size in tokens, e.g. 128k or 1M. "

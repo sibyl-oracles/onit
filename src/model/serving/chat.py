@@ -147,10 +147,11 @@ def _truncate_tool_response(response: str, tool: str = "") -> str:
 # is what is *reserved* against the context window when the compaction
 # threshold is computed, so an inflated default does not reserve an inflated
 # share of the window — it silently halves how full the context may get before
-# compaction fires (with 131072 the threshold clamped to 0.50; with 16384 it
-# sits near 0.89 on a 128k window).  A caller that genuinely needs a very
-# large single response sets serving.max_tokens explicitly.
-DEFAULT_MAX_TOKENS = 16384
+# compaction fires (with 131072 the threshold clamped to 0.50; with 32768 it
+# sits at 0.70 on a 128k window and 0.825 on a 256k one).  A caller that
+# genuinely needs a very large single response sets serving.max_tokens
+# explicitly.
+DEFAULT_MAX_TOKENS = 32768
 
 # Context window assumed when the size of the real one cannot be established:
 # the endpoint does not publish it (OpenRouter) or the query for it failed.
