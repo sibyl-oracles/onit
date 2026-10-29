@@ -1651,6 +1651,18 @@ class OnIt(BaseModel):
         effective_session_path = session_path or self.session_path
         effective_data_path = data_path or self.data_path
         effective_safety_queue = safety_queue or self.safety_queue
+        # An agent built outside ``run()`` has no instance queue -- ``run()``
+        # is what creates one, and a caller that builds the agent directly
+        # (the eval runner, ``scripts/measure.py``, a test) never goes
+        # through it.  ``safety_queue=None`` from such a caller used to
+        # raise AttributeError on the line below, which the runner caught
+        # as a per-item error: every item in both arms scored 0 with
+        # "'NoneType' object has no attribute 'empty'", and an A/B on a
+        # headless agent measured nothing at all.  A caller with no queue
+        # is a caller nobody can interrupt, so the empty queue is the
+        # honest stand-in: nothing is pending, and nothing ever will be.
+        if effective_safety_queue is None:
+            effective_safety_queue = asyncio.Queue(maxsize=10)
 
         while not effective_safety_queue.empty():
             effective_safety_queue.get_nowait()

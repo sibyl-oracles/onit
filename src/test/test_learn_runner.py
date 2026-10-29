@@ -462,3 +462,48 @@ class TestTheErrorRate:
         assert hits / trials > 0.85, (
             "a +0.18 effect was detected %.0f%% of the time; the bar is too "
             "wide to be useful" % (100.0 * hits / trials))
+
+
+class TestTheArmHandsTheAgentAWorkableEnvironment:
+    """The two kwargs that made every item in every arm fail.
+
+    Both defects were invisible to the suite because every test here
+    injects a ``StubAgent`` that accepts ``**kwargs`` and returns a string
+    without looking at them.  The real agent looks at both:
+
+    * ``safety_queue=None`` -- ``process_task`` calls ``.empty()`` on it
+      before the first turn, so the real agent raised ``'NoneType' object
+      has no attribute 'empty'`` on every item.  The runner catches that as
+      a per-item error, so both arms scored 0.000 and the A/B reported a
+      clean null result between two error streams.
+
+    * ``data_path`` -- the MCP tool servers are registered with the
+      config's ``data_path`` and refuse any path outside it.  The runner
+      passed ``<store>/data``, a directory the servers had never heard of,
+      so every tool call was refused and the agent answered the task by
+      describing the refusal.
+    """
+
+    async def test_the_agent_gets_a_queue_it_can_call_empty_on(self, tmp_path):
+        agent = StubAgent()
+        await runner.run_arm([_item("q", "r", "s1#1")], arm="off",
+                             root=str(tmp_path),
+                             make_agent=lambda config: agent,
+                             ask=_ask_ok)
+        queue = agent.calls[0]["kwargs"]["safety_queue"]
+        assert queue is not None, "a None queue crashes the real agent"
+        assert queue.empty() is True
+
+    async def test_the_working_directory_is_the_configs_data_path(self, tmp_path):
+        """The servers only serve one root, and this has to be it."""
+        agent = StubAgent()
+        work = tmp_path / "served-root"
+        await runner.run_arm([_item("q", "r", "s1#1")], arm="off",
+                             root=str(tmp_path / "arms"),
+                             base_config={"data_path": str(work)},
+                             make_agent=lambda config: agent,
+                             ask=_ask_ok)
+        passed = agent.calls[0]["kwargs"]["data_path"]
+        assert passed == str(work.resolve()), (
+            "the arm must run where the tool servers were registered, "
+            "not in a store directory they do not serve")

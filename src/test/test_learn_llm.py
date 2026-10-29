@@ -95,3 +95,55 @@ class TestTheClientCarriesNoTools:
         assert "'tools'" not in source
         assert "tool_registry" not in source
         assert "tool_registry" not in inspect.getsource(llm._build_client)
+
+
+class TestTheClientTupleOrder:
+    """The three values ``_build_client`` returns land in the right slots.
+
+    ``make_ask`` unpacks the tuple as ``(client, ollama_client, is_ollama)``
+    and then calls ``ollama_client.chat(...)`` on an Ollama host.  The
+    Ollama client was returned in the *first* slot, so ``ollama_client``
+    was ``None`` and every background call on an Ollama host raised
+    ``'NoneType' object has no attribute 'chat'``.
+
+    Nothing noticed, because both callers swallow the exception: the
+    Reflector returned no deltas (indistinguishable from "the two runs had
+    nothing to teach") and the grader returned an empty grade (counted as
+    "ungraded", not as an error).  An A/B on an Ollama host therefore
+    measured 0.000 in both arms and reported it as a clean null result.
+
+    The other tests in this file inspect the signature and the source text,
+    which is exactly why they all passed while the client was unusable.
+    """
+
+    def test_the_ollama_client_is_in_the_second_slot(self):
+        from src.learn import llm as llm_module
+
+        from src.model.serving import chat as chat_module
+
+        sentinel = object()
+        real = chat_module._create_ollama_client
+        # ``_build_client`` imports the name from chat at call time, so the
+        # patch has to land there.
+        chat_module._create_ollama_client = lambda *a, **k: sentinel
+        try:
+            client, ollama_client, is_ollama = llm_module._build_client(
+                "https://ollama.com", "EMPTY", 30.0)
+        finally:
+            chat_module._create_ollama_client = real
+
+        assert is_ollama is True
+        assert ollama_client is sentinel, (
+            "the Ollama client must be the second value; make_ask calls "
+            ".chat() on that slot")
+        assert client is None
+
+    def test_an_openai_host_puts_the_client_in_the_first_slot(self):
+        from src.learn import llm as llm_module
+
+        client, ollama_client, is_ollama = llm_module._build_client(
+            "http://127.0.0.1:9999/v1", "EMPTY", 5.0)
+
+        assert is_ollama is False
+        assert client is not None
+        assert ollama_client is None

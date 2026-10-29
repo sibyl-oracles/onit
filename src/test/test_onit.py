@@ -1770,3 +1770,73 @@ class TestFinalAnswerBlock:
         stored = onit.chat_ui.messages[-1].content
         assert "< 0.71205" in stored
         assert stored.endswith("text the user needs")
+
+
+# ── a caller that brings no queue ────────────────────────────────────────────
+
+class TestProcessTaskWithoutAnInstanceQueue:
+    """An agent built outside ``run()`` has no queue, and must still run.
+
+    ``run()`` is what creates ``self.safety_queue``.  Every caller that
+    builds an ``OnIt`` directly -- the eval runner, ``scripts/measure.py``,
+    a test -- never goes through it, so ``self.safety_queue`` is ``None``.
+    ``process_task`` did ``safety_queue or self.safety_queue`` and then
+    called ``.empty()`` on the result, so those callers got
+
+        AttributeError: 'NoneType' object has no attribute 'empty'
+
+    before the first turn.  ``learn --eval-run --ab`` passes
+    ``safety_queue=None`` explicitly, so *every item in both arms* raised,
+    and the comparison was between two error streams that both scored
+    0.000.
+
+    Every existing test in this file sets ``onit.safety_queue`` by hand
+    before calling ``process_task``, which is exactly why none of them
+    saw it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_none_queue_does_not_raise(self, tmp_path):
+        onit = _make_onit_for_async(tmp_path)
+        onit.safety_queue = None
+
+        mock_prompt_msg = MagicMock()
+        mock_prompt_msg.content.text = "Instruction text"
+        mock_prompt_result = MagicMock()
+        mock_prompt_result.messages = [mock_prompt_msg]
+
+        mock_client = AsyncMock()
+        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.onit.Client", return_value=mock_client), \
+             patch("src.onit.chat", new_callable=AsyncMock,
+                   return_value="The answer"):
+            result = await onit.process_task("What is 2+2?", safety_queue=None)
+
+        assert result == "The answer"
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_none_queue_does_not_raise(self, tmp_path):
+        """``run_arm`` passes ``safety_queue=None`` while the instance has
+        no queue either: both fallbacks are None, and both used to raise."""
+        onit = _make_onit_for_async(tmp_path)
+        assert onit.safety_queue is None, (
+            "an agent built outside run() must have no instance queue, "
+            "or this test is not testing the fallback")
+
+        mock_prompt_msg = MagicMock()
+        mock_prompt_msg.content.text = "Instruction text"
+        mock_prompt_result = MagicMock()
+        mock_prompt_result.messages = [mock_prompt_msg]
+
+        mock_client = AsyncMock()
+        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.onit.Client", return_value=mock_client), \
+             patch("src.onit.chat", new_callable=AsyncMock,
+                   return_value="ok"):
+            assert await onit.process_task("q", safety_queue=None) == "ok"

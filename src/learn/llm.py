@@ -77,8 +77,16 @@ def _build_client(host: str, host_key: str, timeout: float | None):
     host = _normalize_openai_base_url(host)
     is_ollama = _is_ollama_host(host)
     if is_ollama:
-        return _create_ollama_client(host, api_key, timeout, stream=False), \
-            None, True
+        # The tuple is (client, ollama_client, is_ollama) and the position
+        # matters.  This used to return the Ollama client in the *first*
+        # slot, so ``make_ask`` read ``ollama_client`` as None and every
+        # background call on an Ollama host died with "'NoneType' object
+        # has no attribute 'chat'".  The Reflector and the grader both
+        # swallow that exception, so the failure was silent: the model
+        # reflector wrote nothing and the grader returned an empty grade,
+        # and an A/B on an Ollama host measured 0.000 in both arms.
+        return None, _create_ollama_client(host, api_key, timeout,
+                                           stream=False), True
     from openai import AsyncOpenAI
     client = AsyncOpenAI(base_url=host, api_key=api_key,
                          timeout=_build_client_timeout(timeout, stream=False))

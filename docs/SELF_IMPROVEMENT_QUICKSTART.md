@@ -554,30 +554,39 @@ onit learn --holdout
 onit learn --eval-run --ab --eval-split dev --eval-limit 40
 ```
 
+The shape of the output is:
+
 ```
 A/B on the dev split:
-  control  (off): 0.000  n=1  correct=0  wrong=0  not-attempted=1  ungraded=0  errors=1
-  treatment(adapt): 0.000  n=1  correct=0  wrong=0  not-attempted=1  ungraded=0  errors=1
-  delta: +0.000  (stderr 0.000)  -> not significant
-  A delta smaller than its error bar is not a result. Ship nothing on this evidence.
+  control  (off): <acc>  n=<N>  correct=<c>  wrong=<w>  not-attempted=<a>  ungraded=<u>  errors=<e>
+  treatment(adapt): <acc>  n=<N>  correct=<c>  wrong=<w>  not-attempted=<a>  ungraded=<u>  errors=<e>
+  delta: <d>  (stderr <bar>)  -> significant | not significant
 ```
 
-**This command does not work today.** The per-item error is
-`'NoneType' object has no attribute 'empty'`: `src/learn/runner.py:238`
-passes `safety_queue=None` to `process_task`, and `process_task` calls
-`effective_safety_queue.empty()` (`src/onit.py:1616-1618`). The queue is
-only created in `OnIt.run()`. Every item errors, both arms score 0.000,
-and the comparison is between two error streams.
+**Read `errors` before you read `accuracy`.** When `errors` is not zero
+the accuracy beside it is not a measurement, and the delta compares two
+failure counts. Every number in this guide that is not a literal tool
+output is marked as such; the fields above are named rather than filled
+in, because a sample that looks like a result is a result people quote.
 
-Two more defects sit behind it:
+**This command works as of October 29, 2026.** It did not before. Three
+defects sat behind it, and each one alone was enough to make the output
+look like a clean null result:
 
-| # | Defect | Effect | Workaround |
+| # | Defect | Effect | Fixed in |
 |---|---|---|---|
-| 1 | `runner.py:238` — `safety_queue=None` | every item errors | `scripts/measure.py` supplies a real `asyncio.Queue` |
-| 2 | `runner.py:237` — `data_path` is `<root>/store/<arm>/data`, outside the server's `DATA_PATH` | every tool call refused | `measure.py` uses the config's `data_path` |
+| 1 | `runner.py` passed `safety_queue=None` | every item raised `'NoneType' object has no attribute 'empty'` before its first turn | `process_task` now builds an empty queue when neither it nor the instance has one |
+| 2 | `runner.py` passed `data_path=<store>/data` | the tool servers were registered with the config's `data_path` and refused every path outside it, so the agent answered each task by describing the refusal | `run_arm` takes the config's `data_path` |
+| 3 | `llm._build_client` returned `(ollama_client, None, True)` | on an Ollama host `make_ask` called `.chat()` on `None`, so the **grader** returned an empty grade and the **model Reflector** wrote nothing | the tuple is now `(None, ollama_client, True)` |
 
-Once those are fixed, the built-in A/B collapses into one command. Until
-then, **use `scripts/measure.py`**.
+Defects 1 and 2 made both arms score 0.000 with every item in error.
+Defect 3 was silent in a different way: the grader's failure is counted
+as `ungraded`, not as an error, so an A/B on an Ollama host reported
+`delta: +0.000 (stderr 0.000) -> not significant` — a real-looking null
+result produced by two failures rather than by two measurements.
+
+A run that errors is now visible: `errors` is printed beside `accuracy`,
+and a non-zero `errors` means the numbers below it are not a measurement.
 
 ### What the built-in split does and does not protect
 

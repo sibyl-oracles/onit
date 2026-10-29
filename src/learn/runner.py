@@ -44,6 +44,7 @@ the agent that grades.  A self-graded answer is not a measurement, and
 one that scored itself would report a number the agent controls.
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -53,6 +54,19 @@ import tempfile
 import time
 
 logger = logging.getLogger(__name__)
+
+
+def _safety_queue():
+    """The stop-queue an item runs with.
+
+    ``process_task`` drains it before the run and checks it between
+    turns; a caller that hands it nothing used to crash on the first
+    line.  Nothing can be pushed into a queue the runner creates, which
+    is the right answer for an unattended replay: no person is present
+    to interrupt it.
+    """
+    return asyncio.Queue(maxsize=10)
+
 
 # The result file's name inside an arm's directory.
 RESULTS_NAME = "results.json"
@@ -189,12 +203,21 @@ def _record_arm_result(path: str, results: list) -> None:
 async def run_arm(items: list, *, arm: str, root: str,
                   base_config: dict | None = None,
                   make_agent=None, ask=None,
-                  limit: int | None = None) -> list:
+                  limit: int | None = None,
+                  data_path: str | None = None) -> list:
     """Run one arm over a list of items and grade the answers.
 
     ``make_agent(config)`` returns an object with ``process_task``; it
     is injected so that the runner is testable without an endpoint and
     without a tool registry.  ``ask`` is the grader's client.
+
+    ``data_path`` is the working directory every item runs in, and it
+    must be the directory the tool servers were registered with -- they
+    take it from the config's ``data_path`` at launch and refuse any
+    path outside it.  It defaults to the config's own ``data_path`` so
+    that a caller who does not think about it still gets a run whose
+    tools work, rather than one that answers every task with a
+    description of why its tools were refused.
 
     Returns a list of result dicts, one per item.
     """
@@ -203,6 +226,11 @@ async def run_arm(items: list, *, arm: str, root: str,
 
     base_config = dict(base_config or {})
     store = _arm_store(root, arm)
+    if data_path is None:
+        data_path = (base_config.get("data_path")
+                     or os.path.join(root, "data"))
+    data_path = os.path.abspath(os.path.expanduser(str(data_path)))
+    os.makedirs(data_path, exist_ok=True)
     config = _config_for_arm(base_config, arm, store)
     # The ruler must be visible to the arm but not writable by it, and
     # the arm's own store must not be the operator's corpus.
@@ -234,8 +262,18 @@ async def run_arm(items: list, *, arm: str, root: str,
                 task,
                 session_path=os.path.join(store, "sessions",
                                          "%s.jsonl" % (item.get("id") or "item")),
-                data_path=os.path.join(store, "data"),
-                safety_queue=None,
+                # The working directory must be the one the MCP tool servers
+                # were registered with.  They take it from the config's
+                # ``data_path`` at launch (``cli._ensure_mcp_servers`` sets
+                # ``ONIT_DATA_PATH``), and every filesystem tool refuses a
+                # path outside that root.  This used to pass
+                # ``<store>/data`` -- a directory the servers never heard of
+                # -- so every tool call in every item was refused and the
+                # agent answered from the refusal instead of from the task.
+                # Both arms then scored on how well they described the
+                # refusal.
+                data_path=data_path,
+                safety_queue=_safety_queue(),
             )
         except Exception as e:
             error = str(e)[:300]
