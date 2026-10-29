@@ -59,7 +59,14 @@ _NAMES = {"off": OFF, "observe": OBSERVE, "adapt": ADAPT,
 # must not be able to talk itself into a rung it has not earned -- but the
 # cap has to be *loud* (see :func:`requested_level`), because a silent cap
 # is a run that believes it is adapting and is not.
-_MAX_IMPLEMENTED = ADAPT
+#
+# It was ADAPT until October 28, 2026, when the skills server was given the
+# gate it was documented to have.  ``default.yaml`` said "the autonomy level
+# has to be `extend` before a skill may be served at all" and no code said
+# it -- so the documented gate could never open *and* the server served at
+# any level, which is the worst of both.  Now the server checks ``EXTEND``
+# and this cap admits it, so the sentence in the YAML is true.
+_MAX_IMPLEMENTED = EXTEND
 
 # Truthy/falsy spellings accepted from the environment, where everything is a
 # string and "0" is not falsy on its own.

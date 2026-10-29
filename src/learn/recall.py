@@ -351,11 +351,27 @@ def recall(task: str, *, config_data: dict | None = None,
                                 -pair[1], _record_key(pair[0])))
 
     chosen = []
+    seen_ids = set()
     used = 0
     header_cost = _estimate_tokens(UNTRUSTED_MARKER)
     for record, score in near:
         if len(chosen) >= top_k:
             break
+        # One episode per id.  A session file holds one line per turn, and
+        # a turn that was recorded twice -- a retry that wrote both, a
+        # backfill that re-derived a record, two runs of the same session
+        # and turn -- is *one* episode with the same id.  Injecting it
+        # twice spends the token budget on a duplicate and tells the agent
+        # that the same thing happened twice, which is a claim about the
+        # history that the history does not make.
+        #
+        # The dedupe is by id rather than by summary because the id is
+        # what ``learned_context.episodes_used`` records, and a later run
+        # that asks "did being shown this episode help" has to be able to
+        # count distinct episodes.
+        record_id = _record_key(record)
+        if record_id in seen_ids:
+            continue
         outcome = _outcome_of(record)
         if not outcome and not include_unjudged:
             continue
@@ -367,8 +383,9 @@ def recall(task: str, *, config_data: dict | None = None,
             # inject fewer episodes whole.
             break
         used += cost
+        seen_ids.add(record_id)
         chosen.append({
-            "id": _record_key(record),
+            "id": record_id,
             "score": round(score, 6),
             "outcome": outcome,
             "summary": summary,

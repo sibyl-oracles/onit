@@ -439,15 +439,24 @@ python3 scripts/measure.py --config ~/demo/config.yaml \
 | treatment | `store.frozen` | recall + playbook (`adapt`) | *your number* |
 
 A win is `treatment − baseline`, and it must clear an error bar. The bar
-this codebase uses is the **sum of the two arms' standard errors**
-(`src/learn/runner.py:294`): one arm's error at n=40 and p≈0.45 is
-~0.079, so the bar is **~0.157 — about 6 items out of 40**. A delta
-smaller than that is noise, and must be reported as such.
+this codebase uses is **1.96 × the standard error of the difference**,
+`1.96 × sqrt(se_baseline² + se_treatment²)` (`src/learn/runner.py`,
+`compare()`): one arm's error at n=40 and p≈0.45 is ~0.079, so the bar
+is **~0.218 — about 9 items out of 40**. A delta smaller than that is
+noise, and must be reported as such.
 
 That bar is wide, and it is the bar you should want. A two-item delta on
 eight items (the run in §10) cleared a 0.153 bar *only* because the
 treatment arm was perfect, which makes its error zero. One sloppy item
 and the same delta would not have cleared it.
+
+*This number changed on October 28, 2026.*  The bar used to be the **sum**
+of the two standard errors — `2s`, which is `1.414σ` of the difference,
+not 1.96.  That made the test wrong 15.7% of the time under the null
+instead of 5%: a placebo arm scored as a win roughly one time in six.
+The bar is now ~1.39× wider than the old one, so **every threshold in
+this document that was computed against the old bar is ~39% too small**.
+The numbers below have been recomputed.
 
 ### The controls that decide whether the win is real
 
@@ -591,6 +600,29 @@ The dev split is the *iteration* set, so its questions are not excluded —
 3 of 240 dev items can recall an earlier twin's answer. The holdout is
 clean.
 
+*October 28, 2026 — the split itself leaked.*  Excluding the holdout from
+recall was only half the boundary. The *draw* shuffled records and sliced,
+so a question asked in two sessions could land in the holdout on one
+record and in dev on the other: the ids were disjoint and the questions
+were not. The split drawn on 2026-10-23 had **7 questions on both sides**,
+including "what is the current SOTA in TTS" and "marikina river water level
+latest". `build_split()` now draws **one record per question**, keeps the
+rest out of the measurement (they stay in the store, and the loops still
+learn from them), and reports how many siblings it dropped
+(`counts.duplicate_questions`, 48 of 400 on the real corpus). The holdout
+and dev question sets are now disjoint by construction, and
+`TestTheSplitIsDisjointByQuestion` asserts it.
+
+**A split drawn before this fix is still leaking.**  Re-draw it:
+`onit learn --holdout` rewrites `holdout.jsonl`, `dev.jsonl` and
+`split.json`.
+
+*Done, same day.*  The frozen split in `benchmarks/eval/` was re-drawn:
+160 holdout, 240 dev, 48 duplicate questions dropped, **0 questions on both
+sides** (it was 7).  The old files are in `tmp/eval-backup-20261023/`, and
+the new `split.json` records `counts.duplicate_questions` so the drop is
+visible rather than implied.  The seed did not change; the draw did.
+
 ---
 
 ## 10. What actually happened when this guide was run
@@ -696,12 +728,12 @@ cannot yet say whether `recall()`'s *ranking* does any work either.
 | 5 | **The shuffled arm** (`--shuffle-recall`) | if a *random* episode helps as much as the top-scored one, `recall()` is not doing the work |
 | 6 | **The task must not be one the model is bad at** | weekday arithmetic is right ~80% of the time, so the ceiling is low and the noise is high |
 
-**And the error bar is the code's, not yours.** `compare()` uses the sum
-of the two arms' standard errors (`src/learn/runner.py:294`), so at n=40
-and p≈0.45 the bar is **~0.157 — about 6 items**, not the ~3 a
-single-arm standard error would suggest. The §10 delta of 2 items
-cleared a 0.153 bar only because the treatment arm was perfect. A win
-that only clears the bar when one arm is flawless is not a win yet.
+**And the error bar is the code's, not yours.** `compare()` uses
+`1.96 × sqrt(se_b² + se_t²)`, so at n=40 and p≈0.45 the bar is
+**~0.218 — about 9 items**, not the ~3 a single-arm standard error
+would suggest. The §10 delta of 2 items cleared a 0.153 bar only
+because the treatment arm was perfect. A win that only clears the bar
+when one arm is flawless is not a win yet.
 
 **Choose a task family where the baseline is near 50%.** If the agent
 already scores 8/8, there is no room to improve and any delta is noise.

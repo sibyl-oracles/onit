@@ -65,21 +65,30 @@ class TestAutonomy:
         the rest lands.
 
         October 22, 2026: the cap moved from `observe` to `adapt` when Loops A
-        and B shipped.  `evolve` and `extend` are still not built, so they
-        still cap -- to the highest rung that is.
+        and B shipped.  October 28, 2026: it moved to `extend` when the skills
+        server was given the level check it was documented to have.  `evolve`
+        is still not built, so it still caps -- to the highest rung that is.
         """
         cfg = {"learn": {"autonomy": "evolve"}}
-        assert learn_config.autonomy(cfg) == learn_config.ADAPT
+        assert learn_config.autonomy(cfg) == learn_config.EXTEND
         assert learn_config.requested_level(cfg) == learn_config.EVOLVE
         assert learn_config.capped(cfg) is True
 
     def test_the_cap_is_loud(self):
         """A silent cap is the bug: a run that believes it is evolving and is
         not.  The request and the grant must be distinguishable."""
-        cfg = {"learn": {"autonomy": "extend"}}
-        assert learn_config.autonomy(cfg) == learn_config.ADAPT
-        assert learn_config.requested_level(cfg) == learn_config.EXTEND
+        cfg = {"learn": {"autonomy": "evolve"}}
+        assert learn_config.autonomy(cfg) == learn_config.EXTEND
+        assert learn_config.requested_level(cfg) == learn_config.EVOLVE
         assert learn_config.capped(cfg) is True
+
+    def test_extend_is_now_reachable(self):
+        """Serving a skill requires `extend`, and `extend` requires that the
+        cap admits it -- otherwise the documented gate could never open and
+        the server would serve at every level, which is what it did."""
+        assert learn_config.autonomy({"learn": {"autonomy": "extend"}}) == \
+            learn_config.EXTEND
+        assert learn_config.capped({"learn": {"autonomy": "extend"}}) is False
 
     def test_a_level_within_the_cap_is_not_flagged(self):
         cfg = {"learn": {"autonomy": "adapt"}}

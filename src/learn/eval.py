@@ -323,13 +323,47 @@ def build_split(*, config_data: dict | None = None,
     shuffled = list(candidates)
     rng.shuffle(shuffled)
 
-    if max_items and len(shuffled) > max_items:
-        shuffled = shuffled[:max_items]
-    candidates = shuffled
+    # The draw is per *question*, not per record, and this is the fix that
+    # makes the split disjoint in the way that matters.
+    #
+    # The old draw shuffled records and sliced, so a question asked in two
+    # sessions -- "what is the current SOTA in TTS" was asked many times,
+    # across models and across days -- could land in the holdout on one
+    # record and in dev on the other.  The ids were disjoint and the
+    # questions were not, and a holdout that shares a question with dev is
+    # not holding anything out: the answer is in the dev split the loop
+    # iterates on.  Seven of the four hundred tasks in the split drawn on
+    # 2026-10-23 were in both halves this way.
+    #
+    # So: walk the shuffled records, keep the first record of each
+    # question, and skip the rest.  One question, one side.  Which side is
+    # decided by where the question's first record fell in the shuffle,
+    # which is still seeded and still deterministic.
+    #
+    # A sibling that is dropped is not lost from the corpus -- it stays in
+    # the store and the loops still learn from it -- it is only kept out
+    # of the *measurement*, which is the thing a duplicated question
+    # corrupts.
+    unique, seen_keys, duplicates = [], set(), 0
+    for record in shuffled:
+        key = task_key(record.get("task") or "")
+        # A record with no usable key cannot be deduped by question; it
+        # was already filtered by _is_usable for having no task text, so
+        # the only way here is a task that normalises to nothing.
+        if key:
+            if key in seen_keys:
+                duplicates += 1
+                continue
+            seen_keys.add(key)
+        unique.append(record)
 
-    n_holdout = int(round(len(shuffled) * holdout_ratio))
-    holdout_items = shuffled[:n_holdout]
-    dev_items = shuffled[n_holdout:]
+    if max_items and len(unique) > max_items:
+        unique = unique[:max_items]
+    candidates = unique
+
+    n_holdout = int(round(len(unique) * holdout_ratio))
+    holdout_items = unique[:n_holdout]
+    dev_items = unique[n_holdout:]
 
     holdout = [_split_entry(r, SPLIT_HOLDOUT, r.get("model"), r.get("owner"))
                for r in holdout_items]
@@ -347,6 +381,11 @@ def build_split(*, config_data: dict | None = None,
             "holdout": len(holdout),
             "dev": len(dev),
             "candidates": len(candidates),
+            # How many records were dropped as siblings of a question
+            # already in the draw.  Reported rather than hidden: a split
+            # that silently discarded half the corpus would look like a
+            # small corpus, and the two are different problems.
+            "duplicate_questions": duplicates,
         },
         "holdout": holdout,
         "dev": dev,

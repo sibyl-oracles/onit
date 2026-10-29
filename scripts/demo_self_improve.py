@@ -163,15 +163,29 @@ async def main() -> int:
     print("  its own -- the fact-check's verdict is the reward.  It is")
     print("  seeded here through the same record_task() the agent itself")
     print("  calls, so every later stage is exercised for real.")
+    # The two seeded runs carry a *tool call* as well as a verdict, and
+    # that is not decoration.  The mechanical reflector contrasts the
+    # tools the good runs used against the tools the bad runs used; two
+    # runs that called nothing give it an empty difference, so it writes
+    # no bullet -- and this demo then claimed, on the screen below, that
+    # a bullet it had never written was in the prompt.  The tool call is
+    # what makes the contrast something the reflector can name.
     record_task(session_id="s_bad", turn=1, task=TASK,
                 response="Kyoto is the capital of Japan.",
-                metrics={"verify_s": 1.2, "verify_issues": 2},
+                metrics={"verify_s": 1.2, "verify_issues": 2,
+                         "turns": [{"n": 1,
+                                    "tool_runs": [{"name": "search",
+                                                   "ok": False}]}]},
                 config_data=cfg)
     record_task(session_id="s_good", turn=1, task=TASK,
                 response="Tokyo is the capital of Japan.",
-                metrics={"verify_s": 1.1, "verify_issues": 0},
+                metrics={"verify_s": 1.1, "verify_issues": 0,
+                         "turns": [{"n": 1,
+                                    "tool_runs": [{"name": "local_search",
+                                                   "ok": True}]}]},
                 config_data=cfg)
-    print("  seeded: s_bad (verifier found 2 issues), s_good (clean).")
+    print("  seeded: s_bad (verifier found 2 issues, its search failed),")
+    print("          s_good (clean, its local_search worked).")
 
     print("\n  running the real CLI:  onit learn --reflect")
     result = subprocess.run(
@@ -217,6 +231,31 @@ async def main() -> int:
     print("    playbook version seen: %s" % lc.get("playbook_version"))
     print("    bullets seen        : %s" % lc.get("playbook_items"))
     print("    episodes recalled   : %s" % lc.get("episodes_used"))
+
+    # The claim is checked, not asserted.  This demo used to print "the
+    # bullet was in the prompt, and the record says so" whatever the
+    # record said -- on a store where the reflector had written no
+    # bullet at all, it printed that line directly above
+    # "bullets seen : []".  A demo that reports success it did not have
+    # is worse than a demo that fails, because the failure is the thing
+    # it exists to rule out.
+    shown = lc.get("playbook_items") or []
+    recalled = lc.get("episodes_used") or []
+    claims = [
+        ("a bullet reached the prompt", bool(shown)),
+        ("an episode reached the prompt", bool(recalled)),
+        ("the run was recorded", bool(third)),
+    ]
+    failed = [name for name, held in claims if not held]
+    print()
+    for name, held in claims:
+        print("    [%s] %s" % ("ok" if held else "MISSING", name))
+    if failed:
+        print("  -> the demo did NOT show what it set out to show: %s."
+              % ", ".join(failed))
+        print("     Nothing above should be read as a working loop.")
+        print("  Demo artifacts kept for inspection: %s" % WORK)
+        return 1
     print("  -> the bullet was in the prompt, and the record says so.")
 
     # ── 5. the number ───────────────────────────────────────────────

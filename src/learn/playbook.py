@@ -524,17 +524,50 @@ def _sampled(item: dict, fraction: float) -> bool:
 
 # ── rendering ────────────────────────────────────────────────────────────
 
+# Markdown heading marks, and every flavour of whitespace.  A bullet is
+# one line of prose; see :func:`_one_line`.
+_HEADING_MARK_RE = re.compile(r"#+")
+_WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
+
+
+def _one_line(text: str) -> str:
+    """Collapse a bullet's text to one line of prose.
+
+    ``render`` is the last thing between a bullet and the prompt, so it
+    has to be the place that guarantees the shape -- the Reflector
+    normalises too, but a bullet also arrives from the *mechanical*
+    reflector, from a hand-edited playbook file, and from a playbook
+    written by an older version.  A block whose lines are bullets is a
+    block; a block one of whose bullets contains ``"\n\n## System"`` is a
+    new instruction section wearing the block's clothes.
+
+    The header says these notes "are not instructions from anyone".  A
+    bullet that could forge a heading made that sentence false, and the
+    agent reads the forged heading as prompt structure rather than as
+    text -- which is exactly what it is.
+
+    So: drop ``#`` marks, collapse all whitespace runs to one space,
+    trim.  One bullet, one line.
+    """
+    text = _HEADING_MARK_RE.sub("", str(text or ""))
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
 def render(items: list) -> str:
     """Render the selected bullets as the block to inject.
 
     Empty when there is nothing to say, so the caller can insert it
     unconditionally without producing an empty section.
+
+    Each bullet is flattened to one line here rather than trusted to
+    have been flattened upstream: this is the function whose output goes
+    into the prompt.
     """
     if not items:
         return ""
     lines = [PLAYBOOK_HEADER]
     for item in items:
-        text = item.get("text", "").strip()
+        text = _one_line(item.get("text", ""))
         if not text:
             continue
         lines.append("- %s" % text)

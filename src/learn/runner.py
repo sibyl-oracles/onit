@@ -291,31 +291,66 @@ def _stderr(p: float, n: int) -> float:
     return (p * (1.0 - p) / n) ** 0.5
 
 
+# How many standard errors a difference has to clear to be called a
+# result.  1.96 is the two-sided 95% normal quantile: a null difference
+# clears it 5% of the time, which is the false-positive rate this test is
+# supposed to have.
+#
+# The test used to compare against ``se_c + se_t`` -- the *sum* of the two
+# arms' standard errors -- and the docstring called that "conservative".
+# It is the opposite.  With equal n the sum is ``2 * sqrt(p(1-p)/n)`` and
+# the standard error of the *difference* is ``sqrt(2) * sqrt(p(1-p)/n)``,
+# so the bar was ``sqrt(2)`` = 1.414 sigma rather than 1.96: a null
+# difference cleared it 15.7% of the time, not 5%.  Measured on 3000
+# simulated null pairs, 15.9%.  A placebo arm therefore had roughly a
+# one-in-six chance of being reported as a win, which is the failure mode
+# that matters -- not the missed real effect, but the shipped nothing
+# that looked like something.
+Z_95 = 1.96
+
+
 def compare(control: list, treatment: list) -> dict:
     """Compare two arms, with an error bar on the difference.
 
-    The error bar is the *conservative* one: the sum of the two arms'
-    standard errors, which is the right comparison for two independent
-    proportions and is larger than the pooled estimate.  A delta that
-    does not clear it is not a result, and the caller should say so.
+    The error bar is the standard error of the *difference* of two
+    independent proportions, times :data:`Z_95`:
+
+        se_diff = sqrt(se_c**2 + se_t**2)
+        bar     = Z_95 * se_diff
+
+    Adding the variances rather than the standard errors is what makes
+    the bar the right width: the two arms are independent samples, and
+    the variance of their difference is the sum of their variances.
+
+    A delta that does not clear the bar is not a result, and the caller
+    should say so.
+
+    ``stderr`` in the returned dict is the *bar* -- the quantity the
+    delta is compared against -- so a caller that prints it is printing
+    the thing the verdict was made on.  ``se_diff`` and ``z`` are
+    returned alongside it so a reader can reconstruct the test.
     """
     c = summarise(control)
     t = summarise(treatment)
     delta = t["accuracy"] - c["accuracy"]
-    err = (_stderr(c["accuracy"], c["n"]) + _stderr(t["accuracy"], t["n"]))
-    # Significant when the delta is bigger than the error bar.  A zero
-    # error bar is the case of perfect separation -- one arm got
-    # everything right and the other got everything wrong -- and a
-    # non-zero delta against it is the strongest result there is, so
-    # the test must not require the error bar to be positive.  A zero
-    # delta against a zero error bar means the arms are identical,
-    # which is not a result in either direction.
+    se_c = _stderr(c["accuracy"], c["n"])
+    se_t = _stderr(t["accuracy"], t["n"])
+    se_diff = (se_c ** 2 + se_t ** 2) ** 0.5
+    err = Z_95 * se_diff
+    # Significant when the delta clears the bar.  A zero error bar is the
+    # case of perfect separation -- one arm got everything right and the
+    # other got everything wrong -- and a non-zero delta against it is the
+    # strongest result there is, so the test must not require the error
+    # bar to be positive.  A zero delta against a zero error bar means the
+    # arms are identical, which is not a result in either direction.
     significant = abs(delta) > err and delta != 0.0
     return {
         "control": c,
         "treatment": t,
         "delta": delta,
         "stderr": err,
+        "se_diff": se_diff,
+        "z": Z_95,
         "significant": significant,
         "n_items": min(c["n"], t["n"]),
     }

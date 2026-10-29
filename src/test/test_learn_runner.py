@@ -388,3 +388,77 @@ class TestArmStore:
         a = runner._arm_store(str(tmp_path), "off")
         b = runner._arm_store(str(tmp_path), "adapt")
         assert a != b
+
+
+# ── the error rate, not just the direction ────────────────────────────────
+#
+# The comparison had a bar that was too narrow by a factor of sqrt(2), and
+# every test above still passed: they check that a big delta is significant
+# and a zero delta is not, and a test that only checks *direction* cannot
+# tell a 5% test from a 16% one.  These do.
+#
+# The failure this guards against is a placebo arm being reported as a win
+# roughly one time in six.  That is not a missed result -- it is a shipped
+# nothing that looked like something.
+
+class TestTheErrorRate:
+    """The test's false-positive rate is 5%, and that is a property."""
+
+    def _arm(self, p, n, rng):
+        return [{"grade": runner.GRADE_CORRECT if rng.random() < p
+                 else runner.GRADE_INCORRECT} for _ in range(n)]
+
+    def test_the_bar_is_1_96_standard_errors_of_the_difference(self):
+        """The bar is z * sqrt(se_c^2 + se_t^2), not se_c + se_t.
+
+        Adding the standard errors gives 2s, and the standard error of the
+        difference is sqrt(2)s, so the old bar was 1.414 sigma.  This is
+        the arithmetic the whole test rests on.
+        """
+        control = ([{"grade": "C"}] * 50 + [{"grade": "I"}] * 50)
+        treatment = ([{"grade": "C"}] * 50 + [{"grade": "I"}] * 50)
+        result = runner.compare(control, treatment)
+        se_c = runner._stderr(0.5, 100)
+        se_t = runner._stderr(0.5, 100)
+        assert result["se_diff"] == pytest.approx((se_c ** 2 + se_t ** 2) ** 0.5)
+        assert result["stderr"] == pytest.approx(1.96 * result["se_diff"])
+        # And the old bar would have been this much wider than se_diff.
+        assert result["se_diff"] < (se_c + se_t)
+
+    def test_the_null_false_positive_rate_is_about_five_percent(self):
+        """Under the null, the test must be wrong 5% of the time.
+
+        Simulated rather than derived, because the property is about the
+        code as written.  3000 trials at n=160: the binomial standard
+        error of the estimate is about 0.4%, so anything in 3.8%-6.2% is
+        consistent with 5% and anything near 16% is the old bug back.
+        """
+        import random
+        rng = random.Random(7)
+        trials = 3000
+        false_positives = 0
+        for _ in range(trials):
+            control = self._arm(0.6, 160, rng)
+            treatment = self._arm(0.6, 160, rng)
+            if runner.compare(control, treatment)["significant"]:
+                false_positives += 1
+        rate = false_positives / trials
+        assert 0.03 < rate < 0.08, (
+            "the null false-positive rate is %.3f; it is meant to be 0.05. "
+            "Near 0.16 means the bar is se_c + se_t again." % rate)
+
+    def test_a_real_effect_is_still_detected(self):
+        """A bar that is too wide would be safe and useless.
+
+        A +0.18 difference at n=160 is well past 1.96 sigma, and a test
+        that could not see it would refuse every real improvement.
+        """
+        import random
+        rng = random.Random(11)
+        trials = 200
+        hits = sum(1 for _ in range(trials)
+                   if runner.compare(self._arm(0.50, 160, rng),
+                                     self._arm(0.68, 160, rng))["significant"])
+        assert hits / trials > 0.85, (
+            "a +0.18 effect was detected %.0f%% of the time; the bar is too "
+            "wide to be useful" % (100.0 * hits / trials))

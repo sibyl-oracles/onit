@@ -849,30 +849,29 @@ One knob, `learn.autonomy` in `default.yaml`, defaulting to 1:
 | **0 — off** | No recording, no injection. Reproducible baseline |
 | **1 — observe** *(default)* | Layer 0 records; nothing is injected. Safe to ship broadly |
 | **2 — adapt** | Loops A + B live; playbook promotions require `onit learn --promote` |
-| **3 — extend** | Loop C live; skills auto-promote on a green gate, operator notified |
+| **3 — extend** | Loop C live: a skill pinned by the curator is served as a tool. Nothing is served below this rung |
 | **4 — evolve** | Loop D; **always** human-reviewed PR, never auto-merge |
 
-**What happens when a level is asked for and does not exist.** Today
-`_MAX_IMPLEMENTED = OBSERVE` in [`src/learn/config.py`](../src/learn/config.py), and
-`autonomy()` returns `min(level, _MAX_IMPLEMENTED)`. A config asking for `adapt` gets
-`observe` — which is the *safe* behavior, and is the right default. The problem is that
-it is **silent**: the run believes it is adapting and is not, and nothing tells the
-operator. `learn report` and `onit learn --show` do not say "you asked for adapt, you
-got observe."
+**What happens when a level is asked for and does not exist.**
+`_MAX_IMPLEMENTED = EXTEND` in [`src/learn/config.py`](../src/learn/config.py), and
+`autonomy()` returns `min(level, _MAX_IMPLEMENTED)`. A config asking for `evolve` gets
+`extend` — the highest rung that is implemented. The cap is loud: `requested_level()`
+and `capped()` say what was asked for and what was granted, and `learn report` prints
+the difference.
 
-*October 22, 2026 — this is a known defect, not a design choice.* The fix is one of two
-things, and the second is better:
+*October 22, 2026 — the cap was `OBSERVE`, and it was silent.* The first fix (chosen)
+was to make it fail loudly and raise the cap as each rung landed, rather than to rename
+the levels; the names keep their meaning and `requested_level()` preserves the request.
 
-1. **Fail loudly.** A level above what is implemented is a configuration error and
-   should be one — a warning on startup and in `learn report`.
-2. **Rename the levels to what exists** *(preferred)*. Until Loops A–D land, the ladder
-   should read `off` / `observe` only, and the names `adapt` / `extend` / `evolve` should
-   be introduced **when the level they name actually works**. A config file that names
-   a rung that does not exist is a promise the code cannot keep, and every future
-   reader has to check which rungs are real.
+*October 28, 2026 — the cap moved from `ADAPT` to `EXTEND`.* The rung was documented
+before it worked: `default.yaml` said "the autonomy level has to be `extend` before a
+skill may be served at all" and no code said it, so the documented gate could never open
+*and* the skills server served at every level, including `off`. Both are fixed: the
+server checks `EXTEND` in `load_skills()`, and the cap admits `EXTEND` so the check can
+pass. The level travels to the spawned server as `ONIT_LEARN_AUTONOMY`, because a stdio
+server has no config of its own.
 
-Either way the cap stays: the agent must not be able to talk itself into a level it has
-not earned.
+The cap stays: the agent must not be able to talk itself into a level it has not earned.
 
 ---
 
@@ -1172,6 +1171,97 @@ and only then pinned — in that order, every time.  A skill that fails the gate
 exists on disk and is not in the pin, so it is not served; there is no path
 from "exists on disk" to "in the model's schema" except through the gate.
 
+*October 28, 2026 — the gate was bypassable, and the pin was not the only
+condition.*  The source check ran a denylist of regexes over the source
+**text**, over an allowlist that contained `os`, `sys`, `subprocess`, `socket`,
+`pathlib`, `pickle`, `importlib` and `urllib`.  A skill could therefore import
+only `sys`, subscript `sys.modules` to reach `os`, and assemble `system` from
+two string fragments — passing all five checks and then running `echo pwned`
+in-process, because the server `exec_module`s the skill's `tool.py` in the
+agent's own process.  Three changes close it:
+
+- **the allowlist is pure computation.**  No module that reaches the
+  filesystem, a process, the network or the import machinery.  `os` and `sys`
+  are refused *because they are the escape*, not because they are unusual.
+- **the check is structural, not textual.**  The source is parsed and walked:
+  a forbidden builtin called by name (`open`, `eval`, `exec`, `compile`,
+  `globals`, `setattr`, `__import__`, …), a `getattr` whose attribute name is
+  not a literal, any dunder attribute (`().__class__.__bases__` reaches every
+  loaded class with no import at all), any subscript of `.modules`.  The
+  regexes stay as a backstop for source that is compiled but never parsed.
+- **the server honours the level.**  Serving requires `extend`; below it
+  `load_skills()` returns nothing and logs which skills it withheld.  Before
+  this, the server served at *every* level including `off`, so the gate was
+  the only thing between a mined fragment and a running tool — and the gate
+  was bypassable.
+
+*October 28, 2026, the second round.*  Those three changes refused the audit's
+payload and were still not enough: five more spellings of the same reach passed
+`check_source`.  Each one defeated a *different* screen, and each one is a
+lesson about the shape of the problem:
+
+| what passed | which screen it walked past | why |
+|---|---|---|
+| `__builtins__['open'](p)` | the attribute rule | the dunder is a `Name`, not an `Attribute` |
+| `f = open` · `def run(f=open)` | the call rule | `open` never appears in front of a bracket |
+| `io.FileIO(p).read()` | the allowlist | `io` was on it, and it exports file objects |
+| `'{0.__globals__}'.format(f)` | both AST rules | the dunder is *data*; `str.format` walks the chain |
+| `attrgetter('__globals__')(f)` | both AST rules | the same reach through a callable |
+
+The fix is four more rules, all structural: a bare dunder name is refused
+(`__name__`, `__doc__`, `__all__`, `__version__`, `__init__` excepted, because
+they are metadata); a forbidden builtin used as a *value* rather than called is
+refused; a dunder spelled inside a string literal is refused, with docstrings
+exempt, because prose is not a capability; and `io` and `types` came off the
+allowlist, which now admits a module only if every name it exports is pure
+computation.
+
+*October 29, 2026, the third round.*  The second round was checked against the
+one payload the audit had written, and it refused that payload.  It was still
+not enough, and the reason is the same reason as before, one level down: every
+rule added in the second round was about an **import** or a **dunder**, and the
+next escape needed neither.
+
+Every module on `STDLIB_ALLOWED` is a stdlib module, and stdlib modules import
+each other.  `uuid` imports `os` and keeps it as `uuid.os`; `random` keeps it as
+`random._os`; `warnings`, `typing`, `enum`, `fractions` and `statistics` keep
+`sys`; `json` keeps `codecs`, which keeps `builtins`.  So:
+
+| what passed | why every screen missed it |
+|---|---|
+| `import uuid; uuid.os.system(cmd)` | the import is `uuid`; `os` is an attribute |
+| `import random; random._os.system(cmd)` | the same, and the regex `\bos\.system\b` never matches `_os.system` — `_` is a word character, so the boundary does not fall before `os` |
+| `operator.attrgetter('os')(uuid).system(cmd)` | the name is *data*; no `Attribute` node for `os` exists |
+| `getattr(uuid, 'os').system(cmd)` | the same, through the builtin |
+| `json.codecs.builtins.open(p)` | three attributes deep, all on the allowlist |
+| `warnings.sys.modules` | `sys`, as an attribute of an allowed module |
+| `fnmatch.os.remove(p)` · `argparse._os.popen(c)` | the file and process capabilities, one dot from an allowed import |
+
+The first two were confirmed to **execute a shell command** through
+`load_skills`.  The fix is one rule about attributes rather than imports: a
+skill may not reach an attribute named like a forbidden module (`os`, `sys`,
+`builtins`, `_os`, …) or named like a process or file capability (`system`,
+`popen`, `execv`, `remove`, …) **off a module it imported**.  Scoping to the
+module root is what keeps `xs.remove(1)` and `json.loads(t)` admissible; a rule
+about bare attribute names would refuse both, and a screen that refuses ordinary
+code is a screen somebody deletes.
+
+**And the gate now runs twice.**  Curation ran it once and recorded the verdict
+in the pin.  But the pin is a file, and the file a running server reads is not
+necessarily the file the gate approved — a copied store, a hand-edited pin, a
+gate that was weaker when the skill was pinned.  `load_skills()` therefore
+re-runs `check_source` on every serve and skips a skill that no longer passes,
+logging why.  Without that, the pin is the boundary and the gate is advice.
+
+**The lesson, and it is the one that matters for the rest of this document.**
+A denylist of *spellings* is a denylist an attacker writes around, and a static
+screen is a screen that only ever proves the spellings someone thought of. The
+gate is now good enough to stop the escapes above; it is not and cannot be a
+sandbox. This document says the tests run in a sandbox (I6) and they do not, and
+until they do the honest statement is: **the gate is a filter, not a boundary,
+and the boundary is the container.**  Running a pinned skill in-process is the
+remaining risk, and it is not a risk a static check can retire.
+
 **What is not done.**  The gate does not *run* the skill's tests yet — that is
 the sandbox's job (I6) and it is not wired.  GAIA is not wired as the
 tool-creation benchmark.  The gate's regression check therefore has no
@@ -1336,9 +1426,22 @@ Two things the runner refuses to get wrong:
   recorded runs and nothing else.  Neither arm writes into the
   operator's own corpus.
 - **The comparison carries an error bar.**  The delta between the arms
-  is reported with the sum of the two arms' standard errors, and a delta
-  that does not clear it is reported as **not significant** — with the
-  instruction to ship nothing on that evidence.
+  is reported with `1.96 × sqrt(se_control² + se_treatment²)` — the
+  standard error of the *difference* of two independent proportions, at
+  the two-sided 95% quantile — and a delta that does not clear it is
+  reported as **not significant**, with the instruction to ship nothing
+  on that evidence.
+
+  *October 28, 2026.*  The bar used to be the **sum** of the two arms'
+  standard errors, and the docstring called it "conservative".  It was
+  the opposite: with equal `n` the sum is `2s` and the standard error of
+  the difference is `sqrt(2)s`, so the test was `1.414σ`, not `1.96σ`.
+  A null difference cleared it **15.7%** of the time instead of 5% —
+  measured at 15.9% over 3000 simulated null pairs.  A placebo arm had
+  roughly a one-in-six chance of being reported as a win, which is the
+  failure that matters: not a missed real effect, but a shipped nothing
+  that looked like something.  The bar is now `1.96σ_diff`, the null
+  rate is measured at 5.2%, and `TestTheErrorRate` asserts it.
 
 #### Blocker 3 — benchmark runs polluted the corpus they were measured against
 

@@ -113,6 +113,38 @@ class TestEnsureMcpServers:
         # subprocess only five variables unless given a full environment.
         assert "PATH" in spec["env"]
 
+    def test_the_spawned_servers_are_told_the_autonomy_level(self):
+        """The skills server decides whether to serve anything by the
+        autonomy level, and a subprocess has no config of its own -- so the
+        level has to travel in the environment.  Without this, the server
+        falls back to `observe` and serves nothing however the operator
+        configured the run."""
+        from type.tools import _STDIO_SPECS
+        config = {"learn": {"autonomy": "extend"},
+                  "mcp": {"servers": [
+                      {"name": "SkillsMCPServer", "transport": "stdio",
+                       "module": "src.mcp.servers.tasks.skills",
+                       "enabled": True},
+                  ]}}
+        _ensure_mcp_servers(config)
+        server = self._by_name(config, "SkillsMCPServer")
+        spec = _STDIO_SPECS[server["url"]]
+        assert spec["env"]["ONIT_LEARN_AUTONOMY"] == "3"
+
+    def test_the_level_is_capped_before_it_is_passed_on(self):
+        """A config asking for `evolve` is running at `extend`; the server
+        must be told what the run *is*, not what it asked for."""
+        from type.tools import _STDIO_SPECS
+        config = {"learn": {"autonomy": "evolve"},
+                  "mcp": {"servers": [
+                      {"name": "SkillsMCPServer", "transport": "stdio",
+                       "module": "src.mcp.servers.tasks.skills",
+                       "enabled": True},
+                  ]}}
+        _ensure_mcp_servers(config)
+        server = self._by_name(config, "SkillsMCPServer")
+        assert _STDIO_SPECS[server["url"]]["env"]["ONIT_LEARN_AUTONOMY"] == "3"
+
     def test_stdio_server_without_a_module_is_disabled(self):
         config = {"mcp": {"servers": [
             {"name": "Broken", "transport": "stdio", "enabled": True},

@@ -468,3 +468,55 @@ class TestInjectionPath:
         # system, then the history pair, then the task.
         assert roles == ["system", "user", "assistant", "user"]
         assert "## Prior runs" in messages[-1]["content"]
+
+
+# ── one episode per id ────────────────────────────────────────────────────
+#
+# A session file holds one line per turn, and a turn can be recorded more
+# than once: a retry that wrote both, a backfill that re-derived a record,
+# two runs of the same session and turn.  Each of those is *one* episode
+# with the same id.  Recall used to return it once per record, so a run
+# was shown the same history three times and told the budget it had spent
+# it on three different things.
+
+class TestRecallDeduplicates:
+
+    def test_the_same_turn_recorded_three_times_is_one_episode(self, learned):
+        learned["learn"]["autonomy"] = "adapt"
+        task = "what is the capital of japan"
+        for _ in range(3):
+            traj.record_task(session_id="dup", turn=1, task=task,
+                             response="Tokyo", config_data=learned)
+        episodes = rec.recall(task, config_data=learned,
+                              exclude_holdout=False)
+        ids = [e["id"] for e in episodes]
+        assert ids == ["dup#1"], (
+            "recall returned %d episodes for one recorded turn: %r"
+            % (len(ids), ids))
+
+    def test_distinct_turns_are_still_distinct(self, learned):
+        """The dedupe is by id, not a cap at one episode."""
+        learned["learn"]["autonomy"] = "adapt"
+        task = "what is the capital of japan"
+        for turn in (1, 2, 3):
+            traj.record_task(session_id="s%d" % turn, turn=1, task=task,
+                             response="Tokyo", config_data=learned)
+        episodes = rec.recall(task, config_data=learned,
+                              exclude_holdout=False)
+        assert len({e["id"] for e in episodes}) == len(episodes)
+        assert len(episodes) == 3
+
+    def test_the_budget_is_spent_on_distinct_episodes(self, learned):
+        """A duplicate must not consume a slot the budget could give to a
+        different episode."""
+        learned["learn"]["autonomy"] = "adapt"
+        task = "what is the capital of japan"
+        for _ in range(5):
+            traj.record_task(session_id="dup", turn=1, task=task,
+                             response="Tokyo", config_data=learned)
+        traj.record_task(session_id="other", turn=1, task=task,
+                         response="Tokyo, Japan", config_data=learned)
+        episodes = rec.recall(task, config_data=learned, top_k=2,
+                              exclude_holdout=False)
+        assert len(episodes) == 2, (
+            "the budget went to duplicates: %r" % [e["id"] for e in episodes])

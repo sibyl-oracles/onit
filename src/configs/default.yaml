@@ -310,6 +310,12 @@ mcp:
     # autonomy level has to be `extend` before a skill may be served at all --
     # the server would start and find an empty pin, and a server that serves
     # nothing is a process the agent pays for and does not use.
+    #
+    # That level check is real, and it lives in the server
+    # (`load_skills()`), not here: the level arrives as ONIT_LEARN_AUTONOMY in
+    # the spawned process's environment, because a stdio server has no config
+    # of its own.  Below `extend` the server loads nothing and logs which
+    # skills it withheld.
     - name: SkillsMCPServer
       description: Skills the agent promoted for itself
       transport: stdio

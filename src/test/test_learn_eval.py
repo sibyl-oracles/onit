@@ -366,3 +366,73 @@ class TestSummary:
         cfg["learn"]["eval"] = {"path": learned["learn"]["path"] + "/eval"}
         summary = lev.summarize(cfg)
         assert summary["outside_agent_surface"] is False
+
+
+# ── the split is disjoint by question, not just by id ─────────────────────
+#
+# The draw used to shuffle records and slice, so a question asked in two
+# sessions could land in the holdout on one record and in dev on the other.
+# The ids were disjoint and the questions were not, and a holdout that
+# shares a question with dev is not holding anything out: the answer is in
+# the dev split the loop iterates on.
+#
+# The split drawn on 2026-10-23 had seven such questions, including "what
+# is the current SOTA in TTS" and "marikina river water level latest".  The
+# corpus asks the same question many times, so this is not a rare case.
+
+class TestTheSplitIsDisjointByQuestion:
+
+    def _ask_twice(self, learned, question, sessions):
+        for session in sessions:
+            _record(learned, session=session, turn=1, task=question,
+                    response="the answer to that question, at length")
+
+    def test_a_question_asked_in_two_sessions_lands_on_one_side(self, learned):
+        self._ask_twice(learned,
+                        "what is the current state of the art in speech",
+                        ["s1", "s2"])
+        _seed(learned, 10)
+        split = lev.build_split(config_data=learned, holdout_ratio=0.4)
+        holdout_tasks = {lev.task_key(item["task"]) for item in split["holdout"]}
+        dev_tasks = {lev.task_key(item["task"]) for item in split["dev"]}
+        shared = holdout_tasks & dev_tasks
+        assert not shared, (
+            "these questions are on both sides of the split: %r" % shared)
+
+    def test_the_whole_split_has_no_shared_question(self, learned):
+        """The property over a corpus with many repeated questions."""
+        for i in range(8):
+            # Three questions, each asked several times under new sessions.
+            self._ask_twice(
+                learned,
+                "question number %d about something worth asking" % (i % 3),
+                ["a%d" % i, "b%d" % i, "c%d" % i])
+        split = lev.build_split(config_data=learned, holdout_ratio=0.4)
+        holdout_tasks = {lev.task_key(item["task"]) for item in split["holdout"]}
+        dev_tasks = {lev.task_key(item["task"]) for item in split["dev"]}
+        assert not (holdout_tasks & dev_tasks)
+        # And every question is still represented somewhere.
+        assert holdout_tasks | dev_tasks
+
+    def test_the_duplicates_are_counted_not_hidden(self, learned):
+        """A split that silently discarded most of the corpus would look
+        like a small corpus, and the two are different problems."""
+        for i in range(6):
+            self._ask_twice(learned, "the same question, asked again",
+                            ["x%d" % i, "y%d" % i])
+        split = lev.build_split(config_data=learned)
+        assert split["counts"]["duplicate_questions"] == 11
+        assert split["counts"]["candidates"] == 1
+
+    def test_the_draw_is_still_deterministic(self, learned):
+        """Deduping must not make the split change between runs."""
+        for i in range(8):
+            self._ask_twice(learned,
+                            "question number %d about something worth asking"
+                            % (i % 3), ["a%d" % i, "b%d" % i])
+        first = lev.build_split(config_data=learned, holdout_ratio=0.4)
+        second = lev.build_split(config_data=learned, holdout_ratio=0.4)
+        assert ([i["id"] for i in first["holdout"]]
+                == [i["id"] for i in second["holdout"]])
+        assert ([i["id"] for i in first["dev"]]
+                == [i["id"] for i in second["dev"]])

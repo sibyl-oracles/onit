@@ -1011,7 +1011,8 @@ class OnIt(BaseModel):
         # OnIt is also built directly — by the web server and by anything
         # embedding it — and a stdio server that was never registered has no
         # address and no way to start.
-        register_stdio_servers(self.mcp_servers, self._mcp_data_path())
+        register_stdio_servers(self.mcp_servers, self._mcp_data_path(),
+                               config_data=self.config_data)
 
         # Find the prompts server URL from the MCP servers list
         for server in self.mcp_servers:

@@ -152,7 +152,8 @@ class TestTheWholeChain:
         skills_curator.promote("served", config_data=world, delta=0.1)
 
         loaded = mcp_server.load_skills(
-            {"learn": {"path": world["learn"]["path"]}})
+            {"learn": {"path": world["learn"]["path"],
+                       "autonomy": "extend"}})
         assert "served" in loaded, "the pinned skill was not served"
         assert "unserved" not in loaded, "an unpinned skill was served"
 
@@ -174,7 +175,8 @@ class TestTheWholeChain:
             skills_curator.promote(name, config_data=world, delta=0.1)
 
         loaded = mcp_server.load_skills(
-            {"learn": {"path": world["learn"]["path"]}})
+            {"learn": {"path": world["learn"]["path"],
+                       "autonomy": "extend"}})
         assert set(loaded) == {"one", "two"}, \
             "the server served %r" % sorted(loaded)
 
@@ -194,7 +196,8 @@ class TestTheWholeChain:
             f.write("this is not python(\n")
 
         loaded = mcp_server.load_skills(
-            {"learn": {"path": world["learn"]["path"]}})
+            {"learn": {"path": world["learn"]["path"],
+                       "autonomy": "extend"}})
         assert "good" in loaded, "the good skill went down with the bad one"
         assert "bad" not in loaded
 

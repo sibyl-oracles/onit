@@ -62,32 +62,227 @@ import re
 
 from .skills import manifest_errors
 
-# The imports a skill may use.  The standard library only: a skill that
-# needs a package is a skill that needs an install, and an install is
-# an operator decision, not a loop decision.
+# The imports a skill may use.
+#
+# This is an *allowlist of pure computation*, and it is short on purpose.
+# A skill is a transformation from its arguments to a value; the agent
+# that calls it already has bash, read_file and write_file for anything
+# else.  So the modules that touch the filesystem, the process, or the
+# network are not here -- not because a skill could never want them, but
+# because wanting them is a decision for an operator, and a list of
+# modules the loop may import on its own is a list that has to be short.
+#
+# The previous version of this set contained ``os``, ``sys``,
+# ``subprocess``, ``socket``, ``http``, ``urllib``, ``pickle``,
+# ``shutil``, ``tempfile``, ``tarfile``, ``zipfile`` and ``sqlite3``.
+# With ``sys`` importable, a skill could reach every loaded module --
+# ``sys.modules['os'].system(...)`` -- and with ``os`` importable it did
+# not even need that.  The denylist below could not catch either,
+# because both are ordinary imports of allowed names.  An allowlist that
+# admits the escape hatches is not an allowlist.
+#
+# ``io`` and ``types`` were on this list until October 28, 2026, and both
+# were escape hatches of the same kind as ``os``: ``io.FileIO(path)``
+# opens a file without calling ``open()``, so the call screen never sees
+# it, and ``types.ModuleType`` / ``types.FunctionType`` build a callable
+# out of parts.  A module is on this list only if *every* name it exports
+# is pure computation, and those two do not qualify.
 STDLIB_ALLOWED = frozenset({
-    "argparse", "base64", "collections", "copy", "csv", "dataclasses",
-    "datetime", "difflib", "enum", "fnmatch", "fractions", "functools",
-    "glob", "gzip", "hashlib", "heapq", "html", "http", "inspect", "io",
-    "itertools", "json", "math", "os", "pathlib", "pickle", "platform",
-    "pprint", "random", "re", "shlex", "shutil", "socket", "sqlite3",
-    "statistics", "string", "subprocess", "sys", "tarfile", "tempfile",
-    "textwrap", "time", "types", "typing", "unicodedata", "unittest",
-    "urllib", "uuid", "warnings", "xml", "zipfile",
+    "argparse", "base64", "bisect", "collections", "colorsys", "copy",
+    "csv", "dataclasses", "datetime", "decimal", "difflib", "enum",
+    "fnmatch", "fractions", "functools", "hashlib", "heapq", "html",
+    "itertools", "json", "math", "numbers", "operator", "pprint",
+    "random", "re", "secrets", "statistics", "string", "textwrap",
+    "time", "typing", "unicodedata", "uuid", "warnings",
 })
 
-# The standard library modules that reach outside the process.  A skill
-# that imports one of these is asking for a capability the loop should
-# not hand out on its own.
-FORBIDDEN_MODULES = frozenset({
-    "ctypes", "multiprocessing", "socketserver", "telnetlib", "webbrowser",
-    "http.server", "ftplib", "smtplib", "asyncio", "signal", "pty",
-})
+# The standard library modules that reach outside the process or the
+# filesystem, with the reason a skill may not have them.  Named
+# explicitly so a refusal can say *what* the skill was reaching for
+# rather than just "not allowed".
+FORBIDDEN_MODULES = {
+    # the process and its siblings
+    "os": "reaches the filesystem and the process table",
+    "sys": "reaches every loaded module, including os",
+    "subprocess": "starts a process",
+    "multiprocessing": "starts a process",
+    "threading": "starts a thread",
+    "asyncio": "starts an event loop",
+    "signal": "reaches the signal table",
+    "pty": "opens a terminal",
+    "ctypes": "calls into native code",
+    "mmap": "maps memory",
+    "resource": "reaches process limits",
+    "atexit": "runs code at interpreter exit",
+    # the filesystem
+    "pathlib": "reaches the filesystem",
+    "shutil": "moves and removes files",
+    "tempfile": "creates files",
+    "glob": "walks the filesystem",
+    "fileinput": "reads files",
+    "linecache": "reads files",
+    "pickle": "deserializes into arbitrary objects",
+    "marshal": "deserializes into arbitrary objects",
+    "shelve": "reads and writes a database file",
+    "sqlite3": "reads and writes a database file",
+    "tarfile": "reads and writes archives",
+    "zipfile": "reads and writes archives",
+    "gzip": "reads and writes files",
+    "bz2": "reads and writes files",
+    "lzma": "reads and writes files",
+    "dbm": "reads and writes a database file",
+    "io": "opens files without calling open()",
+    # objects built out of parts
+    "types": "builds a callable or a module out of parts",
+    # the network
+    "socket": "opens a socket",
+    "socketserver": "opens a socket",
+    "http": "makes an HTTP request",
+    "urllib": "fetches a URL",
+    "ftplib": "opens a connection",
+    "smtplib": "sends mail",
+    "telnetlib": "opens a connection",
+    "webbrowser": "opens a browser",
+    "ssl": "opens a connection",
+    # the import machinery itself
+    "importlib": "imports arbitrary code",
+    "imp": "imports arbitrary code",
+    "pkgutil": "imports arbitrary code",
+    "runpy": "runs arbitrary code",
+    "code": "runs arbitrary code",
+    "codeop": "compiles arbitrary code",
+    "builtins": "reaches the builtin namespace",
+    "__builtin__": "reaches the builtin namespace",
+    # introspection that turns an object into a capability
+    "gc": "reaches every tracked object",
+    "inspect": "reaches frames and source",
+    "traceback": "reaches frames",
+    "platform": "reaches the host",
+}
+
+# Calls a skill may not make, whatever module it imported them from.
+#
+# These are the builtins that turn *data* into *code* or into a
+# capability: they are how a skill written as arithmetic becomes a
+# program.  ``open`` is here for the same reason ``os`` is: a skill that
+# reads a path can read the holdout, and the path screen below is a text
+# screen, so it is the second line and not the first.
+FORBIDDEN_CALLS = {
+    "__import__": "imports a module by name",
+    "breakpoint": "enters the debugger",
+    "compile": "compiles code",
+    "delattr": "removes an attribute",
+    "eval": "evaluates code",
+    "exec": "runs code",
+    "exit": "exits the process",
+    "globals": "reaches the module namespace",
+    "input": "reads from the terminal",
+    "locals": "reaches the local namespace",
+    "open": "opens a file",
+    "quit": "exits the process",
+    "setattr": "sets an attribute",
+    "vars": "reaches the object namespace",
+}
+
+# ``getattr`` is not forbidden -- it is how a skill reads an optional
+# field -- but it is only allowed with a literal name, checked in
+# :func:`_ast_problems`.  ``getattr(m, 'sys' + 'tem')`` is how the
+# escape in the audit was written: every regex below sees two harmless
+# string fragments, and the attribute that gets reached is ``system``.
+DYNAMIC_GETATTR = "getattr"
+
+# The names that *are* the escape, whatever module they hang off.
+#
+# The import screen checks a skill's imports; the attribute rule checks
+# dunders and ``sys.modules``.  Neither looks at an ordinary attribute
+# with an ordinary name, and that is the hole the third round closed:
+# every module on :data:`STDLIB_ALLOWED` is a stdlib module, and stdlib
+# modules import each other.  ``uuid`` imports ``os`` and keeps it as
+# ``uuid.os``; ``random`` keeps it as ``random._os``; ``warnings``,
+# ``typing``, ``enum``, ``fractions`` and ``statistics`` keep ``sys``;
+# ``json`` keeps ``codecs``, which keeps ``builtins``.  So
+#
+#     import uuid
+#     def run(): uuid.os.system("...")            # os.system, one dot away
+#     import random
+#     def run(): random._os.system("...")         # and again, spelled _os
+#     import operator, uuid
+#     def run(): operator.attrgetter("os")(uuid).system("...")
+#
+# all import an allowed module and call an allowed name, and the first
+# two were confirmed to execute a command through ``load_skills``.  The
+# third is the same reach through a callable.
+#
+# The rule is about the *attribute reached off an imported module*, not
+# about the attribute name on its own.  ``uuid.os`` is a module reached
+# off a module; ``items.remove`` is a method on the skill's own list and
+# is none of this screen's business.  Scoping to the module root is what
+# keeps the rule from refusing ordinary code -- ``json.loads`` and
+# ``list.remove`` are both written every day, and a screen that refused
+# them would be switched off by the first person who hit it.
+FORBIDDEN_ATTRIBUTES = {
+    # the escape itself, by the name it is reached under
+    "system": "runs a shell command",
+    "popen": "runs a shell command",
+    "spawnv": "starts a process",
+    "spawnl": "starts a process",
+    "spawnve": "starts a process",
+    "execv": "replaces the process image",
+    "execve": "replaces the process image",
+    "execl": "replaces the process image",
+    "execvp": "replaces the process image",
+    "fork": "starts a process",
+    "forkpty": "starts a process",
+    "kill": "signals a process",
+    "killpg": "signals a process",
+    "remove": "removes a file",
+    "unlink": "removes a file",
+    "rmdir": "removes a directory",
+    "removedirs": "removes a directory",
+    "rmtree": "removes a tree",
+    "chmod": "changes permissions",
+    "chown": "changes ownership",
+    "symlink": "creates a link",
+    "urlopen": "fetches a URL",
+    "socket": "opens a socket",
+    "getenv": "reads the environment",
+    "environ": "reads the environment",
+}
+
+# Attribute names that are a *forbidden module* being reached as an
+# attribute.  ``uuid.os`` and ``json.codecs.builtins`` are this shape,
+# and ``random._os`` is the same shape with the private spelling.
+_FORBIDDEN_MODULE_NAMES = frozenset(FORBIDDEN_MODULES) | {"_os", "_sys"}
+
+# The dunder *names* a skill may write as a bare name or as a string.
+# ``__name__`` is module metadata and is what the curator's own test
+# template reads; ``__doc__`` and ``__all__`` are documentation.  Every
+# other dunder is a way into a namespace: ``__builtins__`` is the
+# builtin table, ``__globals__`` a module's, ``__class__`` an object's.
+#
+# This is a separate list from the *attribute* rule below because the
+# two spellings are different attacks.  ``x.__class__`` is an attribute
+# chain; ``__builtins__['open']`` is a bare name, and a screen that only
+# looks at attributes never sees it.  The audit's payload was written as
+# an attribute chain; the same reach written as a name walked past the
+# first version of this screen.
+ALLOWED_DUNDERS = frozenset({"__name__", "__main__", "__doc__", "__all__",
+                             "__version__", "__init__"})
+
+# How a dunder is recognised inside a *string literal*.  A skill can
+# reach the same namespace without writing an attribute at all:
+# ``'{0.__globals__}'.format(f)`` asks ``str.format`` to walk the chain,
+# and ``operator.attrgetter('__globals__')(f)`` does the same through a
+# callable.  Both spell the dunder as data, so the attribute rule cannot
+# see it and the call rule has nothing to check.  Any dunder in a string
+# literal is refused, other than the ones in :data:`ALLOWED_DUNDERS`.
+_DUNDER_IN_TEXT_RE = re.compile(r"__[A-Za-z][A-Za-z0-9_]*__")
 
 # The source patterns that mean the skill is doing something a skill has
-# no business doing.  These are a *backstop* -- the import and AST
-# checks below are the real screen -- because a string built at runtime
-# can hide anything.
+# no business doing.  These are a *backstop*: the AST screen in
+# :func:`_ast_problems` is the real check, because it sees structure
+# rather than text.  A pattern here catches the case where the AST was
+# built out of a string the screen never parsed.
 FORBIDDEN_PATTERNS = (
     (re.compile(r"\b__import__\b"), "calls __import__"),
     (re.compile(r"\beval\s*\("), "calls eval()"),
@@ -95,7 +290,9 @@ FORBIDDEN_PATTERNS = (
     (re.compile(r"\bcompile\s*\("), "calls compile()"),
     (re.compile(r"\bglobals\s*\(\s*\)"), "mutates globals()"),
     (re.compile(r"\bvars\s*\(\s*\)"), "mutates vars()"),
+    (re.compile(r"\blocals\s*\(\s*\)"), "reads locals()"),
     (re.compile(r"\bgetattr\s*\(\s*__"), "reaches for a dunder via getattr"),
+    (re.compile(r"\bgetattr\s*\([^)]*\+"), "builds an attribute name at runtime"),
     (re.compile(r"\bpickle\.loads?\b"), "deserializes with pickle"),
     (re.compile(r"\bmarshal\.loads?\b"), "deserializes with marshal"),
     (re.compile(r"\bos\.system\b"), "calls os.system()"),
@@ -208,6 +405,328 @@ def _imports(tree: ast.AST) -> list:
     return names
 
 
+def _call_name(node: ast.AST) -> str:
+    """The bare name a call goes through: ``eval`` in ``eval(x)``.
+
+    Returns "" for anything that is not a plain name -- ``obj.method()``
+    and ``f()()`` both return "".  The screen wants the builtin by name,
+    and a call whose name is computed is caught by its own rule.
+    """
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+    return ""
+
+
+# The callables whose whole job is to fetch an attribute by name.  A
+# literal handed to one of them is an attribute reference that no
+# ``ast.Attribute`` node appears in, so the attribute rule cannot see it.
+_ATTRIBUTE_GETTERS = frozenset({"getattr", "attrgetter", "itemgetter",
+                                "methodcaller"})
+
+
+def _reaches_from_module(node: ast.AST, modules: set) -> bool:
+    """Whether ``node`` is (or starts from) a module the skill imported.
+
+    ``uuid.os`` reaches from the imported ``uuid``; ``items.remove`` does
+    not, and must not be refused by the rule that catches ``uuid.os``.
+    A chain is walked through attributes and subscripts, because
+    ``json.codecs.builtins`` is three levels deep and
+    ``random._os.path`` is two.
+    """
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id in modules
+        if isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Subscript):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return False
+
+
+def _literal_str(node: ast.AST) -> str | None:
+    """The value of a string literal node, or None when it is computed.
+
+    Only the *literal* counts.  ``getattr(m, "system")`` names its
+    attribute in the source; ``getattr(m, "sys" + "tem")`` does not, and
+    the difference is exactly the difference between a skill reading an
+    optional field and a skill assembling a capability out of pieces
+    that no text screen can see through.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _attribute_chain(node: ast.AST) -> list:
+    """The attribute names a value is reached through, outermost last.
+
+    ``sys.modules['os'].system`` gives ``["system"]`` on a subscript,
+    and ``a.b.c`` gives ``["b", "c"]``.  Used to notice a *dunder*
+    reached through anything at all -- ``().__class__.__bases__`` is how
+    a sandbox is escaped without importing a single forbidden module.
+    """
+    chain = []
+    while True:
+        if isinstance(node, ast.Attribute):
+            chain.append(node.attr)
+            node = node.value
+        elif isinstance(node, ast.Subscript):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            break
+    return chain
+
+
+def _is_super_init(node: ast.Attribute) -> bool:
+    """Whether this dunder attribute is ``super().__init__``.
+
+    The one dunder a skill legitimately reaches: a skill that subclasses
+    a ``dataclass`` or an exception has to call its parent's
+    initialiser, and the parent is named in the skill's own source.
+    """
+    return (node.attr == "__init__"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "super")
+
+
+def _ast_problems(tree: ast.AST) -> list:
+    """Everything structurally wrong with the source, as messages.
+
+    This is the screen the gate is actually built on, and the reason it
+    is structural rather than textual is the audit's B1: a skill that
+    writes ``sys.modules['o' + 's']`` imports only ``sys``, calls only
+    ``getattr``, and every regex over its *text* sees two harmless
+    string fragments.  The AST sees a ``getattr`` whose attribute name
+    is not a literal, and a subscript on ``sys.modules``, and refuses
+    both without needing to know what the fragments spell.
+
+    The rules, in the order a failure reads best:
+
+    * a forbidden call, by bare name -- ``eval``, ``exec``, ``open``,
+      ``__import__``, ``globals``, ``setattr`` and the rest of
+      :data:`FORBIDDEN_CALLS`;
+    * a forbidden builtin used as a *value* rather than called --
+      ``f = open``, ``def run(f=open)``, ``[open][0](path)``.  The call
+      rule only sees ``open(``; a skill that passes ``open`` around and
+      calls it through another name calls it without ever writing the
+      name in front of a bracket;
+    * a ``getattr`` whose attribute name is computed rather than
+      written;
+    * an attribute or subscript that reaches a dunder, anywhere;
+    * a *bare name* that is a dunder -- ``__builtins__['open']`` needs
+      no attribute chain and no import;
+    * a dunder spelled inside a string literal -- ``'{0.__globals__}'``
+      and ``attrgetter('__globals__')`` are the same reach written as
+      data;
+    * a bare name that is a forbidden module used as a value --
+      ``sys.modules`` when ``sys`` was imported under another name.
+    """
+    problems = []
+    aliases = {}  # local name -> the module it was imported from
+    # The local names that hold a *module object*: the module itself
+    # under ``import x``, or the alias under ``import x as y``.  The
+    # attribute rule below needs this to tell ``uuid.os`` (a module off a
+    # module) from ``items.remove`` (a method off a list), and the two
+    # must not be refused by the same rule.
+    modules = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                modules.add(alias.asname or root)
+                if alias.asname:
+                    aliases[alias.asname] = root
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if node.module:
+                    modules.add(alias.asname or alias.name)
+                if alias.asname and node.module:
+                    aliases[alias.asname] = node.module.split(".")[0]
+
+    # Every docstring node, so the string screen can tell prose from a
+    # format string.  A docstring is the first statement of a module,
+    # class or function and is a bare string expression.
+    docstrings = set()
+    for owner in ast.walk(tree):
+        if isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                              ast.AsyncFunctionDef)):
+            body = getattr(owner, "body", None) or []
+            if body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                docstrings.add(id(body[0].value))
+
+    # The names that are *called* are the call rule's business; a
+    # forbidden builtin that is not called is a forbidden builtin being
+    # passed around, which is the same capability one step removed.
+    called = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            called.add(id(node.func))
+
+    for node in ast.walk(tree):
+        # A forbidden builtin used as a *value* rather than called.
+        # ``f = open``, ``def run(f=open)``, ``[open][0](path)``: the
+        # call screen only sees a name in front of a bracket, and a
+        # skill that passes ``open`` around calls it through another
+        # name.  The capability is the same one.
+        if isinstance(node, ast.Name) and node.id in FORBIDDEN_CALLS \
+                and id(node) not in called:
+            problems.append("uses %s as a value rather than calling it, "
+                            "which %s" % (node.id, FORBIDDEN_CALLS[node.id]))
+
+        # A bare dunder *name*.  ``__builtins__['open']`` needs no
+        # import and no attribute chain, so neither the import screen
+        # nor the attribute rule sees it.  The allowed set is module
+        # metadata only -- see :data:`ALLOWED_DUNDERS`.
+        if isinstance(node, ast.Name) and node.id.startswith("__") \
+                and node.id.endswith("__") \
+                and node.id not in ALLOWED_DUNDERS:
+            problems.append("reaches the dunder name %r" % node.id)
+
+        # A dunder spelled inside a string literal.  ``'{0.__globals__}'
+        # .format(f)`` asks ``str.format`` to walk the chain, and
+        # ``attrgetter('__globals__')(f)`` does the same through a
+        # callable; both write the dunder as data, where no attribute
+        # rule can see it.
+        #
+        # A *docstring* is exempt.  Prose that says the word
+        # ``__globals__`` is not a capability, and refusing it would
+        # teach the curator's own prompt that a comment is dangerous --
+        # the screen has to be about what runs, not about what is
+        # written down.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and id(node) not in docstrings:
+            for found in _DUNDER_IN_TEXT_RE.findall(node.value):
+                if found not in ALLOWED_DUNDERS:
+                    problems.append(
+                        "spells the dunder %r inside a string, which "
+                        "reaches the same attribute the attribute rule "
+                        "refuses" % found)
+                    break
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = _call_name(node)
+            if name in FORBIDDEN_CALLS:
+                problems.append("calls %s(), which %s"
+                                % (name, FORBIDDEN_CALLS[name]))
+            if name == DYNAMIC_GETATTR:
+                # getattr(obj, "literal") is a field read; getattr(obj,
+                # anything-else) is a capability assembled at runtime.
+                if len(node.args) >= 2:
+                    literal = _literal_str(node.args[1])
+                    if literal is None:
+                        problems.append(
+                            "calls getattr() with a name that is not a "
+                            "literal, so the attribute it reaches cannot "
+                            "be read from the source")
+                    elif literal.startswith("__") and literal.endswith("__"):
+                        # A *written* dunder is no better than a computed
+                        # one: getattr(m, "__globals__") reaches the same
+                        # namespace that writing m.__globals__ does, and
+                        # the attribute-chain rule above cannot see it
+                        # because the name is a string, not an attribute.
+                        problems.append(
+                            "calls getattr() for the dunder %r" % literal)
+
+        # A dunder reached through any chain: the sandbox escape that
+        # needs no import at all.  ``().__class__.__bases__`` gets from
+        # an object to ``object`` to every loaded subclass without an
+        # import and without a call to anything on a denylist.
+        #
+        # ``super().__init__()`` is the one legitimate spelling, and it
+        # is allowed by name: a skill that subclasses something needs it,
+        # and it reaches a base class the skill itself declared.
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__") \
+                and node.attr.endswith("__"):
+            if not _is_super_init(node):
+                problems.append("reaches the dunder attribute %r" % node.attr)
+
+        # sys.modules[...] -- the module table, by any spelling.
+        if isinstance(node, ast.Subscript):
+            chain = _attribute_chain(node.value)
+            if chain and chain[0] == "modules":
+                problems.append(
+                    "subscripts .modules, which is the table of every "
+                    "loaded module")
+
+        # A forbidden module used as a value, under whatever local name.
+        if isinstance(node, ast.Name) and node.id in aliases:
+            root = aliases[node.id]
+            if root in FORBIDDEN_MODULES:
+                problems.append("uses %r, which is %s"
+                                % (node.id, FORBIDDEN_MODULES[root]))
+
+        # The third round: an escape reached as an *attribute* off an
+        # allowed module.  See :data:`FORBIDDEN_ATTRIBUTES`.
+        #
+        # Every allowed module is stdlib, and stdlib modules import each
+        # other, so ``uuid.os``, ``random._os`` and ``json.codecs`` are
+        # all one dot from the process.  The import screen never saw them
+        # because the import was ``import uuid``; the dunder rule never
+        # saw them because ``os`` is not a dunder.  This rule reads the
+        # attribute instead of the import, which is the level at which
+        # the capability actually appears.
+        if isinstance(node, ast.Attribute):
+            bare = node.attr.lstrip("_")
+            if node.attr in _FORBIDDEN_MODULE_NAMES \
+                    or bare in _FORBIDDEN_MODULE_NAMES:
+                if _reaches_from_module(node.value, modules):
+                    problems.append(
+                        "reaches %r off an imported module, which is the "
+                        "%r module by another name" % (node.attr, bare))
+            # The capability names are scoped to a module root for the
+            # same reason: ``xs.remove(1)`` is a list method, and
+            # ``uuid.os.remove(p)`` is a deleted file.  Only the second
+            # is this screen's business, and the difference is the root.
+            if bare in FORBIDDEN_ATTRIBUTES \
+                    and _reaches_from_module(node.value, modules):
+                problems.append("reaches the attribute %r, which %s"
+                                % (node.attr, FORBIDDEN_ATTRIBUTES[bare]))
+
+        # ``getattr(uuid, "os")`` and ``operator.attrgetter("os")(uuid)``
+        # name the attribute as *data*, so the rule above cannot see it.
+        # A literal naming a forbidden attribute or module, handed to a
+        # callable whose whole job is to fetch an attribute by name, is
+        # the same reach written in a form no Attribute node appears in.
+        if isinstance(node, ast.Call):
+            target = _call_name(node)
+            if target in _ATTRIBUTE_GETTERS:
+                for arg in node.args[1 if target == "getattr" else 0:]:
+                    literal = _literal_str(arg)
+                    if literal is None:
+                        continue
+                    bare = literal.lstrip("_")
+                    if bare in FORBIDDEN_ATTRIBUTES \
+                            or bare in _FORBIDDEN_MODULE_NAMES:
+                        problems.append(
+                            "reaches %r by name through %s(), which is "
+                            "the attribute rule written as data"
+                            % (literal, target))
+
+    # Deduplicate, and keep the order the rules ran in: the first
+    # message is the one an operator reads.
+    seen = set()
+    unique = []
+    for problem in problems:
+        if problem not in seen:
+            seen.add(problem)
+            unique.append(problem)
+    return unique
+
+
 # A path part is mentioned when it appears as a whole path component --
 # bounded by a separator or the edge of the string -- and not when it is
 # merely a substring of a longer word.
@@ -237,14 +756,20 @@ def _mentions_path_part(part: str, source: str) -> bool:
 def check_source(source: str, *, forbidden_paths: list | None = None) -> tuple:
     """Check 2: the source is clean.
 
-    Three screens, in order of what they catch:
+    Four screens, in order of what they catch:
 
     * it must parse -- a skill whose source does not parse is a skill
       that cannot be loaded;
-    * its imports must be standard library, and not one of the modules
-      that reach outside the process;
-    * its text must not contain the patterns that mean it is doing
-      something it has no business doing.
+    * its imports must be on the allowlist -- pure computation only,
+      because a skill that needs the filesystem or a process is a skill
+      that should have been a tool call, not a tool;
+    * its *structure* must be clean -- no forbidden builtin called, no
+      attribute name assembled at runtime, no dunder reached, no
+      ``sys.modules`` subscript.  This is the screen that matters; the
+      text patterns below are the backstop for the case where the
+      source that gets compiled is not the source that was parsed;
+    * its text must not name the ruler, or a path outside the agent's
+      writable surface.
 
     Returns ``(passed, reason, detail)``.
     """
@@ -263,11 +788,17 @@ def check_source(source: str, *, forbidden_paths: list | None = None) -> tuple:
         if not root:
             continue
         if root in FORBIDDEN_MODULES:
-            outside.append("%s (reaches outside the process)" % name)
+            outside.append("%s (%s)" % (name, FORBIDDEN_MODULES[root]))
         elif root not in STDLIB_ALLOWED:
-            outside.append("%s (not in the standard library)" % name)
+            outside.append("%s (not on the allowed list: a skill computes, "
+                           "it does not reach outside its arguments)" % name)
     if outside:
         return False, ("the source imports %s" % "; ".join(outside)), detail
+
+    problems = _ast_problems(tree)
+    detail["structure"] = problems
+    if problems:
+        return False, ("the source %s" % problems[0]), detail
 
     for pattern, why in FORBIDDEN_PATTERNS:
         found = pattern.search(source)

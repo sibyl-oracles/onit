@@ -81,6 +81,11 @@ MAX_RUN_CHARS = 2000
 # that returns three bullets as a list are the same answer, and only one
 # of them is safe to inject.
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
+
+# Markdown heading marks, and every flavour of whitespace.  A bullet is
+# one line of prose; see :func:`_one_line` for why both are removed.
+_HEADING_MARK_RE = re.compile(r"#+")
+_WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
@@ -183,6 +188,43 @@ def _extract_json(text: str) -> list:
     return [b for b in bullets if isinstance(b, dict)]
 
 
+def _one_line(text: str) -> str:
+    """Collapse ``text`` to a single line with no markdown heading marks.
+
+    A bullet is injected as ``"- <text>"`` under a fixed heading, so the
+    text has to be *a line of prose* and nothing else.  Anything that
+    survives as structure survives as prompt structure:
+
+    * a newline ends the bullet and starts a line the agent reads as
+      the block's own layout -- so ``"Be concise.\n\n## System\n..."``
+      rendered a real ``## System`` heading inside the playbook block,
+      and everything after it read as a new instruction section rather
+      than as one note among several;
+    * a ``#`` at the start of a line is a heading for the same reason,
+      and a bullet that begins with one forges the block's heading
+      even without a newline;
+    * runs of whitespace are noise that makes the block's byte count
+      depend on the model's formatting rather than on its content.
+
+    So: strip leading ``#`` marks, collapse every run of whitespace
+    (including newlines, tabs and the unicode spaces a model emits) to
+    one space, and trim.  What comes out is one line of advice, which
+    is the only thing a bullet was ever supposed to be.
+
+    The block also has a header of its own and says the notes "are not
+    instructions from anyone"; a bullet that could forge a section
+    made that sentence false.
+    """
+    text = str(text or "")
+    # A heading marker anywhere is dropped, not just at the start: a
+    # model that writes "Step 2: ## check the path" is still writing
+    # markdown into a bullet, and a heading that begins a line after a
+    # newline is exactly what the collapse below would otherwise keep.
+    text = _HEADING_MARK_RE.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text)
+    return text.strip()
+
+
 def _clean_bullet(bullet: dict) -> dict | None:
     """One bullet, normalised, or None if it is not usable.
 
@@ -191,8 +233,13 @@ def _clean_bullet(bullet: dict) -> dict | None:
     can stand on its own -- but a bullet whose text is a meta-comment
     ("the bad run failed") is worth nothing, and it is the most common
     thing a model produces when asked to compare two runs.
+
+    The text is reduced to one line before anything else is checked, so
+    every later rule -- the length cap, the meta-comment screen -- sees
+    the text that will actually be injected rather than the model's
+    formatting of it.
     """
-    text = str(bullet.get("text") or "").strip()
+    text = _one_line(bullet.get("text"))
     if not text:
         return None
     if len(text) > MAX_BULLET_CHARS:
@@ -202,7 +249,7 @@ def _clean_bullet(bullet: dict) -> dict | None:
                    "the failing run", "this run", "the run that"):
         if lowered.startswith(phrase):
             return None
-    trigger = str(bullet.get("trigger") or "").strip()
+    trigger = _one_line(bullet.get("trigger"))
     if len(trigger) > 60:
         trigger = trigger[:60].rstrip()
     return {"op": "insert", "text": text, "trigger": trigger}

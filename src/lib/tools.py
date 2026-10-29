@@ -90,14 +90,46 @@ def _package_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 
+def _learn_autonomy_env(config_data: dict | None) -> dict:
+    """The autonomy level a spawned server should be told about.
+
+    A stdio server is a subprocess with no config of its own, so a
+    setting the *server* has to honour has to arrive in the environment.
+    The skills server is the one that needs it: whether a skill may be
+    served at all depends on the autonomy level, and that level is a
+    property of the run that spawned the server rather than of the store
+    the server reads.
+
+    Only the level is passed, not the store path: the server already
+    takes ``ONIT_LEARN_PATH``, and a second source for the same value is
+    a way for the two to disagree.
+
+    Returns an empty dict when the level cannot be resolved, which leaves
+    the server at its own default -- ``observe``, which serves nothing.
+    The failure mode of a missing variable is therefore "no skills",
+    which is the safe one.
+    """
+    try:
+        from learn.config import autonomy
+        return {'ONIT_LEARN_AUTONOMY': str(autonomy(config_data))}
+    except Exception:  # pragma: no cover - learn package absent or broken
+        return {}
+
+
 def register_stdio_servers(servers: list, data_path: str,
-                           log_level: str = 'ERROR') -> None:
+                           log_level: str = 'ERROR',
+                           config_data: dict | None = None) -> None:
     """Give each stdio server its pseudo-URL and the command that starts it.
 
     The subprocess inherits this process's environment with ONIT_DATA_PATH
     pinned to this user's session root, which is what confines its tools to
     that directory. Nothing is shared with another user's OnIt: no port, no
     parent process, no file descriptor.
+
+    ``config_data`` is only read to resolve the autonomy level, which the
+    skills server needs in order to decide whether it may serve anything.
+    Omitting it leaves that server at its own default, which serves
+    nothing.
 
     Safe to call more than once — every entry point that builds an OnIt runs
     it, because a stdio server that was never registered has no way to start.
@@ -107,6 +139,7 @@ def register_stdio_servers(servers: list, data_path: str,
 
     log_dir = Path.home() / '.onit' / 'logs'
     created_log_dir = False
+    extra_env = _learn_autonomy_env(config_data)
 
     for server in servers:
         if not is_stdio_server(server) or not server.get('enabled', True):
@@ -135,7 +168,7 @@ def register_stdio_servers(servers: list, data_path: str,
             url,
             command=sys.executable,
             args=args,
-            env={'ONIT_DATA_PATH': data_path},
+            env={'ONIT_DATA_PATH': data_path, **extra_env},
             cwd=_package_root(),
             log_file=str(log_dir / f'mcp_{name}.log'),
         )

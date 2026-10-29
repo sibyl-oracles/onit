@@ -59,8 +59,24 @@ _SKILLS: dict = {}
 
 
 def _config_data() -> dict:
-    """The config shape the learn package expects."""
-    return {"learn": {"path": LEARN_PATH}}
+    """The config shape the learn package expects.
+
+    The autonomy level arrives in the environment rather than in a
+    config file, because this server is spawned by the agent and has no
+    config of its own.  ``ONIT_LEARN_AUTONOMY`` is set by whoever
+    registers the launch spec (``cli._ensure_mcp_servers`` and
+    ``OnIt.__init__``), from the level that run is actually running at.
+
+    Absent the variable, the level falls back to ``ONIT_LEARN`` and then
+    to the package default, which is ``observe`` -- so a server started
+    by hand serves nothing, rather than serving everything because
+    nobody told it what level to serve at.
+    """
+    autonomy = os.environ.get("ONIT_LEARN_AUTONOMY")
+    learn = {"path": LEARN_PATH}
+    if autonomy:
+        learn["autonomy"] = autonomy
+    return {"learn": learn}
 
 
 def _load_module(path: str, name: str):
@@ -103,20 +119,90 @@ def _schema_for(manifest: dict) -> dict:
     return out
 
 
+def _gate_problem(directory: str, name: str,
+                  config_data: dict | None) -> str:
+    """Why this skill must not be served, or "" when it may be.
+
+    The gate is imported here rather than at module scope so that a
+    server whose store holds no skills never pays for it, and so that a
+    failure to import the gate is a *refusal* rather than a crash: a
+    screen that cannot run must not silently pass everything.
+    """
+    try:
+        from src.learn.skills_gate import check_source, read_skill_sources
+    except Exception as e:  # pragma: no cover - import of our own module
+        return "the gate is unavailable (%s), so the skill cannot be " \
+               "checked" % e
+    try:
+        source, _tests, _ = read_skill_sources(directory)
+    except Exception as e:
+        return "its source could not be read (%s)" % e
+    if not source:
+        return "it has no source to check"
+    ok, reason, _ = check_source(source)
+    return "" if ok else reason
+
+
 def load_skills(config_data: dict | None = None) -> dict:
     """Load every pinned skill, and return them by name.
 
     A skill that fails to load is skipped with a log line rather than
     taking the server down with it. One broken skill should cost the
     agent that skill, not every other skill it has.
+
+    **The autonomy check is here, not in the caller.**  A skill is code
+    that runs in this process with this process's privileges, so the
+    question "may a skill be served at all" has to be answered at the
+    one place every path into serving goes through -- and the pin file
+    is not that place, because the pin is written by an offline curator
+    that does not know what level the agent is running at.
+
+    The level is ``extend`` (3).  Below it, this returns an empty dict
+    and says why in the log: a server that silently served nothing would
+    look identical to a deployment with no skills, and an operator
+    debugging "why is my skill not in the schema" would have nothing to
+    read.
     """
+    from src.learn.config import EXTEND, autonomy, level_name
     from src.learn.skills import pinned_skills, skill_dir
 
     config_data = config_data or _config_data()
+    level = autonomy(config_data)
+    if level < EXTEND:
+        pinned = sorted(pinned_skills(config_data))
+        if pinned:
+            # Only worth a line when there is something being withheld.
+            logger.warning(
+                "Not serving %d pinned skill(s) at autonomy %s (%d): serving "
+                "a skill needs %s (%d). Skills: %s",
+                len(pinned), level_name(level), level, level_name(EXTEND),
+                EXTEND, ", ".join(pinned))
+        return {}
+
     loaded = {}
     for name in sorted(pinned_skills(config_data)):
         directory = skill_dir(name, config_data)
         try:
+            # The gate runs again here, on every serve.
+            #
+            # Curation runs the gate once, when the skill is written, and
+            # then the pin records the verdict.  That is not enough: the
+            # pin is a file, and the file a running server reads is not
+            # necessarily the file the gate approved.  A store copied
+            # from another machine, a pin edited by hand, a gate that was
+            # weaker when the skill was pinned -- all three put code in
+            # front of this loop that the current gate would refuse, and
+            # nothing else in the path would notice.
+            #
+            # Re-running it costs one AST parse per skill at startup.  A
+            # skill that fails is skipped with the reason logged, the
+            # same way a skill that fails to import is: one bad skill
+            # costs the agent that skill, not the server.
+            problem = _gate_problem(directory, name, config_data)
+            if problem:
+                logger.error("Skill %r not served: it no longer passes the "
+                             "gate -- %s", name, problem)
+                continue
             module = _load_module(os.path.join(directory, "tool.py"), name)
             run = getattr(module, "run", None)
             if run is None or not callable(run):

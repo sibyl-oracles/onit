@@ -81,7 +81,8 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     servers = config_data['mcp']['servers']
     apply_default_mcp_servers(servers)
 
-    register_stdio_servers(servers, data_path, log_level)
+    register_stdio_servers(servers, data_path, log_level,
+                           config_data=config_data)
 
 
 # What the web UI serves with, over and above the shared ``serving:`` block.
