@@ -60,7 +60,7 @@ Any OpenAI-compatible endpoint. Two hosted options, no hardware needed — pick 
 ```bash
 # Ollama cloud — free tier
 export OLLAMA_API_KEY=...                                  # key from ollama.com
-onit --host https://api.ollama.com --model glm-5.3:cloud
+onit --host https://ollama.com --model glm-5.3:cloud
 
 # Optional: Tavily as the first web-search tier (free 1,000 credits/mo)
 export TAVILY_API_KEY=...                                  # key from app.tavily.com

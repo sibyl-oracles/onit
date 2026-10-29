@@ -1301,6 +1301,8 @@ class TestProviderLabel:
 
     @pytest.mark.parametrize("host,expected", [
         ("http://localhost:11434", "ollama"),
+        ("http://localhost:11434/v1", "ollama"),
+        ("http://127.0.0.1:11434/v1", "ollama"),
         ("http://127.0.0.1:8000", "ollama"),
         ("http://localhost:8000/v1", "openai-compat"),
         ("https://api.openai.com/v1", "openai"),

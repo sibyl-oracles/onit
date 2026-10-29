@@ -31,7 +31,10 @@ from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
                                 _reasoning_text, _is_reasoning_only,
                                 _stitch_continuation,
                                 _execute_tool, _compact_context, chat,
-                                _normalize_openai_base_url)
+                                _normalize_openai_base_url,
+                                _normalize_ollama_base_url,
+                                _create_ollama_client)
+import model.serving.chat as chat_mod
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
@@ -462,6 +465,45 @@ class TestNormalizeOpenAIBaseUrl:
         assert (_normalize_openai_base_url(
             "https://api.openai.com/v1/Chat/Completions")
             == "https://api.openai.com/v1")
+
+
+class TestNormalizeOllamaBaseUrl:
+    """The native SDK appends /api, so a /v1 host asks for /v1/api/chat."""
+
+    def test_v1_suffix_is_dropped(self):
+        assert _normalize_ollama_base_url("https://ollama.com/v1") == \
+            "https://ollama.com"
+
+    def test_api_suffix_is_dropped(self):
+        assert _normalize_ollama_base_url("https://ollama.com/api") == \
+            "https://ollama.com"
+
+    def test_trailing_slash_and_suffix(self):
+        assert _normalize_ollama_base_url("https://ollama.com/v1/") == \
+            "https://ollama.com"
+
+    def test_bare_host_untouched(self):
+        assert _normalize_ollama_base_url("https://ollama.com") == \
+            "https://ollama.com"
+
+    def test_the_alias_keeps_its_authority(self):
+        assert _normalize_ollama_base_url("https://api.ollama.com/v1") == \
+            "https://api.ollama.com"
+
+    def test_a_local_port_is_not_mistaken_for_a_suffix(self):
+        assert _normalize_ollama_base_url("http://localhost:11434") == \
+            "http://localhost:11434"
+
+    def test_empty_host(self):
+        assert _normalize_ollama_base_url("") == ""
+
+    def test_the_client_actually_uses_the_normalized_host(self):
+        """The guard is worthless if _create_ollama_client does not apply it."""
+        with patch.object(chat_mod, "OLLAMA_SDK_AVAILABLE", True), \
+             patch.object(chat_mod, "OllamaAsyncClient") as ctor:
+            _create_ollama_client("https://ollama.com/v1", "k", 30,
+                                  stream=False)
+        assert ctor.call_args.kwargs["host"] == "https://ollama.com"
 
 
 class TestChat:

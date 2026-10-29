@@ -214,9 +214,9 @@ export OLLAMA_API_KEY=your-ollama-key
 Then point OnIt at the Ollama cloud host and specify a model:
 
 ```bash
-onit --host https://api.ollama.com --model glm-5.3:cloud
-onit --host https://api.ollama.com --model gemma4:31b-cloud
-onit --host https://api.ollama.com --model gpt-oss:120b
+onit --host https://ollama.com --model glm-5.3:cloud
+onit --host https://ollama.com --model gemma4:31b-cloud
+onit --host https://ollama.com --model gpt-oss:120b
 ```
 
 Run `\model` inside a session to list what the endpoint is currently serving —
@@ -225,16 +225,24 @@ the catalogue changes, and a name it no longer carries 404s on the first task.
 Enable thinking mode (if supported by the model):
 
 ```bash
-onit --think --host https://api.ollama.com --model glm-5.3:cloud
+onit --think --host https://ollama.com --model glm-5.3:cloud
 ```
 
 Model is auto-detected from the endpoint if `--model` is omitted. You can also set the host permanently in your config:
 
 ```yaml
 serving:
-  host: https://api.ollama.com
+  host: https://ollama.com
   model: glm-5.3:cloud
 ```
+
+> **The host is the bare origin.** Ollama's native API lives at the root, and
+> the SDK appends `/api/...` to whatever host it is given — so
+> `https://ollama.com/v1` asks for `/v1/api/chat` and 404s on every call. OnIt
+> strips a trailing `/v1` or `/api` and warns, but the bare host is what the
+> docs above use. `https://api.ollama.com` still works as an alias; it is not
+> in Ollama's documentation and 301s everything outside `/api` to
+> `https://ollama.com`, so prefer the documented spelling.
 
 > **Note:** an Ollama cloud endpoint uses its own key when one is set; without
 > one it falls back to the `ollama_api_key` keyring entry (the same key the web
@@ -299,14 +307,14 @@ a URL:
 
 | # | Preset | URL |
 |---|--------|-----|
-| 1 | ollama | `http://localhost:11434` |
+| 1 | ollama | `http://localhost:11434/v1` |
 | 2 | vllm | `http://localhost:8000/v1` |
 | 3 | sglang | `http://localhost:30000/v1` |
 | 4 | openrouter | `https://openrouter.ai/api/v1` |
 | 5 | vercel | `https://ai-gateway.vercel.sh/v1` |
 | 6 | openai | `https://api.openai.com/v1` |
 | 7 | claude | `https://api.anthropic.com/v1` |
-| 8 | ollama-cloud | `https://api.ollama.com` |
+| 8 | ollama-cloud | `https://ollama.com` |
 
 `onit setup --show` lists the presets and every host that has a key stored
 for it but is not in the config — a key set up weeks ago stays visible

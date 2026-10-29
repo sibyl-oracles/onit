@@ -507,15 +507,25 @@ class TestEndpointPresets:
         assert urls["openai"] == "https://api.openai.com/v1"
         assert urls["vercel"] == "https://ai-gateway.vercel.sh/v1"
         assert urls["claude"] == "https://api.anthropic.com/v1"
-        assert urls["ollama"] == "http://localhost:11434"
+        assert urls["ollama"] == "http://localhost:11434/v1"
         assert urls["vllm"] == "http://localhost:8000/v1"
         assert urls["sglang"] == "http://localhost:30000/v1"
-        assert urls["ollama-cloud"] == "https://api.ollama.com"
+        assert urls["ollama-cloud"] == "https://ollama.com"
 
     def test_a_number_resolves_to_its_preset(self):
-        assert setup_mod._resolve_host_input("1", "") == "http://localhost:11434"
+        assert setup_mod._resolve_host_input("1", "") == "http://localhost:11434/v1"
         assert setup_mod._resolve_host_input("4", "") == \
             "https://openrouter.ai/api/v1"
+
+    def test_the_ollama_cloud_preset_is_the_documented_spelling(self):
+        """api.ollama.com is an undocumented alias that 301s everything
+        outside /api; the preset must name the host Ollama documents."""
+        assert setup_mod._resolve_host_input("8", "") == "https://ollama.com"
+
+    def test_every_preset_number_resolves_to_its_own_url(self):
+        """A preset number must return the preset it names, not a fixed one."""
+        for i, (name, url) in enumerate(setup_mod.ENDPOINT_PRESETS, 1):
+            assert setup_mod._resolve_host_input(str(i), "") == url, name
 
     def test_a_number_out_of_range_is_rejected(self, capsys):
         assert setup_mod._resolve_host_input("99", "") is None

@@ -125,20 +125,20 @@ DEFAULT_HOST = "http://localhost:8000/v1"
 # OpenRouter.  The URLs are the canonical spellings — the same ones the
 # key-addressing and the provider rules key off.
 ENDPOINT_PRESETS = (
-    ("ollama",      "http://localhost:11434"),
+    ("ollama",      "http://localhost:11434/v1"),
     ("vllm",        "http://localhost:8000/v1"),
     ("sglang",      "http://localhost:30000/v1"),
     ("openrouter",  "https://openrouter.ai/api/v1"),
     ("vercel",      "https://ai-gateway.vercel.sh/v1"),
     ("openai",      "https://api.openai.com/v1"),
     ("claude",      "https://api.anthropic.com/v1"),
-    ("ollama-cloud","https://api.ollama.com"),
+    ("ollama-cloud","https://ollama.com"),
 )
 
 # Example endpoints shown at the top of the wizard, one per provider.
 ENDPOINT_EXAMPLES = (
     "vLLM: http://localhost:8000/v1  |  "
-    "Ollama cloud: https://api.ollama.com  |  "
+    "Ollama cloud: https://ollama.com  |  "
     "Ollama local: http://localhost:11434/v1  |  "
     "OpenRouter: https://openrouter.ai/api/v1  |  "
     "OpenAI: https://api.openai.com/v1"

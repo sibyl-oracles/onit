@@ -450,8 +450,12 @@ def provider_label(host: str) -> str:
     if "api.anthropic.com" in h:
         return "claude"
     if "localhost" in h or "127.0.0.1" in h or "0.0.0.0" in h:
-        # A local server is OpenAI-shaped when it is served under /v1 (vLLM,
-        # SGLang, LM Studio) and Ollama-shaped otherwise.
+        # Ollama's port is its own answer: the OpenAI-compatible path sits
+        # under /v1, so the path cannot decide this one, and the preset OnIt
+        # writes is the /v1 form.  Any other local server is OpenAI-shaped
+        # when served under /v1 (vLLM, SGLang, LM Studio).
+        if ":11434" in h:
+            return "ollama"
         return "openai-compat" if "/v1" in h else "ollama"
     if "openrouter" in h:
         return "openrouter"
@@ -877,13 +881,34 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     return host_key
 
 
+def _normalize_ollama_base_url(host: str) -> str:
+    """Drop an OpenAI-style path suffix from an Ollama cloud host.
+
+    The native SDK appends ``/api/...`` to whatever host it is given, so a
+    host carrying ``/v1`` or ``/api`` -- the form the OpenAI-compatible docs
+    use, and the form a user copying an example will paste -- asks the server
+    for ``/v1/api/chat`` and 404s on every call.  Only the scheme and
+    authority are meaningful here; the catalogue lives at the root.
+    """
+    if not host:
+        return host
+    base = host.rstrip("/")
+    for suffix in ("/v1", "/api"):
+        if base.lower().endswith(suffix):
+            trimmed = base[:-len(suffix)]
+            logger.warning("Ollama host %s carries an OpenAI-style path; "
+                           "using %s.", host, trimmed)
+            return trimmed
+    return base
+
+
 def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True,
                           prompt_tokens: int = 0):
     """Create an OllamaAsyncClient configured for the given host and API key."""
     if not OLLAMA_SDK_AVAILABLE:
         raise ImportError("The 'ollama' package is required for Ollama cloud support.")
     return OllamaAsyncClient(
-        host=host,
+        host=_normalize_ollama_base_url(host),
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=_build_client_timeout(timeout, stream, prompt_tokens=prompt_tokens),
     )
