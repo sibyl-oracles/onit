@@ -49,8 +49,6 @@ import inspect
 import json
 import logging
 import os
-import shutil
-import tempfile
 import time
 
 logger = logging.getLogger(__name__)
@@ -222,7 +220,6 @@ async def run_arm(items: list, *, arm: str, root: str,
     Returns a list of result dicts, one per item.
     """
     from .eval import eval_dir
-    from .trajectory import trajectory_dir
 
     base_config = dict(base_config or {})
     store = _arm_store(root, arm)

@@ -747,9 +747,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18203,
     path: str = "/sse",
-    options: dict = {}
+    options: dict = None
 ) -> None:
     """Run the MCP server."""
+    options = options or {}
     global DATA_PATH, DOCUMENTS_PATH
 
     if 'verbose' in options:

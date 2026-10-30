@@ -511,9 +511,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18200,
     path: str = "/sse",
-    options: dict = {}
+    options: dict = None
 ) -> None:
     """Run the Prompts MCP server."""
+    options = options or {}
     if 'verbose' in options:
         logger.setLevel(logging.INFO)
     else:

@@ -43,17 +43,14 @@ import json
 import os
 import platform
 import re
-import shlex
 import shutil
 import signal
 import subprocess
 import tempfile
 import time
-import requests
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Optional, Dict, Any
-from pydantic import Field
+from typing import Optional, Dict, Any
 from fastmcp import FastMCP, Context
 
 from src.mcp.servers.tasks.shared import (
@@ -84,11 +81,9 @@ from src.mcp.servers.tasks.os.bash.command_policy import (
     DEFAULT_ALLOWED_COMMANDS,
     INSTALL_DENIED_MSG,
     INSTALL_SEALED_MSG,
-    POLICY,
     SINGLE_TENANT_COMMANDS,
     Decision,
     ask_or_deny as _ask_or_deny,
-    check_command as _check_command_policy,
     evaluate_command as _evaluate_command_policy,
     installs_sealed as _installs_sealed,
 )
@@ -96,7 +91,6 @@ from src.mcp.servers.tasks.os.bash.approvals import (
     BROKER as _APPROVALS,
     DENY as _SCOPE_DENY,
     ONCE as _SCOPE_ONCE,
-    SESSION as _SCOPE_SESSION,
     ask_scope as _ask_scope,
     multi_tenant as _multi_tenant,
 )
@@ -2851,9 +2845,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18202,
     path: str = "/sse",
-    options: dict = {}
+    options: dict = None
 ) -> None:
     """Run the MCP server."""
+    options = options or {}
     global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV, SETTINGS_PATH, _PERMISSIONS_CACHE, FILE_SERVER_URL
 
     if 'verbose' in options:

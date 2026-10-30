@@ -148,3 +148,69 @@ class TestToolProfiles:
 
         monkeypatch.setattr(mod, "mcp", AncientFastMCP())
         assert mod._registered_tool_names() == ["bash", "grep"]
+
+# ── no shared mutable default ────────────────────────────────────────────────
+
+class TestOptionsIsNeverASharedDict:
+    """Every ``run()`` took ``options: dict = {}``.
+
+    The eight defaults were one object each, created once at import and
+    reused for every call.  Nothing mutated them *yet* -- the servers only
+    read -- but the dict is handed to ``run_server``'s child and to the
+    module's ``run()``, so the next ``pop()``, ``update()`` or ``del``
+    would have been visible to every later server in that process.  These
+    tests read the signatures rather than call the servers: the servers
+    block on a transport, and the defect is in the default, not the body.
+    """
+
+    SERVERS = [
+        "src.mcp.prompts.prompts",
+        "src.mcp.servers.tasks.tools.mcp_server",
+        "src.mcp.servers.tasks.web.search.mcp_server",
+        "src.mcp.servers.tasks.local.search.mcp_server",
+        "src.mcp.servers.tasks.github.mcp_server",
+        "src.mcp.servers.tasks.os.bash.mcp_server",
+        "src.mcp.servers.tasks.skills.mcp_server",
+    ]
+
+    def test_no_run_takes_a_mutable_default(self):
+        import importlib
+        import inspect
+        offenders = []
+        for name in self.SERVERS:
+            fn = getattr(importlib.import_module(name), "run")
+            default = inspect.signature(fn).parameters["options"].default
+            if isinstance(default, (dict, list, set)):
+                offenders.append(f"{name}: {default!r}")
+        assert not offenders, (
+            "a mutable default is shared by every call: %s" % offenders)
+
+    def test_the_runner_takes_none_too(self):
+        import inspect
+        default = inspect.signature(run_server).parameters["options"].default
+        assert default is None
+
+    def test_two_calls_do_not_share_an_options_dict(self):
+        """The observable form: a mutation made by one server cannot reach
+        the next server's dict.
+
+        The mutation is made *inside* the call that owns the dict, and each
+        dict's contents are recorded on entry -- recording the object and
+        reading it afterwards would show the recorder's own write.
+        """
+        on_entry = []
+
+        def capture(*args, **kwargs):
+            options = kwargs.get("options")
+            on_entry.append(dict(options))
+            options["leaked"] = True      # this call's dict, not the next's
+
+        mock_module = MagicMock()
+        mock_module.run = capture
+        with patch("builtins.__import__", return_value=mock_module):
+            run_server(name="A", module="tasks.test")
+            run_server(name="B", module="tasks.test")
+        assert on_entry[0] == {}
+        assert on_entry[-1] == {}, (
+            "the second server saw the first server's mutation: %r"
+            % (on_entry[-1],))

@@ -245,9 +245,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18204,
     path: str = "/sse",
-    options: dict = {},
+    options: dict = None,
 ) -> None:
     """Run the GitHub MCP server."""
+    options = options or {}
     verbose = "verbose" in options
     level = logging.INFO if verbose else logging.ERROR
     logger.setLevel(level)

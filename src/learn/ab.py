@@ -38,7 +38,6 @@ win rather than an artefact of ordering.
 
 import asyncio
 import logging
-import os
 import tempfile
 
 logger = logging.getLogger(__name__)

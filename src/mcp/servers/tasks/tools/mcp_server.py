@@ -36,14 +36,12 @@ document search, and GitHub repository management into a single MCP server.
 14. local_search    - BM25/dense/hybrid retrieval over indexed in-house documents
 '''
 
-import json
 import os
 import inspect
 import tempfile
-from typing import Annotated, Optional
+from typing import Optional
 
 from fastmcp import FastMCP, Context
-from pydantic import Field
 
 import logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -111,7 +109,6 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
     search as _search,
     fetch_content as _fetch_content,
     get_weather as _get_weather,
-    extract_pdf_images as _extract_pdf_images,
 )
 
 # Conditionally register tools based on API key availability.
@@ -189,14 +186,9 @@ from src.mcp.servers.tasks.os.bash.mcp_server import (
     serve as _serve,
     send_file as _send_file,
     search_document as _search_document,
-    get_document_context as _get_document_context,
-    extract_tables as _extract_tables,
     search_directory as _search_directory,
 )
 
-from src.mcp.servers.tasks.web.search.mcp_server import (
-    extract_pdf_images as _extract_pdf_images,
-)
 
 
 @mcp.tool(
@@ -592,9 +584,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18201,
     path: str = "/sse",
-    options: dict = {}
+    options: dict = None
 ) -> None:
     """Run the consolidated Tools MCP server."""
+    options = options or {}
     global DATA_PATH, DOCUMENTS_PATH
 
     verbose = 'verbose' in options

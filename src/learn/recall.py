@@ -60,7 +60,6 @@ error is still a regression.
 """
 
 import logging
-import os
 
 from ._search import bm25_scores, tokenize
 

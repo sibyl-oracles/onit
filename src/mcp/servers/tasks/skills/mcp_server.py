@@ -381,9 +381,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18203,
     path: str = "/sse",
-    options: dict = {}
+    options: dict = None
 ) -> None:
     """Run the Skills MCP server."""
+    options = options or {}
     global LEARN_PATH
 
     verbose = 'verbose' in options

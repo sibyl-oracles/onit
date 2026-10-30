@@ -40,7 +40,6 @@ import tempfile
 import requests
 from typing import Optional
 from io import BytesIO
-from pathlib import Path
 from bs4 import BeautifulSoup
 from datetime import datetime
 from dateutil import parser
@@ -801,9 +800,10 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18201,
     path: str = "/sse",
-    options: dict = {}
+    options: dict = None
 ) -> None:
     """Run the MCP server."""
+    options = options or {}
     global DATA_PATH, DEFAULT_MEDIA_DIR
 
     if 'verbose' in options:

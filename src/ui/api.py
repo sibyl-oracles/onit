@@ -40,7 +40,7 @@ import queue
 import re
 import secrets
 import shutil
-import socket
+import socket  # noqa: F401 -- the DNS seam, not a dead import
 import threading
 import time
 import urllib.parse
@@ -296,7 +296,6 @@ _VERIFY_CACHE_MAX = 512        # cached verdicts kept in memory
 # same one; these aliases keep the historical names used across this module
 # and its tests.
 from src.mcp.servers.tasks.shared import (
-    _PRIVATE_HOST_RE,
     _host_resolves_public as _shared_host_resolves_public,
     _url_shape_ok as _link_shape_ok,
 )
@@ -445,7 +444,15 @@ def _host_resolves_public(host: str) -> bool:
     """True only if *host* resolves exclusively to public IP addresses.
 
     Kept as a thin alias over the shared implementation in tasks/shared.py;
-    the logic and rationale live there now."""
+    the logic and rationale live there now.
+
+    ``socket`` is imported at module scope above and looks unused, because
+    the lookup happens in ``tasks/shared.py``.  It is deliberate: this is
+    the name the DNS-rebinding test patches
+    (``monkeypatch.setattr(api_mod.socket, "getaddrinfo", ...)``).  Removing
+    it as an unused import makes that test fail on an AttributeError before
+    it can prove anything -- the seam, not the code, would be under test.
+    """
     return _shared_host_resolves_public(host)
 
 

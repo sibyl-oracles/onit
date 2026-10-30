@@ -64,7 +64,7 @@ except ImportError:  # pragma: no cover - SDK extras genuinely absent
 
 def run_server(name: str,
                module: str,
-               options: dict = {}) -> bool:
+               options: dict = None) -> bool:
     """
     Serve one MCP server over stdio until the client closes the pipe.
 
@@ -72,10 +72,15 @@ def run_server(name: str,
         name: Server name, used for the log file name.
         module: Python module path to import and run.
         options: Passed through to the module's ``run()`` (e.g. ``profile``).
+            ``None`` means none; the default was a shared ``{}``, which the
+            ``options.get(...)`` below only read -- but the same object
+            reached the child's ``run()``, where a single ``pop`` would have
+            been visible to the next server served by this process.
 
     Returns:
         bool: True if the server ran, False otherwise.
     """
+    options = options or {}
     # Redirect this child process's logging to a file so MCP server output
     # never appears on the onit terminal that spawned it.
     _log_dir = os.path.expanduser('~/.onit/logs')

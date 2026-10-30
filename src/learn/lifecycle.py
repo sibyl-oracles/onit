@@ -39,7 +39,6 @@ from collections import defaultdict
 
 from .config import recording_enabled
 from .events import iter_events
-from .report import summarize
 from .trajectory import iter_records
 
 # --- creation: recurrence is the only honest evidence -----------------------

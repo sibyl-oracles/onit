@@ -40,7 +40,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from .config import recording_enabled, redact_tool_args, trajectory_dir
+from .config import recording_enabled, trajectory_dir
 
 logger = logging.getLogger(__name__)
 
