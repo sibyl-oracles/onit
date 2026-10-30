@@ -447,10 +447,13 @@ def _learn_playbook_reflect(args, config_data: dict) -> None:
     # Two reflectors, and the difference matters.  The mechanical one
     # names the difference between the tools that ran; the model-based
     # one reads the two runs and names the difference between what they
-    # *did*.  The mechanical one alone produces tautologies -- "the same
-    # tool, used badly" -- because a cluster is a tool signature, so its
-    # two sides always ran the same tools.  With a model, the contrast
-    # becomes about arguments, order and reasoning.
+    # *did*.  With a model, the contrast becomes about arguments, order
+    # and reasoning rather than about which tools were present.
+    #
+    # (This used to say the mechanical pass alone produced tautologies
+    # because a cluster was a tool signature.  That was true, and it was
+    # fixed: ``playbook.cluster`` now groups by the shape of the task, so
+    # the two sides of a contrast did *not* always run the same tools.)
     #
     # The model is asked first, and the mechanical pass only fills in
     # what the model did not cover.  The mechanical bullets are weaker,
