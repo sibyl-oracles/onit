@@ -970,3 +970,63 @@ class TestABulletCannotForgeASection:
         text = pb.render(items)
         assert "## injected" not in text
         assert text.count("- ") == 2
+
+
+class TestTheReflectCommandRefusesToSelectNoReflector:
+    """``--mechanical-only --model-only`` asked for neither and said nothing.
+
+    Both branches of ``_learn_playbook_reflect`` are skipped when both
+    flags are set, so the pass produced no deltas and the next message
+    blamed the corpus: "found no contrast worth a bullet".  The corpus
+    was never consulted.  The command now refuses instead.
+    """
+
+    def test_both_flags_is_an_error_naming_the_cause(self, monkeypatch, capsys):
+        import argparse
+        from src import cli
+
+        # The record gate is passed, so the refusal under test is the flag
+        # contradiction and not "no trajectories on disk".
+        monkeypatch.setattr("src.learn.corpus.read_sessions",
+                            lambda config_data=None: [{"session_id": "s"}])
+        monkeypatch.setattr("src.learn.corpus.label_corpus",
+                            lambda config_data=None: None)
+        monkeypatch.setattr("src.learn.trajectory.iter_records",
+                            lambda config_data=None: iter(
+                                [{"session_id": "s", "turn": 1, "owner": None}]))
+
+        args = argparse.Namespace(mechanical_only=True, model_only=True,
+                                  dry_run=False, reflect=True)
+        with pytest.raises(SystemExit) as exc:
+            cli._learn_playbook_reflect(args, {"learn": {"autonomy": "adapt"}})
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "--mechanical-only" in err and "--model-only" in err
+        assert "contrast" not in err, (
+            "the refusal must not blame the corpus for a flag contradiction")
+
+    def test_either_flag_alone_still_reflects(self, monkeypatch):
+        import argparse
+        from src import cli
+
+        called = {"model": 0, "mechanical": 0}
+        monkeypatch.setattr("src.learn.corpus.read_sessions",
+                            lambda config_data=None: [{"session_id": "s"}])
+        monkeypatch.setattr("src.learn.corpus.label_corpus",
+                            lambda config_data=None: None)
+        monkeypatch.setattr("src.learn.trajectory.iter_records",
+                            lambda config_data=None: iter(
+                                [{"session_id": "s", "turn": 1, "owner": None}]))
+        monkeypatch.setattr(
+            cli, "_reflect_with_model",
+            lambda *a, **k: called.__setitem__("model", called["model"] + 1) or [])
+        monkeypatch.setattr(
+            pb, "reflect",
+            lambda *a, **k: called.__setitem__("mechanical",
+                                               called["mechanical"] + 1) or [])
+
+        cli._learn_playbook_reflect(
+            argparse.Namespace(mechanical_only=True, model_only=False,
+                               dry_run=False, reflect=True),
+            {"learn": {"autonomy": "adapt"}})
+        assert called["mechanical"] == 1

@@ -459,6 +459,17 @@ def _learn_playbook_reflect(args, config_data: dict) -> None:
     # what the model did not cover.  The mechanical bullets are weaker,
     # so they go last, and a run with no model available still reflects
     # -- just less well than it could have.
+    # Asking for each reflector *alone* asks for neither.  Both branches
+    # below are skipped, the pass produces nothing, and the message after
+    # this block would blame the corpus -- "found no contrast worth a
+    # bullet" -- for a contradiction in the command line.  Say so instead:
+    # the exit is the same, the reason is not.
+    if (getattr(args, "mechanical_only", False)
+            and getattr(args, "model_only", False)):
+        print("--mechanical-only and --model-only select one reflector each, "
+              "so passing both selects neither. Drop one.", file=sys.stderr)
+        sys.exit(1)
+
     deltas = []
     if not getattr(args, "mechanical_only", False):
         deltas.extend(_reflect_with_model(args, config_data, records))
