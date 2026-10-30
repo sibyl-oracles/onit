@@ -23,9 +23,8 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--verbose` | Enable verbose logging | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
-| `--new-session` | Start a fresh session instead of continuing the last one (alias: `--restart-session`) | `false` |
-| `--resume-session NAME_OR_ID` | Continue a particular session: its name, a UUID, or `last` (alias: `--resume`) | last session |
-| `--name-session NAME` | Name a new session as it starts, so `--resume-session NAME` finds it. Implies `--new-session` (alias: `--name`) | — |
+| `--new-session [NAME]` | Start a fresh session instead of continuing the last one. With a name, the session is called that; without one, OnIt names it from the first message | continue last session |
+| `--resume-session NAME_OR_ID` | Continue a particular session: its name, a UUID, a `#` from the listing, or `last` (alias: `--resume`) | last session |
 | `--session-limit N` | How many rows `onit sessions` lists, so a `#` means the same session here | `20` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
 | `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web` deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
@@ -59,20 +58,26 @@ ends in `-session`, so they read as one family rather than three flags
 scattered through `--help`:
 
 ```bash
-onit --new-session                             # fresh session
-onit --new-session --name-session "chapter 3"  # fresh session, named
+onit --new-session                             # fresh session, OnIt names it
+onit --new-session "chapter 3"                 # fresh session called "chapter 3"
 onit --resume-session "chapter 3"              # continue that one
 onit --resume-session 3                        # ... by row number from the listing
 onit --resume-session last                     # ... or the most recent
 ```
 
-The older spellings — `--restart-session`, `--resume`, `--name` — still parse.
-They are hidden from `--help`, because a flag people have in muscle memory is
-a flag that cannot simply be removed, but there is now one way to write each.
+`--new-session` carries the name itself, so there is no separate flag to
+disagree with it. A name is taken as typed; leaving it off asks OnIt to pick
+one from the first message, which is the same auto-naming any session gets.
 
-Giving `--name-session` implies `--new-session`: a name belongs to a session
-that is being created, so naming one and resuming another in the same command
-is refused with a pointer to `onit sessions --rename`.
+The older spellings — `--restart-session`, `--resume`, `--name`,
+`--name-session` — still parse. They are hidden from `--help`, because a flag
+people have in muscle memory is a flag that cannot simply be removed, but there
+is now one way to write each. `--name` and `--name-session` are no longer
+separate flags: a name always meant a session being created, so they are
+spellings of `--new-session`.
+
+Naming a session and resuming another in the same command is refused with a
+pointer to `onit sessions --rename`, rather than silently dropping one of them.
 
 ## `onit sessions`
 

@@ -3,9 +3,9 @@ CLI entry point for the OnIt agent.
 
 Usage:
     onit                                          # interactive terminal chat (continues the last session)
-    onit --new-session                            # interactive terminal chat, fresh session
-    onit --new-session --name-session "thesis ch3"   # ... named, so it is easy to find again
-    onit --resume-session "thesis ch3"            # continue a named session
+    onit --new-session                            # fresh session, OnIt names it
+    onit --new-session "thesis ch3"                # ... named, so it is easy to find again
+    onit --resume-session "thesis ch3"             # continue a named session
     onit setup                                    # interactive setup wizard
     onit setup --show                             # show current configuration
     onit setup --delete tavily                    # remove a stored key
@@ -911,28 +911,45 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── Session options ──────────────────────────────────────────────────────
     # One family, one shape: every flag about a session starts with the thing
-    # it acts on and ends in -session, so the three sit together in --help and
-    # read as a set.  The older spellings (--resume, --name,
-    # --restart-session) still parse and are hidden, because a flag people
-    # have in muscle memory is a flag that cannot simply be removed.
+    # it acts on and ends in -session, so they sit together in --help and read
+    # as a set.  The older spellings (--resume, --restart-session, and the
+    # now-redundant --name-session/--name) still parse and are hidden, because
+    # a flag people have in muscle memory is a flag that cannot simply be
+    # removed.
+    #
+    # --new-session takes the name itself rather than a separate flag: naming a
+    # session and creating it are one act, and two flags meant they could
+    # disagree.  Its value is three-valued, and the difference matters:
+    #   absent   -> None, continue the last session
+    #   no value -> '',   start a fresh session, let OnIt name it from the
+    #                     first message
+    #   a name   -> that exact name, because the user typed it
     session_opts = parser.add_argument_group(
         "session",
         "Which conversation this run is about. Without any of these, terminal "
         "chat continues the last session.")
-    session_opts.add_argument("--new-session", "--restart-session", action="store_true",
-                              default=False, dest="restart_session",
+    session_opts.add_argument("--new-session", nargs="?", const="", default=None,
+                              dest="new_session", metavar="NAME",
                               help="Start a fresh session instead of continuing the "
-                                   "last one. Combine with --name-session to name it.")
+                                   "last one. Give it a name and the session is "
+                                   "called that: --new-session 'chapter 3'. With no "
+                                   "name, OnIt names it from the first message. To "
+                                   "rename a session that already exists, use "
+                                   "'onit sessions --rename'.")
+    # The name flags are now spellings of --new-session.  A name always meant a
+    # session being created, so there is nothing left for a separate flag to
+    # say -- and keeping them apart is what let '--name' be dropped silently
+    # whenever the run happened to resume instead.
+    session_opts.add_argument("--name-session", "--name", nargs="?", const="",
+                              default=argparse.SUPPRESS, dest="new_session",
+                              metavar="NAME", help=argparse.SUPPRESS)
+    session_opts.add_argument("--restart-session", nargs="?", const="",
+                              default=argparse.SUPPRESS, dest="new_session",
+                              metavar="NAME", help=argparse.SUPPRESS)
     session_opts.add_argument("--resume-session", "--resume", type=str, default=None,
                               dest="resume", metavar="NAME_OR_ID",
                               help="Continue a particular session: its name, a UUID, "
                                    "or 'last' for the most recent.")
-    session_opts.add_argument("--name-session", "--name", type=str, default=None,
-                              dest="name", metavar="NAME",
-                              help="Name a new session as it starts, so 'onit "
-                                   "--resume-session NAME' finds it later. Implies "
-                                   "--new-session; to rename a session that already "
-                                   "exists, use 'onit sessions --rename'.")
     session_opts.add_argument("--session-limit", type=int, default=20,
                               dest="session_limit", metavar="N",
                               help="How many rows 'onit sessions' lists, so that a "
@@ -1023,6 +1040,42 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── External MCP servers ─────────────────────────────────────────────────
     return parser
+
+
+# A value given to --new-session that is really a subcommand is the one thing an
+# optional-value flag cannot tell apart on its own: `onit --new-session serve
+# web` would name a session "serve" and then choke on "web".  argparse's
+# subparsers only match a bare word in first position, so the check is by name
+# against the parser's own subcommand list rather than a hardcoded set, which
+# would go stale the next time a subcommand is added.
+def _recover_subcommand(argv: list, parser: argparse.ArgumentParser) -> list:
+    """Turn ``--new-session <subcommand>`` back into ``--new-session=`` plus the
+    subcommand, so a bare flag followed by a subcommand parses.
+
+    ``onit --new-session serve web`` means "fresh session, then serve web".
+    argparse reads it as the name ``serve`` followed by a stray ``web`` and
+    exits 2.  Rewriting the flag to ``--new-session=`` -- the same thing as
+    giving it no name -- leaves the subcommand where argparse expects it.
+    """
+    subs = set()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            subs.update(action.choices)
+    if not subs:
+        return argv
+
+    name_flags = ("--new-session", "--restart-session",
+                  "--name-session", "--name")
+    out, i = [], 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in name_flags and i + 1 < len(argv) and argv[i + 1] in subs:
+            out.append(f"{tok}=")
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
 
 
 def _rename_session(identifier: str, new_name: str, sessions_dir: str,
@@ -1403,7 +1456,7 @@ def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
 
 def main():
     parser = _build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(_recover_subcommand(sys.argv[1:], parser))
 
     # --container: re-exec the whole process inside a hardened Docker container.
     # Must happen before any config load or server setup touches the host.
@@ -1587,13 +1640,14 @@ def main():
     # session.  --new-session opts out and starts from scratch.  Server modes
     # (web/loop) manage their own sessions and never auto-resume.
     #
-    # --name-session names a session that is being created, so it implies
-    # --new-session.  Before, it was quietly ignored whenever a session was
-    # being resumed -- which was the default -- so 'onit --name foo' started a
-    # name you could not then find, having continued somebody else's
-    # conversation under it.
-    if args.name and args.resume:
-        print("Error: --name-session names a new session, so it cannot be "
+    # --new-session carries the name, so there is no second flag to disagree
+    # with it.  None means the flag was absent; '' means it was given with no
+    # name, which asks OnIt to name the session from its first message.
+    new_session = args.new_session
+    starting_fresh = new_session is not None
+
+    if new_session and args.resume:
+        print("Error: --new-session creates a session, so it cannot be "
               "combined with --resume-session.", file=sys.stderr)
         print("To rename an existing session: onit sessions --rename "
               "<name|uuid|#> <new name>", file=sys.stderr)
@@ -1601,7 +1655,7 @@ def main():
 
     resume_target = args.resume
     auto_resume = False
-    if not resume_target and not args.restart_session and not args.name and not (
+    if not resume_target and not starting_fresh and not (
             config_data.get('web') or config_data.get('loop')):
         resume_target = "last"
         auto_resume = True
@@ -1633,10 +1687,25 @@ def main():
     # A name given on the command line belongs to a session being created.  It
     # is carried in the config dict rather than passed as an argument because
     # OnIt._setup_session is what creates the session, and it reads the config.
-    if args.name:
-        config_data['session_name'] = args.name
-        print(f"Naming this session '{args.name}'. "
-              f"Return to it with: onit --resume-session '{args.name}'")
+    #
+    # Only a real name is carried: '' means the flag was given bare, which asks
+    # OnIt to name the session from its first message.  Writing '' into the
+    # config would look like a name that normalizes to nothing.
+    if new_session:
+        # A name already held by another session is resolved with a suffix
+        # rather than refused, so ask the index what this session will be
+        # called before promising it: the printed "return to it" line is the
+        # one the user copies, and it has to resolve to this session.
+        from .sessions import name_for_new_session
+        sessions_dir = os.path.expanduser(
+            config_data.get('session_path', '~/.onit/sessions'))
+        stored = name_for_new_session(new_session, sessions_dir) or new_session
+        config_data['session_name'] = stored
+        print(f"Naming this session '{stored}'.")
+        if stored != new_session:
+            print(f"('{new_session}' is already in use, so this one is "
+                  f"'{stored}'.)")
+        print(f"Return to it with: onit --resume-session '{stored}'")
 
 
     # Must be set before MCP servers are spawned so child processes inherit it.

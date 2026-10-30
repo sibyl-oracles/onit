@@ -720,52 +720,89 @@ class TestSessionSelection:
         assert config["resume_session_id"] == "old-session-id"
 
     def test_naming_a_session_starts_a_new_one(self, sessions, capsys):
-        """A name belongs to a session being created, so giving one is a
-        request for a new session.
+        """A name given to --new-session is the name the session gets.
 
-        It used to be the other way round: --name was silently dropped
-        whenever a session was resumed, and resuming is the default, so
-        'onit --name foo' continued the last conversation under a name the
-        user could not then find. That is the bug this pins.
+        The flag carries the name itself, so naming and creating cannot
+        disagree. Before, a separate --name was silently dropped whenever the
+        run resumed instead -- which is the default -- so 'onit --name foo'
+        continued the last conversation under a name the user could not then
+        find. That is the bug this pins.
         """
-        config = self._run(["--name-session", "thesis chapter 3"])
+        config = self._run(["--new-session", "thesis chapter 3"])
         assert "resume_session_id" not in config
         assert config["session_name"] == "thesis chapter 3"
         out = capsys.readouterr().out
         assert "thesis chapter 3" in out
         assert "--resume-session" in out
 
-    def test_the_old_name_spelling_also_starts_a_new_session(self, sessions):
-        config = self._run(["--name", "foo"])
+    def test_a_bare_new_session_asks_onit_to_name_it(self, sessions, capsys):
+        """No name is a request for OnIt to pick one from the first message,
+        not for a session called ''.
+
+        The distinction is what makes the flag usable: an empty string in the
+        config would reach register_session as a name that normalizes to
+        nothing, and the session would stay nameless even after a real first
+        message named it.
+        """
+        config = self._run(["--new-session"])
         assert "resume_session_id" not in config
-        assert config["session_name"] == "foo"
+        assert "session_name" not in config
+        assert "Naming this session" not in capsys.readouterr().out
+
+    def test_a_taken_name_is_announced_with_the_suffix_it_gets(self, sessions, capsys):
+        """A name already in use is resolved with a suffix rather than
+        refused, so the printed "return to it" line must carry the suffix.
+        Announcing the name that was asked for would send the user to a
+        different session."""
+        import pathlib
+        from src.sessions import register_session, resolve_session_choice
+        register_session("older", str(pathlib.Path(sessions)), tag="chapter 3")
+        config = self._run(["--new-session", "chapter 3"])
+        assert config["session_name"] == "chapter 3-2"
+        out = capsys.readouterr().out
+        assert "chapter 3-2" in out
+        assert "already in use" in out
+        # the promise is kept: the announced name is stored verbatim when the
+        # session is created, so it is not suffixed a second time
+        stored = register_session("newer", str(pathlib.Path(sessions)),
+                                  tag=config["session_name"])
+        assert stored == "chapter 3-2"
+        assert resolve_session_choice("chapter 3-2", str(pathlib.Path(sessions)))
+
+    def test_the_name_flag_spellings_still_work(self, sessions):
+        """--name and --name-session were the way to say this before the name
+        moved onto --new-session. They are now the same flag, so an old script
+        keeps working."""
+        for argv in (["--name", "foo"], ["--name-session", "foo"]):
+            config = self._run(argv)
+            assert "resume_session_id" not in config
+            assert config["session_name"] == "foo"
+
+    def test_the_restart_session_spelling_still_starts_fresh(self, sessions):
+        config = self._run(["--restart-session"])
+        assert "resume_session_id" not in config
 
     def test_naming_and_resuming_together_is_refused(self, sessions, capsys):
         """One flag creates a session and the other continues an existing
         one; both at once has no meaning, and silently picking one would
         lose the name or the conversation."""
         with pytest.raises(SystemExit) as excinfo:
-            self._run(["--name-session", "foo", "--resume-session", "old-session-id"])
+            self._run(["--new-session", "foo", "--resume-session", "old-session-id"])
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "cannot be combined" in err
         assert "onit sessions --rename" in err
 
-    def test_a_resumed_session_can_still_be_renamed_afterwards(self, sessions):
-        """The refused combination is not a dead end: --new-session with a
-        name is the way to name a session that does not exist yet."""
-        config = self._run(["--new-session", "--name-session", "fresh"])
-        assert "resume_session_id" not in config
-        assert config["session_name"] == "fresh"
-
-    def test_help_shows_the_family_and_hides_the_old_spellings(self):
+    def test_help_offers_one_flag_per_job(self):
+        """--new-session now carries the name, so --name-session is gone from
+        --help. It still parses, hidden: a flag in muscle memory cannot simply
+        be removed."""
         from src.cli import _build_parser
         text = _build_parser().format_help()
         assert "--new-session" in text
         assert "--resume-session" in text
-        assert "--name-session" in text
-        # hidden aliases: they parse, but they are not what --help offers
-        assert "--restart-session" in text      # shown beside --new-session
+        assert "--name-session" not in text
+        assert "--restart-session" not in text
         assert "TAG_OR_ID" not in text
 
     def test_the_session_flags_are_one_group(self):
@@ -775,11 +812,36 @@ class TestSessionSelection:
         groups = {g.title: g for g in _build_parser()._action_groups}
         assert "session" in groups
         flags = {o for a in groups["session"]._group_actions for o in a.option_strings}
-        assert {"--new-session", "--resume-session", "--name-session"} <= flags
+        assert {"--new-session", "--resume-session"} <= flags
         # and nowhere else, so there is one place to look
         others = {o for t, g in groups.items() if t != "session"
                   for a in g._group_actions for o in a.option_strings}
-        assert not ({"--new-session", "--resume-session", "--name-session"} & others)
+        assert not ({"--new-session", "--resume-session"} & others)
+
+    def test_a_subcommand_after_the_bare_flag_is_not_eaten(self):
+        """`onit --new-session serve web` means "fresh session, then serve".
+
+        An optional-value flag reads the next word as its value, so without
+        the recovery step argparse would name a session "serve" and then exit
+        2 on the stray "web"."""
+        from src.cli import _build_parser, _recover_subcommand
+        parser = _build_parser()
+        args = parser.parse_args(
+            _recover_subcommand(["--new-session", "serve", "web"], parser))
+        assert args.command == "serve"
+        assert args.serve_mode == "web"
+        assert args.new_session == ""
+
+    def test_a_name_that_happens_to_be_a_subcommand_word_is_still_a_name(self):
+        """The recovery only fires when the flag was given bare. A name is
+        written `--new-session=serve` or in a position the subparser cannot
+        claim, so a session may still be called "sessions"."""
+        from src.cli import _build_parser, _recover_subcommand
+        parser = _build_parser()
+        args = parser.parse_args(
+            _recover_subcommand(["--new-session=sessions"], parser))
+        assert args.command is None
+        assert args.new_session == "sessions"
 
     def test_session_limit_makes_a_row_number_mean_the_same_row(self, sessions):
         """'onit --resume-session 2' takes the # from a listing; the listing
@@ -1096,5 +1158,5 @@ class TestSessionVerbs:
         out = capsys.readouterr().out
         assert "onit sessions --rename" in out
         assert "onit --resume-session" in out
-        assert "--name-session" in out
+        assert "onit --new-session <name>" in out
 

@@ -815,6 +815,10 @@ class OnIt(BaseModel):
     verbose: bool = Field(default=True)
     session_id: str | None = Field(default=None)
     session_path: str = Field(default="~/.onit/sessions")
+    # The name this session ended up with in the index.  Not always the name
+    # asked for: a collision is resolved with a suffix, and a caller that
+    # printed "call it X" needs to know when the answer is X-2.
+    session_name: str | None = Field(default=None)
     # The playbook pin for this session (Loop B).  Set once, on the first
     # task that has a playbook, and read by every task after it: the
     # block is a static one, and static bytes are the whole point.
@@ -1250,8 +1254,14 @@ class OnIt(BaseModel):
             # A name given for this run only: it is popped so a later write of
             # config_data cannot persist one session's name onto every session
             # that follows.
-            register_session(self.session_id, sessions_base,
-                             tag=self.config_data.pop('session_name', None))
+            #
+            # The name that came back is the one the index actually stored,
+            # which is not always the one asked for: two sessions may share a
+            # name, and the second gets a suffix.  Kept on the instance so a
+            # caller that told the user "call it X" can correct itself.
+            self.session_name = register_session(
+                self.session_id, sessions_base,
+                tag=self.config_data.pop('session_name', None))
 
         # The other half of the session: what was done, not what was said.  A
         # new session gets an empty one rather than None, so every path below

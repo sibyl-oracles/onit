@@ -199,6 +199,75 @@ class TestExplicitNaming:
         update_session("s1", task="fix the login bug", sessions_dir=d)
         assert list_sessions(sessions_dir=d)[0]["tag"] == "My Work"
 
+    def test_registering_returns_the_name_the_session_got(self, tmp_path):
+        """The caller prints this name back and expects --resume-session to
+        find the session, so a name the index had to change comes back
+        changed rather than silently different from what was announced."""
+        d = str(tmp_path)
+        assert register_session("s1", sessions_dir=d, tag="chapter 3") == "chapter 3"
+        assert register_session("s2", sessions_dir=d, tag="chapter 3") == "chapter 3-2"
+
+    def test_the_name_a_session_will_get_can_be_asked_for_first(self, tmp_path):
+        """A caller that says "call it X" must be able to print the name the
+        session will actually have, before creating it."""
+        from src.sessions import name_for_new_session
+        d = str(tmp_path)
+        assert name_for_new_session("chapter 3", d) == "chapter 3"
+        register_session("s1", sessions_dir=d, tag="chapter 3")
+        assert name_for_new_session("chapter 3", d) == "chapter 3-2"
+
+    def test_the_announced_name_is_the_one_that_resolves(self, tmp_path):
+        """The whole point of returning the stored name: the printed "return
+        to it with" name must resolve to this session, not the one that
+        already held the name."""
+        from src.sessions import resolve_session_choice, name_for_new_session
+        d = str(tmp_path)
+        register_session("older", sessions_dir=d, tag="chapter 3")
+        announced = name_for_new_session("chapter 3", d)
+        register_session("newer", sessions_dir=d, tag="chapter 3")
+        assert announced == "chapter 3-2"
+        assert resolve_session_choice(announced, d) == "newer"
+        # and the original still answers to the plain name
+        assert resolve_session_choice("chapter 3", d) == "older"
+
+    def test_a_typed_name_that_reads_like_a_placeholder_is_kept(self, tmp_path):
+        """The auto-namer treats "untitled" as "no name yet". A person typing
+        it means the opposite, and the name given to --new-session must be the
+        name the session keeps -- otherwise the requirement "when a name is
+        given it must be used" fails on exactly the words that look like
+        defaults."""
+        for name in ("unnamed", "untitled", "new-session"):
+            d = str(tmp_path / name)
+            register_session("s1", sessions_dir=d, tag=name)
+            update_session("s1", task="fix the login bug", sessions_dir=d)
+            assert list_sessions(sessions_dir=d)[0]["tag"] == name
+
+    def test_a_rename_to_a_placeholder_word_also_sticks(self, tmp_path):
+        from src.sessions import tag_session
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        assert tag_session("s1", "untitled", d) is True
+        update_session("s1", task="fix the login bug", sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "untitled"
+
+    def test_the_auto_namer_still_replaces_its_own_placeholder(self, tmp_path):
+        """The fix above must not freeze the auto-namer's own placeholders:
+        a session it could not name from the first message is still waiting
+        for a real one."""
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        index = {"s1": {"tag": "unnamed", "named_by_user": False}}
+        from src.sessions import _needs_name
+        assert _needs_name("unnamed", "fix the login bug",
+                           named_by_user=index["s1"]["named_by_user"]) is True
+        assert _needs_name("untitled", "fix the login bug",
+                           named_by_user=True) is False
+
+    def test_an_unnamed_session_returns_no_name(self, tmp_path):
+        d = str(tmp_path)
+        assert register_session("s1", sessions_dir=d) == ""
+        assert list_sessions(sessions_dir=d)[0]["tag"] is None
+
 
 class TestAutoNameWaitsForATopic:
 

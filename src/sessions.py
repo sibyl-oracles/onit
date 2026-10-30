@@ -151,13 +151,20 @@ def _has_topic(task: str) -> bool:
     return any(w not in _TAG_STOPWORDS for w in _tag_words(task))
 
 
-def _needs_name(tag, task: str, allow_rename: bool = True) -> bool:
+def _needs_name(tag, task: str, allow_rename: bool = True,
+                named_by_user: bool = False) -> bool:
     """Whether this turn should (re)name a session currently called *tag*.
 
     *allow_rename* is False for the preview, which -- unlike the name -- may be
     replaced even when a person typed the name themselves: they chose what the
     session is called, not what its first message was.
+
+    *named_by_user* settles the one case the tag alone cannot: a name someone
+    typed that reads like a placeholder.  "untitled" from the auto-namer means
+    "no name yet"; "untitled" typed by a person is the name they wanted.
     """
+    if named_by_user and allow_rename:
+        return False
     if not _has_topic(task):
         return False
     if not tag:
@@ -258,25 +265,48 @@ def _tag_holder(tag: str, index: dict, exclude_sid: str | None = None) -> str | 
 
 # ---- Public API ----
 
-def register_session(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                     tag: str | None = None) -> None:
-    """Register a new session in the index."""
-    index = _load_index(sessions_dir)
+def name_for_new_session(tag: str | None,
+                         sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
+    """The name a session created right now with *tag* would be given.
+
+    A caller that says "call it X" needs to print the name the session will
+    actually have, and that is not always *tag*: a name already held by another
+    session gets a suffix.  Both the message and the creation go through this,
+    so the printed name is the one `--resume-session` resolves.
+    """
     name = normalize_tag(tag) if tag else ""
-    if name:
-        # An explicitly named session keeps the name the user chose.  A
-        # collision is disambiguated here rather than refused: the session is
-        # already being created, and losing the name entirely would be worse
-        # than carrying a suffix.
-        name = _ensure_unique_tag(name, index)
+    if not name:
+        return ""
+    # An explicitly named session keeps the name the user chose.  A collision
+    # is disambiguated rather than refused: the session is already being
+    # created, and losing the name entirely would be worse than a suffix.
+    return _ensure_unique_tag(name, _load_index(sessions_dir))
+
+
+def register_session(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR,
+                     tag: str | None = None) -> str:
+    """Register a new session in the index, returning the name it got.
+
+    A name given here is the name the session has: the caller prints it back
+    and expects `--resume-session <that>` to find this session, so a name the
+    index had to change is returned rather than left for the caller to guess.
+    """
+    index = _load_index(sessions_dir)
+    name = name_for_new_session(tag, sessions_dir)
     index[session_id] = {
         "tag": name or None,
         "created": time.time(),
         "updated": time.time(),
         "preview": None,
         "turns": 0,
+        # A name the user typed is theirs, even when it reads like a
+        # placeholder.  Without this the auto-namer treats "untitled" as "no
+        # name yet" and replaces it with a slug from the first message, so the
+        # name given to --new-session is not the name the session keeps.
+        "named_by_user": bool(name),
     }
     _save_index(index, sessions_dir)
+    return name
 
 
 def update_session(session_id: str, task: str | None = None,
@@ -300,7 +330,8 @@ def update_session(session_id: str, task: str | None = None,
     # about, and the first message that says something replaces it.
     if task and _needs_name(meta.get("preview"), task, allow_rename=False):
         meta["preview"] = task[:120]
-    if task and _needs_name(meta.get("tag"), task):
+    if task and _needs_name(meta.get("tag"), task,
+                            named_by_user=meta.get("named_by_user", False)):
         options = _auto_tag_candidates(task)
         meta["tag"] = _ensure_unique_tag(options[0], index, exclude_sid=session_id,
                                          alternates=options[1:])
@@ -350,6 +381,9 @@ def tag_session(session_id: str, tag: str,
     if holder is not None:
         return f"'{tag}' is already the name of session {holder[:8]}."
     index[session_id]["tag"] = tag
+    # A rename is a person choosing the name, so the auto-namer must not
+    # replace it later even if it reads like a placeholder.
+    index[session_id]["named_by_user"] = True
     _save_index(index, sessions_dir)
     return True
 
@@ -631,5 +665,5 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
                      f"(use --limit to see more).")
     lines.append("Continue: onit --resume-session <#>   "
                  "Rename: onit sessions --rename <#> <name>")
-    lines.append("Start a named session: onit --new-session --name-session <name>")
+    lines.append("Start a named session: onit --new-session <name>")
     return "\n".join(lines)
