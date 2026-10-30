@@ -1492,3 +1492,39 @@ class TestDeleteByName:
                          ["sessions", "--rename", "report", "renamed"])
         assert code == 1
         assert "matches 2 sessions" in capsys.readouterr().err
+
+
+class TestSubcommandsDoNotPayForTheAgent:
+    """A subcommand that never runs the agent must not import it.
+
+    ``src.onit`` pulls in ``fastmcp.client``, ``openai`` and
+    ``src.model.serving.chat`` -- 0.57s of the 0.70s ``onit sessions``
+    took to start.  Measured, not assumed: the import graph is what the
+    test reads, so a future import added back at module scope fails here
+    rather than quietly costing every command half a second.
+    """
+
+    def test_importing_the_cli_does_not_import_the_agent(self):
+        import subprocess
+        code = ("import sys, src.cli; "
+                "print(int('src.onit' in sys.modules))")
+        out = subprocess.run([sys.executable, "-c", code],
+                             capture_output=True, text=True,
+                             cwd=os.path.dirname(os.path.dirname(
+                                 os.path.dirname(os.path.abspath(__file__)))))
+        assert out.stdout.strip() == "0", (
+            "importing src.cli dragged in src.onit: %s" % out.stderr[-400:])
+
+    def test_the_name_is_still_reachable_and_still_patchable(self, monkeypatch):
+        """Lazy must not mean unreachable -- ``patch("src.cli.OnIt")`` works."""
+        from src import cli
+        from unittest.mock import patch
+        assert cli.OnIt.__name__ == "OnIt"
+        with patch("src.cli.OnIt") as fake:
+            fake.return_value = "an agent"
+            assert cli.OnIt(config={}) == "an agent"
+
+    def test_an_unknown_attribute_is_still_an_attribute_error(self):
+        from src import cli
+        with pytest.raises(AttributeError):
+            cli.no_such_attribute

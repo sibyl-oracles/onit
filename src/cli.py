@@ -30,8 +30,26 @@ from pathlib import Path
 
 import yaml
 
-from .onit import OnIt
-from .lib.tools import register_stdio_servers, apply_default_mcp_servers
+
+def __getattr__(name):
+    """Resolve ``src.cli.OnIt`` on first use rather than at import.
+
+    ``onit --help``, ``onit sessions``, ``onit setup`` and ``onit learn``
+    never run the agent, but importing it here meant every one of them
+    paid for it: ``src.onit`` pulls in ``fastmcp.client``, ``openai`` and
+    ``src.model.serving.chat``, 0.57s of the 0.70s a command took to
+    start.  ``src.sessions`` alone imports in 0.00s.
+
+    A module-level ``__getattr__`` rather than a local import inside the
+    two functions that need it: those functions are also where tests
+    patch the name (``patch("src.cli.OnIt")``), and a local import would
+    reach past the patch and build the real agent.
+    """
+    if name == "OnIt":
+        from .onit import OnIt as _OnIt
+        globals()["OnIt"] = _OnIt
+        return _OnIt
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 def _find_default_config() -> str:
@@ -81,6 +99,11 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
     # them — from OnIt, further down startup — but a server the CLI never saw
     # would be registered with a data_path resolved differently, so the list
     # must be complete here, where the launch specs are written.
+    # Imported here rather than at module scope: this is the only caller,
+    # and the CLI's own subcommands never reach it.  Importing it at module
+    # scope made ``onit sessions`` pay 0.33s for a server registry it does
+    # not use.
+    from .lib.tools import apply_default_mcp_servers, register_stdio_servers
     config_data.setdefault('mcp', {}).setdefault('servers', [])
     servers = config_data['mcp']['servers']
     apply_default_mcp_servers(servers)
