@@ -67,6 +67,31 @@ def _clean_mode_env(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The developer's keychain
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_real_secrets(monkeypatch, tmp_path):
+    """No test reads a secret the machine running it happens to hold.
+
+    ``get_secret`` asks the OS keychain, then ``~/.onit/secrets.yaml``, so
+    either one makes the machine part of the test's input.  CI caught a test
+    that had only ever passed here: ``test_learn_llm`` builds an Ollama client
+    at ``https://ollama.com``, a provider that refuses to answer without a
+    key.  It raised on a runner with no keychain and resolved happily on a
+    laptop with an ``ollama_api_key`` stored -- the same commit, two results.
+
+    Both sources are closed, not just the keychain, or the file is the next
+    one to differ.  A test that wants a secret supplies one; ``test_setup``'s
+    ``_fake_keystore`` replaces ``get_secret`` itself and is unaffected.
+    """
+    import src.setup as setup_mod
+    monkeypatch.setattr(setup_mod, "KEYRING_AVAILABLE", False)
+    monkeypatch.setattr(setup_mod, "_SECRETS_PATH",
+                        str(tmp_path / "secrets.yaml"))
+
+
+# ---------------------------------------------------------------------------
 # Minimal valid config dict (avoids real MCP / network calls)
 # ---------------------------------------------------------------------------
 

@@ -114,10 +114,22 @@ class TestTheClientTupleOrder:
     which is exactly why they all passed while the client was unusable.
     """
 
-    def test_the_ollama_client_is_in_the_second_slot(self):
+    def test_the_ollama_client_is_in_the_second_slot(self, monkeypatch):
         from src.learn import llm as llm_module
 
         from src.model.serving import chat as chat_module
+
+        # An Ollama host will not build without a key, and asking for one is
+        # not what this test is about.  The keychain is empty here (the
+        # suite's ``_no_real_keychain``), so the key has to be named -- and
+        # named on the seam ``_resolve_api_key`` reads, or the test passes on
+        # a machine that has an ``ollama_api_key`` stored and fails on one
+        # that does not.
+        import src.setup as setup_mod
+        monkeypatch.setattr(
+            setup_mod, "get_secret",
+            lambda key: "sk-test" if key == "ollama_api_key" else None)
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
 
         sentinel = object()
         real = chat_module._create_ollama_client
