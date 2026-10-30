@@ -217,6 +217,7 @@ onit sessions --rename 2 "chapter 3 draft"      # rename row 2
 onit --resume-session 2                         # come back by row number...
 onit --resume-session "chapter 3 draft"         # ...or by name
 onit sessions --delete 2                        # delete row 2
+onit sessions --delete "chapter 3 draft"        # ...or by name
 ```
 
 ## Other front ends

@@ -1118,6 +1118,58 @@ def _sessions_dir(args: argparse.Namespace) -> str:
         config_data.get("session_path", "~/.onit/sessions"))
 
 
+def _resolve_identifiers(identifiers: list, sessions_dir: str):
+    """Resolve what was typed into session ids; return ``(resolved, missing)``.
+
+    *resolved* is a list of ``(session_id, as_typed)`` with duplicates dropped.
+
+    Two things here are not just tidying.  First, ``--delete my thesis chapter
+    3`` arrives as four arguments because the flag takes a list, and those are
+    one name, not four ids: before anything else, the words are joined and
+    tried as a single name, so a name with spaces needs no quotes.  Second, a
+    name that fits more than one session is reported with the sessions it
+    fits, because "no session matches" is a lie when six do.
+    """
+    from .sessions import resolve_session_choice
+
+    resolved, seen = [], set()
+
+    def _take(sid, as_typed):
+        if sid not in seen:
+            seen.add(sid)
+            resolved.append((sid, as_typed))
+
+    # The whole command line as one name, before it is read as several.
+    if len(identifiers) > 1:
+        joined = " ".join(identifiers)
+        sid = resolve_session_choice(joined, sessions_dir)
+        if sid:
+            return [(sid, joined)], []
+
+    missing = []
+    for identifier in identifiers:
+        candidates = []
+        sid = resolve_session_choice(identifier, sessions_dir,
+                                     candidates=candidates)
+        if sid:
+            _take(sid, identifier)
+        elif candidates:
+            # Not "missing": the name matched several, and the person gets to
+            # say which.  Deleting one of six because it was newest is exactly
+            # the bug this refusal replaces.
+            print(f"Error: '{identifier}' matches {len(candidates)} sessions:",
+                  file=sys.stderr)
+            for cand in candidates:
+                print(f"  {cand['tag']}  ({cand['session_id'][:8]})",
+                      file=sys.stderr)
+            print("Use the # from 'onit sessions', or more of the name.",
+                  file=sys.stderr)
+            return [], []
+        else:
+            missing.append(identifier)
+    return resolved, missing
+
+
 def _delete_sessions(identifiers: list, sessions_dir: str,
                      assume_yes: bool = False) -> int:
     """Delete the sessions named on the command line; return the exit code.
@@ -1132,18 +1184,11 @@ def _delete_sessions(identifiers: list, sessions_dir: str,
     name they are known by, since that is what the person typed and what they
     would recognise in the listing.
     """
-    from .sessions import delete_session, list_sessions, resolve_session_choice
+    from .sessions import delete_session, list_sessions
 
     rows = {row["session_id"]: row for row in list_sessions(sessions_dir,
                                                             limit=None)}
-    resolved, missing, seen = [], [], set()
-    for identifier in identifiers:
-        sid = resolve_session_choice(identifier, sessions_dir)
-        if not sid:
-            missing.append(identifier)
-        elif sid not in seen:
-            seen.add(sid)
-            resolved.append((sid, identifier))
+    resolved, missing = _resolve_identifiers(identifiers, sessions_dir)
 
     if missing:
         for identifier in missing:
@@ -1151,7 +1196,6 @@ def _delete_sessions(identifiers: list, sessions_dir: str,
         print("Run 'onit sessions' to see what is there.", file=sys.stderr)
         return 1
     if not resolved:
-        print("Error: nothing to delete.", file=sys.stderr)
         return 1
 
     if not assume_yes:
@@ -1165,8 +1209,16 @@ def _delete_sessions(identifiers: list, sessions_dir: str,
             ref = f"#{identifier}" if str(identifier).isdigit() else identifier
             print(f"  {ref:<4} {name}  ({sid[:8]}, {turns} turn(s))")
         noun = "session" if len(resolved) == 1 else "sessions"
-        answer = input(f"Delete {len(resolved)} {noun}? This cannot be undone. "
-                       f"(yes/no): ")
+        try:
+            answer = input(f"Delete {len(resolved)} {noun}? This cannot be undone. "
+                           f"(yes/no): ")
+        except EOFError:
+            # Piped input that ran out, or no terminal at all.  Nothing was
+            # deleted, which is the safe outcome -- but a traceback is not a
+            # way to say so.
+            print("\nNo answer, so nothing was deleted. "
+                  "Pass --yes to delete without asking.", file=sys.stderr)
+            return 1
         if answer.strip().lower() not in ("yes", "y"):
             print("Cancelled.")
             return 0
@@ -1205,7 +1257,19 @@ def _rename_session(identifier: str, new_name: str, sessions_dir: str,
     if not name:
         print("Error: a session name cannot be empty.", file=sys.stderr)
         return 1
-    sid = resolve_session_choice(identifier, sessions_dir, limit=limit)
+    candidates = []
+    sid = resolve_session_choice(identifier, sessions_dir, limit=limit,
+                                 candidates=candidates)
+    if not sid and candidates:
+        # Renaming the wrong one of six sessions is the same mistake as
+        # deleting the wrong one, so a prefix that fits several is a question.
+        print(f"Error: '{identifier}' matches {len(candidates)} sessions:",
+              file=sys.stderr)
+        for cand in candidates:
+            print(f"  {cand['tag']}  ({cand['session_id'][:8]})", file=sys.stderr)
+        print("Use the # from 'onit sessions', or more of the name.",
+              file=sys.stderr)
+        return 1
     if not sid:
         print(f"Error: no session matches '{identifier}'.", file=sys.stderr)
         print("Run 'onit sessions' to see what is there.", file=sys.stderr)
@@ -1780,7 +1844,9 @@ def main():
         from .sessions import resolve_session_choice
         sessions_dir = os.path.expanduser(
             config_data.get('session_path', '~/.onit/sessions'))
-        sid = resolve_session_choice(resume_target, sessions_dir)
+        ambiguous = []
+        sid = resolve_session_choice(resume_target, sessions_dir,
+                                     candidates=ambiguous)
         # An index entry can outlive its JSONL file; treat that as "no session".
         if sid and not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl")):
             sid = None
@@ -1788,8 +1854,17 @@ def main():
             # Nothing to resume is only an error when the user asked for a
             # specific session; the automatic path just starts a new one.
             if not auto_resume:
-                print(f"Error: Session '{resume_target}' not found.", file=sys.stderr)
-                print("Use 'onit sessions' to list available sessions.", file=sys.stderr)
+                if ambiguous:
+                    print(f"Error: '{resume_target}' matches "
+                          f"{len(ambiguous)} sessions:", file=sys.stderr)
+                    for cand in ambiguous:
+                        print(f"  {cand['tag']}  ({cand['session_id'][:8]})",
+                              file=sys.stderr)
+                    print("Use the # from 'onit sessions', or more of the name.",
+                          file=sys.stderr)
+                else:
+                    print(f"Error: Session '{resume_target}' not found.", file=sys.stderr)
+                    print("Use 'onit sessions' to list available sessions.", file=sys.stderr)
                 sys.exit(1)
         else:
             config_data['resume_session_id'] = sid

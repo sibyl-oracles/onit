@@ -1318,3 +1318,177 @@ class TestDeleteSessions:
         assert code == 0
         assert not (pathlib.Path(store) / "dddd-4444.jsonl").exists()
 
+
+
+class TestDeleteByName:
+    """`--delete <name>` must delete the session that has that name.
+
+    Every case here was reported as "does not work", and each failed for a
+    different reason -- a name cut short in the listing, a name the resolver
+    could not reach at all, a name spread over several arguments.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        from src import sessions
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".onit").mkdir(exist_ok=True)
+        (tmp_path / ".onit" / "sessions").symlink_to(d)
+        return d
+
+    def _add(self, store, sid, tag):
+        from src import sessions
+        sessions.register_session(sid, store, tag=tag)
+
+    def _cli(self, monkeypatch, argv, answer="yes"):
+        from src import cli
+        monkeypatch.setattr(sys, "argv", ["onit"] + argv)
+        monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+        code = 0
+        try:
+            cli.main()
+        except SystemExit as exc:
+            code = exc.code
+        return code
+
+    def _ids(self, store):
+        from src.sessions import list_sessions
+        return [s["session_id"] for s in list_sessions(store, limit=None)]
+
+    def test_the_listing_shows_the_whole_name(self, store, monkeypatch, capsys):
+        """A name cut to 32 characters is not the name.
+
+        Seven real sessions named marikina-river-water-level-latest and -2
+        through -6 all rendered as the same 32 characters, so the listing
+        showed one name for six sessions and typing it back picked one of
+        them -- the newest -- without a word.
+        """
+        from src.sessions import format_sessions_table, list_sessions
+        long_name = "marikina-river-water-level-latest-6"
+        self._add(store, "aaaa-1111", long_name)
+        text = format_sessions_table(list_sessions(store, limit=None))
+        assert long_name in text
+        assert long_name[:32] + " " in text or long_name in text
+
+    def test_a_name_that_fits_several_is_refused_not_guessed(self, store,
+                                                             monkeypatch,
+                                                             capsys):
+        """Choosing by recency is what deleted the wrong session."""
+        for i, sid in enumerate(["aaaa-1111", "bbbb-2222", "cccc-3333"]):
+            self._add(store, sid, f"marikina-river-water-level-latest-{i}")
+        code = self._cli(monkeypatch,
+                         ["sessions", "--delete",
+                          "marikina-river-water-level-latest", "--yes"])
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "matches 3 sessions" in err
+        # every candidate is named, so the person can pick one
+        for sid in ("aaaa-1111", "bbbb-2222", "cccc-3333"):
+            assert sid[:8] in err
+        # and nothing was deleted
+        assert len(self._ids(store)) == 3
+
+    def test_a_full_name_deletes_exactly_that_session(self, store, monkeypatch,
+                                                      capsys):
+        """The fix for the refusal: the name that fits one row still works."""
+        self._add(store, "aaaa-1111", "marikina-river-water-level-latest")
+        self._add(store, "bbbb-2222", "marikina-river-water-level-latest-2")
+        code = self._cli(monkeypatch,
+                         ["sessions", "--delete",
+                          "marikina-river-water-level-latest-2", "--yes"])
+        assert code == 0
+        assert "bbbb-222" in capsys.readouterr().out
+        assert self._ids(store) == ["aaaa-1111"]
+
+    @pytest.mark.parametrize("tag", ["2026", "3", "last"])
+    def test_a_session_can_be_named_like_a_row_number(self, store, monkeypatch,
+                                                      capsys, tag):
+        """A name is a name, even when it looks like a number.
+
+        These three were unreachable: '2026' was a row past the end, '3' was
+        row three, and 'last' was the most recent session -- each reporting
+        or deleting something other than the session that had that name.
+        """
+        self._add(store, "aaaa-1111", tag)
+        self._add(store, "bbbb-2222", "something-else")
+        code = self._cli(monkeypatch, ["sessions", "--delete", tag, "--yes"])
+        assert code == 0
+        assert "aaaa-111" in capsys.readouterr().out
+        assert self._ids(store) == ["bbbb-2222"]
+
+    def test_a_row_number_still_works_when_no_name_matches(self, store,
+                                                            monkeypatch):
+        """The fix must not cost the # column: a bare number that is not a
+        name is still the row it was printed next to."""
+        from src.sessions import list_sessions
+        self._add(store, "aaaa-1111", "first")
+        self._add(store, "bbbb-2222", "second")
+        target = list_sessions(store, limit=None)[0]["session_id"]
+        code = self._cli(monkeypatch, ["sessions", "--delete", "1", "--yes"])
+        assert code == 0
+        assert target not in self._ids(store)
+
+    def test_an_unquoted_name_with_spaces_is_one_name(self, store, monkeypatch,
+                                                      capsys):
+        """--delete takes a list, so a name with spaces arrived as several ids
+        and each was reported as not found."""
+        self._add(store, "aaaa-1111", "my thesis chapter 3")
+        code = self._cli(monkeypatch,
+                         ["sessions", "--delete", "my", "thesis", "chapter",
+                          "3", "--yes"])
+        assert code == 0
+        assert "aaaa-111" in capsys.readouterr().out
+        assert self._ids(store) == []
+
+    def test_the_exact_spelling_beats_a_longer_name(self, store, monkeypatch,
+                                                    capsys):
+        """An exact name wins over a name that merely starts with it, and
+        'Notes' wins over 'notes' when an old index holds both."""
+        self._add(store, "aaaa-1111", "chapter")
+        self._add(store, "bbbb-2222", "chapter-2")
+        code = self._cli(monkeypatch, ["sessions", "--delete", "chapter",
+                                       "--yes"])
+        assert code == 0
+        assert "aaaa-111" in capsys.readouterr().out
+        assert self._ids(store) == ["bbbb-2222"]
+
+    def test_a_case_differing_spelling_is_found(self, store, monkeypatch,
+                                                capsys):
+        """Typing a name in the wrong case is a typo, not a different
+        session -- and it must not fall through to a longer name."""
+        self._add(store, "aaaa-1111", "My Thesis Chapter 3")
+        self._add(store, "bbbb-2222", "My Thesis Chapter 3-2")
+        code = self._cli(monkeypatch,
+                         ["sessions", "--delete", "MY THESIS CHAPTER 3",
+                          "--yes"])
+        assert code == 0
+        assert "aaaa-111" in capsys.readouterr().out
+        assert self._ids(store) == ["bbbb-2222"]
+
+    def test_no_answer_deletes_nothing_and_says_so(self, store, monkeypatch,
+                                                   capsys):
+        """Piped input that runs out used to end in an EOFError traceback."""
+        def no_input(prompt=""):
+            raise EOFError()
+        self._add(store, "aaaa-1111", "keep-me")
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "sessions", "--delete", "keep-me"])
+        monkeypatch.setattr("builtins.input", no_input)
+        from src import cli
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert self._ids(store) == ["aaaa-1111"]
+        assert "--yes" in capsys.readouterr().err
+
+    def test_rename_refuses_a_name_that_fits_several(self, store, monkeypatch,
+                                                     capsys):
+        """Renaming the wrong one of six is the same mistake as deleting it."""
+        for i, sid in enumerate(["aaaa-1111", "bbbb-2222"]):
+            self._add(store, sid, f"report-{i}")
+        code = self._cli(monkeypatch,
+                         ["sessions", "--rename", "report", "renamed"])
+        assert code == 1
+        assert "matches 2 sessions" in capsys.readouterr().err

@@ -420,30 +420,81 @@ def delete_session(session_id: str,
     return found
 
 
+def exact_session_name(name: str,
+                       sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+    """The session whose name is exactly *name*, or None.
+
+    Case-sensitive first, then case-insensitive.  The order matters: names are
+    unique only *ignoring* case, so ``Notes`` and ``notes`` can never both
+    exist -- but an older index can still hold two that differ only in case,
+    and then the spelling the person typed has to win over the one it merely
+    resembles.
+    """
+    index = _load_index(sessions_dir)
+    wanted = name.lower()
+    folded = None
+    for sid, meta in index.items():
+        stored = meta.get("tag") or ""
+        if stored == name:
+            return sid
+        if folded is None and stored.lower() == wanted:
+            folded = sid
+    return folded
+
+
+def match_session_name(name: str,
+                       sessions_dir: str = DEFAULT_SESSIONS_DIR) -> tuple[str | None, list]:
+    """Resolve a name the way a person typed it; return ``(session_id, candidates)``.
+
+    Three tiers, most specific first:
+
+    1. an exact match, case-sensitive -- the name exactly as it is stored;
+    2. an exact match ignoring case;
+    3. a unique prefix, so ``--resume-session chapter`` still finds
+       ``chapter 3``.
+
+    A prefix that matches more than one session resolves to nothing and hands
+    back the candidates instead of choosing one.  Choosing by recency is how
+    ``--delete`` removed the wrong session: seven sessions named
+    ``marikina-river-water-level-latest`` and ``-2`` through ``-6`` all render
+    inside the name column, every one of them matched what was on screen, and
+    the newest was deleted without a word.  A name that cannot name one
+    session is a question for the person who typed it, not a guess.
+    """
+    index = _load_index(sessions_dir)
+
+    exact = exact_session_name(name, sessions_dir)
+    if exact is not None:
+        return exact, []
+
+    wanted = name.lower()
+    prefixed = []
+    for sid, meta in index.items():
+        stored = (meta.get("tag") or "").lower()
+        if stored and stored.startswith(wanted):
+            prefixed.append((sid, meta.get("tag") or ""))
+
+    if len(prefixed) == 1:
+        return prefixed[0][0], []
+    if len(prefixed) > 1:
+        # Ordered the way the listing is, so the candidates read like rows.
+        prefixed.sort(key=lambda x: index[x[0]].get("updated", 0), reverse=True)
+        return None, [{"session_id": sid, "tag": tag} for sid, tag in prefixed]
+    return None, []
+
+
 def find_session_by_tag(tag: str,
                         sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Find a session ID by its tag (case-insensitive prefix match).
 
-    Returns the session_id or None.  If multiple match, returns the most
-    recently updated one.
+    Returns the session_id or None.  An exact name wins over a longer name
+    that merely starts with it, however old it is; among several *prefix*
+    matches the most recently updated one is returned.  Callers that act on
+    what they get back -- ``--delete`` above all -- should use
+    :func:`match_session_name`, which refuses to choose between candidates.
     """
-    index = _load_index(sessions_dir)
-    tag_lower = tag.lower()
-    exact, prefixed = [], []
-    for sid, meta in index.items():
-        session_tag = (meta.get("tag") or "").lower()
-        if session_tag == tag_lower:
-            exact.append((sid, meta))
-        elif session_tag.startswith(tag_lower):
-            prefixed.append((sid, meta))
-    # An exact name is the session the user meant, however old it is.  Ranking
-    # the two kinds together by recency is what made a typed-out name resolve
-    # to some other session that merely started with the same letters.
-    for bucket in (exact, prefixed):
-        if bucket:
-            bucket.sort(key=lambda x: x[1].get("updated", 0), reverse=True)
-            return bucket[0][0]
-    return None
+    sid, _ = match_session_name(tag, sessions_dir)
+    return sid
 
 
 def find_session_by_id_prefix(prefix: str,
@@ -484,15 +535,30 @@ def resolve_session(identifier: str,
 def resolve_session_choice(identifier: str,
                            sessions_dir: str = DEFAULT_SESSIONS_DIR,
                            limit: int | None = None,
-                           include_empty: bool = True) -> str | None:
+                           include_empty: bool = True,
+                           candidates: list | None = None) -> str | None:
     """Resolve what a person typed at a shell prompt to a session id.
 
-    ``resolve_session`` answers the same question for a name or an id.  This
-    adds the two things a *listing* invites: the ``#`` shown next to a row, so
-    ``onit sessions --rename 3 notes`` works on the third line of the listing, and a
-    ``last``/``-1`` shorthand.  A bare number is read as a row number, because
-    that is what the column is there for; a UUID is never all digits, so the
-    two cannot be confused.
+    The order is deliberate, and it is what makes ``--delete <name>`` mean the
+    session that has that name:
+
+    1. a name that matches exactly (see :func:`match_session_name`);
+    2. the ``#`` shown next to a row in the listing, so ``--rename 3`` and
+       ``--delete 3`` act on the third line;
+    3. a unique name prefix;
+    4. ``last``/``-1``, the most recently updated session;
+    5. a UUID or UUID prefix.
+
+    A name comes before the row number because a session can be *called* ``3``
+    or ``2026``: with the number first, ``--delete 2026`` was read as a row
+    past the end and reported that no such session existed, while the session
+    of that name sat right there in the listing.  ``last`` moves to fourth for
+    the same reason, so a session named ``last`` can still be addressed as one.
+
+    *candidates*, when given, is filled with the sessions a *prefix* matched
+    when it matched more than one.  That is not a failure to report as "no
+    session matches": the caller can say which ones were meant and let the
+    person pick, which is the only honest answer when a name fits six rows.
 
     The listing prints every session, so the default view here is every
     session too -- a ``#`` has to mean the row it was printed next to.  The
@@ -504,9 +570,15 @@ def resolve_session_choice(identifier: str,
     text = (identifier or "").strip()
     if not text:
         return None
-    lowered = text.lower()
-    if lowered in ("last", "-1"):
-        return get_last_session(sessions_dir)
+
+    sid, ambiguous = match_session_name(text, sessions_dir)
+    if sid:
+        return sid
+    if ambiguous:
+        if candidates is not None:
+            candidates.extend(ambiguous)
+        return None
+
     if text.isdigit():
         # The same view 'onit sessions' prints, or the number means a different
         # session than the row it was read off.
@@ -516,8 +588,11 @@ def resolve_session_choice(identifier: str,
         n = int(text)
         if 1 <= n <= len(rows):
             return rows[n - 1]["session_id"]
-        return None
-    return resolve_session(text, sessions_dir)
+
+    if text.lower() in ("last", "-1"):
+        return get_last_session(sessions_dir)
+
+    return find_session_by_id_prefix(text, sessions_dir)
 
 
 def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
@@ -651,14 +726,26 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
     without copying a
     UUID out of the terminal.  *total* is the number of sessions that exist,
     when the list shown is a limited view of them.
+
+    The Name column is not truncated either.  It used to be cut to 32
+    characters, and the names that needed the room most are the ones that
+    differ only at the end: ``marikina-river-water-level-latest`` and its
+    ``-2`` through ``-6`` all printed as the same 32 characters, so a person
+    deleting "the one I can see" deleted whichever of the six happened to be
+    newest.  A name is only useful if typing it back selects the session it
+    was printed next to.
     """
     if not sessions:
         return ("No sessions found.\n"
                 "Start one with: onit --new-session")
 
+    width = max((len(s.get("tag") or "(unnamed)") for s in sessions),
+                default=len("Name"))
+    width = max(width, len("Name"))
+
     lines = []
-    lines.append(f"{'#':<4} {'Name':<32} {'Turns':<6} {'Updated':<17} Preview")
-    lines.append("-" * 100)
+    lines.append(f"{'#':<4} {'Name':<{width}} {'Turns':<6} {'Updated':<17} Preview")
+    lines.append("-" * (4 + 1 + width + 1 + 6 + 1 + 17 + 1 + 38))
     for i, s in enumerate(sessions, 1):
         tag = s.get("tag") or "(unnamed)"
         turns = s.get("turns", 0)
@@ -669,7 +756,7 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
         else:
             updated_str = "unknown"
         preview = (s.get("preview") or "").replace("\n", " ")[:38]
-        lines.append(f"{i:<4} {tag[:32]:<32} {turns:<6} {updated_str:<17} {preview}")
+        lines.append(f"{i:<4} {tag:<{width}} {turns:<6} {updated_str:<17} {preview}")
 
     lines.append("")
     if total is not None and total > len(sessions):

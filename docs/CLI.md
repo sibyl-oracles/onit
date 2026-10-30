@@ -86,6 +86,7 @@ List and manage saved sessions.
 onit sessions                                   # list every saved session
 onit sessions --delete 3                        # delete row 3
 onit sessions --delete 3 "thesis chapter 3"     # delete several at once
+onit sessions --delete my thesis chapter 3     # one name, quotes optional
 onit sessions --delete 3 --yes                  # ... without the prompt
 onit sessions --rename 3 "my-chat"              # rename row 3 (same as `onit rename`)
 onit sessions --rebuild-index                   # rebuild the index from JSONL files
@@ -96,13 +97,23 @@ The `#` column is the session's handle: every session action takes it, so a
 session can be acted on without copying a UUID out of the terminal. `--delete`
 also takes a name or a UUID prefix, and several identifiers at once.
 
+A name is matched in this order, most specific first: the name exactly as it is
+stored, then ignoring case, then a *unique* prefix. A prefix that fits more than
+one session is refused, with the sessions it fits listed, rather than guessed
+at -- choosing the most recent match is how `--delete marikina-river-water-level-latest`
+used to remove `-6` instead of the session named exactly that. A name comes
+before the row number, so a session *called* `3`, `2026` or `last` can still be
+addressed by its name. A name with spaces needs no quotes:
+`--delete my thesis chapter 3` is one name, not four ids.
+
 The listing shows **every** session, including ones that were opened and never
 used. Those are the accidental sessions, and they are the rows most worth
 deleting -- hiding them left them with no `#` to delete them by. The old
 `--limit` and `--include-empty` flags are gone for that reason: with nothing
 filtered and nothing truncated, a `#` is simply the line it was printed next
 to. Both still parse, so an old script keeps running, but neither does
-anything.
+anything. The Name column is not truncated either: a name cut short is not the
+name, and the ones that need the room are the ones that differ only at the end.
 
 `--delete` resolves every identifier before it deletes any of them, so a typo
 in a batch deletes nothing rather than half the list. It names each session
