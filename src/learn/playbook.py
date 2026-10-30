@@ -804,7 +804,15 @@ def candidate_deltas(cluster_records: list) -> list:
     # The same tool, used badly: it failed in the runs that went badly
     # and worked in the ones that went well.  This is the most specific
     # thing the store can say, and the most actionable.
-    for tool in sorted(good_ok & bad_tools):
+    #
+    # The set is ``bad_tools - bad_ok``, not ``bad_tools``.  It used to be
+    # ``good_ok & bad_tools`` -- the tool merely *appeared* in a bad run --
+    # which had two consequences, both wrong: a tool that succeeded on
+    # both sides was described as having "failed in the ones that did
+    # not", a claim the store does not support; and a tool that failed on
+    # *both* sides was dropped, losing the one case this rule exists to
+    # report.
+    for tool in sorted(good_ok & (bad_tools - bad_ok)):
         deltas.append({
             "op": "insert",
             "trigger": tool,

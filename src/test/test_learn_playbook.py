@@ -552,6 +552,50 @@ class TestReflector:
         records = [_record("a", "t", [("x", True)], verifier="issues")]
         assert pb.candidate_deltas(records) == []
 
+    def test_a_tool_that_worked_on_both_sides_is_not_called_a_failure(self):
+        """The rule reports a tool that *failed*, not one that was present.
+
+        The set was ``good_ok & bad_tools`` -- the tool merely appeared in
+        a bad run -- so a tool that succeeded on both sides was written up
+        as "it succeeded in the runs that went well and failed in the ones
+        that did not".  That is a claim about a failure that never
+        happened, and the bullet it produces is injected into the prompt.
+        """
+        records = [
+            _record("a", "t", [("local_search", True), ("bash", True)],
+                    verifier="clean"),
+            _record("b", "t", [("bash", True)], verifier="issues"),
+        ]
+        triggers = [d["trigger"] for d in pb.candidate_deltas(records)]
+        assert "bash" not in triggers, (
+            "bash succeeded on both sides and was still reported as failing")
+
+    def test_a_tool_that_failed_on_both_sides_gets_no_false_claim(self):
+        """Nothing is said about a tool that never worked on this task.
+
+        The rule's sentence is "it succeeded in the runs that went well
+        and failed in the ones that did not".  For a tool that failed on
+        both sides that sentence is false, so the rule must stay silent
+        rather than reach for it.
+        """
+        records = [
+            _record("a", "t", [("bash", False)], verifier="clean"),
+            _record("b", "t", [("bash", False)], verifier="issues"),
+        ]
+        triggers = [d["trigger"] for d in pb.candidate_deltas(records)]
+        assert "bash" not in triggers, (
+            "bash never succeeded, so 'succeeded in the runs that went well' "
+            "would also be false")
+
+    def test_a_tool_that_worked_when_good_and_failed_when_bad_is_reported(self):
+        records = [
+            _record("a", "t", [("local_search", True), ("bash", True)],
+                    verifier="clean"),
+            _record("b", "t", [("bash", False)], verifier="issues"),
+        ]
+        triggers = [d["trigger"] for d in pb.candidate_deltas(records)]
+        assert "bash" in triggers
+
     def test_a_tool_that_only_appears_in_the_good_runs_is_proposed(self):
         records = [
             _record("a", "t", [("local_search", True)], verifier="clean"),
