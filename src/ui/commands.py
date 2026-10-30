@@ -66,6 +66,9 @@ COMMANDS = (
     Command("rate", "[up|down|clear] [n]",
             "Rate an answer: the newest one, or number n. The strongest "
             "outcome signal there is."),
+    Command("rename", "<name>",
+            "Name this session, so 'onit resume <name>' finds it later; "
+            "bare, show what it is called."),
     Command("model", "[name | -]",
             "Switch model; bare, list what the endpoint serves; '-' for "
             "auto-detect."),
@@ -815,6 +818,58 @@ async def cmd_doctor(agent, arg: str) -> str:
 
 # ── dispatch ────────────────────────────────────────────────────────────────
 
+def _sessions_dir(agent) -> str:
+    """Where this session's index lives, honouring the config override."""
+    configured = (getattr(agent, "config_data", None) or {}).get(
+        "session_path", "~/.onit/sessions")
+    return os.path.expanduser(configured)
+
+
+def cmd_rename(agent, arg: str) -> str:
+    """Show or set the name of the session in front of the user.
+
+    Naming is the one piece of session metadata a person wants to set *while*
+    the session is open -- afterwards they have to find it first, which is the
+    problem the name was meant to solve.
+    """
+    from ..sessions import (_load_index, normalize_tag, tag_session,
+                            find_session_by_tag)
+
+    sid = getattr(agent, "session_id", None)
+    if not sid:
+        return "This session has no id yet, so it cannot be named."
+    sessions_dir = _sessions_dir(agent)
+
+    if not arg.strip():
+        current = _load_index(sessions_dir).get(sid, {}).get("tag")
+        if current:
+            return f"This session is called '{current}'.\n" \
+                   f"Rename it with \\rename <new-name>."
+        return ("This session has no name yet.\n"
+                "Give it one with \\rename <name>, and it will show up in "
+                "'onit sessions' and resume with 'onit resume <name>'.")
+
+    new_name = normalize_tag(arg)
+    if not new_name:
+        return "A session name cannot be empty."
+
+    # Refuse a name another session already answers to, rather than letting
+    # 'onit resume <name>' become a coin toss.
+    holder = find_session_by_tag(new_name, sessions_dir)
+    if holder and holder != sid:
+        meta = _load_index(sessions_dir).get(holder, {})
+        if (meta.get("tag") or "").lower() == new_name.lower():
+            return (f"'{new_name}' is already the name of session "
+                    f"{holder[:8]}.... Pick another.")
+
+    result = tag_session(sid, new_name, sessions_dir)
+    if result is True:
+        stored = _load_index(sessions_dir).get(sid, {}).get("tag") or new_name
+        return (f"Renamed this session to '{stored}'.\n"
+                f"Come back to it with: onit resume '{stored}'")
+    return f"Could not rename: {result}"
+
+
 async def dispatch(agent, text: str) -> str | None:
     """Run the command in ``text``, returning what to show the user.
 
@@ -843,6 +898,8 @@ async def dispatch(agent, text: str) -> str | None:
             return await cmd_key(agent, arg)
         if name == "save":
             return cmd_save(agent)
+        if name == "rename":
+            return cmd_rename(agent, arg)
         if name == "rate":
             from .rating import cmd_rate
             return cmd_rate(agent, arg)

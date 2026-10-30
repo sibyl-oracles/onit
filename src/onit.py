@@ -1247,7 +1247,11 @@ class OnIt(BaseModel):
             if not os.path.exists(self.session_path):
                 with open(self.session_path, "w", encoding="utf-8") as f:
                     f.write("")
-            register_session(self.session_id, sessions_base)
+            # A name given for this run only: it is popped so a later write of
+            # config_data cannot persist one session's name onto every session
+            # that follows.
+            register_session(self.session_id, sessions_base,
+                             tag=self.config_data.pop('session_name', None))
 
         # The other half of the session: what was done, not what was said.  A
         # new session gets an empty one rather than None, so every path below

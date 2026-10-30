@@ -1148,6 +1148,40 @@ class TestSessionsEndpoints:
         res = client.patch(f"/api/sessions/{uuid.uuid4()}", json={"tag": "x"})
         assert res.status_code == 400
 
+    def _indexed_session(self, ui, task):
+        """A session that has had a turn, which is when it enters the index."""
+        from src.sessions import register_session, update_session
+        sid = str(uuid.uuid4())
+        d = ui._sessions_dir()
+        register_session(sid, d)
+        update_session(sid, task=task, sessions_dir=d)
+        return sid
+
+    def test_rename_to_an_empty_name_is_refused(self, ui, client):
+        """The CLI refuses an empty name; the web UI must not accept one and
+        leave a session that nothing can find."""
+        sid = self._indexed_session(ui, "do the first thing")
+        res = client.patch(f"/api/sessions/{sid}", json={"tag": "   "})
+        assert res.status_code == 400
+
+    def test_rename_to_a_taken_name_is_refused(self, ui, client):
+        """Two sessions answering to one name would make the name useless for
+        finding either of them."""
+        first = self._indexed_session(ui, "do the first thing")
+        second = self._indexed_session(ui, "do the second thing")
+        assert client.patch(f"/api/sessions/{first}",
+                            json={"tag": "shared"}).status_code == 200
+        res = client.patch(f"/api/sessions/{second}", json={"tag": "shared"})
+        assert res.status_code == 400
+
+    def test_a_name_survives_into_the_listing(self, ui, client):
+        sid = self._indexed_session(ui, "do the first thing")
+        assert client.patch(f"/api/sessions/{sid}",
+                            json={"tag": "My Research"}).status_code == 200
+        names = {s["session_id"]: s.get("tag")
+                 for s in client.get("/api/sessions").json()["sessions"]}
+        assert names.get(sid) == "My Research"
+
 
 # ── Auth-enabled app ───────────────────────────────────────────────────────
 

@@ -200,9 +200,19 @@ command approvals in [docs/ISOLATION.md](docs/ISOLATION.md) and
 ## Inside a session
 
 Lines starting with `\` are answered by OnIt itself: `\help`, `\setup` (endpoints in
-use), `\model [name]`, `\host add <url>` (spread across servers), `\key`, `\save`,
-`\bye`. Everything else goes to the model, which works until the task is done —
-each tool call is shown as it runs.
+use), `\model `, `\host add <url>` (spread across servers), `\key`, `\save`,
+`\rename <name>`, `\bye`. Everything else goes to the model, which works until
+the task is done — each tool call is shown as it runs.
+
+Sessions are named, and easy to come back to. A session takes its name from its
+first message; `\rename` or `onit rename` sets one you choose:
+
+```bash
+onit --name "thesis chapter 3"   # name a new session as it starts
+onit sessions                    # list them; the # column is the handle
+onit rename 2 "chapter 3 draft"  # rename row 2
+onit resume 2                    # come back to it by row number, or by name
+```
 
 ## Other front ends
 

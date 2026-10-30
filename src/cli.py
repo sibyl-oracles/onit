@@ -690,6 +690,9 @@ def _build_parser() -> argparse.ArgumentParser:
                                  help="Rebuild the session index from existing JSONL files.")
     sessions_parser.add_argument("--tag", type=str, nargs=2, metavar=("SESSION", "TAG"),
                                  help="Tag a session: --tag <session-id-or-tag> <new-tag>")
+    sessions_parser.add_argument("--all", action="store_true",
+                                 help="Include sessions that were opened but "
+                                      "never used (no turns, no name).")
     sessions_parser.add_argument("--clear", action="store_true",
                                  help="Delete all previous sessions and the index.")
 
@@ -843,6 +846,19 @@ def _build_parser() -> argparse.ArgumentParser:
                                     "(config, presets, stored keys) with a model "
                                     "listing. Exits 1 if any endpoint fails.")
 
+    # rename
+    rename_parser = subparsers.add_parser(
+        "rename", help="Rename a session so it is easy to find later.")
+    rename_parser.add_argument("session", metavar="SESSION",
+                               help="Session to rename: a name, a UUID, or "
+                                    "the number shown by 'onit sessions'.")
+    rename_parser.add_argument("--limit", type=int, default=20,
+                               help="How many rows 'onit sessions' showed, so "
+                                    "a row number means the same session "
+                                    "(default: 20).")
+    rename_parser.add_argument("name", metavar="NAME",
+                               help="The new name.")
+
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
     resume_parser.add_argument("session", nargs="?", default="last",
@@ -876,6 +892,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── General options ──────────────────────────────────────────────────────
     parser.add_argument("--resume", type=str, default=None, metavar="TAG_OR_ID",
                         help='Resume a previous session by tag, UUID, or "last" for the most recent.')
+    parser.add_argument("--name", type=str, default=None, metavar="NAME",
+                        help="Name this session as it starts, so it can be "
+                             "found later with 'onit resume <name>'. Only "
+                             "applies to a session that is being created.")
     parser.add_argument("--restart-session", "--new-session", action="store_true",
                         default=False, dest="restart_session",
                         help="Start a fresh session instead of resuming the last "
@@ -965,6 +985,39 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── External MCP servers ─────────────────────────────────────────────────
     return parser
+
+
+def _rename_session(identifier: str, new_name: str, sessions_dir: str,
+                    limit: int = 20) -> int:
+    """Rename one session; return the process exit code.
+
+    Shared by ``onit rename`` and ``onit sessions --tag`` so the two spellings
+    of the same action cannot drift apart -- in what they accept as an
+    identifier, in what they do with a bad name, or in what they tell the user
+    afterwards.
+    """
+    from .sessions import _load_index, normalize_tag, resolve_session_choice, \
+        tag_session
+
+    name = normalize_tag(new_name)
+    if not name:
+        print("Error: a session name cannot be empty.", file=sys.stderr)
+        return 1
+    sid = resolve_session_choice(identifier, sessions_dir, limit=limit)
+    if not sid:
+        print(f"Error: no session matches '{identifier}'.", file=sys.stderr)
+        print("Run 'onit sessions' to see what is there.", file=sys.stderr)
+        return 1
+    result = tag_session(sid, name, sessions_dir)
+    if result is not True:
+        print(f"Error: {result}", file=sys.stderr)
+        return 1
+    # Read the name back rather than echoing the argument: what is stored is
+    # what 'onit resume' will look up.
+    stored = _load_index(sessions_dir).get(sid, {}).get("tag") or name
+    print(f"Renamed {sid[:8]}... to '{stored}'.")
+    print(f"Resume it with: onit resume '{stored}'")
+    return 0
 
 
 def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
@@ -1346,8 +1399,8 @@ def main():
 
     # Sessions management
     if args.command == "sessions":
-        from .sessions import (list_sessions, format_sessions_table,
-                               rebuild_index, resolve_session, tag_session,
+        from .sessions import (list_sessions, count_sessions,
+                               format_sessions_table, rebuild_index,
                                clear_sessions)
         sessions_dir = os.path.expanduser("~/.onit/sessions")
         if args.clear:
@@ -1364,22 +1417,18 @@ def main():
             print("Done.")
         if args.tag:
             identifier, new_tag = args.tag
-            sid = resolve_session(identifier, sessions_dir)
-            if not sid:
-                print(f"Error: Session '{identifier}' not found.", file=sys.stderr)
-                sys.exit(1)
-            result = tag_session(sid, new_tag, sessions_dir)
-            if result is True:
-                print(f"Tagged session {sid[:8]}... as '{new_tag}'")
-            elif isinstance(result, str):
-                print(f"Error: {result}", file=sys.stderr)
-                sys.exit(1)
-            else:
-                print("Error: Session not found.", file=sys.stderr)
-                sys.exit(1)
+            code = _rename_session(identifier, new_tag, sessions_dir,
+                                   limit=max(args.limit, 1))
+            if code:
+                sys.exit(code)
             return
-        sessions = list_sessions(sessions_dir, limit=args.limit)
-        print(format_sessions_table(sessions))
+        rows = list_sessions(sessions_dir, limit=args.limit,
+                             include_empty=args.all)
+        total = count_sessions(sessions_dir, include_empty=args.all)
+        print(format_sessions_table(rows, total=total))
+        if not args.all and not rows:
+            print("No sessions with any turns yet. "
+                  "Use --all to include the empty ones.")
         return
 
     # Trajectory store: read-only, and deliberately not gated on a config file
@@ -1479,6 +1528,16 @@ def main():
         _setup_servers(config_data)
         sys.exit(_run_doctor(args, config_data))
 
+    # rename: a verb of its own, because renaming is the one session action a
+    # person reaches for while a session is still in front of them.
+    if args.command == "rename":
+        sessions_dir = os.path.expanduser("~/.onit/sessions")
+        code = _rename_session(args.session, args.name, sessions_dir,
+                               limit=max(args.limit, 1))
+        if code:
+            sys.exit(code)
+        return
+
     # resume subcommand: translate to --resume flag and continue normal startup
     if args.command == "resume":
         args.resume = args.session
@@ -1497,10 +1556,10 @@ def main():
         auto_resume = True
 
     if resume_target:
-        from .sessions import resolve_session
+        from .sessions import resolve_session_choice
         sessions_dir = os.path.expanduser(
             config_data.get('session_path', '~/.onit/sessions'))
-        sid = resolve_session(resume_target, sessions_dir)
+        sid = resolve_session_choice(resume_target, sessions_dir)
         # An index entry can outlive its JSONL file; treat that as "no session".
         if sid and not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl")):
             sid = None
@@ -1518,6 +1577,13 @@ def main():
                       "(use --restart-session to start a new one)")
             else:
                 print(f"Resuming session: {sid[:8]}...")
+
+    # A name given on the command line belongs to a session being created.  It
+    # is carried in the config dict rather than passed as an argument because
+    # OnIt._setup_session is what creates the session, and it reads the config.
+    if getattr(args, 'name', None) and not config_data.get('resume_session_id'):
+        config_data['session_name'] = args.name
+
 
     # Must be set before MCP servers are spawned so child processes inherit it.
     if args.unrestricted:

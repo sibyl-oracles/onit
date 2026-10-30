@@ -830,3 +830,100 @@ class TestApprovalChannelWiring:
         monkeypatch.setenv("ONIT_ASK_APPROVAL", "0")
         self._run(["--auto"])
         assert "Nothing is left for --auto to approve" in capsys.readouterr().err
+
+
+# ── session verbs ────────────────────────────────────────────────────────────
+#
+# `onit sessions` prints a # column and used to leave the user to copy a UUID
+# out of the terminal to act on it.  The verbs below take that number, and
+# `rename` exists as a verb at all instead of hiding inside --tag.
+
+class TestSessionVerbs:
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        from src import sessions
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for sid, task in (("aaaa-1111", "write the quarterly report"),
+                          ("bbbb-2222", "debug the cuda kernel")):
+            sessions.register_session(sid, d)
+            sessions.update_session(sid, task=task, sessions_dir=d)
+        return d
+
+    def test_rename_takes_a_row_number(self, store, monkeypatch, capsys):
+        from src import cli
+        # the verb resolves ~/.onit/sessions, so point HOME at the fixture
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "rename", "1", "Report Work"])
+        cli.main()
+        out = capsys.readouterr().out
+        assert "Report Work" in out
+
+    def test_rename_reports_an_unknown_row(self, store, monkeypatch, capsys):
+        from src import cli
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv", ["onit", "rename", "99", "x"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "no session matches" in capsys.readouterr().err
+
+    def test_rename_refuses_an_empty_name(self, store, monkeypatch, capsys):
+        from src import cli
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv", ["onit", "rename", "1", "   "])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "cannot be empty" in capsys.readouterr().err
+
+    def test_sessions_hides_empty_rows_and_says_so(self, store, monkeypatch,
+                                                   capsys):
+        from src import cli, sessions
+        import pathlib
+        sessions.register_session("cccc-3333", store)   # opened, never used
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions"])
+        cli.main()
+        out = capsys.readouterr().out
+        assert "quarterly" in out
+        assert "cccc-3333" not in out
+
+    def test_sessions_all_includes_them(self, store, monkeypatch, capsys):
+        from src import cli, sessions
+        import pathlib
+        sessions.register_session("cccc-3333", store)
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--all"])
+        cli.main()
+        out = capsys.readouterr().out
+        assert "(unnamed)" in out
+
+    def test_the_listing_names_the_verbs(self, store, monkeypatch, capsys):
+        from src import cli
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions"])
+        cli.main()
+        out = capsys.readouterr().out
+        assert "onit rename" in out and "onit resume" in out
+        assert "--name" in out
+

@@ -24,6 +24,7 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
 | `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
+| `--name NAME` | Name the new session as it starts, so `onit resume NAME` finds it. Only applies to a session being created | — |
 | `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
 | `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web` deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
@@ -57,10 +58,37 @@ List and manage saved sessions.
 ```bash
 onit sessions                          # list recent sessions (default: 20)
 onit sessions --limit 50               # list up to 50 sessions
-onit sessions --tag abc123 "my-chat"   # tag a session for easy recall
+onit sessions --all                    # include sessions that were never used
+onit sessions --tag 3 "my-chat"        # rename row 3 (same as `onit rename`)
 onit sessions --rebuild                # rebuild session index from JSONL files
 onit sessions --clear                  # delete all session history
 ```
+
+The `#` column is the session's handle: every session verb takes it, so a
+session can be acted on without copying a UUID out of the terminal. Sessions
+that were opened and never used are left out (they have no name and nothing to
+return to); `--all` shows them.
+
+A session is named automatically from its first message, but a message that
+carries no topic -- "hi", "thanks" -- names nothing, and the next real message
+does it instead. That keeps a session from being called `hi` forever.
+
+## `onit rename`
+
+Name a session so it can be found later.
+
+```bash
+onit rename 3 "thesis chapter 3"        # by row number from `onit sessions`
+onit rename abc123 "thesis chapter 3"   # by UUID prefix
+onit rename old-name "new name"         # by its current name
+```
+
+Names may contain spaces and are matched case-insensitively. Two sessions
+cannot share a name, because `onit resume <name>` would otherwise be a coin
+toss. The name is what `onit resume` looks up.
+
+Inside a chat, `\rename <name>` does the same thing to the session you are in,
+and a bare `\rename` prints what it is currently called.
 
 ## `onit resume`
 
@@ -68,7 +96,8 @@ Resume a previous session by tag or UUID. Terminal chat already resumes the most
 recent session automatically, so this is for picking a *different* one.
 
 ```bash
-onit resume my-chat      # resume by tag
+onit resume my-chat      # resume by name
+onit resume 3            # resume row 3 of `onit sessions`
 onit resume abc123       # resume by session UUID prefix
 onit resume              # resume the most recent session (same as bare `onit`)
 ```

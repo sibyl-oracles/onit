@@ -150,3 +150,240 @@ class TestRunStateSidecar:
         assert clear_sessions(sessions_dir=sessions_dir) == 2
         assert not os.path.exists(state_path_for(jsonl))
         assert not os.path.exists(state_path_for(jsonl2))
+
+
+# ── Naming and renaming ──────────────────────────────────────────────────────
+#
+# A session is found by its name long after it was written, so the name has to
+# be something a person chose or a message that says what the session was
+# about.  The cases below are the ones that made sessions unfindable.
+
+class TestExplicitNaming:
+
+    def test_a_session_can_be_named_as_it_is_created(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="Quarterly Review")
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "Quarterly Review"
+
+    def test_a_name_keeps_its_spaces_and_case(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="PhD Chapter Three")
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "PhD Chapter Three"
+
+    def test_surrounding_and_repeated_whitespace_is_collapsed(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="  my   session  ")
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "my session"
+
+    def test_a_name_cannot_carry_a_newline_into_the_index(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="line one\nline two")
+        tag = list_sessions(sessions_dir=d)[0]["tag"]
+        assert "\n" not in tag and tag == "line one line two"
+
+    def test_two_sessions_named_the_same_get_distinct_names(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="notes")
+        register_session("s2", sessions_dir=d, tag="notes")
+        tags = [s["tag"] for s in list_sessions(sessions_dir=d)]
+        assert len(set(tags)) == 2
+
+    def test_an_empty_name_falls_back_to_no_name(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="   ")
+        assert list_sessions(sessions_dir=d)[0]["tag"] is None
+
+    def test_a_typed_name_is_never_replaced_by_a_later_message(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="My Work")
+        update_session("s1", task="fix the login bug", sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "My Work"
+
+
+class TestAutoNameWaitsForATopic:
+
+    def test_a_greeting_does_not_become_the_session_name(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task="hi", sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["tag"] is None
+
+    def test_the_first_real_message_names_it_after_a_greeting(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task="hi", sessions_dir=d)
+        update_session("s1", task="fix the login bug in auth", sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "fix-login-bug-auth"
+
+    def test_a_substantive_first_message_still_names_it_at_once(self, tmp_path):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task="fix the login bug", sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["tag"] == "fix-login-bug"
+
+    def test_a_greeting_does_not_become_the_preview_either(self, tmp_path):
+        """The preview is how a session is recognised in the list, so it is
+        worth no more than the name: "hi" says nothing about the session."""
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task="hi", sessions_dir=d)
+        update_session("s1", task="analyze the sales data", sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["preview"] == \
+            "analyze the sales data"
+
+    def test_a_typed_name_keeps_its_preview_current(self, tmp_path):
+        """Naming a session by hand says what to call it, not what it was
+        about -- so the preview still follows the work."""
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d, tag="My Chosen Name")
+        update_session("s1", task="hey", sessions_dir=d)
+        update_session("s1", task="real work about databases", sessions_dir=d)
+        (meta,) = list_sessions(sessions_dir=d)
+        assert meta["tag"] == "My Chosen Name"
+        assert meta["preview"] == "real work about databases"
+
+    @pytest.mark.parametrize("greeting", ["hi", "hello", "thanks", "ok", "hey"])
+    def test_no_courtesy_phrase_becomes_a_name(self, tmp_path, greeting):
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task=greeting, sessions_dir=d)
+        assert list_sessions(sessions_dir=d)[0]["tag"] is None
+
+
+class TestRename:
+
+    def test_renaming_changes_the_name_it_is_found_by(self, tmp_path):
+        from sessions import tag_session, find_session_by_tag
+
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task="fix the login bug", sessions_dir=d)
+
+        assert tag_session("s1", "auth work", d) is True
+        assert find_session_by_tag("auth work", d) == "s1"
+
+    def test_an_exact_name_wins_over_a_longer_name_starting_with_it(self, tmp_path):
+        from sessions import tag_session, resolve_session
+
+        d = str(tmp_path)
+        for sid in ("old", "new"):
+            register_session(sid, sessions_dir=d)
+        tag_session("old", "auth", d)
+        tag_session("new", "auth-fix-2", d)
+        # "new" was touched last, so recency alone would pick it.
+        assert resolve_session("auth", d) == "old"
+
+    def test_a_prefix_still_resolves_when_nothing_matches_exactly(self, tmp_path):
+        from sessions import tag_session, resolve_session
+
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        tag_session("s1", "auth-fix-2", d)
+        assert resolve_session("auth", d) == "s1"
+
+    def test_a_name_cannot_be_taken_from_another_session(self, tmp_path):
+        from sessions import tag_session
+
+        d = str(tmp_path)
+        for sid in ("s1", "s2"):
+            register_session(sid, sessions_dir=d)
+        tag_session("s1", "taken", d)
+        result = tag_session("s2", "taken", d)
+        assert isinstance(result, str) and "already" in result
+
+    def test_names_are_unique_regardless_of_case(self, tmp_path):
+        from sessions import tag_session
+
+        d = str(tmp_path)
+        for sid in ("s1", "s2"):
+            register_session(sid, sessions_dir=d)
+        tag_session("s1", "Notes", d)
+        assert isinstance(tag_session("s2", "NOTES", d), str)
+
+    def test_renaming_to_the_same_name_is_allowed(self, tmp_path):
+        from sessions import tag_session
+
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        tag_session("s1", "keep", d)
+        assert tag_session("s1", "keep", d) is True
+
+    @pytest.mark.parametrize("bad", ["", "   ", "\n", "\t\n "])
+    def test_an_unusable_name_is_refused_with_a_reason(self, tmp_path, bad):
+        from sessions import tag_session
+
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        result = tag_session("s1", bad, d)
+        assert isinstance(result, str) and "empty" in result
+
+    def test_renaming_an_unknown_session_reports_not_found(self, tmp_path):
+        from sessions import tag_session
+
+        assert tag_session("nope", "x", str(tmp_path)) is False
+
+
+class TestRowNumbers:
+
+    """`onit sessions` prints a # column, so that number must address the row
+    it was printed next to -- including when empty sessions are hidden."""
+
+    def test_a_row_number_resolves_to_the_row_shown(self, tmp_path):
+        from sessions import resolve_session_choice
+
+        d = str(tmp_path)
+        register_session("empty", sessions_dir=d)          # no turns, hidden
+        for sid, task in (("a", "write the report"), ("b", "debug cuda")):
+            register_session(sid, sessions_dir=d)
+            update_session(sid, task=task, sessions_dir=d)
+
+        shown = list_sessions(sessions_dir=d, include_empty=False)
+        for i, row in enumerate(shown, 1):
+            assert resolve_session_choice(str(i), d) == row["session_id"]
+
+    def test_a_row_number_past_the_end_resolves_to_nothing(self, tmp_path):
+        from sessions import resolve_session_choice
+
+        d = str(tmp_path)
+        register_session("s1", sessions_dir=d)
+        update_session("s1", task="do the thing", sessions_dir=d)
+        assert resolve_session_choice("9", d) is None
+
+    def test_last_still_means_the_most_recent(self, tmp_path):
+        from sessions import resolve_session_choice
+
+        d = str(tmp_path)
+        for sid in ("s1", "s2"):
+            register_session(sid, sessions_dir=d)
+            update_session(sid, task="work", sessions_dir=d)
+        assert resolve_session_choice("last", d) == "s2"
+
+
+class TestEmptySessionsAreHidden:
+
+    def test_sessions_with_no_turns_are_left_out_by_default(self, tmp_path):
+        d = str(tmp_path)
+        register_session("empty", sessions_dir=d)
+        register_session("used", sessions_dir=d)
+        update_session("used", task="real work", sessions_dir=d)
+
+        shown = [s["session_id"] for s in list_sessions(sessions_dir=d,
+                                                       include_empty=False)]
+        assert shown == ["used"]
+
+    def test_they_are_still_there_when_asked_for(self, tmp_path):
+        d = str(tmp_path)
+        register_session("empty", sessions_dir=d)
+        shown = [s["session_id"] for s in list_sessions(sessions_dir=d,
+                                                       include_empty=True)]
+        assert shown == ["empty"]
+
+    def test_the_count_ignores_the_limit(self, tmp_path):
+        from sessions import count_sessions
+
+        d = str(tmp_path)
+        for i in range(5):
+            register_session(f"s{i}", sessions_dir=d)
+            update_session(f"s{i}", task=f"task number {i}", sessions_dir=d)
+        assert count_sessions(d) == 5
+        assert len(list_sessions(sessions_dir=d, limit=2)) == 2

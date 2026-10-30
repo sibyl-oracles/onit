@@ -1018,3 +1018,82 @@ class TestLoopInterception:
         fake, _ = self._fake_session(["\\help", "\\bye"], web=True)
         with pytest.raises(_Forwarded):
             await fake.run()
+
+
+# ── \rename ──────────────────────────────────────────────────────────────────
+#
+# Naming is the one piece of session metadata a person wants to set while the
+# session is open.  Before \rename existed the only way to name a session was
+# to leave it and run 'onit sessions --tag', which is backwards: you name a
+# session so that you can find it later, not after you have found it.
+
+class TestRenameCommand:
+
+    @pytest.fixture
+    def named(self, tmp_path, monkeypatch):
+        """A sessions dir with one live session and one other."""
+        from src import sessions
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        sessions.register_session("sess-1", d)
+        sessions.update_session("sess-1", task="fix the login bug",
+                                sessions_dir=d)
+        sessions.register_session("sess-2", d)
+        sessions.update_session("sess-2", task="debug the cuda kernel",
+                                sessions_dir=d)
+        a = SimpleNamespace(session_id="sess-1",
+                            config_data={"session_path": d},
+                            session_path="/tmp/s.jsonl", data_path="/tmp/d")
+        return a, d
+
+    def test_bare_shows_the_current_name(self, named):
+        a, _ = named
+        out = commands.cmd_rename(a, "")
+        assert "fix-login-bug" in out
+
+    def test_a_name_is_set(self, named):
+        a, d = named
+        out = commands.cmd_rename(a, "Auth Work")
+        assert "Auth Work" in out
+        from src.sessions import _load_index
+        assert _load_index(d)["sess-1"]["tag"] == "Auth Work"
+
+    def test_the_new_name_is_what_resume_finds(self, named):
+        a, d = named
+        commands.cmd_rename(a, "Auth Work")
+        from src.sessions import resolve_session
+        assert resolve_session("Auth Work", d) == "sess-1"
+
+    def test_the_reply_says_how_to_come_back(self, named):
+        a, _ = named
+        assert "onit resume" in commands.cmd_rename(a, "Auth Work")
+
+    def test_another_sessions_name_is_refused(self, named):
+        a, d = named
+        out = commands.cmd_rename(a, "debug-cuda-kernel")
+        assert "already" in out
+        from src.sessions import _load_index
+        assert _load_index(d)["sess-1"]["tag"] == "fix-login-bug"
+
+    def test_an_empty_name_leaves_the_name_alone(self, named):
+        a, d = named
+        out = commands.cmd_rename(a, "   ")
+        assert "fix-login-bug" in out  # shown, not set
+        from src.sessions import _load_index
+        assert _load_index(d)["sess-1"]["tag"] == "fix-login-bug"
+
+    def test_a_session_with_no_id_is_told_so(self):
+        a = SimpleNamespace(session_id=None, config_data={})
+        assert "no id" in commands.cmd_rename(a, "x")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_it(self, named):
+        a, _ = named
+        out = await commands.dispatch(a, "\\rename Auth Work")
+        assert "Auth Work" in out
+
+    def test_it_is_listed_in_help(self):
+        assert "\\rename" in commands.render_help()
+
+    def test_a_typo_of_it_suggests_it(self):
+        assert commands.suggest("renam") == "rename"
