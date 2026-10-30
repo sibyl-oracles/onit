@@ -34,13 +34,11 @@ from model.serving.chat import (
     _REPEAT_STREAK_BAIL,
     _build_client_timeout,
     _build_messages,
-    _cached_tokens_of,
     _compact_context,
     _decay_old_tool_results,
     _truncate_tool_response,
     chat,
 )
-from model.serving.results import ResultStore
 from model.serving.state import RunState
 from model.serving.verify import has_tool_evidence, needs_verification
 

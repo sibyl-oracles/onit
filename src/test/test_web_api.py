@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from starlette.testclient import TestClient
 
-from ui.api import _END, ApiSession, WebApiUI, _sse
+from ui.api import _END, WebApiUI, _sse
 from ui import auth as ui_auth
 
 

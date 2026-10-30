@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.chat import chat, _repetition_span, _trim_repetition  # noqa: E402
+from model.serving.chat import chat, _repetition_span  # noqa: E402
 
 REPEATED = (
     "Go.\n\nNow.\n\nLet me output.\n\nOK.\n\nI'll write.\n\n"

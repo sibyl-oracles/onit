@@ -21,7 +21,6 @@ makes, and it means these tests need no network and no endpoint.
 import asyncio
 import json
 
-import pytest
 
 from src.learn import reflector
 

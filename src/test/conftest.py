@@ -4,8 +4,6 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

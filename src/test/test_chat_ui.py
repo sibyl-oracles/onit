@@ -4,7 +4,7 @@ import io
 import os
 import re
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console, Group

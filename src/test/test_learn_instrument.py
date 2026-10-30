@@ -7,16 +7,11 @@ out with an error bar, and the reflector produces bullets a curator
 will accept.
 """
 
-import asyncio
 import json
 import os
-import shutil
-import tempfile
 
-import pytest
 
 from src.learn import ab, playbook, reflector, runner
-from src.learn import trajectory
 
 
 class StubAgent:

@@ -12,7 +12,6 @@ import json
 
 import pytest
 
-from learn import config as learn_config
 from learn import events as ev
 from learn import lifecycle as lc
 from learn import trajectory as traj

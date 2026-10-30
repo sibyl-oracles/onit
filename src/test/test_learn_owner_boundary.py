@@ -178,7 +178,6 @@ class TestRecallIsAlreadyPerCall:
 
     def test_recall_filters_by_owner_per_call(self, learned):
         from src.learn import recall
-        from src.learn import trajectory
 
         def _record(session, owner):
             return {"schema": 1, "kind": "task", "session": session,

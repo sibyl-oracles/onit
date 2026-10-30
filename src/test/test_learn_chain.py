@@ -19,12 +19,11 @@ and it must not leave a skill pinned that a later run would serve.
 import json
 import os
 import shutil
-import tempfile
 
 import pytest
 
 from src.learn import (corpus, eval as ruler, playbook, recall, skills,
-                       skills_curator, skills_gate, skills_mining, trajectory)
+                       skills_curator, skills_mining, trajectory)
 
 
 @pytest.fixture

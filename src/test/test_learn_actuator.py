@@ -27,7 +27,6 @@ are mostly about the boundaries:
   * the actuator does nothing unless it was asked to.
 """
 
-import json
 import os
 
 import pytest

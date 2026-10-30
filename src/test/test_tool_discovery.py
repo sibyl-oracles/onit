@@ -125,7 +125,6 @@ class TestConsolidatedToolContracts:
     @staticmethod
     def _schemas(name):
         import importlib
-        from lib.tools import _build_parameters
         out = {}
         for label, mod_path in (
                 ("tools", "src.mcp.servers.tasks.tools.mcp_server"),

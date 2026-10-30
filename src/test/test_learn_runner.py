@@ -26,7 +26,6 @@ import os
 import pytest
 
 from src.learn import runner
-from src.learn import trajectory
 
 
 # ── fixtures ────────────────────────────────────────────────────────────────

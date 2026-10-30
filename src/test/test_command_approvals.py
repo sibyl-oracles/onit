@@ -15,7 +15,6 @@ Two things are being checked throughout, and they pull in opposite directions:
   answer affects, so the boundaries between them stay machine-enforced.
 """
 
-import asyncio
 import inspect
 import json
 import os

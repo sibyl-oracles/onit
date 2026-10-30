@@ -5,7 +5,6 @@ tested is a subprocess protocol, and a mocked one would test the mock.
 """
 
 import asyncio
-import json
 import os
 import sys
 

@@ -2018,7 +2018,7 @@ class OnIt(BaseModel):
             if autonomy(self.config_data) < ADAPT:
                 return
             from .learn.playbook import (attribute, decay, global_path,
-                                         load, owner_path, read_playbook,
+                                         owner_path, read_playbook,
                                          write_playbook)
             signals = run_state.__dict__.get("signals") or {}
             helped = hurt = 0

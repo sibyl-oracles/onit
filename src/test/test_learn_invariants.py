@@ -31,7 +31,7 @@ import tempfile
 
 import pytest
 
-from src.learn import corpus, eval as ruler, playbook, recall, signals as sig
+from src.learn import corpus, eval as ruler, playbook, recall
 from src.learn import skills, skills_curator, skills_gate, skills_mining
 from src.learn import trajectory
 

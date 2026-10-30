@@ -4,15 +4,14 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, mock_open
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.onit import (OnIt, STOP_TAG, StreamingAdapter, friendly_tool_status,
+from src.onit import (OnIt, StreamingAdapter, friendly_tool_status,
                       MAX_FAILOVER_ATTEMPTS, _chat_with_failover)
 from src.model.serving.state import RunState
 

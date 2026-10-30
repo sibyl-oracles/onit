@@ -431,7 +431,6 @@ class TestDoctorEndpoints:
         assert "none known" in capsys.readouterr().out
 
     def test_without_the_flag_nothing_is_probed(self, doctor_env):
-        import src.setup as setup_mod
         import src.model.serving.chat as chat_mod
         probed = []
 

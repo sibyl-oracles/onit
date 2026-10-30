@@ -262,7 +262,6 @@ class TestTheToolkitIsOptional:
         expensive -- rather than on the accessor, which is called once
         per public function.
         """
-        import importlib.util
 
         calls = []
 

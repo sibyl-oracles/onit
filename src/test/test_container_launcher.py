@@ -1,7 +1,6 @@
 """Tests for container_launcher — no live Docker required."""
 
 import sys
-from unittest.mock import patch
 
 import pytest
 

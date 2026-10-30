@@ -20,9 +20,7 @@ server.  What is tested is the resolution, which is where the two
 properties above are decided.
 """
 
-import os
 
-import pytest
 
 from src.learn import llm
 

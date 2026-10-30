@@ -2,7 +2,6 @@
 answer is written, and its wiring into the chat loop."""
 
 import asyncio
-import json
 import os
 import sys
 import time

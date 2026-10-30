@@ -21,7 +21,6 @@ What is being protected here, in order of how badly it would hurt if it broke:
    decorative.
 """
 
-import json
 import os
 
 import pytest
