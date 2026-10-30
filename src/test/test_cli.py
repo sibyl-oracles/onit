@@ -1105,7 +1105,7 @@ class TestSessionVerbs:
     def test_sessions_rename_and_the_verb_agree(self, store, monkeypatch, capsys):
         """Two spellings, one implementation: what the verb accepts the flag
         accepts, down to the row number and the error text."""
-        from src import cli, sessions
+        from src import cli
         import pathlib
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
@@ -1330,7 +1330,6 @@ class TestDeleteByName:
 
     @pytest.fixture
     def store(self, tmp_path, monkeypatch):
-        from src import sessions
         d = str(tmp_path / "sessions")
         os.makedirs(d, exist_ok=True)
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -1528,3 +1527,66 @@ class TestSubcommandsDoNotPayForTheAgent:
         from src import cli
         with pytest.raises(AttributeError):
             cli.no_such_attribute
+
+
+class TestVersionFlag:
+    """``onit --version`` answers without loading anything that can fail.
+
+    The flag exists because ``src.__version__`` did, and nothing in the CLI
+    read it: the number was reachable from Python but not from the command
+    line.  It is answered by argparse's ``version`` action during parsing,
+    so these tests also pin that it stays that way -- a version flag that
+    needs the config, the MCP servers or the agent is useless precisely when
+    someone asks for it.
+    """
+
+    def test_it_prints_the_package_version(self):
+        import subprocess
+        from src import __version__
+        out = subprocess.run([sys.executable, "-m", "src.cli", "--version"],
+                             capture_output=True, text=True,
+                             cwd=os.path.dirname(os.path.dirname(
+                                 os.path.dirname(os.path.abspath(__file__)))))
+        assert out.returncode == 0
+        assert out.stdout.strip() == f"onit {__version__}"
+
+    def test_it_matches_the_packaging_metadata(self):
+        """Two copies of the number must not drift."""
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        with open(os.path.join(root, "pyproject.toml")) as fh:
+            declared = re.search(r'^version = "([^"]+)"', fh.read(),
+                                 re.M).group(1)
+        from src import __version__
+        assert declared == __version__
+
+    def test_it_does_not_import_the_agent_or_any_server(self):
+        """The answer must not depend on the stack the flag is asked about.
+
+        ``src.onit`` drags in ``fastmcp.client``, ``openai`` and model
+        serving; importing any of them to print a version would make the
+        flag fail on exactly the broken install where it is worth having.
+        """
+        import subprocess
+        code = ("import sys, contextlib, src.cli\n"
+                "with contextlib.suppress(SystemExit):\n"
+                "    src.cli._build_parser().parse_args(['--version'])\n"
+                "print(int('src.onit' in sys.modules),"
+                " int('fastmcp' in sys.modules))")
+        out = subprocess.run([sys.executable, "-c", code],
+                             capture_output=True, text=True,
+                             cwd=os.path.dirname(os.path.dirname(
+                                 os.path.dirname(os.path.abspath(__file__)))))
+        # The version action prints to stdout first; the answer is the last
+        # line, which the script above writes after parsing.
+        assert out.stdout.strip().splitlines()[-1] == "0 0", out.stderr[-400:]
+
+    def test_it_is_listed_in_help(self):
+        import subprocess
+        out = subprocess.run([sys.executable, "-m", "src.cli", "--help"],
+                             capture_output=True, text=True,
+                             cwd=os.path.dirname(os.path.dirname(
+                                 os.path.dirname(os.path.abspath(__file__)))))
+        assert "--version" in out.stdout
+        assert "Print the OnIt version and exit." in out.stdout

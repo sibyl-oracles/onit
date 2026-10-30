@@ -30,6 +30,8 @@ from pathlib import Path
 
 import yaml
 
+from . import __version__
+
 
 def __getattr__(name):
     """Resolve ``src.cli.OnIt`` on first use rather than at import.
@@ -424,7 +426,6 @@ def _learn_playbook_reflect(args, config_data: dict) -> None:
     """The offline Reflector/Curator pass over the recorded corpus."""
     from .learn import playbook as pb
     from .learn.corpus import label_corpus, read_sessions
-    from .learn.recall import ALL_OWNERS
     from .learn.trajectory import iter_records
 
     sessions = read_sessions(config_data)
@@ -1012,6 +1013,15 @@ def _build_parser() -> argparse.ArgumentParser:
                               help=argparse.SUPPRESS)
     parser.add_argument("--config", type=str, default=None,
                         help="Path to the configuration YAML file.")
+    # `onit --version` answers from src/__init__.py, which is the module that
+    # already holds the number (and that the web UI and the terminal banner
+    # read).  argparse's own version action prints and exits during parsing,
+    # so this costs no config load, no server setup and no agent import --
+    # the flag is answerable even on a machine whose serving host is down,
+    # which is exactly when someone asks.
+    parser.add_argument("--version", action="version",
+                        version=f"onit {__version__}",
+                        help="Print the OnIt version and exit.")
     parser.add_argument("--host", type=str, default=None,
                         help="LLM serving host URL (e.g. http://localhost:8000/v1). "
                              "Overrides config and ONIT_HOST env var.")

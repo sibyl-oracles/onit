@@ -165,25 +165,29 @@ whether the last attempt finished or stopped early at a limit. Resuming reads
 it back and tells the agent, so a continued session builds on work that already
 succeeded instead of starting it again. It is deleted with the session.
 
-## The A2A client (was `onit ask`)
+## `onit --version`
 
-The `ask` subcommand was removed: its only bundled server, the A2A server,
-already lives in [legacy/](../legacy/), and the client moved there with it. The
-client is a plain JSON-RPC-over-HTTP implementation (no A2A SDK import) and
-talks to any A2A server:
+Prints the version and exits:
 
 ```bash
-python -m legacy.a2a_client "what is the weather in Manila"     --server http://localhost:9001
-python -m legacy.a2a_client "summarize this document" --file report.pdf
-python -m legacy.a2a_client "describe this image" --image photo.jpg
+onit --version        # onit 0.1.5a
 ```
 
-| Argument / Flag | Description | Default |
-|-----------------|-------------|---------|
-| `task` (positional) | Task to send to the server | required |
-| `--file PATH` | File to upload along with the task | — |
-| `--image PATH` | Image file for vision processing (model must be a VLM) | — |
-| `--server URL` | A2A server URL | `http://localhost:9001` |
+The number comes from `src/__init__.py` (`__version__`), the same attribute
+the web UI and the terminal banner read, and it is answered during argument
+parsing — no config load, no server setup, no agent import. It works on a
+machine whose serving host is unreachable, which is often why someone asks.
+
+## The A2A client (removed)
+
+`onit ask` and the A2A client/server pair were removed in 0.1.5 along with the
+`legacy/` directory that held them. Nothing in `src/` referenced them. The
+code is still reachable in git history if you need it:
+
+```bash
+git log --oneline -- legacy/            # the commits that touched it
+git show <commit>:legacy/a2a_client.py  # the client as it last stood
+```
 
 ## `onit doctor`
 
