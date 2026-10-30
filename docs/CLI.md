@@ -25,7 +25,6 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--show-logs` | Show tool execution logs | `false` |
 | `--new-session [NAME]` | Start a fresh session instead of continuing the last one. With a name, the session is called that; without one, OnIt names it from the first message | continue last session |
 | `--resume-session NAME_OR_ID` | Continue a particular session: its name, a UUID, a `#` from the listing, or `last` (alias: `--resume`) | last session |
-| `--session-limit N` | How many rows `onit sessions` lists, so a `#` means the same session here | `20` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
 | `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web` deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
 | `--no-auto` | Be asked about a command policy will not run on its own, instead of approving it automatically (alias: `--ask`) | `false` |
@@ -84,18 +83,30 @@ pointer to `onit sessions --rename`, rather than silently dropping one of them.
 List and manage saved sessions.
 
 ```bash
-onit sessions                                   # list recent sessions (default: 20)
-onit sessions --limit 50                        # list up to 50 sessions
-onit sessions --include-empty                   # also show sessions never used
+onit sessions                                   # list every saved session
+onit sessions --delete 3                        # delete row 3
+onit sessions --delete 3 "thesis chapter 3"     # delete several at once
+onit sessions --delete 3 --yes                  # ... without the prompt
 onit sessions --rename 3 "my-chat"              # rename row 3 (same as `onit rename`)
 onit sessions --rebuild-index                   # rebuild the index from JSONL files
 onit sessions --delete-all                      # delete all session history
 ```
 
 The `#` column is the session's handle: every session action takes it, so a
-session can be acted on without copying a UUID out of the terminal. Sessions
-that were opened and never used are left out (they have no name and nothing to
-return to); `--include-empty` shows them.
+session can be acted on without copying a UUID out of the terminal. `--delete`
+also takes a name or a UUID prefix, and several identifiers at once.
+
+The listing shows **every** session, including ones that were opened and never
+used. Those are the accidental sessions, and they are the rows most worth
+deleting -- hiding them left them with no `#` to delete them by. The old
+`--limit` and `--include-empty` flags are gone for that reason: with nothing
+filtered and nothing truncated, a `#` is simply the line it was printed next
+to. Both still parse, so an old script keeps running, but neither does
+anything.
+
+`--delete` resolves every identifier before it deletes any of them, so a typo
+in a batch deletes nothing rather than half the list. It names each session
+before asking, because the name is what the person recognises.
 
 A session is named automatically from its first message, but a message that
 carries no topic -- "hi", "thanks" -- names nothing, and the next real message

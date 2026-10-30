@@ -428,24 +428,45 @@ class TestRowNumbers:
         assert resolve_session_choice("last", d) == "s2"
 
 
-class TestEmptySessionsAreHidden:
+class TestEmptySessionsAreListed:
 
-    def test_sessions_with_no_turns_are_left_out_by_default(self, tmp_path):
+    """A session that was opened and never used is still a row.
+
+    It used to be filtered out of the listing unless asked for, which left
+    the one session a person most wants to delete -- the accidental one --
+    with no row number and no way to address it.
+    """
+
+    def test_sessions_with_no_turns_are_listed(self, tmp_path):
+        d = str(tmp_path)
+        register_session("empty", sessions_dir=d)
+        register_session("used", sessions_dir=d)
+        update_session("used", task="real work", sessions_dir=d)
+
+        shown = [s["session_id"] for s in list_sessions(sessions_dir=d)]
+        assert set(shown) == {"empty", "used"}
+
+    def test_a_row_number_counts_them(self, tmp_path):
+        """The # column is what --delete takes, so an empty row has to have
+        one, and it has to be the row it was printed next to."""
+        from sessions import resolve_session_choice
+
+        d = str(tmp_path)
+        for sid in ("a", "b", "c"):
+            register_session(sid, sessions_dir=d)
+        rows = list_sessions(sessions_dir=d)
+        for i, row in enumerate(rows, 1):
+            assert resolve_session_choice(str(i), d) == row["session_id"]
+
+    def test_the_filter_is_still_available_to_callers_that_want_it(self, tmp_path):
         d = str(tmp_path)
         register_session("empty", sessions_dir=d)
         register_session("used", sessions_dir=d)
         update_session("used", task="real work", sessions_dir=d)
 
         shown = [s["session_id"] for s in list_sessions(sessions_dir=d,
-                                                       include_empty=False)]
+                                                        include_empty=False)]
         assert shown == ["used"]
-
-    def test_they_are_still_there_when_asked_for(self, tmp_path):
-        d = str(tmp_path)
-        register_session("empty", sessions_dir=d)
-        shown = [s["session_id"] for s in list_sessions(sessions_dir=d,
-                                                       include_empty=True)]
-        assert shown == ["empty"]
 
     def test_the_count_ignores_the_limit(self, tmp_path):
         from sessions import count_sessions

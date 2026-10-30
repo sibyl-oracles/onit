@@ -483,8 +483,8 @@ def resolve_session(identifier: str,
 
 def resolve_session_choice(identifier: str,
                            sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                           limit: int = 20,
-                           include_empty: bool = False) -> str | None:
+                           limit: int | None = None,
+                           include_empty: bool = True) -> str | None:
     """Resolve what a person typed at a shell prompt to a session id.
 
     ``resolve_session`` answers the same question for a name or an id.  This
@@ -493,6 +493,13 @@ def resolve_session_choice(identifier: str,
     ``last``/``-1`` shorthand.  A bare number is read as a row number, because
     that is what the column is there for; a UUID is never all digits, so the
     two cannot be confused.
+
+    The listing prints every session, so the default view here is every
+    session too -- a ``#`` has to mean the row it was printed next to.  The
+    filtering defaults used to be the other way round, so the listing and
+    the resume flag could disagree about what row 3 was.  *limit* and
+    *include_empty* remain for callers that deliberately want a narrower
+    view; ``None`` means no truncation.
     """
     text = (identifier or "").strip()
     if not text:
@@ -503,7 +510,8 @@ def resolve_session_choice(identifier: str,
     if text.isdigit():
         # The same view 'onit sessions' prints, or the number means a different
         # session than the row it was read off.
-        rows = list_sessions(sessions_dir, limit=limit,
+        rows = list_sessions(sessions_dir,
+                             limit=1_000_000 if limit is None else limit,
                              include_empty=include_empty)
         n = int(text)
         if 1 <= n <= len(rows):
@@ -540,16 +548,19 @@ def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
 
 
 def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                  limit: int = 20, owner: str | None = None,
+                  limit: int | None = 20, owner: str | None = None,
                   include_empty: bool = True) -> list:
     """Return a list of sessions sorted by most recently updated.
 
     Each entry has: session_id, tag, created, updated, preview, turns.
     When *owner* is given, only sessions recorded as owned by that email are
     returned -- unowned (pre-auth) sessions stay hidden until claimed.
-    *include_empty* drops sessions that were opened and never used: they have
+    *include_empty* keeps sessions that were opened and never used: they have
     no name, no preview and nothing to recall, and on a long-lived install they
     outnumber the real ones enough to bury them.
+    *limit* is ``None`` for no truncation.  The sort happens before the slice,
+    so a limit only ever shortens the list from the bottom: row *n* of the
+    full listing is row *n* of any listing long enough to reach it.
     """
     index = _load_index(sessions_dir)
 
@@ -572,14 +583,14 @@ def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
             "turns": meta.get("turns", 0),
         })
     sessions.sort(key=lambda x: x.get("updated") or 0, reverse=True)
-    return sessions[:limit]
+    return sessions if limit is None else sessions[:limit]
 
 
 def count_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
                    owner: str | None = None,
-                   include_empty: bool = False) -> int:
+                   include_empty: bool = True) -> int:
     """How many sessions there are, ignoring *limit*."""
-    return len(list_sessions(sessions_dir, limit=1_000_000, owner=owner,
+    return len(list_sessions(sessions_dir, limit=None, owner=owner,
                              include_empty=include_empty))
 
 
@@ -642,7 +653,8 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
     when the list shown is a limited view of them.
     """
     if not sessions:
-        return "No sessions found."
+        return ("No sessions found.\n"
+                "Start one with: onit --new-session")
 
     lines = []
     lines.append(f"{'#':<4} {'Name':<32} {'Turns':<6} {'Updated':<17} Preview")
@@ -661,9 +673,9 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
 
     lines.append("")
     if total is not None and total > len(sessions):
-        lines.append(f"Showing {len(sessions)} of {total} sessions "
-                     f"(use --limit to see more).")
+        lines.append(f"Showing {len(sessions)} of {total} sessions.")
     lines.append("Continue: onit --resume-session <#>   "
                  "Rename: onit sessions --rename <#> <name>")
+    lines.append("Delete: onit sessions --delete <#> [<#> ...]")
     lines.append("Start a named session: onit --new-session <name>")
     return "\n".join(lines)

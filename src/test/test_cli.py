@@ -843,17 +843,15 @@ class TestSessionSelection:
         assert args.command is None
         assert args.new_session == "sessions"
 
-    def test_session_limit_makes_a_row_number_mean_the_same_row(self, sessions):
-        """'onit --resume-session 2' takes the # from a listing; the listing
-        is limited to 20 rows by default, so the flag that changes the view
-        has to change what the number means too."""
-        from src.cli import _build_parser
-        args = _build_parser().parse_args(["--session-limit", "50"])
-        assert args.session_limit == 50
+    def test_session_limit_still_parses_but_no_longer_moves_a_row(self, sessions):
+        """The listing shows every session now, so nothing truncates it and a
+        row number needs no configuring.
 
-    def test_the_limit_reaches_the_row_resolution(self, sessions, monkeypatch):
-        """Parsing the flag is not enough: it has to arrive where a row
-        number is turned into a session."""
+        The flag keeps parsing because it was documented and a script may pass
+        it -- but it must not change which session '3' means. It never really
+        did: the list is sorted before it is sliced, so a limit only ever
+        shortened the list from the bottom.
+        """
         import pathlib
         from src.sessions import register_session, update_session
         store = pathlib.Path(sessions)
@@ -861,11 +859,38 @@ class TestSessionSelection:
             register_session(f"row-{i}", str(store))
             update_session(f"row-{i}", task=f"task {i}", sessions_dir=str(store))
             (store / f"row-{i}.jsonl").write_text("")
-        # 3 rows of a 3-row view is row 6 of the full list, not row 3
-        config = self._run(["--resume-session", "3", "--session-limit", "3"])
-        from src.sessions import resolve_session_choice
-        assert config["resume_session_id"] == resolve_session_choice(
-            "3", str(store), limit=3)
+
+        plain = self._run(["--resume-session", "3"])
+        with_flag = self._run(["--resume-session", "3", "--session-limit", "3"])
+        assert plain["resume_session_id"] == with_flag["resume_session_id"]
+
+    def test_the_listing_reads_the_configured_store(self, sessions, capsys):
+        """'onit sessions' hardcoded ~/.onit/sessions while --resume-session
+        honoured session_path. On a config that moved the store, the listing
+        and the resume flag saw different sessions -- and --delete would have
+        removed one from a store the agent never reads."""
+        self._run(["sessions"])
+        out = capsys.readouterr().out
+        # the fixture's store holds old-session-id and new-session-id
+        assert "old-session-id" in out or "(unnamed)" in out
+        assert "SMOKE-OK" not in out      # that is the real ~/.onit store
+
+    def test_the_listing_prints_every_row(self, sessions, capsys):
+        """20 was the default limit and the listing printed 20 rows, so a
+        21st session had no # to address it with -- it could not be resumed
+        or deleted by row number at all."""
+        import pathlib
+        from src.sessions import register_session, update_session
+        store = pathlib.Path(sessions)
+        for i in range(25):
+            register_session(f"extra-{i}", str(store))
+            update_session(f"extra-{i}", task=f"task {i}", sessions_dir=str(store))
+
+        self._run(["sessions"])
+        out = capsys.readouterr().out
+        # 27 sessions exist, so the last row number is 27
+        assert "27 " in out
+        assert "Showing" not in out    # nothing was held back
 
 
 class TestApprovalChannelWiring:
@@ -1119,10 +1144,17 @@ class TestSessionVerbs:
         assert "--rename" in text
         assert "--tag" not in text
         assert "--rebuild-index" in text and "--delete-all" in text
-        assert "--include-empty" in text
+        assert "--delete" in text and "--yes" in text
+        # The listing shows everything, so there is nothing left to limit or
+        # to filter -- and a flag that does nothing is worse than no flag.
+        assert "--include-empty" not in text
+        assert "--limit" not in text
 
-    def test_sessions_hides_empty_rows_and_says_so(self, store, monkeypatch,
-                                                   capsys):
+    def test_sessions_shows_every_row(self, store, monkeypatch, capsys):
+        """An empty session used to be hidden, with a flag to reveal it. That
+        made the '#' column address a list the person could not see in full,
+        and left no way to delete a row that was never used -- which is the
+        one row a person most wants to delete."""
         from src import cli, sessions
         import pathlib
         sessions.register_session("cccc-3333", store)   # opened, never used
@@ -1133,18 +1165,6 @@ class TestSessionVerbs:
         cli.main()
         out = capsys.readouterr().out
         assert "quarterly" in out
-        assert "cccc-3333" not in out
-
-    def test_sessions_all_includes_them(self, store, monkeypatch, capsys):
-        from src import cli, sessions
-        import pathlib
-        sessions.register_session("cccc-3333", store)
-        home = pathlib.Path(store).parent
-        (home / ".onit").mkdir(exist_ok=True)
-        (home / ".onit" / "sessions").symlink_to(store)
-        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--all"])
-        cli.main()
-        out = capsys.readouterr().out
         assert "(unnamed)" in out
 
     def test_the_listing_names_the_verbs(self, store, monkeypatch, capsys):
@@ -1157,6 +1177,144 @@ class TestSessionVerbs:
         cli.main()
         out = capsys.readouterr().out
         assert "onit sessions --rename" in out
+        assert "onit sessions --delete" in out
         assert "onit --resume-session" in out
         assert "onit --new-session <name>" in out
+
+
+class TestDeleteSessions:
+    """`onit sessions --delete` takes the same identifiers as --rename.
+
+    The '#' column addresses every verb on the listing, not just rename, and
+    a session that was opened and never used is exactly the row someone wants
+    to delete -- so it has to be visible and numbered.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        """Two used sessions in a store the CLI will find via HOME."""
+        from src import sessions
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for sid, task in (("aaaa-1111", "write the quarterly report"),
+                          ("bbbb-2222", "debug the cuda kernel")):
+            sessions.register_session(sid, d)
+            sessions.update_session(sid, task=task, sessions_dir=d)
+            open(os.path.join(d, sid + ".jsonl"), "w").write("{}\n")
+        return d
+
+    def _cli(self, store, monkeypatch, argv, answer="yes"):
+        """Run the sessions command against *store*; return (exit, out, err)."""
+        from src import cli
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        link = home / ".onit" / "sessions"
+        if not link.exists():
+            link.symlink_to(store)
+        monkeypatch.setattr(sys, "argv", ["onit"] + argv)
+        monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+        code = 0
+        try:
+            cli.main()
+        except SystemExit as exc:
+            code = exc.code
+        return code
+
+    def test_delete_takes_a_row_number(self, store, monkeypatch, capsys):
+        from src.sessions import list_sessions
+        before = [s["session_id"] for s in list_sessions(store, limit=None)]
+        target = before[0]
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "1", "--yes"])
+        assert code == 0
+        after = [s["session_id"] for s in list_sessions(store, limit=None)]
+        assert target not in after
+        assert len(after) == len(before) - 1
+        assert "Deleted" in capsys.readouterr().out
+
+    def test_delete_takes_a_name(self, store, monkeypatch):
+        from src.sessions import find_session_by_tag, list_sessions
+        sid = find_session_by_tag("write-quarterly-report", store)
+        assert sid
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "write-quarterly-report", "--yes"])
+        assert code == 0
+        assert sid not in [s["session_id"] for s in list_sessions(store, limit=None)]
+
+    def test_delete_takes_a_uuid_prefix(self, store, monkeypatch):
+        from src.sessions import list_sessions
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "aaaa", "--yes"])
+        assert code == 0
+        assert "aaaa-1111" not in [s["session_id"]
+                                   for s in list_sessions(store, limit=None)]
+
+    def test_delete_takes_several_at_once(self, store, monkeypatch):
+        from src.sessions import list_sessions
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "1", "2", "--yes"])
+        assert code == 0
+        assert len(list_sessions(store, limit=None)) == 0
+
+    def test_delete_asks_before_deleting(self, store, monkeypatch, capsys):
+        from src.sessions import list_sessions
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "1"], answer="no")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "About to delete" in out and "Cancelled" in out
+        assert len(list_sessions(store, limit=None)) == 2   # nothing went
+
+    def test_a_typo_in_a_batch_deletes_nothing(self, store, monkeypatch, capsys):
+        """Half a batch is the worst outcome: the person believes the whole
+        thing failed and the sessions they meant to keep are gone."""
+        from src.sessions import list_sessions
+        before = [s["session_id"] for s in list_sessions(store, limit=None)]
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "aaaa", "nope-nothing", "--yes"])
+        assert code == 1
+        assert [s["session_id"] for s in list_sessions(store, limit=None)] == before
+        assert "nope-nothing" in capsys.readouterr().err
+
+    def test_deleting_the_same_row_twice_deletes_once(self, store, monkeypatch):
+        from src.sessions import list_sessions
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "1", "1", "--yes"])
+        assert code == 0
+        assert len(list_sessions(store, limit=None)) == 1
+
+    def test_an_unused_session_can_be_deleted(self, store, monkeypatch):
+        """The whole point of listing them: the accidental session is the one
+        that needs deleting, and it used to have no row to delete."""
+        from src import sessions
+        sessions.register_session("cccc-3333", store)
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "cccc-3333", "--yes"])
+        assert code == 0
+        assert "cccc-3333" not in [s["session_id"]
+                                   for s in sessions.list_sessions(store, limit=None)]
+
+    def test_delete_all_takes_yes_too(self, store, monkeypatch):
+        """--yes belongs to the deletion family, not to --delete alone: a
+        script that prunes everything has the same reason to skip the prompt."""
+        from src.sessions import list_sessions
+        def boom(prompt=""):
+            raise AssertionError("prompted despite --yes")
+        monkeypatch.setattr("builtins.input", boom)
+        code = self._cli(store, monkeypatch, ["sessions", "--delete-all", "--yes"])
+        assert code == 0
+        assert list_sessions(store, limit=None) == []
+
+    def test_delete_removes_the_history_file_too(self, store, monkeypatch):
+        import pathlib
+        from src.sessions import register_session, update_session
+        register_session("dddd-4444", store)
+        update_session("dddd-4444", task="a real conversation", sessions_dir=store)
+        (pathlib.Path(store) / "dddd-4444.jsonl").write_text("{}\n")
+        code = self._cli(store, monkeypatch,
+                         ["sessions", "--delete", "dddd-4444", "--yes"])
+        assert code == 0
+        assert not (pathlib.Path(store) / "dddd-4444.jsonl").exists()
 

@@ -11,6 +11,7 @@ Usage:
     onit setup --delete tavily                    # remove a stored key
     onit sessions                                 # list previous sessions
     onit sessions --rename 2 "chapter 3 draft"    # rename a session
+    onit sessions --delete 2                      # delete one (--delete 2 5 7)
     onit doctor [--deep]                          # run the live self-check battery
     onit resume                       # continue a previous session (same as --resume-session)
     onit serve web [--port 9000]                  # launch the web UI
@@ -687,8 +688,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # sessions
     sessions_parser = subparsers.add_parser("sessions",
                                             help="List and manage previous sessions.")
-    sessions_parser.add_argument("--limit", type=int, default=20,
-                                 help="Maximum number of sessions to list (default: 20).")
     sessions_parser.add_argument("--rename", type=str, nargs=2,
                                  metavar=("SESSION", "NEW_NAME"),
                                  help="Rename a session: --rename <name|uuid|#> <new name>. "
@@ -699,13 +698,30 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions_parser.add_argument("--tag", type=str, nargs=2, dest="rename",
                                  default=argparse.SUPPRESS, metavar=("SESSION", "NEW_NAME"),
                                  help=argparse.SUPPRESS)
+    # Deleting is the other half of listing: you read a row, you act on it.
+    # It takes the same identifiers --rename does, so the '#' column addresses
+    # both verbs, and it takes several at once because pruning is a chore
+    # people do in batches.
+    sessions_parser.add_argument("--delete", type=str, nargs="+", default=None,
+                                 metavar="SESSION",
+                                 help="Delete one or more sessions: --delete <name|uuid|#> "
+                                      "[<name|uuid|#> ...]. Asks before deleting.")
+    sessions_parser.add_argument("--yes", "-y", action="store_true", dest="assume_yes",
+                                 help="Do not ask for confirmation (for --delete and "
+                                      "--delete-all).")
     sessions_parser.add_argument("--rebuild-index", action="store_true", dest="rebuild",
                                  help="Rebuild the session index from existing JSONL files.")
     sessions_parser.add_argument("--rebuild", action="store_true", default=argparse.SUPPRESS,
                                  help=argparse.SUPPRESS)
+    # --limit and --include-empty are gone: the listing shows every session,
+    # so there is nothing left to limit or to filter.  They still parse, so an
+    # old script or a habit does not die on an argparse exit 2, and they do
+    # nothing -- which is what they already did to the '#' column (the list is
+    # sorted before it is sliced, so a limit never moved a row).
+    sessions_parser.add_argument("--limit", type=int, default=argparse.SUPPRESS,
+                                 help=argparse.SUPPRESS)
     sessions_parser.add_argument("--include-empty", action="store_true", dest="all",
-                                 help="Also list sessions that were opened but never used "
-                                      "(no turns, no name).")
+                                 default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     sessions_parser.add_argument("--all", action="store_true", default=argparse.SUPPRESS,
                                  help=argparse.SUPPRESS)
     sessions_parser.add_argument("--delete-all", action="store_true", dest="clear",
@@ -869,11 +885,12 @@ def _build_parser() -> argparse.ArgumentParser:
     rename_parser.add_argument("session", metavar="SESSION",
                                help="Session to rename: a name, a UUID, or "
                                     "the number shown by 'onit sessions'.")
+    # The listing shows every session now, so a row number is a row number
+    # with nothing to configure.  The flag still parses: it was documented,
+    # and a script that passes it should not die on an argparse exit 2.
     rename_parser.add_argument("--session-limit", "--limit", type=int,
-                               default=20, dest="limit",
-                               help="How many rows 'onit sessions' showed, so "
-                                    "a row number means the same session "
-                                    "(default: 20).")
+                               default=None, dest="limit",
+                               help=argparse.SUPPRESS)
     rename_parser.add_argument("name", metavar="NAME",
                                help="The new name.")
 
@@ -950,11 +967,12 @@ def _build_parser() -> argparse.ArgumentParser:
                               dest="resume", metavar="NAME_OR_ID",
                               help="Continue a particular session: its name, a UUID, "
                                    "or 'last' for the most recent.")
-    session_opts.add_argument("--session-limit", type=int, default=20,
+    # Nothing truncates the listing any more, so a row number needs no
+    # configuring.  Kept parsing because it was documented and a script may
+    # pass it; it no longer changes what a row number means.
+    session_opts.add_argument("--session-limit", type=int, default=None,
                               dest="session_limit", metavar="N",
-                              help="How many rows 'onit sessions' lists, so that a "
-                                   "row number means the same session here "
-                                   "(default: 20).")
+                              help=argparse.SUPPRESS)
     parser.add_argument("--config", type=str, default=None,
                         help="Path to the configuration YAML file.")
     parser.add_argument("--host", type=str, default=None,
@@ -1078,8 +1096,101 @@ def _recover_subcommand(argv: list, parser: argparse.ArgumentParser) -> list:
     return out
 
 
+def _sessions_dir(args: argparse.Namespace) -> str:
+    """The directory sessions actually live in.
+
+    ``onit sessions`` and ``onit rename`` used to hardcode
+    ``~/.onit/sessions`` while ``--resume-session`` honoured ``session_path``
+    from the config.  On a config that moved the store, the listing therefore
+    showed one set of sessions and the resume flag looked in another -- and
+    ``--delete`` would have removed a session from a store the agent never
+    reads.  One resolver, so a ``#`` means the same row everywhere.
+    """
+    config_path = getattr(args, "config", None) or _find_default_config()
+    config_data = {}
+    if config_path and os.path.isfile(config_path):
+        try:
+            with open(config_path, "r") as f:
+                config_data = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError):
+            config_data = {}
+    return os.path.expanduser(
+        config_data.get("session_path", "~/.onit/sessions"))
+
+
+def _delete_sessions(identifiers: list, sessions_dir: str,
+                     assume_yes: bool = False) -> int:
+    """Delete the sessions named on the command line; return the exit code.
+
+    Takes the same identifiers as ``_rename_session`` -- a ``#`` from the
+    listing, a name, a UUID prefix, ``last`` -- because the ``#`` column
+    addresses every verb on the listing, not just rename.
+
+    Everything is resolved before anything is deleted, so a typo in the last
+    of several identifiers does not leave half the batch gone: either the whole
+    set is deleted or nothing is.  The confirmation names the sessions by the
+    name they are known by, since that is what the person typed and what they
+    would recognise in the listing.
+    """
+    from .sessions import delete_session, list_sessions, resolve_session_choice
+
+    rows = {row["session_id"]: row for row in list_sessions(sessions_dir,
+                                                            limit=None)}
+    resolved, missing, seen = [], [], set()
+    for identifier in identifiers:
+        sid = resolve_session_choice(identifier, sessions_dir)
+        if not sid:
+            missing.append(identifier)
+        elif sid not in seen:
+            seen.add(sid)
+            resolved.append((sid, identifier))
+
+    if missing:
+        for identifier in missing:
+            print(f"Error: no session matches '{identifier}'.", file=sys.stderr)
+        print("Run 'onit sessions' to see what is there.", file=sys.stderr)
+        return 1
+    if not resolved:
+        print("Error: nothing to delete.", file=sys.stderr)
+        return 1
+
+    if not assume_yes:
+        print("About to delete:")
+        for sid, identifier in resolved:
+            row = rows.get(sid, {})
+            name = row.get("tag") or "(unnamed)"
+            turns = row.get("turns", 0)
+            # A row number is addressed with '#', a name is not: printing
+            # '#plan-thesis' would invite someone to type that.
+            ref = f"#{identifier}" if str(identifier).isdigit() else identifier
+            print(f"  {ref:<4} {name}  ({sid[:8]}, {turns} turn(s))")
+        noun = "session" if len(resolved) == 1 else "sessions"
+        answer = input(f"Delete {len(resolved)} {noun}? This cannot be undone. "
+                       f"(yes/no): ")
+        if answer.strip().lower() not in ("yes", "y"):
+            print("Cancelled.")
+            return 0
+
+    # Delete by the ids resolved above, never by the identifiers again: after
+    # the first row goes, the listing shifts and row 2 is no longer the row 2
+    # that was confirmed.  Resolving once is what makes the confirmation and
+    # the deletion refer to the same sessions.
+    failed = 0
+    for sid, identifier in resolved:
+        row = rows.get(sid, {})
+        name = row.get("tag")
+        label = f"'{name}'" if name else sid[:8]
+        if delete_session(sid, sessions_dir):
+            print(f"Deleted {label} ({sid[:8]}).")
+        else:
+            print(f"Error: could not delete '{identifier}' ({sid[:8]}).",
+                  file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def _rename_session(identifier: str, new_name: str, sessions_dir: str,
-                    limit: int = 20) -> int:
+                    limit: int | None = None) -> int:
     """Rename one session; return the process exit code.
 
     Shared by ``onit rename``, ``onit sessions --rename`` and the ``\\rename``
@@ -1493,8 +1604,13 @@ def main():
         from .sessions import (list_sessions, count_sessions,
                                format_sessions_table, rebuild_index,
                                clear_sessions)
-        sessions_dir = os.path.expanduser("~/.onit/sessions")
+        sessions_dir = _sessions_dir(args)
+        assume_yes = getattr(args, "assume_yes", False)
         if args.clear:
+            if assume_yes:
+                count = clear_sessions(sessions_dir)
+                print(f"Deleted {count} session(s).")
+                return
             answer = input("This will delete ALL session history. Are you sure? (yes/no): ")
             if answer.strip().lower() in ("yes", "y"):
                 count = clear_sessions(sessions_dir)
@@ -1502,24 +1618,24 @@ def main():
             else:
                 print("Cancelled.")
             return
+        if args.delete:
+            code = _delete_sessions(args.delete, sessions_dir, assume_yes)
+            if code:
+                sys.exit(code)
+            return
         if args.rebuild:
             print("Rebuilding session index...")
             rebuild_index(sessions_dir)
             print("Done.")
         if args.rename:
             identifier, new_name = args.rename
-            code = _rename_session(identifier, new_name, sessions_dir,
-                                   limit=max(args.limit, 1))
+            code = _rename_session(identifier, new_name, sessions_dir)
             if code:
                 sys.exit(code)
             return
-        rows = list_sessions(sessions_dir, limit=args.limit,
-                             include_empty=args.all)
-        total = count_sessions(sessions_dir, include_empty=args.all)
+        rows = list_sessions(sessions_dir, limit=None)
+        total = count_sessions(sessions_dir)
         print(format_sessions_table(rows, total=total))
-        if not args.all and not rows:
-            print("No sessions with any turns yet. "
-                  "Use --all to include the empty ones.")
         return
 
     # Trajectory store: read-only, and deliberately not gated on a config file
@@ -1622,9 +1738,9 @@ def main():
     # rename: a verb of its own, because renaming is the one session action a
     # person reaches for while a session is still in front of them.
     if args.command == "rename":
-        sessions_dir = os.path.expanduser("~/.onit/sessions")
+        sessions_dir = _sessions_dir(args)
         code = _rename_session(args.session, args.name, sessions_dir,
-                               limit=max(args.limit, 1))
+                               limit=None)
         if code:
             sys.exit(code)
         return
@@ -1664,8 +1780,7 @@ def main():
         from .sessions import resolve_session_choice
         sessions_dir = os.path.expanduser(
             config_data.get('session_path', '~/.onit/sessions'))
-        sid = resolve_session_choice(resume_target, sessions_dir,
-                                     limit=max(getattr(args, 'session_limit', 20), 1))
+        sid = resolve_session_choice(resume_target, sessions_dir)
         # An index entry can outlive its JSONL file; treat that as "no session".
         if sid and not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl")):
             sid = None
