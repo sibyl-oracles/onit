@@ -1066,7 +1066,7 @@ class TestRenameCommand:
 
     def test_the_reply_says_how_to_come_back(self, named):
         a, _ = named
-        assert "onit resume" in commands.cmd_rename(a, "Auth Work")
+        assert "onit --resume-session" in commands.cmd_rename(a, "Auth Work")
 
     def test_another_sessions_name_is_refused(self, named):
         a, d = named

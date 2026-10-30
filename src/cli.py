@@ -2,14 +2,17 @@
 CLI entry point for the OnIt agent.
 
 Usage:
-    onit                                          # interactive terminal chat (resumes last session)
-    onit --restart-session                        # interactive terminal chat, fresh session
+    onit                                          # interactive terminal chat (continues the last session)
+    onit --new-session                            # interactive terminal chat, fresh session
+    onit --new-session --name-session "thesis ch3"   # ... named, so it is easy to find again
+    onit --resume-session "thesis ch3"            # continue a named session
     onit setup                                    # interactive setup wizard
     onit setup --show                             # show current configuration
     onit setup --delete tavily                    # remove a stored key
     onit sessions                                 # list previous sessions
+    onit sessions --rename 2 "chapter 3 draft"    # rename a session
     onit doctor [--deep]                          # run the live self-check battery
-    onit resume [TAG_OR_ID]                       # resume a previous session
+    onit resume                       # continue a previous session (same as --resume-session)
     onit serve web [--port 9000]                  # launch the web UI
     onit serve loop "task" [--period 60]          # repeat a task on a timer
     onit --config my.yaml                         # custom config file
@@ -686,15 +689,29 @@ def _build_parser() -> argparse.ArgumentParser:
                                             help="List and manage previous sessions.")
     sessions_parser.add_argument("--limit", type=int, default=20,
                                  help="Maximum number of sessions to list (default: 20).")
-    sessions_parser.add_argument("--rebuild", action="store_true",
+    sessions_parser.add_argument("--rename", type=str, nargs=2,
+                                 metavar=("SESSION", "NEW_NAME"),
+                                 help="Rename a session: --rename <name|uuid|#> <new name>. "
+                                      "The same thing as 'onit rename'.")
+    # --tag was the only rename spelling for a while, and it said "tag" for a
+    # thing every other surface calls a name.  It still parses, so an old
+    # script or a habit is not broken; it is no longer what --help offers.
+    sessions_parser.add_argument("--tag", type=str, nargs=2, dest="rename",
+                                 default=argparse.SUPPRESS, metavar=("SESSION", "NEW_NAME"),
+                                 help=argparse.SUPPRESS)
+    sessions_parser.add_argument("--rebuild-index", action="store_true", dest="rebuild",
                                  help="Rebuild the session index from existing JSONL files.")
-    sessions_parser.add_argument("--tag", type=str, nargs=2, metavar=("SESSION", "TAG"),
-                                 help="Tag a session: --tag <session-id-or-tag> <new-tag>")
-    sessions_parser.add_argument("--all", action="store_true",
-                                 help="Include sessions that were opened but "
-                                      "never used (no turns, no name).")
-    sessions_parser.add_argument("--clear", action="store_true",
-                                 help="Delete all previous sessions and the index.")
+    sessions_parser.add_argument("--rebuild", action="store_true", default=argparse.SUPPRESS,
+                                 help=argparse.SUPPRESS)
+    sessions_parser.add_argument("--include-empty", action="store_true", dest="all",
+                                 help="Also list sessions that were opened but never used "
+                                      "(no turns, no name).")
+    sessions_parser.add_argument("--all", action="store_true", default=argparse.SUPPRESS,
+                                 help=argparse.SUPPRESS)
+    sessions_parser.add_argument("--delete-all", action="store_true", dest="clear",
+                                 help="Delete every session and the index. Asks first.")
+    sessions_parser.add_argument("--clear", action="store_true", default=argparse.SUPPRESS,
+                                 help=argparse.SUPPRESS)
 
     # learn: inspect what the agent has recorded about its own runs
     learn_parser = subparsers.add_parser(
@@ -852,7 +869,8 @@ def _build_parser() -> argparse.ArgumentParser:
     rename_parser.add_argument("session", metavar="SESSION",
                                help="Session to rename: a name, a UUID, or "
                                     "the number shown by 'onit sessions'.")
-    rename_parser.add_argument("--limit", type=int, default=20,
+    rename_parser.add_argument("--session-limit", "--limit", type=int,
+                               default=20, dest="limit",
                                help="How many rows 'onit sessions' showed, so "
                                     "a row number means the same session "
                                     "(default: 20).")
@@ -860,9 +878,11 @@ def _build_parser() -> argparse.ArgumentParser:
                                help="The new name.")
 
     # resume
-    resume_parser = subparsers.add_parser("resume", help="Resume a previous session.")
+    resume_parser = subparsers.add_parser(
+        "resume", help="Continue a previous session (same as --resume-session).")
     resume_parser.add_argument("session", nargs="?", default="last",
-                               help='Session tag, UUID, or "last" (default: last).')
+                               metavar="NAME_OR_ID",
+                               help='Session name, UUID, or "last" (default: last).')
 
     # serve: run OnIt in a server or daemon mode
     serve_parser = subparsers.add_parser("serve",
@@ -889,17 +909,35 @@ def _build_parser() -> argparse.ArgumentParser:
     loop_p.add_argument("--period", type=float, default=None,
                         help="Seconds between iterations (default: 10, or period in config).")
 
-    # ── General options ──────────────────────────────────────────────────────
-    parser.add_argument("--resume", type=str, default=None, metavar="TAG_OR_ID",
-                        help='Resume a previous session by tag, UUID, or "last" for the most recent.')
-    parser.add_argument("--name", type=str, default=None, metavar="NAME",
-                        help="Name this session as it starts, so it can be "
-                             "found later with 'onit resume <name>'. Only "
-                             "applies to a session that is being created.")
-    parser.add_argument("--restart-session", "--new-session", action="store_true",
-                        default=False, dest="restart_session",
-                        help="Start a fresh session instead of resuming the last "
-                             "one (terminal chat resumes the last session by default).")
+    # ── Session options ──────────────────────────────────────────────────────
+    # One family, one shape: every flag about a session starts with the thing
+    # it acts on and ends in -session, so the three sit together in --help and
+    # read as a set.  The older spellings (--resume, --name,
+    # --restart-session) still parse and are hidden, because a flag people
+    # have in muscle memory is a flag that cannot simply be removed.
+    session_opts = parser.add_argument_group(
+        "session",
+        "Which conversation this run is about. Without any of these, terminal "
+        "chat continues the last session.")
+    session_opts.add_argument("--new-session", "--restart-session", action="store_true",
+                              default=False, dest="restart_session",
+                              help="Start a fresh session instead of continuing the "
+                                   "last one. Combine with --name-session to name it.")
+    session_opts.add_argument("--resume-session", "--resume", type=str, default=None,
+                              dest="resume", metavar="NAME_OR_ID",
+                              help="Continue a particular session: its name, a UUID, "
+                                   "or 'last' for the most recent.")
+    session_opts.add_argument("--name-session", "--name", type=str, default=None,
+                              dest="name", metavar="NAME",
+                              help="Name a new session as it starts, so 'onit "
+                                   "--resume-session NAME' finds it later. Implies "
+                                   "--new-session; to rename a session that already "
+                                   "exists, use 'onit sessions --rename'.")
+    session_opts.add_argument("--session-limit", type=int, default=20,
+                              dest="session_limit", metavar="N",
+                              help="How many rows 'onit sessions' lists, so that a "
+                                   "row number means the same session here "
+                                   "(default: 20).")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to the configuration YAML file.")
     parser.add_argument("--host", type=str, default=None,
@@ -991,10 +1029,10 @@ def _rename_session(identifier: str, new_name: str, sessions_dir: str,
                     limit: int = 20) -> int:
     """Rename one session; return the process exit code.
 
-    Shared by ``onit rename`` and ``onit sessions --tag`` so the two spellings
-    of the same action cannot drift apart -- in what they accept as an
-    identifier, in what they do with a bad name, or in what they tell the user
-    afterwards.
+    Shared by ``onit rename``, ``onit sessions --rename`` and the ``\\rename``
+    chat command's CLI twin, so the spellings of the same action cannot drift
+    apart -- in what they accept as an identifier, in what they do with a bad
+    name, or in what they tell the user afterwards.
     """
     from .sessions import _load_index, normalize_tag, resolve_session_choice, \
         tag_session
@@ -1013,10 +1051,10 @@ def _rename_session(identifier: str, new_name: str, sessions_dir: str,
         print(f"Error: {result}", file=sys.stderr)
         return 1
     # Read the name back rather than echoing the argument: what is stored is
-    # what 'onit resume' will look up.
+    # what 'onit --resume-session' will look up.
     stored = _load_index(sessions_dir).get(sid, {}).get("tag") or name
     print(f"Renamed {sid[:8]}... to '{stored}'.")
-    print(f"Resume it with: onit resume '{stored}'")
+    print(f"Continue it with: onit --resume-session '{stored}'")
     return 0
 
 
@@ -1415,9 +1453,9 @@ def main():
             print("Rebuilding session index...")
             rebuild_index(sessions_dir)
             print("Done.")
-        if args.tag:
-            identifier, new_tag = args.tag
-            code = _rename_session(identifier, new_tag, sessions_dir,
+        if args.rename:
+            identifier, new_name = args.rename
+            code = _rename_session(identifier, new_name, sessions_dir,
                                    limit=max(args.limit, 1))
             if code:
                 sys.exit(code)
@@ -1545,12 +1583,25 @@ def main():
     config_data = _parse_and_resolve_config(args)
 
     # Session selection.  The terminal chat continues where it left off, so an
-    # explicit --resume is optional: without one we resume the last session.
-    # --restart-session opts out and starts from scratch.  Server modes
+    # explicit --resume-session is optional: without one we continue the last
+    # session.  --new-session opts out and starts from scratch.  Server modes
     # (web/loop) manage their own sessions and never auto-resume.
+    #
+    # --name-session names a session that is being created, so it implies
+    # --new-session.  Before, it was quietly ignored whenever a session was
+    # being resumed -- which was the default -- so 'onit --name foo' started a
+    # name you could not then find, having continued somebody else's
+    # conversation under it.
+    if args.name and args.resume:
+        print("Error: --name-session names a new session, so it cannot be "
+              "combined with --resume-session.", file=sys.stderr)
+        print("To rename an existing session: onit sessions --rename "
+              "<name|uuid|#> <new name>", file=sys.stderr)
+        sys.exit(1)
+
     resume_target = args.resume
     auto_resume = False
-    if not resume_target and not args.restart_session and not (
+    if not resume_target and not args.restart_session and not args.name and not (
             config_data.get('web') or config_data.get('loop')):
         resume_target = "last"
         auto_resume = True
@@ -1559,7 +1610,8 @@ def main():
         from .sessions import resolve_session_choice
         sessions_dir = os.path.expanduser(
             config_data.get('session_path', '~/.onit/sessions'))
-        sid = resolve_session_choice(resume_target, sessions_dir)
+        sid = resolve_session_choice(resume_target, sessions_dir,
+                                     limit=max(getattr(args, 'session_limit', 20), 1))
         # An index entry can outlive its JSONL file; treat that as "no session".
         if sid and not os.path.exists(os.path.join(sessions_dir, f"{sid}.jsonl")):
             sid = None
@@ -1574,15 +1626,17 @@ def main():
             config_data['resume_session_id'] = sid
             if auto_resume:
                 print(f"Resuming last session: {sid[:8]}... "
-                      "(use --restart-session to start a new one)")
+                      "(use --new-session to start a new one)")
             else:
                 print(f"Resuming session: {sid[:8]}...")
 
     # A name given on the command line belongs to a session being created.  It
     # is carried in the config dict rather than passed as an argument because
     # OnIt._setup_session is what creates the session, and it reads the config.
-    if getattr(args, 'name', None) and not config_data.get('resume_session_id'):
+    if args.name:
         config_data['session_name'] = args.name
+        print(f"Naming this session '{args.name}'. "
+              f"Return to it with: onit --resume-session '{args.name}'")
 
 
     # Must be set before MCP servers are spawned so child processes inherit it.

@@ -709,6 +709,102 @@ class TestSessionSelection:
         assert "resume_session_id" not in self._run(["serve", "web"])
         assert "resume_session_id" not in self._run(["serve", "loop", "check things"])
 
+    # ── the flag family ──────────────────────────────────────────────────────
+    # Every flag about a session now ends in -session and they are declared
+    # together, so --help reads as a set. The old spellings stay, hidden,
+    # because a flag in muscle memory cannot simply be removed.
+
+    def test_the_new_spellings_work(self, sessions):
+        assert "resume_session_id" not in self._run(["--new-session"])
+        config = self._run(["--resume-session", "old-session-id"])
+        assert config["resume_session_id"] == "old-session-id"
+
+    def test_naming_a_session_starts_a_new_one(self, sessions, capsys):
+        """A name belongs to a session being created, so giving one is a
+        request for a new session.
+
+        It used to be the other way round: --name was silently dropped
+        whenever a session was resumed, and resuming is the default, so
+        'onit --name foo' continued the last conversation under a name the
+        user could not then find. That is the bug this pins.
+        """
+        config = self._run(["--name-session", "thesis chapter 3"])
+        assert "resume_session_id" not in config
+        assert config["session_name"] == "thesis chapter 3"
+        out = capsys.readouterr().out
+        assert "thesis chapter 3" in out
+        assert "--resume-session" in out
+
+    def test_the_old_name_spelling_also_starts_a_new_session(self, sessions):
+        config = self._run(["--name", "foo"])
+        assert "resume_session_id" not in config
+        assert config["session_name"] == "foo"
+
+    def test_naming_and_resuming_together_is_refused(self, sessions, capsys):
+        """One flag creates a session and the other continues an existing
+        one; both at once has no meaning, and silently picking one would
+        lose the name or the conversation."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(["--name-session", "foo", "--resume-session", "old-session-id"])
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "cannot be combined" in err
+        assert "onit sessions --rename" in err
+
+    def test_a_resumed_session_can_still_be_renamed_afterwards(self, sessions):
+        """The refused combination is not a dead end: --new-session with a
+        name is the way to name a session that does not exist yet."""
+        config = self._run(["--new-session", "--name-session", "fresh"])
+        assert "resume_session_id" not in config
+        assert config["session_name"] == "fresh"
+
+    def test_help_shows_the_family_and_hides_the_old_spellings(self):
+        from src.cli import _build_parser
+        text = _build_parser().format_help()
+        assert "--new-session" in text
+        assert "--resume-session" in text
+        assert "--name-session" in text
+        # hidden aliases: they parse, but they are not what --help offers
+        assert "--restart-session" in text      # shown beside --new-session
+        assert "TAG_OR_ID" not in text
+
+    def test_the_session_flags_are_one_group(self):
+        """--help groups them under 'session'; that is what makes the family
+        discoverable rather than three flags scattered among twenty."""
+        from src.cli import _build_parser
+        groups = {g.title: g for g in _build_parser()._action_groups}
+        assert "session" in groups
+        flags = {o for a in groups["session"]._group_actions for o in a.option_strings}
+        assert {"--new-session", "--resume-session", "--name-session"} <= flags
+        # and nowhere else, so there is one place to look
+        others = {o for t, g in groups.items() if t != "session"
+                  for a in g._group_actions for o in a.option_strings}
+        assert not ({"--new-session", "--resume-session", "--name-session"} & others)
+
+    def test_session_limit_makes_a_row_number_mean_the_same_row(self, sessions):
+        """'onit --resume-session 2' takes the # from a listing; the listing
+        is limited to 20 rows by default, so the flag that changes the view
+        has to change what the number means too."""
+        from src.cli import _build_parser
+        args = _build_parser().parse_args(["--session-limit", "50"])
+        assert args.session_limit == 50
+
+    def test_the_limit_reaches_the_row_resolution(self, sessions, monkeypatch):
+        """Parsing the flag is not enough: it has to arrive where a row
+        number is turned into a session."""
+        import pathlib
+        from src.sessions import register_session, update_session
+        store = pathlib.Path(sessions)
+        for i in range(6):
+            register_session(f"row-{i}", str(store))
+            update_session(f"row-{i}", task=f"task {i}", sessions_dir=str(store))
+            (store / f"row-{i}.jsonl").write_text("")
+        # 3 rows of a 3-row view is row 6 of the full list, not row 3
+        config = self._run(["--resume-session", "3", "--session-limit", "3"])
+        from src.sessions import resolve_session_choice
+        assert config["resume_session_id"] == resolve_session_choice(
+            "3", str(store), limit=3)
+
 
 class TestApprovalChannelWiring:
     """Which runs can ask a person, and which answer for themselves.
@@ -889,6 +985,80 @@ class TestSessionVerbs:
         assert exc.value.code == 1
         assert "cannot be empty" in capsys.readouterr().err
 
+    def test_sessions_rename_renames_a_row(self, store, monkeypatch, capsys):
+        """Renaming belongs to the listing: you read a row, you fix its name.
+        It used to be a separate verb reached by leaving the listing, and
+        the only spelling inside the listing was --tag."""
+        from src import cli, sessions
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "sessions", "--rename", "1", "Report Work"])
+        cli.main()
+        out = capsys.readouterr().out
+        assert "Report Work" in out
+        assert "--resume-session" in out
+        assert sessions.find_session_by_tag("Report Work", store)
+
+    def test_sessions_rename_refuses_an_empty_name(self, store, monkeypatch, capsys):
+        from src import cli
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "sessions", "--rename", "1", "  "])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        assert "cannot be empty" in capsys.readouterr().err
+
+    def test_sessions_rename_and_the_verb_agree(self, store, monkeypatch, capsys):
+        """Two spellings, one implementation: what the verb accepts the flag
+        accepts, down to the row number and the error text."""
+        from src import cli, sessions
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "sessions", "--rename", "99", "x"])
+        with pytest.raises(SystemExit):
+            cli.main()
+        via_flag = capsys.readouterr().err
+        monkeypatch.setattr(sys, "argv", ["onit", "rename", "99", "x"])
+        with pytest.raises(SystemExit):
+            cli.main()
+        assert capsys.readouterr().err == via_flag
+
+    def test_the_old_tag_spelling_still_renames(self, store, monkeypatch, capsys):
+        """--tag was the only spelling for a while. It still parses, so an
+        old script keeps working, but it is not what --help offers."""
+        from src import cli, sessions
+        import pathlib
+        home = pathlib.Path(store).parent
+        (home / ".onit").mkdir(exist_ok=True)
+        (home / ".onit" / "sessions").symlink_to(store)
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "sessions", "--tag", "1", "Old Spelling"])
+        cli.main()
+        assert "Old Spelling" in capsys.readouterr().out
+        assert sessions.find_session_by_tag("Old Spelling", store)
+
+    def test_sessions_help_names_rename_and_hides_tag(self):
+        from src.cli import _build_parser
+        # parse the subcommand's own help, so this reads what a user sees
+        parser = _build_parser()
+        sub = [a for a in parser._subparsers._group_actions[0].choices.values()
+               if a.prog == "onit sessions"][0]
+        text = sub.format_help()
+        assert "--rename" in text
+        assert "--tag" not in text
+        assert "--rebuild-index" in text and "--delete-all" in text
+        assert "--include-empty" in text
+
     def test_sessions_hides_empty_rows_and_says_so(self, store, monkeypatch,
                                                    capsys):
         from src import cli, sessions
@@ -924,6 +1094,7 @@ class TestSessionVerbs:
         monkeypatch.setattr(sys, "argv", ["onit", "sessions"])
         cli.main()
         out = capsys.readouterr().out
-        assert "onit rename" in out and "onit resume" in out
-        assert "--name" in out
+        assert "onit sessions --rename" in out
+        assert "onit --resume-session" in out
+        assert "--name-session" in out
 

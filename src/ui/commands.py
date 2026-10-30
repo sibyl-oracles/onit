@@ -67,7 +67,7 @@ COMMANDS = (
             "Rate an answer: the newest one, or number n. The strongest "
             "outcome signal there is."),
     Command("rename", "<name>",
-            "Name this session, so 'onit resume <name>' finds it later; "
+            "Name this session, so 'onit --resume-session <name>' finds it; "
             "bare, show what it is called."),
     Command("model", "[name | -]",
             "Switch model; bare, list what the endpoint serves; '-' for "
@@ -847,14 +847,15 @@ def cmd_rename(agent, arg: str) -> str:
                    f"Rename it with \\rename <new-name>."
         return ("This session has no name yet.\n"
                 "Give it one with \\rename <name>, and it will show up in "
-                "'onit sessions' and resume with 'onit resume <name>'.")
+                "'onit sessions' and continue with "
+                "'onit --resume-session <name>'.")
 
     new_name = normalize_tag(arg)
     if not new_name:
         return "A session name cannot be empty."
 
     # Refuse a name another session already answers to, rather than letting
-    # 'onit resume <name>' become a coin toss.
+    # 'onit --resume-session <name>' become a coin toss.
     holder = find_session_by_tag(new_name, sessions_dir)
     if holder and holder != sid:
         meta = _load_index(sessions_dir).get(holder, {})
@@ -866,7 +867,7 @@ def cmd_rename(agent, arg: str) -> str:
     if result is True:
         stored = _load_index(sessions_dir).get(sid, {}).get("tag") or new_name
         return (f"Renamed this session to '{stored}'.\n"
-                f"Come back to it with: onit resume '{stored}'")
+                f"Come back to it with: onit --resume-session '{stored}'")
     return f"Could not rename: {result}"
 
 

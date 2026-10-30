@@ -455,7 +455,7 @@ def resolve_session_choice(identifier: str,
 
     ``resolve_session`` answers the same question for a name or an id.  This
     adds the two things a *listing* invites: the ``#`` shown next to a row, so
-    ``onit rename 3 notes`` works on the third line of ``onit sessions``, and a
+    ``onit sessions --rename 3 notes`` works on the third line of the listing, and a
     ``last``/``-1`` shorthand.  A bare number is read as a row number, because
     that is what the column is there for; a UUID is never all digits, so the
     two cannot be confused.
@@ -601,8 +601,9 @@ def clear_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> int:
 def format_sessions_table(sessions: list, total: int | None = None) -> str:
     """Format session list as a human-readable table for CLI output.
 
-    The ``#`` column is not decoration: ``onit rename 3 <name>`` and
-    ``onit resume 3`` take it, so a session can be acted on without copying a
+    The ``#`` column is not decoration: ``onit sessions --rename 3 <name>``
+    and ``onit --resume-session 3`` take it, so a session can be acted on
+    without copying a
     UUID out of the terminal.  *total* is the number of sessions that exist,
     when the list shown is a limited view of them.
     """
@@ -628,6 +629,7 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
     if total is not None and total > len(sessions):
         lines.append(f"Showing {len(sessions)} of {total} sessions "
                      f"(use --limit to see more).")
-    lines.append("Resume: onit resume <#>      Rename: onit rename <#> <name>")
-    lines.append("Start a named session: onit --name <name>")
+    lines.append("Continue: onit --resume-session <#>   "
+                 "Rename: onit sessions --rename <#> <name>")
+    lines.append("Start a named session: onit --new-session --name-session <name>")
     return "\n".join(lines)

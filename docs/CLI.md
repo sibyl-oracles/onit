@@ -23,9 +23,10 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--verbose` | Enable verbose logging | `false` |
 | `--think` | Enable thinking/reasoning mode (CoT) | `false` |
 | `--show-logs` | Show tool execution logs | `false` |
-| `--resume TAG_OR_ID` | Resume a previous session by tag, UUID, or `last` | last session |
-| `--name NAME` | Name the new session as it starts, so `onit resume NAME` finds it. Only applies to a session being created | — |
-| `--restart-session` | Start a new session instead of resuming the last one (alias: `--new-session`) | `false` |
+| `--new-session` | Start a fresh session instead of continuing the last one (alias: `--restart-session`) | `false` |
+| `--resume-session NAME_OR_ID` | Continue a particular session: its name, a UUID, or `last` (alias: `--resume`) | last session |
+| `--name-session NAME` | Name a new session as it starts, so `--resume-session NAME` finds it. Implies `--new-session` (alias: `--name`) | — |
+| `--session-limit N` | How many rows `onit sessions` lists, so a `#` means the same session here | `20` |
 | `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
 | `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web` deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
 | `--no-auto` | Be asked about a command policy will not run on its own, instead of approving it automatically (alias: `--ask`) | `false` |
@@ -51,23 +52,45 @@ onit setup           # run the wizard
 onit setup --show    # print current configuration
 ```
 
+## The session flags
+
+Every flag about which conversation a run is about is declared together and
+ends in `-session`, so they read as one family rather than three flags
+scattered through `--help`:
+
+```bash
+onit --new-session                             # fresh session
+onit --new-session --name-session "chapter 3"  # fresh session, named
+onit --resume-session "chapter 3"              # continue that one
+onit --resume-session 3                        # ... by row number from the listing
+onit --resume-session last                     # ... or the most recent
+```
+
+The older spellings — `--restart-session`, `--resume`, `--name` — still parse.
+They are hidden from `--help`, because a flag people have in muscle memory is
+a flag that cannot simply be removed, but there is now one way to write each.
+
+Giving `--name-session` implies `--new-session`: a name belongs to a session
+that is being created, so naming one and resuming another in the same command
+is refused with a pointer to `onit sessions --rename`.
+
 ## `onit sessions`
 
 List and manage saved sessions.
 
 ```bash
-onit sessions                          # list recent sessions (default: 20)
-onit sessions --limit 50               # list up to 50 sessions
-onit sessions --all                    # include sessions that were never used
-onit sessions --tag 3 "my-chat"        # rename row 3 (same as `onit rename`)
-onit sessions --rebuild                # rebuild session index from JSONL files
-onit sessions --clear                  # delete all session history
+onit sessions                                   # list recent sessions (default: 20)
+onit sessions --limit 50                        # list up to 50 sessions
+onit sessions --include-empty                   # also show sessions never used
+onit sessions --rename 3 "my-chat"              # rename row 3 (same as `onit rename`)
+onit sessions --rebuild-index                   # rebuild the index from JSONL files
+onit sessions --delete-all                      # delete all session history
 ```
 
-The `#` column is the session's handle: every session verb takes it, so a
+The `#` column is the session's handle: every session action takes it, so a
 session can be acted on without copying a UUID out of the terminal. Sessions
 that were opened and never used are left out (they have no name and nothing to
-return to); `--all` shows them.
+return to); `--include-empty` shows them.
 
 A session is named automatically from its first message, but a message that
 carries no topic -- "hi", "thanks" -- names nothing, and the next real message
@@ -78,14 +101,14 @@ does it instead. That keeps a session from being called `hi` forever.
 Name a session so it can be found later.
 
 ```bash
-onit rename 3 "thesis chapter 3"        # by row number from `onit sessions`
-onit rename abc123 "thesis chapter 3"   # by UUID prefix
-onit rename old-name "new name"         # by its current name
+onit sessions --rename 3 "thesis chapter 3"     # by row number from the listing
+onit sessions --rename abc123 "thesis ch3"      # by UUID prefix
+onit rename old-name "new name"                 # the same thing, as its own verb
 ```
 
 Names may contain spaces and are matched case-insensitively. Two sessions
-cannot share a name, because `onit resume <name>` would otherwise be a coin
-toss. The name is what `onit resume` looks up.
+cannot share a name, because `--resume-session <name>` would otherwise be a
+coin toss. The name is what `--resume-session` looks up.
 
 Inside a chat, `\rename <name>` does the same thing to the session you are in,
 and a bare `\rename` prints what it is currently called.
@@ -96,15 +119,15 @@ Resume a previous session by tag or UUID. Terminal chat already resumes the most
 recent session automatically, so this is for picking a *different* one.
 
 ```bash
-onit resume my-chat      # resume by name
-onit resume 3            # resume row 3 of `onit sessions`
-onit resume abc123       # resume by session UUID prefix
-onit resume              # resume the most recent session (same as bare `onit`)
+onit resume my-chat      # continue by name
+onit resume 3            # continue row 3 of `onit sessions`
+onit resume abc123       # continue by session UUID prefix
+onit resume              # continue the most recent session (same as bare `onit`)
 ```
 
-Equivalent to `onit --resume TAG_OR_ID`.
+Equivalent to `onit --resume-session NAME_OR_ID`.
 
-To start from scratch instead, use `onit --restart-session`. Server modes
+To start from scratch instead, use `onit --new-session`. Server modes
 (`serve web`, `serve loop`) manage their own
 sessions and never auto-resume.
 

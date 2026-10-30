@@ -205,13 +205,15 @@ use), `\model `, `\host add <url>` (spread across servers), `\key`, `\save`,
 the task is done — each tool call is shown as it runs.
 
 Sessions are named, and easy to come back to. A session takes its name from its
-first message; `\rename` or `onit rename` sets one you choose:
+first message; `\rename` or `onit sessions --rename` sets one you choose. The
+three session flags are one family, so they are easy to find in `--help`:
 
 ```bash
-onit --name "thesis chapter 3"   # name a new session as it starts
-onit sessions                    # list them; the # column is the handle
-onit rename 2 "chapter 3 draft"  # rename row 2
-onit resume 2                    # come back to it by row number, or by name
+onit --new-session --name-session "chapter 3"   # start one, named
+onit sessions                                   # list them; # is the handle
+onit sessions --rename 2 "chapter 3 draft"      # rename row 2
+onit --resume-session 2                         # come back by row number...
+onit --resume-session "chapter 3 draft"         # ...or by name
 ```
 
 ## Other front ends
