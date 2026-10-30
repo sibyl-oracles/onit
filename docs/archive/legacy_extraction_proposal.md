@@ -1,6 +1,7 @@
 # Legacy Extraction Proposal: Viber, Telegram, and A2A
 
-**Status:** Proposal — awaiting approval
+**Status:** Done, then reversed — the extraction landed, and `legacy/` was
+deleted in 0.1.5. Kept as the record of why it existed.
 **Date:** September 21, 2026
 **Goal:** Simplify the active codebase by moving Viber, Telegram, and A2A support into a self-contained `legacy/` directory. The core remains: terminal chat, web UI, loop mode, MCP servers, sandbox.
 

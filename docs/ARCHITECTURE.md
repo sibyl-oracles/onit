@@ -11,9 +11,9 @@
 │                     OnIt (src/onit.py)              │
 │                                                     │
 │  ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────────────┐ │
-│  │ ChatUI  │ │ WebApiUI │ │ Loop  │ │ legacy/ (A2A, │ │
-│  │(terminal│ │(FastAPI) │ │ runner│ │ Telegram,     │ │
-│  └────┬────┘ └────┬─────┘ └───┬───┘ │ Viber)        │ │
+│  │ ChatUI  │ │ WebApiUI │ │ Loop  │ │ Skills  │ │
+│  │(terminal│ │(FastAPI) │ │ runner│ │ server  │ │
+│  └────┬────┘ └────┬─────┘ └───┬───┘ │(extend) │ │
 └───────┼───────────┼───────────┼─────┴───┬───────────┘
 │       └──────────┼──┘            │             │       │
 │                 ▼                 ▼                 │
@@ -62,5 +62,5 @@ onit/
 │   └── test/                   # Test suite (pytest)
 ```
 
-Legacy front ends (A2A server, Telegram and Viber gateways) live in
-`legacy/` at the repository root.
+The A2A server and the Telegram and Viber gateways that used to live in
+`legacy/` were deleted in 0.1.5; they remain in git history.

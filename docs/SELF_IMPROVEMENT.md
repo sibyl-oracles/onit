@@ -798,8 +798,8 @@ with an ad-hoc bash/Python fragment, **promote the fragment to an MCP tool**.
   5. benchmark delta ≥ 0 on the holdout — a new tool that adds nothing still costs
      schema tokens and dilutes selection accuracy.
 - **Serving**: a new **`SkillsMCPServer`** (`src/mcp/servers/tasks/skills/`, port 18203)
-  registered in [`src/mcp/servers/configs/default.yaml`](../src/mcp/servers/configs/default.yaml)
-  and [`src/configs/default.yaml`](../src/configs/default.yaml), loading only skills
+  registered in [`src/configs/default.yaml`](../src/configs/default.yaml),
+  loading only skills
   listed in `pinned.yaml`. **No change to `ToolRegistry` semantics is needed** — the
   registry discovers it like any other MCP server. Hot-reload comes later; a restart is
   acceptable for v1.

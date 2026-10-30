@@ -36,7 +36,6 @@ pytest src/test/test_chat_ui.py -v       # Terminal UI tests
 pytest src/test/test_web_api.py -v       # Web UI tests
 pytest src/test/test_mcp_prompts.py -v   # MCP prompt tests
 pytest src/test/test_tool_discovery.py -v # Tool discovery tests
-pytest legacy/test -v                    # Legacy components (A2A, gateways)
 pytest src/test/test_mcp_tools_security.py -v # MCP tools security tests
 pytest src/test/test_doctor.py -v        # Live self-check battery tests
 ```
@@ -153,7 +152,8 @@ and `src/test/test_cli_doctor.py`.
 
 ## Test structure
 
-All tests are in `src/test/` (legacy component tests in `legacy/test/`):
+All tests are in `src/test/` and `benchmarks/test_*`; there is no second
+tree, and `pyproject.toml` points `testpaths` at `src/test`.
 
 | File | Description |
 |------|-------------|

@@ -5,8 +5,7 @@
 ### Breaking Changes
 
 - **CLI slimmed** — `onit ask` (and its `--file`/`--image`/`--server` flags),
-  `--host2`/`--model2`, and `--target-env` are gone. The A2A client moved to
-  [legacy/](legacy/) (`python -m legacy.a2a_client`); multi-endpoint serving is
+  `--host2`/`--model2`, and `--target-env` are gone. Multi-endpoint serving is
   configured through `serving.endpoints` in the config file; a stale
   `serving.host2` key in an old config logs a migration warning and is ignored.
 - **Dead code removed** — the VLM web-image MCP server (`VLMToolsMCPServer`)
@@ -20,12 +19,12 @@
 - **One failover layer** — the two whole-run retry loops collapsed into a
   single failover budget (`MAX_FAILOVER_ATTEMPTS`); a failing endpoint is
   retried once per layer instead of compounding to nine attempts.
-- **A2A server, Telegram and Viber gateways moved to `legacy/`** — The active
-  codebase now covers the terminal chat, web UI, loop mode, MCP servers and
-  the container. The A2A protocol server runs as `python -m legacy.a2a_server`
-  and the chat gateways as `python -m legacy.gateway [telegram|viber]`, after
-  `pip install -r legacy/requirements.txt`. See [legacy/README.md](legacy/README.md).
-  `onit serve a2a` and `onit serve gateway` are gone.
+- **A2A server, Telegram and Viber gateways removed** — `onit serve a2a` and
+  `onit serve gateway` are gone, and so is the `legacy/` directory that briefly
+  held them: 16 files, 1,482 lines of production code and four test files that
+  nothing in `src/` imported and that `testpaths` never ran. The codebase now
+  covers the terminal chat, web UI, loop mode, MCP servers and the container.
+  The removed code is in git history.
 - **Dependencies slimmed** — `a2a-sdk[all]` (with its grpcio/protobuf chain)
   and `python-telegram-bot` are no longer core dependencies; installs are
   faster and the supply chain smaller. The `gateway` extra is gone;
@@ -42,7 +41,7 @@
 
 - **Native Web UI** — The web UI no longer runs on Gradio. It is now a FastAPI app with a hand-written front end (`src/ui/api.py` + `src/ui/static/`) served over SSE, with streaming tokens, inline tool-call detail during the thinking phase, code and image rendering, copy buttons, and a login screen (`--no-login` to disable). Gradio is gone from the dependency list.
 - **Voice Mode** (`onit --voice`) — Full-duplex speech-to-speech. Audio is handled end to end by NVIDIA NemotronLabs VoiceChat 11B over an OpenAI-Realtime-compatible WebSocket (`--voice-url`); OnIt supplies the tools and the work. Install with `onit[voice]`. See [docs/VOICE.md](docs/VOICE.md).
-- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, and `onit serve {web,loop}`. Plain `onit` still opens terminal chat. *(A2A and gateway subcommands later moved to legacy/.)*
+- **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, and `onit serve {web,loop}`. Plain `onit` still opens terminal chat. *(A2A and gateway subcommands were later removed.)*
 - **Persistent Sessions** — Terminal chat continues the last session by default. `onit sessions` lists, renames, rebuilds, and clears them; `--resume-session NAME_OR_ID` (or `last`) reopens one; `--new-session [NAME]` starts fresh, named if you give a name.
 - **Two-Host Load Balancing** — Serve from two endpoints at once with `--host2`/`--model2` and pick a policy with `--load-balancer {sticky,round_robin,random,least_busy}`. Endpoints are health-ranked, and Ollama endpoints stay in reserve unless `--no-ollama-fallback-only` puts them in normal rotation. *(Superseded: multi-endpoint serving is now configured through `serving.endpoints`; the flags are gone.)*
 - **Agent Harness Capabilities** — All six harness phases from the NOOA framework landed: run-state budgeting, a result store that keeps large tool results readable instead of truncating them (`result_read` / `result_grep`), harness tools, early stopping, and answer verification. See [docs/HARNESS_CAPABILITIES.md](docs/HARNESS_CAPABILITIES.md).
@@ -55,7 +54,7 @@
 - **Container Mode** (`--container`) — Run the whole OnIt process inside a hardened Docker container, with GPU pass-through (`--container-gpus`), extra bind mounts (`--container-mount`), a memory cap (`--container-memory`), custom `/dev/shm` and `/tmp` sizes, and opt-in package installs (`--container-allow-installs`).
 - **Target Environment** (`--target-env`) — Point the agent's bash tool at a specific conda or virtual environment's Python, pip, and binaries without leaving the host shell. *(Removed in the simplification pass.)*
 - **Unrestricted Mode** (`--unrestricted`) — Opt-in flag granting full host filesystem access, lifting the default sandbox path restrictions for power users and CI pipelines.
-- **Streaming Output** — Chat responses stream token-by-token in the terminal UI and web UI, with a live tok/s indicator. `--no-stream` turns it off. *(The A2A client moved to legacy/ with the extraction.)*
+- **Streaming Output** — Chat responses stream token-by-token in the terminal UI and web UI, with a live tok/s indicator. `--no-stream` turns it off. *(The A2A client was later removed.)*
 - **Auto Model Detection** — The model is auto-detected from the LLM endpoint, so vLLM hosts no longer need it set explicitly. `--model` still overrides.
 - **Context Compaction** — Automatic context-window compaction summarises older messages as the limit approaches, with a streaming inline notice when it happens.
 - **MLX and Ollama Cloud** — Added local MLX serving on Apple silicon and hosted Ollama cloud endpoints alongside vLLM, local Ollama, and OpenRouter. See [docs/MODEL_SERVING.md](docs/MODEL_SERVING.md).
@@ -137,7 +136,7 @@
 - **Per-Session Isolation (Web UI)** — Each browser tab now gets its own independent session with isolated chat history, file storage, and response routing. Multiple users can chat concurrently without seeing each other's messages or files. Sessions auto-cleanup after 24 hours.
 - **Per-Session Isolation (A2A Server)** — Each A2A context (client conversation) gets its own isolated session with separate chat history, data directory, and safety queue. Different A2A clients no longer share state.
 - **Concurrent Request Processing (Web UI)** — Web UI requests are now processed concurrently via `process_task()` (matching the Telegram/Viber gateway pattern), instead of sequentially through a single queue.
-- **Viber Gateway** — Chat with OnIt remotely via a Viber bot. Supports text and photo messages with vision processing. Requires a public HTTPS webhook URL (now in [legacy/](legacy/); see [legacy/GATEWAY_QUICK_START.md](legacy/GATEWAY_QUICK_START.md)).
+- **Viber Gateway** — Chat with OnIt remotely via a Viber bot. Supports text and photo messages with vision processing. Requires a public HTTPS webhook URL. *Removed in 0.1.5 with `legacy/`.*
 - **Gateway Auto-Detection** — `onit --gateway` now auto-detects Telegram or Viber based on which environment variable is set (`TELEGRAM_BOT_TOKEN` or `VIBER_BOT_TOKEN`).
 - **Tunnel Documentation** — Comprehensive guide for tunneling options: Cloudflare Tunnel, ngrok, localtunnel, Tailscale Funnel, and SSH reverse tunnel.
 

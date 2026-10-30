@@ -53,7 +53,7 @@ signal and the numbers as journalism until the primary NVIDIA publication is ava
 | Source | Use in OnIt |
 |---|---|
 | [Model Context Protocol](https://modelcontextprotocol.io/) | Every tool server (`src/mcp/`) |
-| [A2A Protocol](https://a2a-protocol.org/) | client and server both in [legacy/](../legacy/) (`legacy.a2a_client`) |
+| [A2A Protocol](https://a2a-protocol.org/) | not used — the client and server were removed with `legacy/` in 0.1.5 |
 
 ## Model serving
 
@@ -81,5 +81,5 @@ See [`MODEL_SERVING.md`](MODEL_SERVING.md).
 |---|---|
 | [Docker](https://docs.docker.com/get-docker/) | `--container` mode, [`DOCKER.md`](DOCKER.md) |
 | [Caddy](https://caddyserver.com) · [Let's Encrypt](https://letsencrypt.org) · [Certbot](https://certbot.eff.org) | TLS termination, [`HTTPS_DEPLOYMENT.md`](HTTPS_DEPLOYMENT.md) |
-| [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) · [Tailscale](https://tailscale.com/download) | Public webhook exposure, [`legacy/GATEWAY_QUICK_START.md`](../legacy/GATEWAY_QUICK_START.md) |
+| [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) · (https://tailscale.com/download) | Public HTTPS exposure for the web UI, [`HTTPS_DEPLOYMENT.md`](HTTPS_DEPLOYMENT.md) |
 | [Google OAuth 2.0](https://developers.google.com/identity/protocols/oauth2/web-server) | [`WEB_AUTHENTICATION.md`](WEB_AUTHENTICATION.md), [`OAUTH_SETUP_QUICK_START.md`](OAUTH_SETUP_QUICK_START.md) |

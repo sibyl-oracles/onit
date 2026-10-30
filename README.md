@@ -228,7 +228,10 @@ onit sessions --delete "chapter 3 draft"        # ...or by name
 | `onit serve loop "task" --period 60` | Repeat a task on a timer |
 | `onit --container` | Hardened Docker container ([docs/DOCKER.md](docs/DOCKER.md)) |
 
-Telegram, Viber and A2A moved to [legacy/](legacy/).
+The A2A server and the Telegram and Viber gateways were removed from the
+tree in 0.1.5. They are still in git history (before commit `legacy` was
+deleted) for anyone who wants to revive them; nothing in `src/` referenced
+them, and their tests lived apart from the suite.
 
 ## Documentation
 
@@ -243,16 +246,15 @@ Telegram, Viber and A2A moved to [legacy/](legacy/).
 
 | Category | Files | Lines |
 |---|---|---|
-| **Production code** (`src/`, excl. tests) | 61 `.py` | **34,602** (25,884 code, 4,414 comments, 4,305 blank) |
-| Frontend (`src/ui/static/`, excl. vendor) | 6 | 3,274 |
-| Prompt templates + configs (YAML) | 6 | 471 |
-| **Test suites** (`src/test/`, `benchmarks/test_*`, `legacy/test/`) | 48 `.py` | 27,001 |
-| Benchmarks (non-test) | 14 `.py` | 1,765 |
-| Legacy (non-test) | 8 `.py` | 1,482 |
-| Docs (`docs/`, README, RELEASE) | 26 `.md` | 7,172 |
-| **Total Python** (all `.py`, excl. `__pycache__`) | 211 | **72,332** |
+| **Production code** (`src/`, excl. tests) | 79 `.py` | **44,970** (33,076 code, 6,160 comments, 5,734 blank) |
+| Frontend (`src/ui/static/`, excl. vendor) | 8 | 3,348 |
+| Prompt templates + configs (YAML) | 6 | 503 |
+| **Test suites** (`src/test/`, `benchmarks/test_*`) | 63 `.py` | 37,031 |
+| Benchmarks (non-test) | 14 `.py` | 1,786 |
+| Docs (`docs/`, README, RELEASE) | 27 `.md` | 9,130 |
+| **Total Python** (all `.py`, excl. `__pycache__`) | 162 | **85,384** |
 
-Production code by module: `mcp` 9,929 · `model` 9,327 · `ui` 7,324 · `onit.py` 2,191 · `setup.py` 936 · `learn` 1,127 · `lib` 882 · `cli.py` 857 · `type` 940 · `container_launcher.py` 574 · `sessions.py` 486 · `__init__.py` 29.
+Production code by module: `mcp` 10,437 · `model` 9,899 · `learn` 7,937 · `ui` 7,641 · `onit.py` 2,556 · `cli.py` 2,026 · `setup.py` 1,211 · `type` 969 · `lib` 921 · `sessions.py` 768 · `container_launcher.py` 575 · `__init__.py` 30.
 
 *Recompute:* `find src -name '*.py' -not -path '*/__pycache__/*' -not -path 'src/test/*' -exec cat {} + | wc -l`
 
