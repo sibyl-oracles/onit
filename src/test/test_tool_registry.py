@@ -255,7 +255,11 @@ class TestToolHandler:
         b64 = base64.b64encode(fake_png).decode()
 
         mock_response = MagicMock()
-        mock_response.content = [ImageContent(type="image", data=b64, mimeType="image/png")]
+        # ``mime_type`` is the SDK v2 spelling; ``mimeType`` is the v1 alias the
+        # code used to read, which still works on 2.x but raises a deprecation
+        # warning and is gone from an object built with the new name only.
+        mock_response.content = [ImageContent(type="image", data=b64,
+                                              mime_type="image/png")]
 
         mock_client = AsyncMock()
         mock_client.call_tool = AsyncMock(return_value=mock_response)
@@ -268,6 +272,93 @@ class TestToolHandler:
 
         assert result.endswith(".png")
         assert os.path.isfile(result)
+        os.unlink(result)
+
+    @pytest.mark.asyncio
+    async def test_the_image_type_is_read_from_the_v2_field(self):
+        """``mime_type`` decides the extension; the v1 alias is not consulted.
+
+        A JPEG saved as ``.png`` is not a cosmetic problem: the model is told
+        it is a PNG and either rejects it or misreads it.
+        """
+        import base64
+        from mcp.types import ImageContent
+
+        b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 8).decode()
+        mock_response = MagicMock()
+        mock_response.content = [ImageContent(type="image", data=b64,
+                                              mime_type="image/jpeg")]
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", return_value=mock_client):
+            result = await h(query="img")
+
+        assert result.endswith(".jpg") or result.endswith(".jpeg")
+        os.unlink(result)
+
+    @pytest.mark.asyncio
+    async def test_a_wav_is_written_with_the_parameters_the_tool_sent(self):
+        """The header must match the audio, or the clip plays at the wrong speed.
+
+        ``AudioContent`` carries its WAV parameters in ``_meta``.  The SDK v2
+        model exposes that as ``meta``; the code read ``metadata``, which does
+        not exist, so every clip was written 16 kHz mono -- a 44.1 kHz stereo
+        recording came back as a slow, half-speed file rather than an error.
+        """
+        import base64
+        import struct
+        import wave
+        from mcp.types import AudioContent
+
+        payload = struct.pack("<8h", *range(8))
+        audio = AudioContent(
+            type="audio", data=base64.b64encode(payload).decode(),
+            mime_type="audio/wav",
+            _meta={"channels": 2, "sample_width": 2, "frame_rate": 44100})
+
+        mock_response = MagicMock()
+        mock_response.content = [audio]
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", return_value=mock_client):
+            result = await h(query="say this")
+
+        with wave.open(result) as wf:
+            assert wf.getnchannels() == 2
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 44100
+        os.unlink(result)
+
+    @pytest.mark.asyncio
+    async def test_the_audio_extension_follows_the_mime_type(self):
+        """An MP3 must not be written to a ``.wav`` path, which claims a header
+        it does not have."""
+        import base64
+        from mcp.types import AudioContent
+
+        audio = AudioContent(type="audio", data=base64.b64encode(b"ID3" + b"\x00" * 8).decode(),
+                             mime_type="audio/mpeg")
+        mock_response = MagicMock()
+        mock_response.content = [audio]
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        h = _make_handler("t")
+        with patch("type.tools.Client", return_value=mock_client):
+            result = await h(query="say this")
+
+        assert result.endswith(".mp3")
         os.unlink(result)
 
     @pytest.mark.asyncio

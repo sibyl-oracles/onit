@@ -690,7 +690,8 @@ class ToolHandler(RequestHandler):
         # MCP data types: https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/types.py
         if isinstance(content, ImageContent):
             image_data = base64.b64decode(content.data)
-            mime_ext = _mime_to_extension(content.mimeType) if content.mimeType else "png"
+            mime = _mime_of(content)
+            mime_ext = _mime_to_extension(mime) if mime else "png"
             suffix = f".{mime_ext}"
             fd, image_path = tempfile.mkstemp(suffix=suffix)
             with os.fdopen(fd, "wb") as f:
@@ -706,31 +707,33 @@ class ToolHandler(RequestHandler):
             if isinstance(audio_data, str):
                 logger.info(f"Audio data is a base64 string of length {len(audio_data)}")
 
-            # Detect format from mimeType, falling back to 'wav'
-            audio_format = "wav"
-            if hasattr(content, 'mimeType') and content.mimeType:
-                audio_format = _mime_to_extension(content.mimeType)
-            elif hasattr(content, 'format') and content.format:
-                audio_format = content.format
+            # Detect the format from the MIME type, falling back to 'wav'.
+            mime = _mime_of(content)
+            audio_format = _mime_to_extension(mime) if mime else "wav"
 
             audio_data = base64.b64decode(content.data)
 
-            meta: dict[str, object] = content.metadata if hasattr(content, 'metadata') else {}
+            meta: dict[str, object] = _meta_of(content)
             logger.info(f"Audio data format: {audio_format}, metadata: {meta}")
 
             suffix = f".{audio_format}"
             fd, audio_path = tempfile.mkstemp(suffix=suffix)
             try:
                 os.close(fd)
-                # WAV parameters sourced from metadata when available, otherwise defaults.
-                channels = int(meta.get('channels', _DEFAULT_WAV_CHANNELS)) if meta else _DEFAULT_WAV_CHANNELS
-                sample_width = int(meta.get('sample_width', _DEFAULT_WAV_SAMPLE_WIDTH)) if meta else _DEFAULT_WAV_SAMPLE_WIDTH
-                frame_rate = int(meta.get('frame_rate', _DEFAULT_WAV_FRAME_RATE)) if meta else _DEFAULT_WAV_FRAME_RATE
-                with wave.open(audio_path, 'wb') as wf:
-                    wf.setnchannels(channels)
-                    wf.setsampwidth(sample_width)
-                    wf.setframerate(frame_rate)
-                    wf.writeframes(audio_data)
+                if audio_format in ("wav", "x-wav", "vnd.wave"):
+                    # Only PCM WAV gets a header.  Wrapping an MP3 in one
+                    # produces a file whose header contradicts its payload.
+                    channels = int(meta.get('channels', _DEFAULT_WAV_CHANNELS)) if meta else _DEFAULT_WAV_CHANNELS
+                    sample_width = int(meta.get('sample_width', _DEFAULT_WAV_SAMPLE_WIDTH)) if meta else _DEFAULT_WAV_SAMPLE_WIDTH
+                    frame_rate = int(meta.get('frame_rate', _DEFAULT_WAV_FRAME_RATE)) if meta else _DEFAULT_WAV_FRAME_RATE
+                    with wave.open(audio_path, 'wb') as wf:
+                        wf.setnchannels(channels)
+                        wf.setsampwidth(sample_width)
+                        wf.setframerate(frame_rate)
+                        wf.writeframes(audio_data)
+                else:
+                    with open(audio_path, "wb") as f:
+                        f.write(audio_data)
             except Exception:
                 if os.path.exists(audio_path):
                     os.unlink(audio_path)
@@ -738,6 +741,38 @@ class ToolHandler(RequestHandler):
             return audio_path
 
         return "Undefined content type returned from the tool."
+
+
+def _mime_of(content) -> str:
+    """The MIME type of an MCP content object, under either spelling.
+
+    MCP SDK v2 renamed ``mimeType`` to ``mime_type``.  Reading the old name
+    still works on 2.x but raises ``FastMCPDeprecationWarning``, and it is
+    absent from objects built with the new spelling.  The new name is tried
+    first so the deprecated property is never touched; the old one stays as a
+    fallback for a peer still sending v1 shapes.
+    """
+    for attr in ("mime_type", "mimeType"):
+        value = getattr(content, attr, None)
+        if value:
+            return str(value)
+    return ""
+
+
+def _meta_of(content) -> dict:
+    """The ``_meta`` mapping of an MCP content object, or ``{}``.
+
+    The field is ``meta`` on the SDK's models and ``metadata`` on the older
+    ones.  Only ``meta`` exists on v2, so reading ``metadata`` alone silently
+    returned ``{}`` and every audio file was written with the default WAV
+    parameters -- a 44.1 kHz stereo clip came out 16 kHz mono, which plays at
+    the wrong speed rather than failing.
+    """
+    for attr in ("meta", "metadata"):
+        value = getattr(content, attr, None)
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def _mime_to_extension(mime_type: str) -> str:
