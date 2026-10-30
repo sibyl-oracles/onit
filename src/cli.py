@@ -54,6 +54,24 @@ def __getattr__(name):
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
+def _agent_class():
+    """The agent class, resolved lazily and through a patched ``src.cli.OnIt``.
+
+    A bare ``OnIt`` in a function body is a *global* lookup, and a global
+    lookup is the one access a module ``__getattr__`` does not serve.  The
+    laziness above therefore has to be honoured explicitly: ``onit --resume``
+    died in ``_dispatch_mode`` with ``NameError: name 'OnIt' is not defined``
+    while ``onit sessions`` kept working, because no test called the real
+    ``_dispatch_mode`` -- the tests that reach it patch it out, and the ones
+    that patch ``src.cli.OnIt`` bind the global themselves and hide the bug.
+
+    ``getattr`` on the module object does consult ``__getattr__``, and it
+    returns a patched ``src.cli.OnIt`` unchanged, so both call sites keep the
+    laziness that makes ``onit sessions`` 0.05s instead of 0.70s.
+    """
+    return getattr(sys.modules[__name__], "OnIt")
+
+
 def _find_default_config() -> str:
     """Locate the default config file, checking common locations."""
     candidates = [
@@ -1531,7 +1549,7 @@ def _setup_servers(config_data: dict) -> None:
 
 def _dispatch_mode(config_data: dict) -> None:
     """Instantiate OnIt and launch the appropriate run mode."""
-    onit = OnIt(config=config_data)
+    onit = _agent_class()(config=config_data)
     asyncio.run(onit.run())
 
 
@@ -1631,7 +1649,7 @@ def _run_doctor(args: argparse.Namespace, config_data: dict) -> int:
         sink = io.StringIO() if args.json else None
         with contextlib.redirect_stdout(sink if sink is not None
                                         else sys.__stdout__):
-            agent = OnIt(config=config_data)
+            agent = _agent_class()(config=config_data)
     except Exception as e:
         print(f"Error: could not start the agent for self-check: "
               f"{type(e).__name__}: {e}", file=sys.stderr)

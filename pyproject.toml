@@ -61,6 +61,13 @@ test = [
     "pytest-asyncio",
     "pytest-cov",
 ]
+# `onit --resume` shipped a NameError: `_dispatch_mode` read a bare global
+# `OnIt`, and a module __getattr__ does not serve a global lookup.  The suite
+# was green because the tests that reach that function patch it out.  F821
+# finds this class of defect without running anything, so it runs in CI.
+lint = [
+    "ruff",
+]
 bench = [
     "inspect-ai>=0.3.0",
     "inspect-evals",
@@ -99,3 +106,13 @@ include = ["src*"]
     "ui/static/*",
     "ui/static/vendor/*",
 ]
+
+[tool.ruff]
+# F821 undefined name, F811 redefinition, F401 unused import: the three that
+# catch a name that is read but never bound.  Everything else is left to the
+# reviewer; the wider rule set reports ~1,300 findings on this tree and a lint
+# step nobody can pass is a lint step nobody reads.
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F821", "F811", "F401"]

@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from model.serving.chat import (  # noqa: E402
     chat, _repetition_span, _sentence_loop_span, _trim_sentence_loop,
+    _SENT_LOOP_MIN_SENTENCES,
 )
 
 # Exactly what the user pasted, whitespace as reported.
@@ -89,7 +90,11 @@ def test_periodicity_scan_cannot_see_two_copies():
 
 def test_sentence_detector_sees_the_reported_loop():
     window, copies, first = _sentence_loop_span(USER_LOOP)
-    assert window >= _SENT_LOOP_MIN_SENTENCES if False else window >= 3
+    # The floor the detector itself uses, not a copy of its current value:
+    # the old line compared against the constant behind ``if False``,
+    # which is dead code that ruff reported as an undefined name and that
+    # would have passed against any window once the constant moved.
+    assert window >= _SENT_LOOP_MIN_SENTENCES
     assert copies >= 2, (
         f"the reported loop was not seen as a repeat (window={window}, copies={copies})")
 

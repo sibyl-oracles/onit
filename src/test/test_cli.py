@@ -1529,6 +1529,91 @@ class TestSubcommandsDoNotPayForTheAgent:
             cli.no_such_attribute
 
 
+class TestTheRealDispatchBuildsTheAgent:
+    """The two call sites, exercised for real rather than patched away.
+
+    ``_dispatch_mode`` read a bare global ``OnIt``.  A module ``__getattr__``
+    never serves a global lookup, so ``onit --resume`` raised ``NameError``
+    on every run while the suite stayed green.
+
+    Why it stayed green is the reason these tests are shaped as they are:
+    ``patch("src.cli.OnIt")`` *creates* the global, so the bare lookup finds
+    it and the bug disappears.  Patching it is what hid the defect, so these
+    tests patch ``src.onit.OnIt`` -- the module ``__getattr__`` imports from
+    -- and clear ``src.cli``'s namespace first, leaving no global to find.
+    A first draft that patched ``src.cli.OnIt`` passed against the broken
+    commit, which is how this shape was found.
+    """
+
+    @pytest.fixture
+    def uncached(self, monkeypatch):
+        """Leave ``src.cli`` with no ``OnIt`` global, and restore after."""
+        from src import cli
+        had = "OnIt" in vars(cli)
+        saved = vars(cli).get("OnIt")
+        monkeypatch.delitem(vars(cli), "OnIt", raising=False)
+        yield
+        if had:
+            vars(cli)["OnIt"] = saved
+        else:
+            vars(cli).pop("OnIt", None)
+
+    def test_dispatch_mode_builds_and_runs_the_agent(self, uncached, monkeypatch):
+        from src import cli
+        built, ran = [], []
+
+        class FakeAgent:
+            def __init__(self, config=None):
+                built.append(config)
+
+            async def run(self):
+                ran.append(True)
+
+        monkeypatch.setattr("src.onit.OnIt", FakeAgent)
+        cli._dispatch_mode({"a": 1})
+        assert built == [{"a": 1}]
+        assert ran, "the agent was built but never run"
+
+    def test_doctor_builds_the_agent_through_the_same_lookup(self, uncached,
+                                                             monkeypatch):
+        """The second site: a stubbed agent, or doctor returns 1 silently."""
+        import argparse
+        from src import cli
+        built = []
+
+        class FakeAgent:
+            session_id = None
+
+            def __init__(self, config=None):
+                built.append(config)
+
+        async def no_checks(agent, deep=False, on_start=None):
+            return []
+
+        monkeypatch.setattr("src.onit.OnIt", FakeAgent)
+        args = argparse.Namespace(json=False, deep=False, keep_session=False,
+                                  endpoints=False)
+        with patch("src.ui.doctor.run_checks", no_checks), \
+                patch("src.ui.doctor.render_report", lambda r, deep=False: ""):
+            code = cli._run_doctor(args, {"session_path": "/tmp/none"})
+        assert code == 0
+        assert built == [{"session_path": "/tmp/none"}], (
+            "doctor never reached the agent -- the lookup is broken again")
+
+    def test_the_lookup_does_not_import_the_agent_until_called(self):
+        """The fix must not undo the laziness it was added to keep."""
+        import subprocess
+        code = ("import sys, src.cli; "
+                "print(int('src.onit' in sys.modules)); "
+                "src.cli._agent_class(); "
+                "print(int('src.onit' in sys.modules))")
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True,
+            cwd=os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))))
+        assert out.stdout.split() == ["0", "1"], out.stderr[-400:]
+
+
 class TestVersionFlag:
     """``onit --version`` answers without loading anything that can fail.
 

@@ -24,7 +24,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[test,web]
+          pip install .[test,web,lint]
+
+      - name: Undefined names
+        # F821 catches the class of bug that shipped `onit --resume` a
+        # NameError: a name read but never bound.  It runs before the tests
+        # because it needs none of their fixtures -- a bare global lookup is
+        # exactly what a patched-out test cannot see.
+        run: ruff check src/
 
       - name: Run tests
         run: pytest src/test/ -v --tb=short
