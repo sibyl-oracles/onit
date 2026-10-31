@@ -12,6 +12,7 @@ Usage:
     onit sessions                                 # list previous sessions
     onit sessions --rename 2 "chapter 3 draft"    # rename a session
     onit sessions --delete 2                      # delete one (--delete 2 5 7)
+    onit sessions --delete 20-32                  # ...or a range of rows
     onit doctor [--deep]                          # run the live self-check battery
     onit resume                       # continue a previous session (same as --resume-session)
     onit serve web [--port 9000]                  # launch the web UI
@@ -761,7 +762,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sessions_parser.add_argument("--delete", type=str, nargs="+", default=None,
                                  metavar="SESSION",
                                  help="Delete one or more sessions: --delete <name|uuid|#> "
-                                      "[<name|uuid|#> ...]. Asks before deleting.")
+                                      "[<name|uuid|#> ...], or a range of rows like "
+                                      "20-32. Asks before deleting.")
     sessions_parser.add_argument("--yes", "-y", action="store_true", dest="assume_yes",
                                  help="Do not ask for confirmation (for --delete and "
                                       "--delete-all).")
@@ -1188,14 +1190,21 @@ def _resolve_identifiers(identifiers: list, sessions_dir: str):
 
     *resolved* is a list of ``(session_id, as_typed)`` with duplicates dropped.
 
-    Two things here are not just tidying.  First, ``--delete my thesis chapter
-    3`` arrives as four arguments because the flag takes a list, and those are
-    one name, not four ids: before anything else, the words are joined and
-    tried as a single name, so a name with spaces needs no quotes.  Second, a
-    name that fits more than one session is reported with the sessions it
-    fits, because "no session matches" is a lie when six do.
+    Three things here are not just tidying.  First, ``--delete my thesis
+    chapter 3`` arrives as four arguments because the flag takes a list, and
+    those are one name, not four ids: before anything else, the words are
+    joined and tried as a single name, so a name with spaces needs no quotes.
+    Second, a name that fits more than one session is reported with the
+    sessions it fits, because "no session matches" is a lie when six do.
+    Third, ``--delete 20-32`` is a range of rows, expanded to the thirteen
+    sessions the listing shows at those numbers -- pruning a block of rows one
+    ``#`` at a time is the chore a range exists to remove.
+
+    An identifier can also expand to several ids, so *resolved* is not one
+    entry per argument: a range contributes one per row.  ``as_typed`` stays
+    the range, which is what the confirmation prints against each row.
     """
-    from .sessions import resolve_session_choice
+    from .sessions import resolve_session_choice, resolve_session_range
 
     resolved, seen = [], set()
 
@@ -1204,15 +1213,34 @@ def _resolve_identifiers(identifiers: list, sessions_dir: str):
             seen.add(sid)
             resolved.append((sid, as_typed))
 
-    # The whole command line as one name, before it is read as several.
+    # The whole command line as one name, before it is read as several.  A
+    # range goes the same way, and for the same reason: the shell hands
+    # '20 - 32' over as three arguments, and those are one range.
     if len(identifiers) > 1:
         joined = " ".join(identifiers)
+        rows = resolve_session_range(joined, sessions_dir)
+        if rows is not None:
+            if rows:
+                for sid in rows:
+                    _take(sid, joined)
+                return resolved, []
+            # A range that names no rows is a range, not a missing session:
+            # say so rather than let it fall through to "no session matches".
+            return [], [joined]
         sid = resolve_session_choice(joined, sessions_dir)
         if sid:
             return [(sid, joined)], []
 
     missing = []
     for identifier in identifiers:
+        rows = resolve_session_range(identifier, sessions_dir)
+        if rows is not None:
+            if rows:
+                for sid in rows:
+                    _take(sid, identifier)
+            else:
+                missing.append(identifier)
+            continue
         candidates = []
         sid = resolve_session_choice(identifier, sessions_dir,
                                      candidates=candidates)
@@ -1235,21 +1263,35 @@ def _resolve_identifiers(identifiers: list, sessions_dir: str):
     return resolved, missing
 
 
+def _row_number_of(session_id: str, rows: dict) -> int | None:
+    """The ``#`` the listing prints for *session_id*, or None.
+
+    *rows* is the listing keyed by id, in order.  The number is the position
+    in that listing, which is the only thing ``#`` has ever meant.
+    """
+    for n, sid in enumerate(rows, 1):
+        if sid == session_id:
+            return n
+    return None
+
+
 def _delete_sessions(identifiers: list, sessions_dir: str,
                      assume_yes: bool = False) -> int:
     """Delete the sessions named on the command line; return the exit code.
 
     Takes the same identifiers as ``_rename_session`` -- a ``#`` from the
-    listing, a name, a UUID prefix, ``last`` -- because the ``#`` column
-    addresses every verb on the listing, not just rename.
+    listing, a name, a UUID prefix, ``last``, or a row range like ``20-32``
+    -- because the ``#`` column addresses every verb on the listing, not just
+    rename.
 
     Everything is resolved before anything is deleted, so a typo in the last
     of several identifiers does not leave half the batch gone: either the whole
     set is deleted or nothing is.  The confirmation names the sessions by the
     name they are known by, since that is what the person typed and what they
-    would recognise in the listing.
+    would recognise in the listing -- a range lists every row it covers, so
+    the block being removed is read before it goes.
     """
-    from .sessions import delete_session, list_sessions
+    from .sessions import delete_session, is_session_range, list_sessions
 
     rows = {row["session_id"]: row for row in list_sessions(sessions_dir,
                                                             limit=None)}
@@ -1257,7 +1299,12 @@ def _delete_sessions(identifiers: list, sessions_dir: str,
 
     if missing:
         for identifier in missing:
-            print(f"Error: no session matches '{identifier}'.", file=sys.stderr)
+            if is_session_range(identifier, sessions_dir):
+                print(f"Error: no rows in '{identifier}' -- the listing ends "
+                      f"at {len(rows)}.", file=sys.stderr)
+            else:
+                print(f"Error: no session matches '{identifier}'.",
+                      file=sys.stderr)
         print("Run 'onit sessions' to see what is there.", file=sys.stderr)
         return 1
     if not resolved:
@@ -1270,9 +1317,18 @@ def _delete_sessions(identifiers: list, sessions_dir: str,
             name = row.get("tag") or "(unnamed)"
             turns = row.get("turns", 0)
             # A row number is addressed with '#', a name is not: printing
-            # '#plan-thesis' would invite someone to type that.
-            ref = f"#{identifier}" if str(identifier).isdigit() else identifier
-            print(f"  {ref:<4} {name}  ({sid[:8]}, {turns} turn(s))")
+            # '#plan-thesis' would invite someone to type that.  A range is
+            # one entry that covers many rows, so each line names the range
+            # it came from -- thirteen identical '20-32' lines say what is
+            # going without saying where each row sits in the block.
+            if str(identifier).isdigit():
+                ref = f"#{identifier}"
+            elif is_session_range(str(identifier), sessions_dir):
+                row_no = _row_number_of(sid, rows)
+                ref = f"{identifier} #{row_no}" if row_no else identifier
+            else:
+                ref = identifier
+            print(f"  {ref:<12} {name}  ({sid[:8]}, {turns} turn(s))")
         noun = "session" if len(resolved) == 1 else "sessions"
         try:
             answer = input(f"Delete {len(resolved)} {noun}? This cannot be undone. "

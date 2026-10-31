@@ -8,12 +8,19 @@ history files are not touched — this module only manages metadata.
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from datetime import datetime, timezone
 
 DEFAULT_SESSIONS_DIR = os.path.expanduser("~/.onit/sessions")
 INDEX_FILENAME = "index.json"
+
+# A row range: digits on both sides of a single dash, either side optional,
+# and nothing else.  Deliberately not "anything with a dash" -- session names
+# are full of dashes -- and deliberately not tolerant of trailing words, so
+# '2-4 7' (a range and a row) stays two identifiers instead of becoming 2-47.
+_RANGE_RE = re.compile(r"\s*(\d*)\s*-\s*(\d*)\s*")
 
 
 def _index_path(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
@@ -532,6 +539,75 @@ def resolve_session(identifier: str,
     return None
 
 
+def is_session_range(text: str,
+                     sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool:
+    """Whether *text* should be read as a row range rather than a name.
+
+    The question the CLI asks before it prints an error, so that a range which
+    names no rows is told apart from a name that matches nothing -- and the
+    question :func:`resolve_session_range` asks before it expands, so the two
+    cannot disagree about what a range is.
+    """
+    text = (text or "").strip()
+    if not _RANGE_RE.fullmatch(text):
+        return False
+    first, last = _RANGE_RE.fullmatch(text).groups()
+    if not first and not last:
+        # A bare "-" is not a range, it is a typo.  Reading it as "everything"
+        # is the one expansion that could empty the whole store.
+        return False
+    # A session may be *called* '2-4'.  The name wins, as it does over a row
+    # number, so a chosen name is never unreachable.
+    return exact_session_name(text, sessions_dir) is None
+
+
+def resolve_session_range(text: str,
+                          sessions_dir: str = DEFAULT_SESSIONS_DIR,
+                          limit: int | None = None,
+                          include_empty: bool = True) -> list | None:
+    """Expand a row range like ``20-32`` into session ids, in row order.
+
+    Returns None when *text* is not a range at all, so the caller can carry on
+    treating it as a name.  That test comes before the expansion because a
+    name is allowed to contain a dash -- ``marikina-river-water-level-latest``
+    has four -- and only digits on both sides make it a range.
+
+    A session *named* ``2-4`` also comes before the expansion, for the same
+    reason a session named ``3`` comes before row 3: the name a person chose
+    is the address they will reach for, and a range that shadows it would make
+    it the one session on the listing that could not be named.
+
+    Rows are the ones the listing prints: the same ``#`` a person read off
+    the screen.  A range is inclusive at both ends, ``20-32`` is thirteen
+    rows, because that is how a range is read out loud.  Either end may be
+    open -- ``20-`` is row 20 to the last, ``-32`` is the first to row 32 --
+    since "everything from here on" is the usual reason to want a range.
+
+    A range is expanded against *one* listing, taken here, so its rows cannot
+    drift from the rows that were confirmed.  An end past the last row is
+    clamped: ``-32`` on a store of twenty means all twenty, not an error,
+    while a start past the last row is empty -- there is nothing there.
+
+    An end before its start returns ``[]``, which the caller reports as
+    nothing being deleted.  Reversing them silently would delete rows the
+    person did not name.
+    """
+    if not is_session_range(text, sessions_dir):
+        return None
+    match = _RANGE_RE.fullmatch((text or "").strip())
+    first, last = match.group(1), match.group(2)
+    rows = list_sessions(sessions_dir,
+                         limit=1_000_000 if limit is None else limit,
+                         include_empty=include_empty)
+    start = int(first) if first else 1
+    end = int(last) if last else len(rows)
+    if end > len(rows):
+        end = len(rows)
+    if start < 1 or start > end:
+        return []
+    return [row["session_id"] for row in rows[start - 1:end]]
+
+
 def resolve_session_choice(identifier: str,
                            sessions_dir: str = DEFAULT_SESSIONS_DIR,
                            limit: int | None = None,
@@ -763,6 +839,6 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
         lines.append(f"Showing {len(sessions)} of {total} sessions.")
     lines.append("Continue: onit --resume-session <#>   "
                  "Rename: onit sessions --rename <#> <name>")
-    lines.append("Delete: onit sessions --delete <#> [<#> ...]")
+    lines.append("Delete: onit sessions --delete <#> [<#> ...] or <a>-<b>")
     lines.append("Start a named session: onit --new-session <name>")
     return "\n".join(lines)

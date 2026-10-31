@@ -85,6 +85,8 @@ List and manage saved sessions.
 ```bash
 onit sessions                                   # list every saved session
 onit sessions --delete 3                        # delete row 3
+onit sessions --delete 20-32                    # delete rows 20 to 32 (13 rows)
+onit sessions --delete 20-                      # ...rows 20 to the last
 onit sessions --delete 3 "thesis chapter 3"     # delete several at once
 onit sessions --delete my thesis chapter 3     # one name, quotes optional
 onit sessions --delete 3 --yes                  # ... without the prompt
@@ -106,6 +108,17 @@ before the row number, so a session *called* `3`, `2026` or `last` can still be
 addressed by its name. A name with spaces needs no quotes:
 `--delete my thesis chapter 3` is one name, not four ids.
 
+A **range** of rows is one identifier: `--delete 20-32` removes the thirteen
+rows between them, inclusive. Either end may be left open -- `20-` is row 20 to
+the last row, `-32` is the first row to row 32 -- and an end past the last row
+is clamped to it, so `-32` on a store of twenty means all twenty. `20 - 32`
+with spaces is the same range. A reversed range (`32-20`) is refused rather
+than swapped: the rows it would delete are not the rows that were named. A
+range is expanded against one listing, taken before the prompt, so the rows in
+the confirmation are the rows that go. Only digits on both sides of the dash
+make a range, so `marikina-river-water-level-latest` is still a name, and a
+session actually *named* `2-4` still resolves by its name.
+
 The listing shows **every** session, including ones that were opened and never
 used. Those are the accidental sessions, and they are the rows most worth
 deleting -- hiding them left them with no `#` to delete them by. The old
@@ -117,7 +130,9 @@ name, and the ones that need the room are the ones that differ only at the end.
 
 `--delete` resolves every identifier before it deletes any of them, so a typo
 in a batch deletes nothing rather than half the list. It names each session
-before asking, because the name is what the person recognises.
+before asking, because the name is what the person recognises, and for a range
+it names the row inside the range as well (`20-32 #21`), so a block of
+thirteen reads as thirteen rows rather than thirteen copies of one line.
 
 A session is named automatically from its first message, but a message that
 carries no topic -- "hi", "thanks" -- names nothing, and the next real message

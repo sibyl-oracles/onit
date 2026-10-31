@@ -1493,6 +1493,168 @@ class TestDeleteByName:
         assert "matches 2 sessions" in capsys.readouterr().err
 
 
+class TestDeleteARangeOfRows:
+    """`--delete 20-32` removes the rows the listing numbers 20 to 32.
+
+    Pruning a block of rows one `#` at a time is the chore a range exists to
+    remove, and it is also where a mistake is cheapest to make: the rows that
+    matter here are that a range covers *exactly* the rows printed between its
+    ends, that it is inclusive at both ends, and that nothing which is not a
+    range -- a name with dashes, a reversed pair, a bare dash -- is silently
+    read as one.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".onit").mkdir(exist_ok=True)
+        (tmp_path / ".onit" / "sessions").symlink_to(d)
+        return d
+
+    def _add(self, store, sid, tag):
+        from src import sessions
+        sessions.register_session(sid, store, tag=tag)
+        open(os.path.join(store, sid + ".jsonl"), "w").write("{}\n")
+
+    def _fill(self, store, n):
+        """*n* named sessions, newest last so row 1 is the newest."""
+        for i in range(1, n + 1):
+            self._add(store, f"{i:04d}-aaaa", f"s{i}")
+
+    def _cli(self, monkeypatch, argv, answer="yes"):
+        from src import cli
+        monkeypatch.setattr(sys, "argv", ["onit"] + argv)
+        monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+        code = 0
+        try:
+            cli.main()
+        except SystemExit as exc:
+            code = exc.code
+        return code
+
+    def _tags(self, store):
+        from src.sessions import list_sessions
+        return [s["tag"] for s in list_sessions(store, limit=None)]
+
+    def test_a_range_deletes_the_rows_between_its_ends(self, store, monkeypatch):
+        """Inclusive at both ends: 20-32 is thirteen rows, not eleven."""
+        self._fill(store, 40)
+        rows = self._tags(store)
+        doomed = rows[19:32]
+        code = self._cli(monkeypatch, ["sessions", "--delete", "20-32", "--yes"])
+        assert code == 0
+        left = self._tags(store)
+        assert len(left) == len(rows) - 13
+        for tag in doomed:
+            assert tag not in left
+        # the neighbours on either side of the block are untouched
+        assert rows[18] in left and rows[32] in left
+
+    def test_an_open_end_runs_to_the_last_row(self, store, monkeypatch):
+        self._fill(store, 10)
+        rows = self._tags(store)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "8-", "--yes"])
+        assert code == 0
+        assert self._tags(store) == rows[:7]
+
+    def test_an_open_start_runs_from_the_first_row(self, store, monkeypatch):
+        self._fill(store, 10)
+        rows = self._tags(store)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "-3", "--yes"])
+        assert code == 0
+        assert self._tags(store) == rows[3:]
+
+    def test_an_end_past_the_last_row_is_clamped(self, store, monkeypatch,
+                                                capsys):
+        """-32 on a store of five means five. Refusing it would be pedantry
+        about a range whose meaning is not in doubt."""
+        self._fill(store, 5)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "-32", "--yes"])
+        assert code == 0
+        assert self._tags(store) == []
+
+    def test_a_range_and_a_row_together(self, store, monkeypatch):
+        """The flag takes a list, so a range is one entry in it, not the whole
+        argument."""
+        self._fill(store, 10)
+        rows = self._tags(store)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "2-3", "9",
+                                       "--yes"])
+        assert code == 0
+        left = self._tags(store)
+        assert rows[1] not in left and rows[2] not in left
+        assert rows[8] not in left
+        assert len(left) == 7
+
+    def test_a_reversed_range_deletes_nothing(self, store, monkeypatch, capsys):
+        """Swapping the ends would delete rows nobody named. Say so instead."""
+        self._fill(store, 10)
+        before = self._tags(store)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "8-3", "--yes"])
+        assert code == 1
+        assert self._tags(store) == before
+        assert "8-3" in capsys.readouterr().err
+
+    def test_a_range_past_the_end_deletes_nothing(self, store, monkeypatch,
+                                                  capsys):
+        self._fill(store, 5)
+        before = self._tags(store)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "20-32", "--yes"])
+        assert code == 1
+        assert self._tags(store) == before
+        err = capsys.readouterr().err
+        assert "no rows" in err and "20-32" in err
+
+    def test_the_prompt_lists_every_row_of_the_range(self, store, monkeypatch,
+                                                     capsys):
+        """A block of thirteen is read before it goes, not summarised."""
+        self._fill(store, 10)
+        rows = self._tags(store)
+        code = self._cli(monkeypatch, ["sessions", "--delete", "4-6"],
+                         answer="no")
+        out = capsys.readouterr().out
+        assert code == 0
+        for tag in rows[3:6]:
+            assert tag in out
+        # one line per row of the block, each naming the row it is, so nothing
+        # in it goes unread and no line is a repeat of the one above
+        assert out.count("turn(s)") == 3
+        for n in (4, 5, 6):
+            assert f"4-6 #{n}" in out
+        assert "Cancelled" in out
+        assert self._tags(store) == rows
+
+    def test_a_name_with_dashes_is_still_a_name(self, store, monkeypatch):
+        """Every range check has to survive the names it looks like."""
+        self._fill(store, 4)
+        self._add(store, "zzzz-9999", "marikina-river-water-level-latest")
+        code = self._cli(monkeypatch,
+                         ["sessions", "--delete",
+                          "marikina-river-water-level-latest", "--yes"])
+        assert code == 0
+        assert "marikina-river-water-level-latest" not in self._tags(store)
+        assert len(self._tags(store)) == 4
+
+    def test_a_session_named_like_a_range_wins_over_the_range(self, store,
+                                                              monkeypatch):
+        """A chosen name must stay reachable, as a name beats a row number."""
+        self._fill(store, 6)
+        self._add(store, "zzzz-9999", "2-4")
+        code = self._cli(monkeypatch, ["sessions", "--delete", "2-4", "--yes"])
+        assert code == 0
+        left = self._tags(store)
+        assert "2-4" not in left
+        assert len(left) == 6          # the rows the range would have taken stay
+
+    def test_the_listing_advertises_the_range(self, store):
+        from src.sessions import format_sessions_table, list_sessions
+        self._fill(store, 2)
+        text = format_sessions_table(list_sessions(store, limit=None))
+        assert "<a>-<b>" in text
+
+
 class TestSubcommandsDoNotPayForTheAgent:
     """A subcommand that never runs the agent must not import it.
 
