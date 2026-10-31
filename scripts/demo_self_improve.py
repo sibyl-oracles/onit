@@ -75,8 +75,10 @@ def fresh() -> None:
 def write_config(host: str | None, model: str | None) -> dict:
     """The demo's own config, so the operator's is never touched."""
     config = {
-        "serving": {"host": host or "http://202.92.159.240:8001/v1",
-                    "model": model or "Qwen/Qwen3.8-27B"},
+        "serving": {
+            "host": host or "http://202.92.159.240:8001/v1",
+            "model": model or "Qwen/Qwen3.8-27B",
+        },
         "learn": {"autonomy": "adapt", "path": STORE},
         "data_path": DATA,
         "session_path": SESSIONS,
@@ -95,26 +97,33 @@ async def ask(agent, task: str, session_name: str) -> str:
     """
     queue = asyncio.Queue(maxsize=10)
     path = os.path.join(SESSIONS, session_name + ".jsonl")
-    return await agent.process_task(task, session_path=path, data_path=DATA,
-                                    safety_queue=queue)
+    return await agent.process_task(task, session_path=path, data_path=DATA, safety_queue=queue)
 
 
 def show_records(cfg: dict) -> list:
     from src.learn.trajectory import iter_records
+
     records = list(iter_records(cfg))
     print("  trajectories on disk:")
     for r in records:
         lc = r.get("learned_context") or {}
-        print("    session=%-8s turn=%s  episodes=%-30s playbook_v=%s" % (
-            (r.get("session_id") or "")[:8], r.get("turn"),
-            str(lc.get("episodes_used")), lc.get("playbook_version")))
+        print(
+            "    session=%-8s turn=%s  episodes=%-30s playbook_v=%s"
+            % (
+                (r.get("session_id") or "")[:8],
+                r.get("turn"),
+                str(lc.get("episodes_used")),
+                lc.get("playbook_version"),
+            )
+        )
     return records
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=None,
-                        help="An existing config to read the endpoint from.")
+    parser.add_argument(
+        "--config", default=None, help="An existing config to read the endpoint from."
+    )
     parser.add_argument("--host", default=None, help="Serving host URL.")
     parser.add_argument("--model", default=None, help="Model name.")
     args = parser.parse_args()
@@ -137,13 +146,13 @@ async def main() -> int:
     # ── 1. the cold agent ───────────────────────────────────────────
     banner("1. A cold agent: empty store, nothing to recall")
     _ensure_mcp_servers(cfg)
-    agent = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: OnIt(cfg))
+    agent = await asyncio.get_running_loop().run_in_executor(None, lambda: OnIt(cfg))
     answer = await ask(agent, TASK, "s1")
     print("  answer:", answer[:110])
     records = show_records(cfg)
-    print("  episodes recalled: %s" %
-          (records[0].get("learned_context") or {}).get("episodes_used"))
+    print(
+        "  episodes recalled: %s" % (records[0].get("learned_context") or {}).get("episodes_used")
+    )
     print("  -> nothing to recall from.  The store was empty.")
 
     # ── 2. the same question again ──────────────────────────────────
@@ -170,28 +179,40 @@ async def main() -> int:
     # no bullet -- and this demo then claimed, on the screen below, that
     # a bullet it had never written was in the prompt.  The tool call is
     # what makes the contrast something the reflector can name.
-    record_task(session_id="s_bad", turn=1, task=TASK,
-                response="Kyoto is the capital of Japan.",
-                metrics={"verify_s": 1.2, "verify_issues": 2,
-                         "turns": [{"n": 1,
-                                    "tool_runs": [{"name": "search",
-                                                   "ok": False}]}]},
-                config_data=cfg)
-    record_task(session_id="s_good", turn=1, task=TASK,
-                response="Tokyo is the capital of Japan.",
-                metrics={"verify_s": 1.1, "verify_issues": 0,
-                         "turns": [{"n": 1,
-                                    "tool_runs": [{"name": "local_search",
-                                                   "ok": True}]}]},
-                config_data=cfg)
+    record_task(
+        session_id="s_bad",
+        turn=1,
+        task=TASK,
+        response="Kyoto is the capital of Japan.",
+        metrics={
+            "verify_s": 1.2,
+            "verify_issues": 2,
+            "turns": [{"n": 1, "tool_runs": [{"name": "search", "ok": False}]}],
+        },
+        config_data=cfg,
+    )
+    record_task(
+        session_id="s_good",
+        turn=1,
+        task=TASK,
+        response="Tokyo is the capital of Japan.",
+        metrics={
+            "verify_s": 1.1,
+            "verify_issues": 0,
+            "turns": [{"n": 1, "tool_runs": [{"name": "local_search", "ok": True}]}],
+        },
+        config_data=cfg,
+    )
     print("  seeded: s_bad (verifier found 2 issues, its search failed),")
     print("          s_good (clean, its local_search worked).")
 
     print("\n  running the real CLI:  onit learn --reflect")
     result = subprocess.run(
-        [sys.executable, "-m", "src.cli", "--config", CONFIG,
-         "learn", "--reflect"],
-        capture_output=True, text=True, cwd=ROOT)
+        [sys.executable, "-m", "src.cli", "--config", CONFIG, "learn", "--reflect"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
     for line in result.stdout.splitlines():
         print("   ", line)
     if result.returncode != 0:
@@ -203,8 +224,7 @@ async def main() -> int:
     print("  playbook: %s" % playbook_path)
     if os.path.exists(playbook_path):
         book = json.load(open(playbook_path, encoding="utf-8"))
-        print("  version: %s   bullets: %s" % (
-            book.get("version"), len(book.get("items") or [])))
+        print("  version: %s   bullets: %s" % (book.get("version"), len(book.get("items") or [])))
         for item in book.get("items") or []:
             print("    - [%s] %s" % (item.get("status"), item.get("text")))
     context = pb.build_context(cfg)
@@ -217,15 +237,12 @@ async def main() -> int:
     # So the deployment shape is "reflect offline, then start the agent" --
     # and a long-running process keeps the version it started with until
     # it is restarted.  Hence a new agent here.
-    before = {(r.get("session_id"), r.get("turn"))
-              for r in iter_records(cfg)}
-    agent2 = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: OnIt(cfg))
+    before = {(r.get("session_id"), r.get("turn")) for r in iter_records(cfg)}
+    agent2 = await asyncio.get_running_loop().run_in_executor(None, lambda: OnIt(cfg))
     answer = await ask(agent2, TASK, "s3")
     print("\n  third run answer:", answer[:110])
     records = show_records(cfg)
-    third = [r for r in records
-             if (r.get("session_id"), r.get("turn")) not in before]
+    third = [r for r in records if (r.get("session_id"), r.get("turn")) not in before]
     lc = (third[0].get("learned_context") if third else {}) or {}
     print("  the third run's own record:")
     print("    playbook version seen: %s" % lc.get("playbook_version"))
@@ -251,8 +268,7 @@ async def main() -> int:
     for name, held in claims:
         print("    [%s] %s" % ("ok" if held else "MISSING", name))
     if failed:
-        print("  -> the demo did NOT show what it set out to show: %s."
-              % ", ".join(failed))
+        print("  -> the demo did NOT show what it set out to show: %s." % ", ".join(failed))
         print("     Nothing above should be read as a working loop.")
         print("  Demo artifacts kept for inspection: %s" % WORK)
         return 1

@@ -58,6 +58,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 # ── 1. the install ───────────────────────────────────────────────────────────
 
+
 def check_install() -> None:
     banner("1. Is the code on disk the code that runs?")
 
@@ -66,8 +67,11 @@ def check_install() -> None:
 
     src_file = os.path.abspath(src.__file__)
     in_repo = src_file.startswith(REPO)
-    check("src is imported from this working tree", in_repo,
-          "imported from: %s\nrepo root:    %s" % (src_file, REPO))
+    check(
+        "src is imported from this working tree",
+        in_repo,
+        "imported from: %s\nrepo root:    %s" % (src_file, REPO),
+    )
 
     # The metadata is not a reliable test: this install writes a
     # ``__editable__*.pth`` finder and records the *mapping* in
@@ -78,9 +82,11 @@ def check_install() -> None:
 
     # The strongest evidence: a symbol that only exists in the current tree.
     live = hasattr(cfg, "_MAX_IMPLEMENTED")
-    check("a symbol from the current tree is live", live,
-          "learn.config._MAX_IMPLEMENTED = %r"
-          % getattr(cfg, "_MAX_IMPLEMENTED", None))
+    check(
+        "a symbol from the current tree is live",
+        live,
+        "learn.config._MAX_IMPLEMENTED = %r" % getattr(cfg, "_MAX_IMPLEMENTED", None),
+    )
 
     print("""
   A non-editable install (``pip install onit``) would need
@@ -91,6 +97,7 @@ def check_install() -> None:
 
 # ── 2. what self-improvement writes ──────────────────────────────────────────
 
+
 def check_writes() -> None:
     banner("2. Does self-improvement add anything to the codebase?")
 
@@ -100,20 +107,27 @@ def check_writes() -> None:
     store = tempfile.mkdtemp(prefix="verify_store_", dir=os.path.join(REPO, "tmp"))
     cfg = {"learn": {"path": store, "autonomy": "extend"}}
 
-    candidate = {"tool": "bash", "digest": "date -d X", "sessions": 4,
-                 "calls": 7, "arg_keys": ["cmd"]}
-    written = skills_curator.synthesize(candidate, name="verify_skill",
-                                        config_data=cfg)
+    candidate = {
+        "tool": "bash",
+        "digest": "date -d X",
+        "sessions": 4,
+        "calls": 7,
+        "arg_keys": ["cmd"],
+    }
+    written = skills_curator.synthesize(candidate, name="verify_skill", config_data=cfg)
 
     inside_store = written["dir"].startswith(skills_dir(cfg))
     inside_pkg = os.path.abspath(os.path.join(REPO, "src")) in written["dir"]
-    check("a generated skill lands in the store", inside_store,
-          "written to: %s" % written["dir"])
-    check("a generated skill does not land in the package", not inside_pkg,
-          "package dir: %s" % os.path.join(REPO, "src"))
+    check("a generated skill lands in the store", inside_store, "written to: %s" % written["dir"])
+    check(
+        "a generated skill does not land in the package",
+        not inside_pkg,
+        "package dir: %s" % os.path.join(REPO, "src"),
+    )
 
     # Nothing in src/learn writes relative to __file__.
     import re
+
     offenders = []
     learn_dir = os.path.join(REPO, "src", "learn")
     for name in sorted(os.listdir(learn_dir)):
@@ -124,14 +138,19 @@ def check_writes() -> None:
             for number, line in enumerate(fh, 1):
                 if "__file__" in line and re.search(r"open\(.*['\"]w", line):
                     offenders.append("%s:%d" % (name, number))
-    check("no learn module writes next to its own source", not offenders,
-          "offenders: %s" % (offenders or "none"))
+    check(
+        "no learn module writes next to its own source",
+        not offenders,
+        "offenders: %s" % (offenders or "none"),
+    )
 
     from src.learn.config import EVOLVE, _MAX_IMPLEMENTED
-    check("the rung that would edit source is not implemented",
-          _MAX_IMPLEMENTED < EVOLVE,
-          "highest implemented rung is %d; 'evolve' is %d"
-          % (_MAX_IMPLEMENTED, EVOLVE))
+
+    check(
+        "the rung that would edit source is not implemented",
+        _MAX_IMPLEMENTED < EVOLVE,
+        "highest implemented rung is %d; 'evolve' is %d" % (_MAX_IMPLEMENTED, EVOLVE),
+    )
 
     print("""
   Every loop is delta-only and lives outside the package:
@@ -149,12 +168,14 @@ def check_writes() -> None:
 
 # ── 3. the instruments ───────────────────────────────────────────────────────
 
+
 def check_instruments() -> None:
     banner("3. What can each instrument tell you?")
 
     def run(args):
-        result = subprocess.run([sys.executable, "-m", "src.cli"] + args,
-                                capture_output=True, text=True, cwd=REPO)
+        result = subprocess.run(
+            [sys.executable, "-m", "src.cli"] + args, capture_output=True, text=True, cwd=REPO
+        )
         return result.returncode, result.stdout, result.stderr
 
     code, out, err = run(["learn", "--json"])
@@ -163,16 +184,20 @@ def check_instruments() -> None:
     if ok:
         try:
             data = json.loads(out)
-            detail = ("tasks recorded: %s across %s session(s)"
-                      % (data.get("tasks"), data.get("sessions")))
+            detail = "tasks recorded: %s across %s session(s)" % (
+                data.get("tasks"),
+                data.get("sessions"),
+            )
         except Exception:
             detail = out[:200]
-    check("the store can be read (claim 1: was it recorded)", ok,
-          detail or (err or out)[:300])
+    check("the store can be read (claim 1: was it recorded)", ok, detail or (err or out)[:300])
 
     code, out, _ = run(["learn", "--playbook"])
-    check("the playbook can be rendered (claim 2: what is injected)",
-          code == 0 and "Playbook" in out, out.strip()[:300])
+    check(
+        "the playbook can be rendered (claim 2: what is injected)",
+        code == 0 and "Playbook" in out,
+        out.strip()[:300],
+    )
 
     print("""
   Three claims, and the instrument that can carry each:

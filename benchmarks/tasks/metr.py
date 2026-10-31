@@ -69,6 +69,7 @@ def load_human_minutes() -> dict[str, float]:
 # Logistic fit + time horizon
 # --------------------------------------------------------------------------- #
 
+
 def _logistic(x: float, k: float, x0: float) -> float:
     # Clamp the exponent: exp() overflows long before the fit is meaningful.
     z = max(-60.0, min(60.0, -k * (x - x0)))
@@ -126,7 +127,7 @@ def horizon_summary(
     # a slope exists at all. k ~ 0 means duration carries no signal.
     if abs(k) < 1e-6:
         return {"time_horizon_50": None, "n": len(attempts), "fit": (k, x0)}
-    return {"time_horizon_50": float(2 ** x0), "n": len(attempts), "fit": (k, x0)}
+    return {"time_horizon_50": float(2**x0), "n": len(attempts), "fit": (k, x0)}
 
 
 def time_horizon_50(scores: list[Score]) -> float | None:
@@ -157,6 +158,7 @@ def _horizon_metric():
 # --------------------------------------------------------------------------- #
 # Live METR Task-Standard family via the official bridge
 # --------------------------------------------------------------------------- #
+
 
 def _family_human_minutes(labels: dict[str, float]) -> dict[str, float]:
     """Collapse the per-task label map to per-family medians (minutes)."""
@@ -235,7 +237,6 @@ def metr_bridge(
 # `--tasks metr` both reach it. Kept as a thin @task wrapper so the required
 # image_tag argument surfaces as a normal -T task arg.
 @task
-def metr(image_tag: str, agent: Callable | None = None,
-         sample_id: str | None = None) -> Task:
+def metr(image_tag: str, agent: Callable | None = None, sample_id: str | None = None) -> Task:
     """METR Task-Standard family via the bridge (see :func:`metr_bridge`)."""
     return metr_bridge(image_tag=image_tag, agent=agent, sample_id=sample_id)

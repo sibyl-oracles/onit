@@ -1,0 +1,28 @@
+# Commits whose diff is formatting only, so `git blame` should look past them.
+#
+# Git does not read this file on its own.  Point it here once per clone:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# or pass --ignore-revs-file .git-blame-ignore-revs to a single blame.  GitHub
+# reads the file automatically.
+#
+# The rule for adding an entry: the commit changes no behaviour, and that can
+# be checked.  For a reformat, compare the AST of every touched file before and
+# after with string literals masked.  A commit that merely *looks* mechanical
+# does not qualify -- skipping it would hide a real change from every future
+# investigation.
+#
+# Measured on this entry, over src/**/*.py at the commit that added this file:
+# 1740 of 91573 lines (1.90%) blamed to it without this file, 1678 (1.83%)
+# with it.  The file recovers the lines whose text is unchanged across the
+# reformat; it cannot recover the majority, which are blank lines and closing
+# brackets that blame pins to the commit that reindented them, and which
+# `git blame -w` handles about as well.  It is kept because it is the standing
+# instruction for future reformats -- and because GitHub and most editors honour
+# it without being asked.
+#
+# ruff format over the whole tree.  20563 insertions across 128 files, none of
+# them changing a syntax tree: the only AST difference is docstring
+# continuation-line indentation, which ruff reindents along with the code.
+6fc6fc2ca8337a6118da3f0331789d5bcadae030

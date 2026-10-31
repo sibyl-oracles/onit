@@ -52,8 +52,7 @@ from typing import Any
 # not first), and the bare-SDK import below then finds the PyPI package.
 import os as _os
 
-_src_dir = _os.path.realpath(
-    _os.path.join(_os.path.dirname(__file__), _os.pardir, "src"))
+_src_dir = _os.path.realpath(_os.path.join(_os.path.dirname(__file__), _os.pardir, "src"))
 _demoted = [p for p in sys.path if p and _os.path.realpath(p) == _src_dir]
 for _p in _demoted:
     sys.path.remove(_p)
@@ -119,8 +118,12 @@ def base_config_data() -> dict[str, Any]:
             # knows (the old combined "ToolsMCPServer") gets no spec, so it
             # stays unspawnable and discovery times out on it.
             "servers": [
-                {"name": "PromptsMCPServer", "transport": "stdio",
-                 "module": "src.mcp.prompts.prompts", "enabled": True},
+                {
+                    "name": "PromptsMCPServer",
+                    "transport": "stdio",
+                    "module": "src.mcp.prompts.prompts",
+                    "enabled": True,
+                },
                 # The current split tools servers (with real modules), not the
                 # legacy combined "ToolsMCPServer" which has no module and so
                 # is never spawned. Both are stdio (spawned by the MCP client
@@ -128,12 +131,20 @@ def base_config_data() -> dict[str, Any]:
                 # ToolsNet the stateless ones. apply_default_mcp_servers()
                 # sees these names and adds nothing, so the list stays exactly
                 # as written.
-                {"name": "ToolsLocalMCPServer", "transport": "stdio",
-                 "module": "tasks.tools", "options": {"profile": "local"},
-                 "enabled": True},
-                {"name": "ToolsNetMCPServer", "transport": "stdio",
-                 "module": "tasks.tools", "options": {"profile": "net"},
-                 "enabled": True},
+                {
+                    "name": "ToolsLocalMCPServer",
+                    "transport": "stdio",
+                    "module": "tasks.tools",
+                    "options": {"profile": "local"},
+                    "enabled": True,
+                },
+                {
+                    "name": "ToolsNetMCPServer",
+                    "transport": "stdio",
+                    "module": "tasks.tools",
+                    "options": {"profile": "net"},
+                    "enabled": True,
+                },
             ]
         },
     }
@@ -258,22 +269,31 @@ class OnItAPI(ModelAPI):
         # and the S1 gate read it from.  A run that failed before any turn
         # has an empty sink — publish zeros so the column always exists.
         _m = stats.get("metrics") or {}
-        return ModelOutput.from_content(model=self.model_name, content=answer or "",
-                                        metadata={
-                                            "wall_s": round(float(_m.get("model_s", 0.0))
-                                                            + float(_m.get("tool_s", 0.0))
-                                                            + float(_m.get("compaction_s", 0.0))
-                                                            + float(_m.get("verify_s", 0.0))
-                                                            + float(_m.get("instruction_s", 0.0)), 3),
-                                            "model_s": float(_m.get("model_s", 0.0)),
-                                            "prefill_s": float(_m.get("prefill_s", 0.0)),
-                                            "decode_s": float(_m.get("decode_s", 0.0)),
-                                            "tool_s": float(_m.get("tool_s", 0.0)),
-                                            "ttft_s": float(_m.get("ttft_s", 0.0) or 0.0),
-                                            "prompt_tokens_max": int(_m.get("prompt_tokens_max", 0)),
-                                            "completion_tokens": int(_m.get("completion_tokens", 0)),
-                                            "cached_tokens": int(_m.get("cached_tokens", 0)),
-                                            "compactions": int(_m.get("compactions", 0)),
-                                            "turn_count": int(_m.get("turn_count", 0)),
-                                            "retries": int(_m.get("api_retries", 0)),
-                                        })
+        # ``ModelOutput.from_content`` takes no ``metadata``: the SDK's own
+        # providers set it on the object afterwards (``output.metadata =
+        # output.metadata or {}``).  Passing it as a keyword is a TypeError on
+        # every inspect_ai, which is what broke these tests and, with them, any
+        # benchmark run that got as far as publishing its metrics.
+        _output = ModelOutput.from_content(model=self.model_name, content=answer or "")
+        _output.metadata = {
+            "wall_s": round(
+                float(_m.get("model_s", 0.0))
+                + float(_m.get("tool_s", 0.0))
+                + float(_m.get("compaction_s", 0.0))
+                + float(_m.get("verify_s", 0.0))
+                + float(_m.get("instruction_s", 0.0)),
+                3,
+            ),
+            "model_s": float(_m.get("model_s", 0.0)),
+            "prefill_s": float(_m.get("prefill_s", 0.0)),
+            "decode_s": float(_m.get("decode_s", 0.0)),
+            "tool_s": float(_m.get("tool_s", 0.0)),
+            "ttft_s": float(_m.get("ttft_s", 0.0) or 0.0),
+            "prompt_tokens_max": int(_m.get("prompt_tokens_max", 0)),
+            "completion_tokens": int(_m.get("completion_tokens", 0)),
+            "cached_tokens": int(_m.get("cached_tokens", 0)),
+            "compactions": int(_m.get("compactions", 0)),
+            "turn_count": int(_m.get("turn_count", 0)),
+            "retries": int(_m.get("api_retries", 0)),
+        }
+        return _output

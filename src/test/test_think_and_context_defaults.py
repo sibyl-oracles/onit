@@ -431,3 +431,224 @@ class TestDocs:
         row = [ln for ln in text.splitlines() if "`--think`" in ln]
         assert row, "docs/CLI.md no longer documents --think"
         assert "`true`" in " ".join(row)
+
+
+# ── the Ollama fallbacks: thinking, and the window it really allocated ──────
+#
+# Both defects have the same shape: a request the server quietly answers with
+# something other than what was asked.  A model without the thinking
+# capability refuses the switch with a 400 that the generic retry re-sent
+# verbatim, and a model whose trained window is smaller than ``num_ctx``
+# allocates what it can and reports success.  Neither is visible in the
+# request, so both are tested through what reaches the server.
+
+
+def _ollama_client(allocated=None, capabilities=None, native_ctx=None, on_think=None):
+    """An AsyncClient stub that behaves like the real server on these paths."""
+    calls: list = []
+
+    def _chat(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("think") and on_think is not None:
+            return on_think()
+        response = MagicMock(
+            message=MagicMock(content="Done.", tool_calls=None, thinking=None),
+            done=True,
+            done_reason="stop",
+            prompt_eval_count=100,
+            eval_count=5,
+        )
+
+        async def _ok():
+            return response
+
+        return _ok()
+
+    client = AsyncMock()
+    client.chat = _chat
+    show = MagicMock()
+    show.capabilities = capabilities
+    show.modelinfo = {"qwen3_5.context_length": native_ctx} if native_ctx else {}
+    client.show = AsyncMock(return_value=show)
+    running = MagicMock()
+    running.models = [MagicMock(model="m:1b", context_length=allocated)] if allocated else []
+    client.ps = AsyncMock(return_value=running)
+    client._calls = calls
+    return client
+
+
+async def _run_ollama(client, reset: bool = True, **chat_kwargs):
+    """One chat() against the stub.
+
+    ``reset`` clears the module caches first, which is what a fresh process
+    looks like.  A test that asserts on what one run remembers for the next
+    passes ``reset=False`` — clearing between them would erase the very
+    memory under test.
+    """
+    from model.serving.chat import chat, reset_endpoint_caches
+
+    if reset:
+        reset_endpoint_caches()
+    with (
+        patch("model.serving.chat._create_ollama_client", return_value=client),
+        patch(
+            "model.serving.chat._ollama_resolve_model_id",
+            new_callable=AsyncMock,
+            return_value="m:1b",
+        ),
+    ):
+        return await chat(
+            host="https://ollama.com",
+            host_key="k",
+            model="m:1b",
+            instruction="hi",
+            safety_queue=asyncio.Queue(),
+            **chat_kwargs,
+        )
+
+
+def _rejection():
+    """The 400 Ollama returns for a model built without the capability."""
+    import ollama
+
+    async def _raise():
+        raise ollama.ResponseError('{"error": "m:1b does not support thinking"}', 400)
+
+    return _raise()
+
+
+class TestANonThinkingOllamaModelStillAnswers:
+    """Thinking is on by default, so a model that cannot think must not turn
+    every turn into three identical rejections and no answer."""
+
+    @pytest.mark.asyncio
+    async def test_the_capability_list_is_honoured_before_the_request(self):
+        """``/api/show`` says what the model takes; ask it rather than the 400."""
+        client = _ollama_client(capabilities=["completion", "tools"])
+        answer = await _run_ollama(client)
+        assert answer and "Done." in answer
+        assert len(client._calls) == 1, "no rejection should have been spent"
+        assert "think" not in client._calls[0]
+
+    @pytest.mark.asyncio
+    async def test_a_rejection_is_retried_without_the_switch(self):
+        """An old server publishes no capabilities, so the 400 is the only
+        signal — and the retry has to differ from the request that failed."""
+        client = _ollama_client(capabilities=None, on_think=_rejection)
+        answer = await _run_ollama(client)
+        assert answer and "Done." in answer
+        assert len(client._calls) == 2, "one refusal, one recovery"
+        assert client._calls[0].get("think") is True
+        assert "think" not in client._calls[1]
+
+    @pytest.mark.asyncio
+    async def test_the_rejection_is_remembered_for_later_turns(self):
+        """Paying for the same refusal on every turn would make a multi-turn
+        run on a non-thinking model quadratic in wasted requests."""
+        client = _ollama_client(capabilities=None, on_think=_rejection)
+        await _run_ollama(client)
+        first = len(client._calls)
+        await _run_ollama(client, reset=False)
+        # Second run: the refusal is remembered, so one request and no probe.
+        assert len(client._calls) - first == 1
+        assert "think" not in client._calls[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_thinking_model_still_gets_the_switch(self):
+        """The fallback must not turn reasoning off for models that have it."""
+        client = _ollama_client(capabilities=["completion", "thinking"])
+        await _run_ollama(client)
+        assert client._calls[0].get("think") is True
+
+    def test_an_unrecognised_capability_shape_is_silence_not_a_no(self):
+        """Reading silence as "cannot think" would disable reasoning for every
+        model on a server that words its answer differently."""
+        from model.serving.chat import _record_ollama_thinking_capability
+
+        assert _record_ollama_thinking_capability("m", MagicMock(capabilities=MagicMock())) is None
+        assert _record_ollama_thinking_capability("m", MagicMock(capabilities=None)) is None
+
+    def test_an_empty_thinking_block_is_an_explicit_no(self):
+        from model.serving.chat import _record_ollama_thinking_capability
+
+        resp = MagicMock(capabilities=None, thinking={"values": []})
+        assert _record_ollama_thinking_capability("m", resp) is False
+
+
+class TestTheWindowOllamaActuallyAllocated:
+    """A ``num_ctx`` larger than the model's trained window is clamped in
+    silence, so the window a run is accounted against has to come from the
+    server after the first turn, not from the request."""
+
+    @pytest.mark.asyncio
+    async def test_the_allocated_window_replaces_an_optimistic_one(self):
+        """No native window known: 1M is asked for, 262144 is allocated."""
+        seen: list = []
+
+        class _UI:
+            def set_token_budgets(self, max_output_tokens=0, max_context_tokens=0):
+                seen.append(max_context_tokens)
+
+            def set_context_usage(self, pct, max_tokens=0):
+                pass
+
+            def __getattr__(self, name):
+                return MagicMock()
+
+        client = _ollama_client(allocated=262144, capabilities=["completion", "thinking"])
+        await _run_ollama(client, chat_ui=_UI())
+        assert client._calls[0]["options"]["num_ctx"] == DEFAULT_MAX_CONTEXT_TOKENS
+        # The UI is told twice: the request, then the fact.
+        assert seen[-1] == 262144
+        assert seen[0] == DEFAULT_MAX_CONTEXT_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_the_clamped_window_drives_compaction(self):
+        """The point of the number: compaction has to fire at 90% of what the
+        server holds, not 90% of what was asked for."""
+        import model.serving.chat as chat_mod
+
+        captured: dict = {}
+        real_threshold = chat_mod._ModelCaller
+
+        def _spy(**kwargs):
+            caller = real_threshold(**kwargs)
+            original = caller.call_turn
+
+            async def _wrapped(messages, state, turn_think):
+                captured["window"] = caller.max_context_tokens
+                return await original(messages, state, turn_think)
+
+            caller.call_turn = _wrapped
+            return caller
+
+        client = _ollama_client(allocated=262144, capabilities=["completion", "thinking"])
+        with patch("model.serving.chat._ModelCaller", side_effect=_spy):
+            await _run_ollama(client)
+        # First call still carries the request; the reconcile runs after it.
+        assert captured["window"] == DEFAULT_MAX_CONTEXT_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_reports_nothing_keeps_the_request(self):
+        """``/api/ps`` without the field is not evidence of a smaller window."""
+        client = _ollama_client(allocated=None, capabilities=["completion", "thinking"])
+        client.ps = AsyncMock(return_value=MagicMock(models=[MagicMock(model="m:1b")]))
+        answer = await _run_ollama(client)
+        assert answer and "Done." in answer
+
+    @pytest.mark.asyncio
+    async def test_a_failing_ps_does_not_fail_the_run(self):
+        client = _ollama_client(capabilities=["completion", "thinking"])
+        client.ps = AsyncMock(side_effect=RuntimeError("no such endpoint"))
+        answer = await _run_ollama(client)
+        assert answer and "Done." in answer
+
+    def test_a_bare_name_matches_the_latest_tag(self):
+        """Ollama normalises ``qwen3`` to ``qwen3:latest``; a strict compare
+        would miss the model it was just told about."""
+        from model.serving.chat import _ollama_model_matches
+
+        assert _ollama_model_matches("qwen3", "qwen3:latest")
+        assert _ollama_model_matches("qwen3:latest", "qwen3")
+        assert _ollama_model_matches("qwen3:8b", "qwen3:8b")
+        assert not _ollama_model_matches("qwen3:8b", "qwen3:70b")

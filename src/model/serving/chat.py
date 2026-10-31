@@ -71,13 +71,19 @@ except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
     from lib.schema import coerce_arguments, validate_arguments
     from learn import describe_tool_call, redact_tool_args
 
+# Ollama's own error type, aliased so a refusal can be told apart from a
+# transient failure on that path.  It is not an OpenAIError: without this
+# import every Ollama error fell into the generic ``except Exception`` in
+# _ModelCaller.call_turn, and the retry re-sent the identical payload.
 try:
     from ollama import AsyncClient as OllamaAsyncClient
+    from ollama import ResponseError as OllamaResponseError
 
     OLLAMA_SDK_AVAILABLE = True
 except ImportError:
     OllamaAsyncClient = None
     OLLAMA_SDK_AVAILABLE = False
+    OllamaResponseError = None
 
 logger = logging.getLogger(__name__)
 
@@ -1011,6 +1017,18 @@ _MAX_CONTEXT_CACHE: dict = {}  # (host, model) -> (value, expires_at)
 _OLLAMA_CONTEXT_CACHE: dict = {}  # model -> (value, expires_at)
 _NEGATIVE_CACHE_TTL = 300.0  # seconds a "could not determine" answer sticks
 
+# Ollama models that turned out not to take the thinking switch, and the
+# models whose /api/show capabilities say so up front.  Both keyed by model
+# name, both consulted by ``_ollama_think_unsupported``.
+#
+# Ollama rejects ``think: true`` with a 400 ("<model> does not support
+# thinking") for a model built without the capability, and the generic retry
+# then re-sends the identical payload -- three times, then a dead turn.  The
+# switch has to be *dropped* on the retry, and remembered so later turns do
+# not pay for the same rejection.
+_NO_OLLAMA_THINK: dict = {}  # model -> expires_at (a rejection was seen)
+_OLLAMA_THINKING_CAPS: dict = {}  # model -> bool (from /api/show capabilities)
+
 # Hosts that rejected chat_template_kwargs (see _verify_ask).  Remembered so
 # that a server whose chat template has no thinking switch costs one failed
 # call rather than one per answer.
@@ -1081,6 +1099,8 @@ def reset_endpoint_caches() -> None:
     _MAX_CONTEXT_CACHE.clear()
     _OLLAMA_CONTEXT_CACHE.clear()
     _NO_TEMPLATE_KWARGS.clear()
+    _NO_OLLAMA_THINK.clear()
+    _OLLAMA_THINKING_CAPS.clear()
 
 
 def _cache_get(cache: dict, key) -> tuple:
@@ -1239,6 +1259,9 @@ async def _get_ollama_max_context(client, model: str) -> Optional[int]:
         return cached
     try:
         resp = await client.show(model)
+        # Same response, same free lookup: the thinking capability rides in
+        # /api/show too, so record it rather than asking again later.
+        _record_ollama_thinking_capability(model, resp)
         modelinfo = getattr(resp, "modelinfo", None) or {}
         for key, val in modelinfo.items():
             if key.endswith(".context_length") and val:
@@ -1246,6 +1269,154 @@ async def _get_ollama_max_context(client, model: str) -> Optional[int]:
     except Exception as e:
         logger.debug("Could not query context_length from Ollama: %s", e)
     return _cache_put(_OLLAMA_CONTEXT_CACHE, model, None)
+
+
+def _record_ollama_thinking_capability(model: str, show_response) -> Optional[bool]:
+    """Record whether ``/api/show`` says this model can think.
+
+    Two shapes are read, because the field moved: recent servers list
+    ``capabilities`` (``["completion", "tools", "thinking", ...]``), and a
+    server that carries the newer ``thinking`` block (``{"values": [...]}``)
+    may omit ``"thinking"`` from ``capabilities``.  An empty ``values`` list is
+    the explicit "this model does not think" — the same thing the 400 says.
+    Returns None when the response says nothing either way, and records
+    nothing in that case so the next probe can still find out.
+    """
+    caps = getattr(show_response, "capabilities", None)
+    # Only a real list of names is an answer.  Anything else — an older server
+    # with no field, a shape this code does not know — is silence, and silence
+    # must not be read as "cannot think": that would quietly turn thinking off
+    # for every model on a server that words its answer differently.
+    if isinstance(caps, (list, tuple)) and all(isinstance(c, str) for c in caps):
+        supported = "thinking" in caps
+        _OLLAMA_THINKING_CAPS[model] = supported
+        return supported
+    # The newer ``thinking`` block states the same thing more explicitly: the
+    # levels the model accepts.  An empty list is the server saying it takes
+    # none of them.
+    block = getattr(show_response, "thinking", None)
+    if isinstance(block, dict) and isinstance(block.get("values"), list):
+        supported = bool(block["values"])
+        _OLLAMA_THINKING_CAPS[model] = supported
+        return supported
+    return None
+
+
+async def _get_ollama_thinking_capability(client, model: str) -> Optional[bool]:
+    """Whether Ollama says this model supports thinking: True/False/None.
+
+    Asked once per model per process, only when a turn actually wants to
+    think.  None means the server did not say — an old server with no
+    ``capabilities`` field — and the caller should send the switch and learn
+    from the answer instead.
+    """
+    if model in _OLLAMA_THINKING_CAPS:
+        return _OLLAMA_THINKING_CAPS[model]
+    try:
+        resp = await client.show(model)
+    except Exception as e:
+        logger.debug("Could not query capabilities from Ollama: %s", e)
+        return None
+    return _record_ollama_thinking_capability(model, resp)
+
+
+def _ollama_model_matches(a: str, b: str) -> bool:
+    """Whether two Ollama model names refer to the same model.
+
+    Ollama normalises a bare name to ``name:latest``, so ``qwen3`` and
+    ``qwen3:latest`` are one model and a strict comparison would miss it.
+    """
+    if a == b:
+        return True
+    return a.split(":")[0] == b.split(":")[0] and (
+        "latest" in (a, b) or ":" not in a or ":" not in b
+    )
+
+
+async def _get_ollama_allocated_context(client, model: str) -> Optional[int]:
+    """The context window Ollama actually allocated for a resident model.
+
+    ``/api/ps`` reports ``context_length`` per loaded model: the window the
+    server really gave it, which is not always the ``num_ctx`` it was asked
+    for.  Ollama clamps a request to the model's trained window (and to what
+    memory allows) and does not say so.  Measured on Ollama 0.34.4 with a
+    262144-token model: asking for 1000000 allocates 262144, and the request
+    comes back successful.
+
+    Returns None when the model is not resident or the server does not report
+    the field — an SDK or server too old to have it — and the caller then
+    keeps the window it asked for.
+    """
+    try:
+        running = await client.ps()
+    except Exception as e:
+        logger.debug("Could not query /api/ps from Ollama: %s", e)
+        return None
+    for entry in getattr(running, "models", None) or []:
+        name = getattr(entry, "model", None) or getattr(entry, "name", None)
+        if name and _ollama_model_matches(name, model):
+            val = getattr(entry, "context_length", None)
+            if val:
+                return int(val)
+    return None
+
+
+def _ollama_error_types() -> tuple:
+    """The exception types an Ollama call raises, for one ``except`` clause.
+
+    ``ollama.ResponseError`` is a plain ``Exception`` subclass — it is not an
+    ``OpenAIError`` — so an Ollama refusal reached only the catch-all handler
+    in ``_ModelCaller.call_turn``, which re-sent the identical payload.  Caught
+    by name, a refusal can change the next request instead.
+
+    Returned as a tuple so the handler still works when the SDK is absent:
+    ``except (ValueError,)`` never matches, and the generic handler below
+    catches whatever the call raised.
+    """
+    if OllamaResponseError is None:
+        return (ValueError,)
+    return (OllamaResponseError,)
+
+
+def _ollama_think_unsupported(model: str) -> bool:
+    """Whether this model is known not to take ``think``.
+
+    Two sources, one question: the capabilities probe said so, or a request
+    was refused over it.  The second is remembered with a TTL like every other
+    rejection here — a model re-pulled with a thinking template gets a fresh
+    hearing rather than staying silent until the process restarts.
+    """
+    if _OLLAMA_THINKING_CAPS.get(model) is False:
+        return True
+    expires = _NO_OLLAMA_THINK.get(model)
+    if expires is None:
+        return False
+    if time.monotonic() >= expires:
+        del _NO_OLLAMA_THINK[model]
+        return False
+    return True
+
+
+def _remember_ollama_think_unsupported(model: str, error: Exception) -> bool:
+    """Record an Ollama refusal of the thinking switch.  True if it was one.
+
+    Ollama answers 400 with "``<model>`` does not support thinking"; some
+    builds phrase it as "thinking is not supported by this model".  Both are
+    parameter rejections, not transient failures, so the retry has to change
+    the payload — dropping ``think`` — rather than repeat it.
+    """
+    text = str(error).lower()
+    if "thinking" not in text:
+        return False
+    if "does not support" not in text and "not supported" not in text:
+        return False
+    _NO_OLLAMA_THINK[model] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
+    logger.info(
+        "Ollama model %s does not support thinking (%s); retrying without the switch.",
+        model,
+        error,
+    )
+    return True
 
 
 def _known_tool_name(name: str, tool_registry, harness=None) -> bool:
@@ -4319,8 +4490,19 @@ class _ModelCaller:
                             "stop": [],
                         },
                     )
+                    # Send the switch only when the model can take it.  A
+                    # non-thinking Ollama model refuses the whole request over
+                    # ``think``, so a run that defaults thinking on would spend
+                    # every turn on three identical 400s and then fail with no
+                    # answer.  The probe is one /api/show per model per process
+                    # (cached, so the retries below cost nothing), and a refusal
+                    # is remembered too — see the handler — so a server that
+                    # does not publish capabilities still recovers after one
+                    # wasted attempt.
                     if _turn_think:
-                        ollama_kwargs["think"] = True
+                        await _get_ollama_thinking_capability(ollama_client, model)
+                        if not _ollama_think_unsupported(model):
+                            ollama_kwargs["think"] = True
                     if tools:
                         ollama_kwargs["tools"] = tools
                     # Force JSON output when the model keeps generating planning prose
@@ -4927,6 +5109,20 @@ class _ModelCaller:
                         e,
                         _responses_effort or "omitted",
                     )
+                api_error = f"Error communicating with {host}: {e}."
+                logger.error(api_error)
+                _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
+            except _ollama_error_types() as e:
+                # An Ollama model that does not take the thinking switch
+                # refuses the whole request, and the generic path below would
+                # retry the identical payload until the budget ran out — three
+                # identical 400s and a dead turn.  Remember the refusal instead;
+                # the next attempt goes out without ``think`` and answers.
+                # A refusal of anything else is left to the generic handler, so
+                # it still logs and retries exactly as before.
+                if is_ollama and _remember_ollama_think_unsupported(model, e):
+                    api_error = None
+                    continue
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
@@ -6599,6 +6795,11 @@ async def chat(
                 f"Model max context: {max_context_tokens:,} tokens", chat_ui, verbose, level="info"
             )
 
+    # Whether the window in force is still a request rather than a fact.  Only
+    # the Ollama branch below can say yes; the reconcile block in the turn loop
+    # is guarded by it, so it has to be bound on every path.
+    _ollama_window_unconfirmed = False
+
     # Ollama: resolve the context window (num_ctx).  Ollama defaults num_ctx to
     # 2048, which silently truncates any response longer than ~prompt+2048 tokens
     # regardless of num_predict.  Use the explicit override if given, otherwise the
@@ -6635,6 +6836,12 @@ async def chat(
         # Keep compaction accounting consistent with the window Ollama allocates.
         if max_context_tokens is None:
             max_context_tokens = num_ctx
+        # The window asked for is not always the window granted: Ollama clamps
+        # ``num_ctx`` to the model's trained size without saying so, so the
+        # figure above is a request, not a fact.  Check what was allocated once
+        # the model is resident (after the first turn) and account for that
+        # instead — see the reconcile block in the turn loop.
+        _ollama_window_unconfirmed = True
 
     # Nothing knew the real window: no configured value, no CLI flag, and
     # either a provider that does not publish one or a query that failed.  An
@@ -6728,14 +6935,23 @@ async def chat(
     # before the tool-call JSON, so give them the full max_tokens when think=True.
     # Without thinking, 512 is still enough for any tool-call JSON payload.
     CONTINUATION_MAX_TOKENS = max_tokens if think else 512
+
     # Compaction threshold: fire early enough that prompt_tokens + max_tokens still fits
     # within the context window after new messages are added (tool results, etc.).
     # Reserve max_tokens output budget + 5% of the window as a safety buffer.
-    if max_context_tokens:
-        _reserved = max_tokens + int(max_context_tokens * 0.05)
-        CONTEXT_COMPACT_THRESHOLD = min(0.90, max(0.50, 1.0 - _reserved / max_context_tokens))
-    else:
-        CONTEXT_COMPACT_THRESHOLD = 0.90
+    #
+    # A function of the window rather than a number computed once, because the
+    # window can still change below: Ollama may allocate less than it was asked
+    # for, and a threshold fixed against the request would then describe a
+    # window the server never created.  See the reconcile block after the first
+    # turn.
+    def _compact_threshold(window: Optional) -> float:
+        if not window:
+            return 0.90
+        _reserved = max_tokens + int(window * 0.05)
+        return min(0.90, max(0.50, 1.0 - _reserved / window))
+
+    CONTEXT_COMPACT_THRESHOLD = _compact_threshold(max_context_tokens)
     # Everything about this run that changes while it runs — turn number, what
     # has been called, how much of each budget is spent, the answer text carried
     # between turns.  See state.py.
@@ -6986,6 +7202,39 @@ async def chat(
         _completion_tokens = turn.completion_tokens
         _usage = turn.usage
         chat_completion = turn.chat_completion
+
+        # Ollama clamps ``num_ctx`` to the model's trained window and says so
+        # nowhere in the response: ask for 1M on a 262144-token model and the
+        # request succeeds with a quarter of the window accounted for.  The
+        # cost of not looking is the whole point of the accounting —
+        # compaction would not fire until 90% of 1M while the server overflowed
+        # at 262144.  /api/ps names the window that was really allocated, so
+        # after the first turn (the model is resident by then) take the smaller
+        # of the two and re-derive everything that was computed from the
+        # request.
+        if is_ollama and _ollama_window_unconfirmed:
+            _ollama_window_unconfirmed = False
+            _allocated_ctx = await _get_ollama_allocated_context(ollama_client, model)
+            if _allocated_ctx and max_context_tokens and _allocated_ctx < max_context_tokens:
+                _log_to_ui_or_verbose(
+                    f"Ollama allocated {_allocated_ctx:,} tokens of context, not the "
+                    f"{max_context_tokens:,} requested; accounting for {_allocated_ctx:,}.",
+                    chat_ui,
+                    verbose,
+                    level="warning",
+                )
+                max_context_tokens = _allocated_ctx
+                caller.max_context_tokens = _allocated_ctx
+                CONTEXT_COMPACT_THRESHOLD = _compact_threshold(max_context_tokens)
+                if chat_ui:
+                    chat_ui.set_token_budgets(
+                        max_output_tokens=max_tokens, max_context_tokens=max_context_tokens
+                    )
+                    if state.last_prompt_tokens > 0:
+                        chat_ui.set_context_usage(
+                            state.last_prompt_tokens / max_context_tokens * 100,
+                            max_context_tokens,
+                        )
 
         tool_calls = _tool_calls
         if tool_calls is None or len(tool_calls) == 0:

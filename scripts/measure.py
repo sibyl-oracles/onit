@@ -96,6 +96,7 @@ import yaml  # noqa: E402
 
 # ── scoring ──────────────────────────────────────────────────────────────────
 
+
 def normalise(text: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace."""
     text = str(text or "").lower()
@@ -136,21 +137,123 @@ def read_tasks(path: str) -> list:
 # A token that is distinctive enough to mean "the same question, asked
 # again".  Ordinary words are excluded; a date, a number with a unit, a
 # quoted string and a path are not.
-_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
-    "is", "are", "was", "were", "be", "been", "am", "it", "its", "this",
-    "that", "these", "those", "i", "me", "my", "we", "our", "you", "your",
-    "he", "she", "they", "them", "their", "what", "which", "who", "whom",
-    "when", "where", "why", "how", "can", "could", "would", "should",
-    "will", "shall", "may", "might", "must", "do", "does", "did", "done",
-    "please", "thanks", "thank", "give", "get", "make", "tell", "show",
-    "answer", "compute", "calculate", "following", "date", "name", "only",
-    "day", "week", "weekday", "next", "also", "just", "very", "more",
-    "most", "less", "least", "some", "any", "all", "there", "here",
-    "about", "over", "under", "again", "not", "but", "if", "then",
-    "into", "from", "out", "up", "down", "off", "one", "two", "use",
-    "using", "used", "work", "out", "following", "does", "fall", "falls",
-})
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "am",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
+        "them",
+        "their",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "when",
+        "where",
+        "why",
+        "how",
+        "can",
+        "could",
+        "would",
+        "should",
+        "will",
+        "shall",
+        "may",
+        "might",
+        "must",
+        "do",
+        "does",
+        "did",
+        "done",
+        "please",
+        "thanks",
+        "thank",
+        "give",
+        "get",
+        "make",
+        "tell",
+        "show",
+        "answer",
+        "compute",
+        "calculate",
+        "following",
+        "date",
+        "name",
+        "only",
+        "day",
+        "week",
+        "weekday",
+        "next",
+        "also",
+        "just",
+        "very",
+        "more",
+        "most",
+        "less",
+        "least",
+        "some",
+        "any",
+        "all",
+        "there",
+        "here",
+        "about",
+        "over",
+        "under",
+        "again",
+        "not",
+        "but",
+        "if",
+        "then",
+        "into",
+        "from",
+        "out",
+        "up",
+        "down",
+        "off",
+        "one",
+        "two",
+        "use",
+        "using",
+        "used",
+        "work",
+        "out",
+        "following",
+        "does",
+        "fall",
+        "falls",
+    }
+)
 
 
 def distinctive_tokens(text: str) -> set:
@@ -168,8 +271,7 @@ def distinctive_tokens(text: str) -> set:
     for match in re.findall(r"https?://\S+|\b[\w.-]+/[\w./-]+", text or ""):
         tokens.add(match.rstrip(".,;:"))
     # bare numbers with a unit
-    for match in re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|kb|mb|gb|tb|ms|hz|px)\b",
-                             text or ""):
+    for match in re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|kb|mb|gb|tb|ms|hz|px)\b", text or ""):
         tokens.add(re.sub(r"\s+", "", match.lower()))
     # long-ish content words
     for word in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{4,}", text or ""):
@@ -194,6 +296,7 @@ def find_contamination(items: list, store: str) -> list:
         return []
     try:
         from src.learn.trajectory import iter_records
+
         records = list(iter_records({"learn": {"path": store}}))
     except Exception:
         return []
@@ -219,16 +322,17 @@ def find_contamination(items: list, store: str) -> list:
             if not shared:
                 continue
             # A shared generic word is not a leak; a shared date or path is.
-            distinctive = {t for t in shared
-                           if re.search(r"\d", t) or "/" in t or len(t) > 8}
+            distinctive = {t for t in shared if re.search(r"\d", t) or "/" in t or len(t) > 8}
             if not distinctive:
                 continue
-            contaminated.append({
-                "index": index,
-                "task": task,
-                "contaminated_by": other,
-                "shared": sorted(distinctive),
-            })
+            contaminated.append(
+                {
+                    "index": index,
+                    "task": task,
+                    "contaminated_by": other,
+                    "shared": sorted(distinctive),
+                }
+            )
             break
     return contaminated
 
@@ -283,12 +387,13 @@ def patch_shuffled_recall(rng: random.Random) -> None:
 
 # ── the run ──────────────────────────────────────────────────────────────────
 
+
 async def run(args, cfg: dict) -> dict:
     from src.onit import OnIt
 
     items = read_tasks(args.tasks)
     if args.limit:
-        items = items[:args.limit]
+        items = items[: args.limit]
     if not items:
         raise SystemExit("No items in %s" % args.tasks)
 
@@ -329,6 +434,7 @@ async def run(args, cfg: dict) -> dict:
     # its tools with asyncio.run, which cannot run inside a running loop.
     def factory():
         from src.cli import _ensure_mcp_servers
+
         _ensure_mcp_servers(cfg)
         return OnIt(cfg)
 
@@ -379,17 +485,18 @@ async def run(args, cfg: dict) -> dict:
             )
         except Exception as exc:
             error = "%s: %s" % (type(exc).__name__, str(exc)[:200])
-        results.append({
-            "id": item.get("id") or "m%04d" % index,
-            "task": task,
-            "answer": answer,
-            "reference": reference,
-            "grade": score(answer, reference),
-            "error": error,
-            "wall_s": round(time.time() - started, 3),
-        })
-        print("  [%3d/%3d] %-11s %s"
-              % (index + 1, len(items), results[-1]["grade"], task[:60]))
+        results.append(
+            {
+                "id": item.get("id") or "m%04d" % index,
+                "task": task,
+                "answer": answer,
+                "reference": reference,
+                "grade": score(answer, reference),
+                "error": error,
+                "wall_s": round(time.time() - started, 3),
+            }
+        )
+        print("  [%3d/%3d] %-11s %s" % (index + 1, len(items), results[-1]["grade"], task[:60]))
 
     graded = [r for r in results if r["grade"] in ("correct", "incorrect")]
 
@@ -421,8 +528,8 @@ async def run(args, cfg: dict) -> dict:
         "errors": sum(1 for r in results if r["error"]),
         "accuracy": (correct / len(clean)) if clean else 0.0,
         "accuracy_including_contaminated": (
-            (sum(1 for r in graded if r["grade"] == "correct") / len(graded))
-            if graded else 0.0),
+            (sum(1 for r in graded if r["grade"] == "correct") / len(graded)) if graded else 0.0
+        ),
         "contamination": contamination,
         "results": results,
     }
@@ -431,78 +538,106 @@ async def run(args, cfg: dict) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Replay a task file through the real agent and score it.")
-    parser.add_argument("--config", required=True,
-                        help="The agent's YAML config.")
-    parser.add_argument("--tasks", required=True,
-                        help="JSONL of {\"task\": ..., \"response\": ...} items.")
-    parser.add_argument("--autonomy", default="off",
-                        choices=["off", "observe", "adapt"],
-                        help="The arm. 'off' injects nothing and records "
-                             "nothing; 'adapt' injects recall + playbook.")
-    parser.add_argument("--store", default=None,
-                        help="The learned store this arm reads and writes.")
-    parser.add_argument("--data-path", default=None,
-                        help="The session working directory. Must be inside "
-                             "the bash server's DATA_PATH.")
-    parser.add_argument("--out", default=None,
-                        help="Where to write the JSON report.")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Replay only the first N items.")
-    parser.add_argument("--shuffle-recall", action="store_true",
-                        help="The control: return a RANDOM episode instead "
-                             "of the top-scored one. If this arm scores like "
-                             "the treatment arm, recall() is not doing the "
-                             "work.")
-    parser.add_argument("--isolate", action="store_true",
-                        help="Give every item its own fresh copy of the "
-                             "store, so item k cannot be shown item k-1's "
-                             "run and the arms are independent.")
-    parser.add_argument("--seed", type=int, default=0,
-                        help="Seed for --shuffle-recall (default 0).")
+        description="Replay a task file through the real agent and score it."
+    )
+    parser.add_argument("--config", required=True, help="The agent's YAML config.")
+    parser.add_argument(
+        "--tasks", required=True, help='JSONL of {"task": ..., "response": ...} items.'
+    )
+    parser.add_argument(
+        "--autonomy",
+        default="off",
+        choices=["off", "observe", "adapt"],
+        help="The arm. 'off' injects nothing and records "
+        "nothing; 'adapt' injects recall + playbook.",
+    )
+    parser.add_argument(
+        "--store", default=None, help="The learned store this arm reads and writes."
+    )
+    parser.add_argument(
+        "--data-path",
+        default=None,
+        help="The session working directory. Must be inside the bash server's DATA_PATH.",
+    )
+    parser.add_argument("--out", default=None, help="Where to write the JSON report.")
+    parser.add_argument("--limit", type=int, default=None, help="Replay only the first N items.")
+    parser.add_argument(
+        "--shuffle-recall",
+        action="store_true",
+        help="The control: return a RANDOM episode instead "
+        "of the top-scored one. If this arm scores like "
+        "the treatment arm, recall() is not doing the "
+        "work.",
+    )
+    parser.add_argument(
+        "--isolate",
+        action="store_true",
+        help="Give every item its own fresh copy of the "
+        "store, so item k cannot be shown item k-1's "
+        "run and the arms are independent.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Seed for --shuffle-recall (default 0)."
+    )
     args = parser.parse_args()
 
     config_path = os.path.abspath(os.path.expanduser(args.config))
     with open(config_path, "r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
 
-    print("Replaying %s  arm=%s  store=%s"
-          % (args.tasks, args.autonomy, args.store or "(config default)"))
+    print(
+        "Replaying %s  arm=%s  store=%s"
+        % (args.tasks, args.autonomy, args.store or "(config default)")
+    )
 
     summary = asyncio.run(run(args, cfg))
 
     print()
-    print("  n=%d  graded=%d  correct=%d  wrong=%d  not-attempted=%d  "
-          "ungraded=%d  errors=%d  accuracy=%.3f"
-          % (summary["n"], summary["graded"], summary["correct"],
-             summary["incorrect"], summary["not_attempted"],
-             summary["ungraded"], summary["errors"], summary["accuracy"]))
+    print(
+        "  n=%d  graded=%d  correct=%d  wrong=%d  not-attempted=%d  "
+        "ungraded=%d  errors=%d  accuracy=%.3f"
+        % (
+            summary["n"],
+            summary["graded"],
+            summary["correct"],
+            summary["incorrect"],
+            summary["not_attempted"],
+            summary["ungraded"],
+            summary["errors"],
+            summary["accuracy"],
+        )
+    )
 
     if summary["contaminated"]:
         print()
-        print("  LEAK CHECK: %d of %d item(s) ask a question the store "
-              "already contains a run of." % (summary["contaminated"],
-                                               summary["n"]))
+        print(
+            "  LEAK CHECK: %d of %d item(s) ask a question the store "
+            "already contains a run of." % (summary["contaminated"], summary["n"])
+        )
         for entry in summary["contamination"]:
             print("    %s" % entry["task"][:64])
-            print("      the store already has: %s"
-                  % str(entry["contaminated_by"])[:64])
+            print("      the store already has: %s" % str(entry["contaminated_by"])[:64])
             print("      shared: %s" % ", ".join(entry["shared"][:5]))
         if args.autonomy == "off":
-            print("  This arm injects nothing, so it was NOT shown any of "
-                  "it.  The hit means the HOLDOUT overlaps the store -- "
-                  "which is still a leak, because the treatment arm reads "
-                  "the same store.")
+            print(
+                "  This arm injects nothing, so it was NOT shown any of "
+                "it.  The hit means the HOLDOUT overlaps the store -- "
+                "which is still a leak, because the treatment arm reads "
+                "the same store."
+            )
         else:
-            print("  Those items are EXCLUDED from the accuracy above.  The "
-                  "treatment arm was shown the answer before it was asked "
-                  "the question, so a difference on them is the answer "
-                  "key, not learning.")
-        print("  Accuracy including them: %.3f"
-              % summary["accuracy_including_contaminated"])
-        print("  Fix: use holdout dates the loop never worked on, and give "
-              "the loop and the holdout different wording for the same "
-              "underlying task.")
+            print(
+                "  Those items are EXCLUDED from the accuracy above.  The "
+                "treatment arm was shown the answer before it was asked "
+                "the question, so a difference on them is the answer "
+                "key, not learning."
+            )
+        print("  Accuracy including them: %.3f" % summary["accuracy_including_contaminated"])
+        print(
+            "  Fix: use holdout dates the loop never worked on, and give "
+            "the loop and the holdout different wording for the same "
+            "underlying task."
+        )
 
     out = args.out or os.path.join(ROOT, "tmp", "measure-%s.json" % args.autonomy)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
   pull_request:
-    branches: [main]
+    branches:
 
 jobs:
   test:
@@ -31,10 +31,41 @@ jobs:
         # NameError: a name read but never bound.  It runs before the tests
         # because it needs none of their fixtures -- a bare global lookup is
         # exactly what a patched-out test cannot see.
-        run: ruff check src/
+        #
+        # benchmarks/ and scripts/ are linted too: they are not on the test
+        # path, so a lint gate that stops at src/ cannot see them at all.
+        run: ruff check src/ benchmarks/ scripts/
 
       - name: Format check
-        run: ruff format --check src/
+        run: ruff format --check src/ benchmarks/ scripts/
 
       - name: Run tests
-        run: pytest src/test/ -v --tb=short --cov=src --cov-report=term-missing
+        # --cov, the report format and the coverage floor live in
+        # [tool.pytest.ini_options] addopts, so this command and a local
+        # `pytest` measure the same tree the same way.  -v stays here: it is a
+        # CI readability choice, not part of the gate.
+        run: pytest src/test/ -v --tb=short
+
+  benchmarks:
+    # The bench extras are heavy (inspect-ai, datasets, numpy, scikit-learn)
+    # and the tests are offline, so this runs once rather than on all three
+    # interpreter versions -- enough to keep them from rotting unnoticed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[test,web,lint,bench]
+
+      - name: Run benchmark tests
+        # testpaths is src/test, so these are invisible to the step above.
+        # They assert on the Inspect provider and the task builders, not on a
+        # model, so they need no server and no Docker.
+        run: pytest benchmarks/ -v --tb=short -p no:cacheprovider --no-cov

@@ -101,10 +101,12 @@ def resolve_serving() -> dict:
        keeping unannotated runs comparable.
     3. The local-vLLM default host, with auto-detection from ``/v1/models``.
     """
-    host = (os.environ.get("ONIT_BENCH_HOST")
-            or _agent_config_serving().get("host")
-            or os.environ.get("ONIT_HOST")
-            or DEFAULT_HOST)
+    host = (
+        os.environ.get("ONIT_BENCH_HOST")
+        or _agent_config_serving().get("host")
+        or os.environ.get("ONIT_HOST")
+        or DEFAULT_HOST
+    )
     serving: dict = {"host": host, "think": _env_bool("ONIT_BENCH_THINK", False)}
 
     model = os.environ.get("ONIT_BENCH_MODEL")
@@ -207,8 +209,8 @@ def _preferred_endpoint(entries: list, serving: dict) -> dict | None:
         endpoints = [ServerEndpoint(host=h, priority=p) for p, _, h in normalized]
         fallback_only = bool(serving.get("ollama_fallback_only", True))
         preferred = LoadBalancer(
-            endpoints, serving.get("load_balancer", "sticky"),
-            ollama_fallback_only=fallback_only).preferred
+            endpoints, serving.get("load_balancer", "sticky"), ollama_fallback_only=fallback_only
+        ).preferred
         for _, _, entry in normalized:
             if entry["host"] == preferred.host:
                 return entry
@@ -358,9 +360,7 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
             f"[bench] or point ONIT_BENCH_HOST at a running endpoint."
         )
 
-    served = sorted(
-        str(m.get("id")) for m in payload.get("data", []) if m.get("id")
-    )
+    served = sorted(str(m.get("id")) for m in payload.get("data", []) if m.get("id"))
     if not served:
         sys.exit(f"[bench] endpoint {host} answered but serves no models.")
 
@@ -378,7 +378,7 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
             f"[bench] model {model!r} is not served by {host}.\n"
             f"[bench] served: {', '.join(served)}\n"
             f"[bench] run the server for the pin, or override with "
-            f"ONIT_BENCH_MODEL (set it to \"\" to auto-detect)."
+            f'ONIT_BENCH_MODEL (set it to "" to auto-detect).'
         )
 
 
@@ -409,7 +409,7 @@ def _endpoint_api_key(host: str, serving: dict) -> str:
         if key:
             return key
         keyring_key, env_var, _, _ = legacy_key_for(host)
-        return (os.environ.get(env_var) or get_secret(keyring_key) or "EMPTY")
+        return os.environ.get(env_var) or get_secret(keyring_key) or "EMPTY"
     except Exception:
         return "EMPTY"
 

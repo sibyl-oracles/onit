@@ -68,8 +68,10 @@ def _resolve_task_names(requested: list[str]) -> list[str]:
         elif item in TASKS:
             names.append(item)
         else:
-            sys.exit(f"Unknown task or category: {item!r}. "
-                     f"Tasks: {sorted(TASKS)}; categories: {sorted(CATEGORIES)}")
+            sys.exit(
+                f"Unknown task or category: {item!r}. "
+                f"Tasks: {sorted(TASKS)}; categories: {sorted(CATEGORIES)}"
+            )
     # De-duplicate while preserving order.
     seen: set[str] = set()
     return [n for n in names if not (n in seen or seen.add(n))]
@@ -126,29 +128,43 @@ def _write_run_meta(log_dir: str, tier_name: str, model: str) -> None:
     try:
         os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, RUN_META_NAME), "w", encoding="utf-8") as f:
-            json.dump({"tier": tier_name, "model": model,
-                       "learn": bench_config.learn_level()}, f, indent=2)
+            json.dump(
+                {"tier": tier_name, "model": model, "learn": bench_config.learn_level()},
+                f,
+                indent=2,
+            )
     except OSError as e:
         print(f"[bench] could not write {RUN_META_NAME}: {e}")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="benchmarks.run", description=__doc__)
-    parser.add_argument("--tier", default=bench_config.DEFAULT_TIER,
-                        choices=list(bench_config.TIERS),
-                        help="Run preset (sample limit + concurrency).")
-    parser.add_argument("--tasks", nargs="+", default=["all"],
-                        help="Task aliases or categories to run "
-                             f"({sorted(TASKS)} / {sorted(CATEGORIES)}).")
-    parser.add_argument("--list", action="store_true",
-                        help="List benchmark aliases and their names, then exit.")
-    parser.add_argument("--log-dir", default="benchmarks/logs",
-                        help="Where Inspect writes .eval logs.")
-    parser.add_argument("--fresh", action="store_true",
-                        help="Ignore any prior logs and start every task over. "
-                             "By default a re-run resumes the most recent "
-                             "incomplete log per task (same model + tier), "
-                             "re-running only the unfinished samples.")
+    parser.add_argument(
+        "--tier",
+        default=bench_config.DEFAULT_TIER,
+        choices=list(bench_config.TIERS),
+        help="Run preset (sample limit + concurrency).",
+    )
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        default=["all"],
+        help=f"Task aliases or categories to run ({sorted(TASKS)} / {sorted(CATEGORIES)}).",
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="List benchmark aliases and their names, then exit."
+    )
+    parser.add_argument(
+        "--log-dir", default="benchmarks/logs", help="Where Inspect writes .eval logs."
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore any prior logs and start every task over. "
+        "By default a re-run resumes the most recent "
+        "incomplete log per task (same model + tier), "
+        "re-running only the unfinished samples.",
+    )
     args = parser.parse_args(argv)
 
     if args.list:
@@ -186,12 +202,16 @@ def main(argv: list[str] | None = None) -> None:
             fresh_names.append(name)
 
     task_labels = [f"{n} ({bench_config.display_name(n)})" for n in task_names]
-    print(f"[bench] tier={tier.name} model={model} limit={tier.limit} "
-          f"time_limit={time_limit}s learn={bench_config.learn_level()}")
+    print(
+        f"[bench] tier={tier.name} model={model} limit={tier.limit} "
+        f"time_limit={time_limit}s learn={bench_config.learn_level()}"
+    )
     print(f"[bench] benchmarks: {', '.join(task_labels)}")
     if resume_targets:
-        print(f"[bench] resuming {len(resume_targets)} incomplete log(s): "
-              f"{', '.join(i.name for i in resume_targets)}")
+        print(
+            f"[bench] resuming {len(resume_targets)} incomplete log(s): "
+            f"{', '.join(i.name for i in resume_targets)}"
+        )
 
     # Stamp how the agent was configured next to its logs. The autonomy level
     # is not in the Inspect log, and a score is only comparable to another

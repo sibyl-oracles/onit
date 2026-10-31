@@ -28,8 +28,7 @@ def test_extract_code_prefers_longest_block():
 
 
 def test_mbpp_program_passes_for_correct_solution():
-    meta = {"tests": ["assert add(2, 3) == 5", "assert add(0, 0) == 0"],
-            "test_imports": []}
+    meta = {"tests": ["assert add(2, 3) == 5", "assert add(0, 0) == 0"], "test_imports": []}
     program = _mbpp_program("def add(a, b):\n    return a + b", meta)
     assert _exits_zero(program)
 

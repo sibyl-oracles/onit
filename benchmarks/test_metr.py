@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
 
 from benchmarks.tasks.metr import (
     _family_human_minutes,
@@ -25,12 +24,15 @@ from inspect_ai.scorer import CORRECT, INCORRECT, Score
 # Logistic fit
 # --------------------------------------------------------------------------- #
 
+
 def test_fit_logistic_recovers_known_curve():
     # P(success) = sigmoid(2 * (x - 5)) -> horizon at x0 = 5 (2**5 = 32 min).
     k_true, x0_true = 2.0, 5.0
     xs = [i * 0.5 for i in range(20)]  # 0 .. 9.5
-    ys = [1.0 if _p >= 0.5 else 0.0 for _p in
-          (1 / (1 + math.exp(-k_true * (x - x0_true))) for x in xs)]
+    ys = [
+        1.0 if _p >= 0.5 else 0.0
+        for _p in (1 / (1 + math.exp(-k_true * (x - x0_true))) for x in xs)
+    ]
     k, x0 = _fit_logistic(xs, ys)
     assert abs(x0 - x0_true) < 0.3
     assert k > 0
@@ -56,6 +58,7 @@ def test_fit_logistic_one_class_is_degenerate():
 # Horizon extraction
 # --------------------------------------------------------------------------- #
 
+
 def _score(hm: float, ok: bool) -> Score:
     s = Score(value=CORRECT if ok else INCORRECT)
     s.metadata = {"human_minutes": hm}
@@ -64,8 +67,12 @@ def _score(hm: float, ok: bool) -> Score:
 
 def test_time_horizon_50_basic():
     scores = [
-        _score(1, True), _score(2, True), _score(4, True),
-        _score(32, False), _score(64, False), _score(128, False),
+        _score(1, True),
+        _score(2, True),
+        _score(4, True),
+        _score(32, False),
+        _score(64, False),
+        _score(128, False),
     ]
     th = time_horizon_50(scores)
     assert th is not None
@@ -95,6 +102,7 @@ def test_horizon_summary_shape():
 # Bundled label map
 # --------------------------------------------------------------------------- #
 
+
 def test_label_map_loads_and_is_sane():
     labels = load_human_minutes()
     assert len(labels) == 228  # METR Time Horizon v1.1 labeled set
@@ -112,8 +120,12 @@ def test_label_map_keys_are_family_slash_task():
 
 
 def test_family_collapse_gives_medians():
-    labels = {"password_check/1": 10.0, "password_check/2": 30.0,
-              "password_check/3": 20.0, "sadservers/a": 100.0}
+    labels = {
+        "password_check/1": 10.0,
+        "password_check/2": 30.0,
+        "password_check/3": 20.0,
+        "sadservers/a": 100.0,
+    }
     fams = _family_human_minutes(labels)
     assert fams["password_check"] == 20.0
     assert fams["sadservers"] == 100.0

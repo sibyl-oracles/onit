@@ -67,6 +67,22 @@ _SPEED_FIELDS = (
 )
 
 
+def _sample_speed_metadata(sample) -> dict:
+    """The per-sample speed metadata the OnIt provider publishes.
+
+    Read from ``sample.output.metadata``, which is where inspect_ai keeps what
+    a model provider sets on its ``ModelOutput``.  ``sample.metadata`` is the
+    *sample's* metadata — the dataset row's — and never carries these fields,
+    so reading it alone left every speed column empty.  Both are consulted so
+    logs written when the provider published somewhere else still render.
+    """
+    for holder in (getattr(sample, "output", None), sample):
+        md = getattr(holder, "metadata", None)
+        if isinstance(md, dict) and md:
+            return md
+    return {}
+
+
 def _collect_speed(results: dict[str, dict], log_dir: str) -> None:
     """Fold per-sample speed metadata into ``results`` as ``speed/<field>``.
 
@@ -75,16 +91,17 @@ def _collect_speed(results: dict[str, dict], log_dir: str) -> None:
     """
     for task, r in results.items():
         vals: dict[tuple, list] = {}
-        for info in list_eval_logs(log_dir, task=task):
+        # ``list_eval_logs`` filters through a predicate, not a task name.
+        for info in list_eval_logs(log_dir, filter=lambda x: x.eval.task == task):
             try:
                 log = read_eval_log(info, header_only=False)
             except Exception:
                 continue
             if log.status != "success":
                 continue
-            for sample in (log.samples or []):
-                md = getattr(sample, "metadata", None) or {}
-                if not isinstance(md, dict) or "wall_s" not in md:
+            for sample in log.samples or []:
+                md = _sample_speed_metadata(sample)
+                if "wall_s" not in md:
                     continue
                 for key, agg in _SPEED_FIELDS:
                     v = md.get(key)
@@ -134,8 +151,10 @@ def to_markdown(results: dict[str, dict], meta: dict | None = None) -> str:
     # (post-S1 provider).  Older logs render the accuracy-only table.
     _has_speed = any("speed" in r for r in results.values())
     if _has_speed:
-        lines += ["| Benchmark | Alias | Samples | Accuracy | Wall s/sample | Model s (prefill/decode) | TTFT p50/p95 s | Prompt tok (peak) | Out tok | Cache hit | Compactions |",
-                  "|---|---|---|---|---|---|---|---|---|---|---|"]
+        lines += [
+            "| Benchmark | Alias | Samples | Accuracy | Wall s/sample | Model s (prefill/decode) | TTFT p50/p95 s | Prompt tok (peak) | Out tok | Cache hit | Compactions |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
         for task in sorted(results):
             r = results[task]
             name = bench_config.display_name(task)
@@ -149,10 +168,10 @@ def to_markdown(results: dict[str, dict], meta: dict | None = None) -> str:
                 f"| {sp.get('prompt_tokens_max', 0):,.0f} "
                 f"| {sp.get('completion_tokens', 0):,.0f} "
                 f"| {sp.get('cache_hit_pct', 0):.0%} "
-                f"| {sp.get('compactions', 0):.1f} |")
+                f"| {sp.get('compactions', 0):.1f} |"
+            )
         return "\n".join(lines) + "\n"
-    lines += ["| Benchmark | Alias | Model | Samples | Metrics |",
-              "|---|---|---|---|---|"]
+    lines += ["| Benchmark | Alias | Model | Samples | Metrics |", "|---|---|---|---|---|"]
     for task in sorted(results):
         r = results[task]
         # ``task`` is the Inspect task name == the CLI alias.
@@ -176,8 +195,8 @@ def diff_baseline(results: dict, baseline: dict, tolerance: float) -> list[str]:
                 regressions.append(f"{task}/{metric}: missing")
             elif cur_val < base_val - tolerance:
                 regressions.append(
-                    f"{task}/{metric}: {cur_val:.3f} < baseline {base_val:.3f} "
-                    f"(tol {tolerance})")
+                    f"{task}/{metric}: {cur_val:.3f} < baseline {base_val:.3f} (tol {tolerance})"
+                )
     return regressions
 
 

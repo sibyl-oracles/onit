@@ -82,12 +82,15 @@ def backfill_file(path: str, apply: bool) -> tuple[int, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--path", default=DEFAULT_PATH,
-                        help=f"Trajectory directory (default: {DEFAULT_PATH})")
-    parser.add_argument("--apply", action="store_true",
-                        help="Write the backfill. Without this, only report.")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--path", default=DEFAULT_PATH, help=f"Trajectory directory (default: {DEFAULT_PATH})"
+    )
+    parser.add_argument(
+        "--apply", action="store_true", help="Write the backfill. Without this, only report."
+    )
     args = parser.parse_args()
 
     total_changed = total_scanned = 0
@@ -99,12 +102,13 @@ def main() -> None:
         total_changed += changed
         total_scanned += scanned
         if changed:
-            print(f"  {name}: {changed} of {scanned} task record(s) "
-                  f"{'backfilled' if args.apply else 'backfillable'}")
+            print(
+                f"  {name}: {changed} of {scanned} task record(s) "
+                f"{'backfilled' if args.apply else 'backfillable'}"
+            )
 
     mode = "backfilled" if args.apply else "backfillable (dry run; use --apply)"
-    print(f"\n{total_changed} record(s) {mode} out of "
-          f"{total_scanned} scanned in {args.path}")
+    print(f"\n{total_changed} record(s) {mode} out of {total_scanned} scanned in {args.path}")
 
 
 if __name__ == "__main__":

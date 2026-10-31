@@ -94,6 +94,7 @@ def code_exec_scorer(build_program: Callable[[str, dict], str]):
 # Native tasks
 # --------------------------------------------------------------------------- #
 
+
 def _humaneval_record_to_sample(record: dict) -> Sample:
     return Sample(
         input=record["prompt"],
@@ -163,6 +164,7 @@ def mbpp() -> Task:
 # --------------------------------------------------------------------------- #
 # Wrapped inspect_evals tasks (provider-compatible: generate() based)
 # --------------------------------------------------------------------------- #
+
 
 @task
 def bigcodebench(subset: list[int] | None = None) -> Task:
