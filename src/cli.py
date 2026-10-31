@@ -786,6 +786,16 @@ def _build_parser() -> argparse.ArgumentParser:
                                  help="Delete every session and the index. Asks first.")
     sessions_parser.add_argument("--clear", action="store_true", default=argparse.SUPPRESS,
                                  help=argparse.SUPPRESS)
+    # The empty sessions are listed, so they can be deleted by row -- but they
+    # are the rows a test run used to create in bulk, interleaved with the real
+    # ones, so a range cannot name them and deleting them one at a time is not
+    # a chore anyone finishes.  This is the one filter, and it only ever
+    # matches a session with nothing in it at all.
+    sessions_parser.add_argument("--delete-empty", action="store_true",
+                                 dest="delete_empty",
+                                 help="Delete every session that was opened and "
+                                      "never used (no name, no preview, no turns). "
+                                      "Asks first.")
 
     # learn: inspect what the agent has recorded about its own runs
     learn_parser = subparsers.add_parser(
@@ -1788,7 +1798,7 @@ def main():
     if args.command == "sessions":
         from .sessions import (list_sessions, count_sessions,
                                format_sessions_table, rebuild_index,
-                               clear_sessions)
+                               clear_sessions, empty_sessions)
         sessions_dir = _sessions_dir(args)
         assume_yes = getattr(args, "assume_yes", False)
         if args.clear:
@@ -1802,6 +1812,31 @@ def main():
                 print(f"Deleted {count} session(s).")
             else:
                 print("Cancelled.")
+            return
+        if getattr(args, "delete_empty", False):
+            empty = empty_sessions(sessions_dir)
+            if not empty:
+                print("No empty sessions: every session has a name or a turn.")
+                return
+            total = count_sessions(sessions_dir)
+            print(f"{len(empty)} of {total} sessions were opened and never used.")
+            print("They have no name, no preview and no turns, so there is "
+                  "nothing in them to lose.")
+            if not assume_yes:
+                try:
+                    answer = input(f"Delete {len(empty)} empty session(s)? "
+                                   f"(yes/no): ")
+                except EOFError:
+                    print("\nNo answer, so nothing was deleted. "
+                          "Pass --yes to delete without asking.", file=sys.stderr)
+                    sys.exit(1)
+                if answer.strip().lower() not in ("yes", "y"):
+                    print("Cancelled.")
+                    return
+            from .sessions import delete_session
+            deleted = sum(1 for row in empty
+                          if delete_session(row["session_id"], sessions_dir))
+            print(f"Deleted {deleted} empty session(s).")
             return
         if args.delete:
             code = _delete_sessions(args.delete, sessions_dir, assume_yes)

@@ -1837,3 +1837,72 @@ class TestVersionFlag:
                                  os.path.dirname(os.path.abspath(__file__)))))
         assert "--version" in out.stdout
         assert "Print the OnIt version and exit." in out.stdout
+
+
+# ── deleting the sessions nobody ever used ──────────────────────────────────
+#
+# A test that built a real agent without naming a session store registered
+# itself in the developer's own ~/.onit/sessions: unnamed, zero turns, newest
+# entry, so also the one a bare `onit` resumed.  One laptop collected 360 of
+# them.  They interleave with the real sessions by date, so a row range cannot
+# name them -- `--delete 20-32` would take real conversations with it.
+
+class TestDeleteEmptySessions:
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        from src import sessions
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        # The verb resolves ~/.onit/sessions, so point HOME at the fixture.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".onit").mkdir(exist_ok=True)
+        (tmp_path / ".onit" / "sessions").symlink_to(d)
+        for sid, task in (("real-1", "write the migration"),
+                          ("real-2", "debug the parser")):
+            sessions.register_session(sid, d)
+            sessions.update_session(sid, task=task, sessions_dir=d)
+        for sid in ("junk-1", "junk-2"):
+            sessions.register_session(sid, d)
+        return d
+
+    def test_it_deletes_the_empty_ones_and_keeps_the_rest(self, store, monkeypatch,
+                                                         capsys):
+        from src import cli, sessions
+        monkeypatch.setattr(sys, "argv",
+                            ["onit", "sessions", "--delete-empty", "--yes"])
+        cli.main()
+        out = capsys.readouterr().out
+        assert "Deleted 2 empty session(s)." in out
+        assert [r["session_id"] for r in sessions.list_sessions(store)] == [
+            "real-2", "real-1"]
+
+    def test_it_says_how_many_before_asking(self, store, monkeypatch, capsys):
+        from src import cli
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete-empty"])
+        monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+        cli.main()
+        out = capsys.readouterr().out
+        assert "2 of 4 sessions were opened and never used" in out
+        assert "Cancelled." in out
+
+    def test_a_refusal_deletes_nothing(self, store, monkeypatch):
+        from src import cli, sessions
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete-empty"])
+        monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+        cli.main()
+        assert len(sessions.list_sessions(store)) == 4
+
+    def test_a_store_with_nothing_empty_says_so(self, tmp_path, monkeypatch,
+                                                capsys):
+        from src import cli, sessions
+        d = str(tmp_path / "sessions")
+        os.makedirs(d, exist_ok=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".onit").mkdir(exist_ok=True)
+        (tmp_path / ".onit" / "sessions").symlink_to(d)
+        sessions.register_session("real", d)
+        sessions.update_session("real", task="do the thing", sessions_dir=d)
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete-empty"])
+        cli.main()
+        assert "No empty sessions" in capsys.readouterr().out

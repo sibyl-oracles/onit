@@ -92,6 +92,66 @@ def _no_real_secrets(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The developer's session store
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_real_session_store(monkeypatch, tmp_path_factory):
+    """No test writes a session into the store the person running it uses.
+
+    ``OnIt._setup_session`` falls back to ``~/.onit/sessions`` when the config
+    does not name one, and it registers the session it creates.  A test that
+    builds a real ``OnIt`` from a bare ``{"serving": {...}}`` therefore adds a
+    row to the developer's own ``onit sessions`` listing -- unnamed, zero
+    turns, and, being the newest entry, the one a bare ``onit`` would resume
+    next.  ``test_max_tokens_default`` did exactly that three times per run
+    and is why one laptop had 360 such rows.
+
+    Two things are moved, because moving one is not enough.
+
+    ``HOME`` covers ``Path.home()``, ``expanduser("~")`` and the default in
+    ``_setup_session``, which is read at call time.  It does *not* cover
+    ``DEFAULT_SESSIONS_DIR``: that is a module constant, and it is already
+    bound as the default argument of every function in ``sessions`` by the
+    time the first test runs, since an earlier test imported the module.  So
+    the constant and those defaults are rebound too -- otherwise a call that
+    names no directory, which is the leak this fixture exists for, still
+    writes to the real store.  A test that names its own ``session_path``
+    still wins.
+
+    The directory is made through ``tmp_path_factory`` and not under
+    ``tmp_path``: several doctor tests assert their ``tmp_path`` is empty
+    afterwards, and a home directory parked inside it is the one thing they
+    would find.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    # Windows spells it USERPROFILE; the fallback is not exercised on the CI
+    # runners, but a test that reads it should not reach the real home either.
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    import sys
+
+    import sessions as sessions_mod
+
+    old = sessions_mod.DEFAULT_SESSIONS_DIR
+    new = str(home / ".onit" / "sessions")
+    monkeypatch.setattr(sessions_mod, "DEFAULT_SESSIONS_DIR", new,
+                        raising=False)
+    for fn in list(vars(sessions_mod).values()):
+        defaults = getattr(fn, "__defaults__", None)
+        if defaults and old in defaults:
+            rebound = tuple(new if d == old else d for d in defaults)
+            monkeypatch.setattr(fn, "__defaults__", rebound, raising=False)
+    # ``OnIt._setup_session`` and the CLI resolve their own default string.
+    for mod_name in ("src.onit", "src.cli"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, "DEFAULT_SESSIONS_DIR"):
+            monkeypatch.setattr(mod, "DEFAULT_SESSIONS_DIR", new,
+                                raising=False)
+
+
+# ---------------------------------------------------------------------------
 # Minimal valid config dict (avoids real MCP / network calls)
 # ---------------------------------------------------------------------------
 

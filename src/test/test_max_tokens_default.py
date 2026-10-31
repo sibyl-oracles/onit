@@ -198,22 +198,38 @@ class TestEffectiveValue:
     directly: it is the config's value when there is one, and the constant
     otherwise.  This exercises that path rather than assuming it."""
 
-    def _resolved(self, cfg: dict) -> int:
+    def _resolved(self, cfg: dict, sessions_dir) -> int:
         from src.onit import OnIt
         from type.tools import ToolRegistry
         from unittest.mock import patch
+        # Building an OnIt creates a session, and a config without
+        # ``session_path`` sends that to ``~/.onit/sessions`` -- the real store
+        # of whoever runs the suite.  Three tests in this class meant three
+        # empty sessions per run in the developer's own listing, which is how
+        # a laptop collected 360 unnamed rows.  The number under test is the
+        # model's output budget, so the session goes to a scratch directory.
+        cfg = {**cfg, "session_path": str(sessions_dir)}
         with patch("src.onit.discover_tools", return_value=ToolRegistry()):
             agent = OnIt(config=cfg)
         return agent.model_serving.get("max_tokens", DEFAULT_MAX_TOKENS)
 
-    def test_a_config_without_max_tokens_falls_back_to_the_constant(self):
-        assert self._resolved({"serving": {"host": "http://x/v1"}}) == EXPECTED
+    @pytest.fixture(autouse=True)
+    def _sessions_dir(self, tmp_path):
+        """A session store that is thrown away with the test."""
+        return tmp_path / "sessions"
 
-    def test_a_config_with_max_tokens_wins(self):
+    def test_a_config_without_max_tokens_falls_back_to_the_constant(
+            self, _sessions_dir):
+        assert self._resolved({"serving": {"host": "http://x/v1"}},
+                              _sessions_dir) == EXPECTED
+
+    def test_a_config_with_max_tokens_wins(self, _sessions_dir):
         assert self._resolved({"serving": {"host": "http://x/v1",
-                                           "max_tokens": 4096}}) == 4096
+                                           "max_tokens": 4096}},
+                              _sessions_dir) == 4096
 
-    def test_a_user_config_without_the_key_gets_the_code_default(self):
+    def test_a_user_config_without_the_key_gets_the_code_default(
+            self, _sessions_dir):
         """The case that made the shipped YAML irrelevant: a user config
         replaces the shipped file, so it is the code constant that answers
         when the user config omits the key."""
@@ -221,4 +237,4 @@ class TestEffectiveValue:
         user_cfg = yaml.safe_load(
             "serving:\n  host: http://x/v1\n  think: true\n")
         assert "max_tokens" not in user_cfg.get("serving", {})
-        assert self._resolved(user_cfg) == EXPECTED
+        assert self._resolved(user_cfg, _sessions_dir) == EXPECTED

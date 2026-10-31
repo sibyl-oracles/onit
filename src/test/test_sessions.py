@@ -477,3 +477,112 @@ class TestEmptySessionsAreListed:
             update_session(f"s{i}", task=f"task number {i}", sessions_dir=d)
         assert count_sessions(d) == 5
         assert len(list_sessions(sessions_dir=d, limit=2)) == 2
+
+
+# ── an empty session is not "where I left off" ───────────────────────────────
+
+class TestTheLastSessionHasSomethingInIt:
+    """A bare ``onit`` resumes the last session.  An empty one is not it.
+
+    Empty sessions are listed on purpose -- they are the accidental ones, and
+    a row is how they get deleted -- but they are the newest entry by
+    definition, so ranking purely by recency made ``onit`` open a blank prompt
+    instead of continuing the conversation.  ``onit doctor`` builds a real
+    agent to check a real agent and deletes the session afterwards; if it dies
+    before the cleanup, the row it leaves is what every bare ``onit`` resumed.
+    """
+
+    def test_an_empty_session_newer_than_a_real_one_is_skipped(self, tmp_path):
+        from sessions import get_last_session
+
+        d = str(tmp_path)
+        register_session("real", sessions_dir=d)
+        update_session("real", task="write the migration", sessions_dir=d)
+        for sid in ("junk-1", "junk-2"):
+            register_session(sid, sessions_dir=d)
+
+        # The junk is newer, which is the whole problem.
+        assert get_last_session(d) == "real"
+
+    def test_the_real_one_is_still_chosen_when_the_junk_is_oldest(self, tmp_path):
+        """Order is not what decides it -- content is."""
+        from sessions import get_last_session
+
+        d = str(tmp_path)
+        register_session("junk", sessions_dir=d)
+        register_session("real", sessions_dir=d)
+        update_session("real", task="debug the parser", sessions_dir=d)
+        assert get_last_session(d) == "real"
+
+    def test_a_session_with_a_turn_but_no_name_counts_as_content(self, tmp_path):
+        """Only sessions with nothing at all are skipped."""
+        from sessions import _load_index, get_last_session
+
+        d = str(tmp_path)
+        register_session("unnamed-but-used", sessions_dir=d)
+        update_session("unnamed-but-used", task="hi", sessions_dir=d)
+        index = _load_index(d)
+        index["unnamed-but-used"]["tag"] = None
+        index["unnamed-but-used"]["preview"] = None
+        from sessions import _save_index
+        _save_index(index, d)
+
+        assert get_last_session(d) == "unnamed-but-used"
+
+    def test_a_store_holding_only_empty_sessions_still_returns_one(self, tmp_path):
+        """Falling back to no session at all would lose the one there is."""
+        from sessions import get_last_session
+
+        d = str(tmp_path)
+        register_session("only", sessions_dir=d)
+        assert get_last_session(d) == "only"
+
+    def test_an_empty_store_returns_nothing(self, tmp_path):
+        from sessions import get_last_session
+
+        assert get_last_session(str(tmp_path)) is None
+
+
+class TestNoTestWritesTheRealStore:
+    """The suite must not add rows to the listing of whoever runs it.
+
+    ``OnIt._setup_session`` falls back to ``~/.onit/sessions`` when a config
+    does not name one, and registers the session it creates.  A test that
+    builds a real ``OnIt`` from a bare ``{"serving": {...}}`` therefore writes
+    into the developer's own store -- which is how one laptop collected 360
+    unnamed rows, three per test run, starting with the commit that added
+    ``test_max_tokens_default``.
+
+    The real home is read from the password database and not from ``$HOME``,
+    because the fixture moves ``$HOME``: comparing the default against the
+    environment would compare it against the move and pass either way.
+    """
+
+    @staticmethod
+    def _real_home() -> str:
+        import os
+        try:
+            import pwd
+            return pwd.getpwuid(os.getuid()).pw_dir
+        except (ImportError, KeyError):  # Windows
+            return os.path.expanduser("~")
+
+    def test_the_default_store_is_not_the_real_one(self):
+        import os
+        import sessions
+
+        real = os.path.join(self._real_home(), ".onit", "sessions")
+        assert sessions.DEFAULT_SESSIONS_DIR != real, (
+            "the fixture did not move DEFAULT_SESSIONS_DIR: a call that names "
+            f"no directory would write to {real}")
+
+    def test_a_call_naming_no_directory_lands_under_the_moved_home(self):
+        import os
+        import sessions
+
+        sessions.register_session("no-dir-probe")
+        written = os.path.join(sessions.DEFAULT_SESSIONS_DIR, "index.json")
+        assert os.path.exists(written)
+        assert written.startswith(os.environ["HOME"])
+        assert not os.path.exists(os.path.join(
+            self._real_home(), ".onit", "sessions", "no-dir-probe.jsonl"))

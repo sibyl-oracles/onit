@@ -90,6 +90,7 @@ onit sessions --delete 20-                      # ...rows 20 to the last
 onit sessions --delete 3 "thesis chapter 3"     # delete several at once
 onit sessions --delete my thesis chapter 3     # one name, quotes optional
 onit sessions --delete 3 --yes                  # ... without the prompt
+onit sessions --delete-empty                    # delete sessions never used
 onit sessions --rename 3 "my-chat"              # rename row 3 (same as `onit rename`)
 onit sessions --rebuild-index                   # rebuild the index from JSONL files
 onit sessions --delete-all                      # delete all session history
@@ -127,6 +128,14 @@ filtered and nothing truncated, a `#` is simply the line it was printed next
 to. Both still parse, so an old script keeps running, but neither does
 anything. The Name column is not truncated either: a name cut short is not the
 name, and the ones that need the room are the ones that differ only at the end.
+
+`--delete-empty` is for the other kind of clutter: sessions that were opened and
+never used, with no name, no preview and no turns. They are listed like any
+other session, so they can be deleted by `#` -- but they are exactly the rows a
+test run creates in bulk, interleaved with the real ones by date, so a row range
+cannot name them. The filter matches only a session with nothing in it at all: a
+session named by hand is not empty even with no turns, and one that recorded a
+turn is not empty even with no name.
 
 `--delete` resolves every identifier before it deletes any of them, so a typo
 in a batch deletes nothing rather than half the list. It names each session

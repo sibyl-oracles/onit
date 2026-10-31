@@ -672,7 +672,25 @@ def resolve_session_choice(identifier: str,
 
 
 def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
-    """Return the most recently updated session ID."""
+    """Return the most recently updated session that has something in it.
+
+    A session that was opened and never used is still a row in the listing --
+    it is the accidental one, and it needs a ``#`` to delete it by -- but it is
+    not a conversation to continue.  It is nonetheless the *newest* entry by
+    definition, so ranking purely by recency made a bare ``onit`` resume it:
+    the person asked to continue where they left off and got an empty prompt.
+
+    ``onit doctor`` made that happen on purpose.  It builds a real agent to
+    check a real agent, then deletes the session it created -- and if it dies
+    before the cleanup, the row stays, and every bare ``onit`` afterwards
+    resumes it.  Skipping empty sessions here is the difference between "the
+    last thing I did" and "the last thing that happened to the store".
+
+    Only sessions with nothing at all are skipped.  A session whose name or
+    preview was never set but which recorded a turn is a real conversation and
+    keeps its place; so does one that is empty *now* when it is the only entry
+    there is, because falling back to no session at all would lose it.
+    """
     index = _load_index(sessions_dir)
     sessions_path = Path(sessions_dir)
 
@@ -692,10 +710,17 @@ def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
         except OSError:
             return idx_ts
 
-    sorted_sessions = sorted(index.items(),
-                             key=lambda x: _effective_ts(x[0], x[1]),
-                             reverse=True)
-    return sorted_sessions[0][0] if sorted_sessions else None
+    def _has_content(meta: dict) -> bool:
+        return bool(meta.get("turns") or meta.get("preview") or meta.get("tag"))
+
+    ranked = sorted(index.items(), key=lambda x: _effective_ts(x[0], x[1]),
+                    reverse=True)
+    for sid, meta in ranked:
+        if _has_content(meta):
+            return sid
+    # Nothing has been said in any of them: the newest empty session is a
+    # better answer than none, because it is the one the person is looking at.
+    return ranked[0][0] if ranked else None
 
 
 def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
@@ -769,6 +794,24 @@ def rebuild_index(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> dict:
         }
     _save_index(index, sessions_dir)
     return index
+
+
+def empty_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> list:
+    """Every session that was opened and never used, newest first.
+
+    "Never used" is exact: no name, no preview, no turn.  A session that was
+    named by hand but never spoken to is not empty -- the name is the reason
+    it exists -- and one that recorded a turn is a conversation whatever its
+    name says.
+
+    These are the rows a test run used to create in bulk: an agent built by a
+    test that named no ``session_path`` registered itself in the real store.
+    They are interleaved with the real sessions by date, so a row range cannot
+    name them and deleting them one at a time is not a chore anyone finishes.
+    """
+    return [row for row in list_sessions(sessions_dir, limit=None)
+            if not row.get("tag") and not row.get("preview")
+            and not row.get("turns")]
 
 
 def clear_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> int:
