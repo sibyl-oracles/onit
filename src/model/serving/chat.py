@@ -50,6 +50,7 @@ from .verify import (
 )
 
 from .harness import COMPACTION_NOTICE, HarnessTools
+from .balancer import is_ollama_host as _balancer_is_ollama_host
 from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
 from .interpreter import DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT
 from .state import (
@@ -637,8 +638,15 @@ def _log_to_ui_or_verbose(
 
 
 def _is_ollama_host(host: str) -> bool:
-    """Return True when host points to an Ollama cloud endpoint."""
-    return "ollama.com" in host or "ollama.ai" in host
+    """Return True when host points to an Ollama endpoint, cloud or local.
+
+    Delegates to ``balancer.is_ollama_host``, the one copy of the rule.  This
+    module had its own, matching only ``ollama.com`` and ``ollama.ai``, while
+    the balancer and the setup wizard both counted local Ollama -- so a server
+    at ``localhost:11434`` was held back from rotation *as* Ollama and then
+    driven down the OpenAI-compatible path as if it were vLLM.
+    """
+    return _balancer_is_ollama_host(host)
 
 
 def _is_openai_host(host: str) -> bool:
@@ -4499,10 +4507,21 @@ class _ModelCaller:
                     # is remembered too — see the handler — so a server that
                     # does not publish capabilities still recovers after one
                     # wasted attempt.
-                    if _turn_think:
-                        await _get_ollama_thinking_capability(ollama_client, model)
-                        if not _ollama_think_unsupported(model):
-                            ollama_kwargs["think"] = True
+                    #
+                    # It is sent in the negative direction too.  Omitting
+                    # ``think`` does not mean "off" — it asks for the server's
+                    # default, and a server that reports ``thinking.default``
+                    # reasons anyway: measured against Ollama 0.34.4, a model
+                    # with default ``medium`` sent no ``think`` field spends
+                    # the whole output budget on reasoning and returns empty
+                    # ``content`` with ``done_reason: length``.  The
+                    # OpenAI-compatible path used to say ``enable_thinking:
+                    # false`` in chat_template_kwargs and got this right, so
+                    # the native path has to say ``think: false`` or it is a
+                    # regression against the path it replaces.
+                    await _get_ollama_thinking_capability(ollama_client, model)
+                    if not _ollama_think_unsupported(model):
+                        ollama_kwargs["think"] = bool(_turn_think)
                     if tools:
                         ollama_kwargs["tools"] = tools
                     # Force JSON output when the model keeps generating planning prose
@@ -6799,6 +6818,9 @@ async def chat(
     # the Ollama branch below can say yes; the reconcile block in the turn loop
     # is guarded by it, so it has to be bound on every path.
     _ollama_window_unconfirmed = False
+    # Set when num_ctx came from the model's own metadata, which /api/ps must
+    # not second-guess.
+    _ollama_window_confirmed = False
 
     # Ollama: resolve the context window (num_ctx).  Ollama defaults num_ctx to
     # 2048, which silently truncates any response longer than ~prompt+2048 tokens
@@ -6828,6 +6850,15 @@ async def chat(
                 _ctx_ceiling = max(max_tokens * 2, DEFAULT_MAX_CONTEXT_TOKENS)
                 if _native_ctx:
                     num_ctx = min(_native_ctx, _ctx_ceiling)
+                    # The request is already inside the model's trained window,
+                    # so there is nothing left for /api/ps to tell us.  It is
+                    # worth having: measured on Ollama 0.34.4, a server whose
+                    # OLLAMA_CONTEXT_LENGTH is 262144 reports 4096 from
+                    # /api/ps for every request, whatever num_ctx was asked
+                    # for.  Trusting that would account the run against 4096
+                    # and compact at 3,686 tokens -- a fifth of the window the
+                    # server really holds, on a prompt it answered happily.
+                    _ollama_window_confirmed = True
                 else:
                     num_ctx = _ctx_ceiling
         _log_to_ui_or_verbose(
@@ -6841,7 +6872,12 @@ async def chat(
         # figure above is a request, not a fact.  Check what was allocated once
         # the model is resident (after the first turn) and account for that
         # instead — see the reconcile block in the turn loop.
-        _ollama_window_unconfirmed = True
+        #
+        # Only when the request was a guess.  A window derived from the model's
+        # own metadata is already clamped, and /api/ps is the less reliable of
+        # the two: it reports the runner's per-request figure, which can sit far
+        # below the window the server will actually accept.
+        _ollama_window_unconfirmed = not _ollama_window_confirmed
 
     # Nothing knew the real window: no configured value, no CLI flag, and
     # either a provider that does not publish one or a query that failed.  An

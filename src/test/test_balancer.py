@@ -483,3 +483,83 @@ class TestPriority:
         assert LoadBalancer(_two_endpoints()).describe() == (
             "http://vllm:8000/v1, http://vllm2:8000/v1"
         )
+
+
+class TestOllamaHostDetectionIsOneRule:
+    """``is_ollama_host`` decides which code path a run takes, and it used to
+    exist three times with two different answers.
+
+    The balancer and the setup wizard counted local Ollama; ``chat()`` counted
+    only the cloud.  So a server at ``localhost:11434`` was held back from
+    rotation *as* Ollama and then driven down the OpenAI-compatible path as if
+    it were vLLM -- skipping ``num_ctx`` sizing, the thinking switch, and the
+    reconciliation against the window Ollama really allocated.  These tests pin
+    the rule and the agreement between its callers.
+    """
+
+    def test_a_local_port_is_ollama(self):
+        assert balancer_mod.is_ollama_host("http://localhost:11434/v1")
+        assert balancer_mod.is_ollama_host("http://localhost:11434")
+        assert balancer_mod.is_ollama_host("http://127.0.0.1:11434/v1")
+
+    def test_the_port_is_matched_not_the_substring(self):
+        """``":11434" in host`` also matches ``:114340``, a port a vLLM server
+        can legitimately listen on.  Routing that to the native SDK would fail
+        every call, so the port is parsed, not searched for."""
+        assert not balancer_mod.is_ollama_host("http://localhost:114340")
+        assert not balancer_mod.is_ollama_host("http://host:114340/v1")
+        assert not balancer_mod.is_ollama_host("http://localhost:9999/v1")
+
+    def test_an_ollama_domain_is_matched_by_suffix(self):
+        assert balancer_mod.is_ollama_host("https://ollama.com")
+        assert balancer_mod.is_ollama_host("https://api.ollama.ai/v1")
+        assert balancer_mod.is_ollama_host("https://api.ollama.com")
+        # ``"ollama.com" in host`` matches this, and would route an unrelated
+        # server to the native SDK.
+        assert not balancer_mod.is_ollama_host("https://notollama.com/v1")
+
+    def test_case_and_a_trailing_dot_do_not_matter(self):
+        assert balancer_mod.is_ollama_host("HTTPS://OLLAMA.COM/V1")
+        assert balancer_mod.is_ollama_host("https://ollama.com.")
+
+    def test_nothing_and_nonsense_are_not_ollama(self):
+        assert not balancer_mod.is_ollama_host("")
+        assert not balancer_mod.is_ollama_host(None)
+        # An out-of-range port raises in urlsplit; it is not an Ollama host,
+        # and it must not raise out of a routing decision.
+        assert not balancer_mod.is_ollama_host("http://localhost:99999/v1")
+
+    def test_the_three_callers_agree(self):
+        """The regression itself: one rule, three callers, same answer.
+
+        ``chat()`` is where routing happens, so a disagreement here is a run
+        that never reaches any of the Ollama code.
+        """
+        from model.serving.chat import _is_ollama_host as chat_rule
+        from setup import is_ollama_host as wizard_rule
+
+        hosts = [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://localhost:114340",
+            "https://ollama.com",
+            "https://api.ollama.ai/v1",
+            "https://notollama.com/v1",
+            "http://vllm:8000/v1",
+            "",
+        ]
+        for host in hosts:
+            expected = balancer_mod.is_ollama_host(host)
+            assert chat_rule(host) == expected, f"chat() disagrees on {host!r}"
+            assert wizard_rule(host) == expected, f"the wizard disagrees on {host!r}"
+
+    def test_a_local_endpoint_is_driven_as_ollama(self):
+        """The consequence, at the level the balancer owns: a local Ollama is
+        an Ollama endpoint, so it is deprioritised against a vLLM peer."""
+        eps = [
+            ServerEndpoint(host="http://vllm:8000/v1", name="vllm"),
+            ServerEndpoint(host="http://localhost:11434/v1", name="local"),
+        ]
+        lb = LoadBalancer(eps, algorithm="sticky")
+        for i in range(10):
+            assert lb.acquire(key=f"s{i}").name == "vllm"

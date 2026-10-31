@@ -320,11 +320,15 @@ def entry_label(entry: dict) -> str:
 def is_ollama_host(host: str) -> bool:
     """True for Ollama endpoints: cloud (ollama.com/.ai) or local (:11434).
 
-    Mirrors ``balancer._is_ollama_host``; kept here so the wizard can warn
-    about the fallback rule without importing the serving stack.
+    Delegates to ``serving.balancer.is_ollama_host``, which holds the one copy
+    of the rule.  It was duplicated here so the wizard could warn about the
+    fallback rule without importing the serving stack; balancer is stdlib-only
+    and imports nothing back, so the import costs nothing and the two can no
+    longer drift.
     """
-    host = host or ""
-    return "ollama.com" in host or "ollama.ai" in host or ":11434" in host
+    from src.model.serving.balancer import is_ollama_host as _canonical
+
+    return _canonical(host)
 
 
 def is_ollama_cloud_host(host: str) -> bool:

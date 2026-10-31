@@ -47,6 +47,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,61 @@ DEFAULT_PRIORITY = 0
 MAX_STICKY_KEYS = 1024
 
 
+# The port a local Ollama listens on, and so the one way to recognise it: its
+# OpenAI-compatible surface lives under ``/v1`` exactly like vLLM's, so the path
+# cannot decide this one, and the wizard's own preset for local Ollama is
+# ``http://localhost:11434/v1``.  See ``is_ollama_host``.
+OLLAMA_LOCAL_PORT = 11434
+
+
+def _is_ollama_domain(hostname: str) -> bool:
+    """True when the hostname is ollama.com/ollama.ai or a subdomain of one.
+
+    Suffix-matched rather than substring-matched: ``"ollama.com" in host`` also
+    matches ``notollama.com``, which would route an unrelated server to the
+    native SDK and fail every call.  ``api.ollama.ai`` is the usual cloud host,
+    so subdomains have to count.
+    """
+    hostname = (hostname or "").lower().rstrip(".")
+    return any(
+        hostname == domain or hostname.endswith("." + domain)
+        for domain in ("ollama.com", "ollama.ai")
+    )
+
+
+def is_ollama_host(host: str) -> bool:
+    """True for Ollama endpoints: cloud (ollama.com/.ai) or local (:11434).
+
+    The single copy of this rule.  It used to exist three times, and they
+    disagreed: this one and the wizard's counted local Ollama, while the one
+    chat() routes on counted only the cloud.  So a local server was
+    deprioritised here as Ollama and then driven through the OpenAI-compatible
+    path by chat(), which is the arrangement that skips ``num_ctx`` sizing, the
+    thinking switch, and the window Ollama actually allocated.
+
+    Port, not substring: ``":11434" in host`` also matches ``:114340``, a port
+    a vLLM instance can legitimately listen on, and any URL with ``:11434`` in
+    its path -- either of which would be routed to the native SDK and fail.
+    """
+    host = (host or "").strip()
+    if not host:
+        return False
+    try:
+        parsed = urlsplit(host if "//" in host else f"//{host}")
+        hostname = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        # An unparseable URL (an out-of-range port, a malformed IPv6 literal)
+        # is not an Ollama endpoint.  The caller reports it as what it is.
+        return False
+    if _is_ollama_domain(hostname):
+        return True
+    return port == OLLAMA_LOCAL_PORT
+
+
 def _is_ollama_host(host: str) -> bool:
-    """True for Ollama endpoints: cloud (ollama.com/.ai) or local (:11434)."""
-    return "ollama.com" in host or "ollama.ai" in host or ":11434" in host
+    """Back-compat alias for ``is_ollama_host``."""
+    return is_ollama_host(host)
 
 
 @dataclass

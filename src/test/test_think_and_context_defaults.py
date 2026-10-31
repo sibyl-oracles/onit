@@ -652,3 +652,77 @@ class TestTheWindowOllamaActuallyAllocated:
         assert _ollama_model_matches("qwen3:latest", "qwen3")
         assert _ollama_model_matches("qwen3:8b", "qwen3:8b")
         assert not _ollama_model_matches("qwen3:8b", "qwen3:70b")
+
+
+class TestAWindowFromTheModelIsNotSecondGuessed:
+    """``/api/ps`` is not always the better witness.
+
+    Measured on Ollama 0.34.4: a server whose ``OLLAMA_CONTEXT_LENGTH`` is
+    262144 reports ``context_length: 4096`` from ``/api/ps`` for every request,
+    whatever ``num_ctx`` asked for.  The window derived from the model's own
+    metadata is already clamped to what the model was trained on, so trusting
+    ``/api/ps`` over it would account the run against 4096 and compact at 3,686
+    tokens -- a fifth of the window the server really holds, on a prompt it
+    answered happily.
+
+    So the reconcile runs only when the request was a guess.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_native_window_is_not_replaced_by_a_smaller_ps_figure(self):
+        """The model says 262144; ``/api/ps`` says 4096.  The model wins."""
+        seen: list = []
+
+        class _UI:
+            def set_token_budgets(self, max_output_tokens=0, max_context_tokens=0):
+                seen.append(max_context_tokens)
+
+            def set_context_usage(self, pct, max_tokens=0):
+                pass
+
+            def __getattr__(self, name):
+                return MagicMock()
+
+        client = _ollama_client(
+            allocated=4096, capabilities=["completion", "thinking"], native_ctx=262144
+        )
+        await _run_ollama(client, chat_ui=_UI())
+        # Asked for the model's window, not the 1M ceiling.
+        assert client._calls[0]["options"]["num_ctx"] == 262144
+        # And never told the run is smaller than that.
+        assert 4096 not in seen
+        assert seen[-1] == 262144
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_native_window_still_reconciles(self):
+        """The guard must not disable the check it was added beside: with no
+        native window the request is a guess, so ``/api/ps`` still corrects it.
+        """
+        seen: list = []
+
+        class _UI:
+            def set_token_budgets(self, max_output_tokens=0, max_context_tokens=0):
+                seen.append(max_context_tokens)
+
+            def set_context_usage(self, pct, max_tokens=0):
+                pass
+
+            def __getattr__(self, name):
+                return MagicMock()
+
+        client = _ollama_client(allocated=262144, capabilities=["completion", "thinking"])
+        await _run_ollama(client, chat_ui=_UI())
+        assert client._calls[0]["options"]["num_ctx"] == DEFAULT_MAX_CONTEXT_TOKENS
+        assert seen[-1] == 262144
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_window_is_not_second_guessed(self):
+        """A caller that names ``num_ctx`` has said what it wants; there is no
+        guess to check, so ``/api/ps`` is not consulted."""
+        client = _ollama_client(
+            allocated=4096, capabilities=["completion", "thinking"], native_ctx=262144
+        )
+        client.ps = AsyncMock(side_effect=AssertionError("ps should not be called"))
+        answer = await _run_ollama(client, num_ctx=65536)
+        assert answer and "Done." in answer
+        assert client._calls[0]["options"]["num_ctx"] == 65536
