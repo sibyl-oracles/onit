@@ -23,8 +23,13 @@ from src.cli import (
 # this file that reaches main() therefore leaks them, whatever it was actually
 # testing: a leaked ONIT_AUTO_APPROVE turns a later module's refusal into an
 # approval. Snapshot and put back by hand, for the whole file.
-_APPROVAL_ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
-                      "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
+_APPROVAL_ENV_VARS = (
+    "ONIT_APPROVAL_CHANNEL",
+    "ONIT_AUTO_APPROVE",
+    "ONIT_ASK_APPROVAL",
+    "ONIT_WEB_UI",
+    "ONIT_UNRESTRICTED",
+)
 
 # The tool-availability switches are set the same way, in the same place, when
 # credential resolution finds nothing: a config resolved without a key leaves
@@ -37,8 +42,7 @@ _TOOL_DISABLE_VARS = ("ONIT_DISABLE_WEB_SEARCH", "ONIT_DISABLE_WEATHER")
 
 @pytest.fixture(autouse=True)
 def _restore_approval_env():
-    saved = {var: os.environ.get(var)
-             for var in _APPROVAL_ENV_VARS + _TOOL_DISABLE_VARS}
+    saved = {var: os.environ.get(var) for var in _APPROVAL_ENV_VARS + _TOOL_DISABLE_VARS}
     yield
     for var, value in saved.items():
         if value is None:
@@ -66,14 +70,23 @@ class TestFindDefaultConfig:
 
 # ── _ensure_mcp_servers ──────────────────────────────────────────────────────
 
+
 class TestEnsureMcpServers:
     @staticmethod
     def _config():
         """One named server. _ensure_mcp_servers adds the defaults alongside."""
-        return {"mcp": {"servers": [
-            {"name": "A", "url": "http://127.0.0.1:9000/mcp",
-             "external": True, "enabled": True},
-        ]}}
+        return {
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "A",
+                        "url": "http://127.0.0.1:9000/mcp",
+                        "external": True,
+                        "enabled": True,
+                    },
+                ]
+            }
+        }
 
     @staticmethod
     def _by_name(config, name):
@@ -90,15 +103,24 @@ class TestEnsureMcpServers:
         config = self._config()
         _ensure_mcp_servers(config)
         names = {s["name"] for s in config["mcp"]["servers"]}
-        assert names == {"A", "PromptsMCPServer", "ToolsLocalMCPServer",
-                         "ToolsNetMCPServer"}
+        assert names == {"A", "PromptsMCPServer", "ToolsLocalMCPServer", "ToolsNetMCPServer"}
 
     def test_stdio_server_gets_a_spec(self):
         from type.tools import _STDIO_SPECS
-        config = {"mcp": {"servers": [
-            {"name": "ToolsLocalMCPServer", "transport": "stdio",
-             "module": "tasks.tools", "profile": "local", "enabled": True},
-        ]}}
+
+        config = {
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "ToolsLocalMCPServer",
+                        "transport": "stdio",
+                        "module": "tasks.tools",
+                        "profile": "local",
+                        "enabled": True,
+                    },
+                ]
+            }
+        }
         _ensure_mcp_servers(config)
 
         server = self._by_name(config, "ToolsLocalMCPServer")
@@ -120,12 +142,20 @@ class TestEnsureMcpServers:
         falls back to `observe` and serves nothing however the operator
         configured the run."""
         from type.tools import _STDIO_SPECS
-        config = {"learn": {"autonomy": "extend"},
-                  "mcp": {"servers": [
-                      {"name": "SkillsMCPServer", "transport": "stdio",
-                       "module": "src.mcp.servers.tasks.skills",
-                       "enabled": True},
-                  ]}}
+
+        config = {
+            "learn": {"autonomy": "extend"},
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "SkillsMCPServer",
+                        "transport": "stdio",
+                        "module": "src.mcp.servers.tasks.skills",
+                        "enabled": True,
+                    },
+                ]
+            },
+        }
         _ensure_mcp_servers(config)
         server = self._by_name(config, "SkillsMCPServer")
         spec = _STDIO_SPECS[server["url"]]
@@ -135,25 +165,38 @@ class TestEnsureMcpServers:
         """A config asking for `evolve` is running at `extend`; the server
         must be told what the run *is*, not what it asked for."""
         from type.tools import _STDIO_SPECS
-        config = {"learn": {"autonomy": "evolve"},
-                  "mcp": {"servers": [
-                      {"name": "SkillsMCPServer", "transport": "stdio",
-                       "module": "src.mcp.servers.tasks.skills",
-                       "enabled": True},
-                  ]}}
+
+        config = {
+            "learn": {"autonomy": "evolve"},
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "SkillsMCPServer",
+                        "transport": "stdio",
+                        "module": "src.mcp.servers.tasks.skills",
+                        "enabled": True,
+                    },
+                ]
+            },
+        }
         _ensure_mcp_servers(config)
         server = self._by_name(config, "SkillsMCPServer")
         assert _STDIO_SPECS[server["url"]]["env"]["ONIT_LEARN_AUTONOMY"] == "3"
 
     def test_stdio_server_without_a_module_is_disabled(self):
-        config = {"mcp": {"servers": [
-            {"name": "Broken", "transport": "stdio", "enabled": True},
-        ]}}
+        config = {
+            "mcp": {
+                "servers": [
+                    {"name": "Broken", "transport": "stdio", "enabled": True},
+                ]
+            }
+        }
         _ensure_mcp_servers(config)
         assert self._by_name(config, "Broken")["enabled"] is False
 
 
 # ── Web UI OAuth credential resolution ──────────────────────────────────────
+
 
 class TestWebOAuthCredentialResolution:
     """Google OAuth2 credentials stored by 'onit setup' (keyring) or env vars
@@ -164,6 +207,7 @@ class TestWebOAuthCredentialResolution:
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         secrets = secrets or {}
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: secrets.get(key))
         # Keep the user's real ~/.onit/config.yaml out of the test
@@ -175,8 +219,10 @@ class TestWebOAuthCredentialResolution:
 
     def test_keyring_credentials_reach_web_config(self, tmp_path, monkeypatch):
         cfg = {"web": True, "serving": {"host": "http://localhost:8000/v1"}}
-        secrets = {"web_google_client_id": "kr-id.apps.googleusercontent.com",
-                   "web_google_client_secret": "kr-secret"}
+        secrets = {
+            "web_google_client_id": "kr-id.apps.googleusercontent.com",
+            "web_google_client_secret": "kr-secret",
+        }
         resolved = self._resolve(tmp_path, monkeypatch, cfg, secrets)
         assert resolved["web_google_client_id"] == "kr-id.apps.googleusercontent.com"
         assert resolved["web_google_client_secret"] == "kr-secret"
@@ -190,8 +236,11 @@ class TestWebOAuthCredentialResolution:
         assert resolved["web_google_client_secret"] == "env-secret"
 
     def test_config_file_value_wins(self, tmp_path, monkeypatch):
-        cfg = {"web": True, "serving": {"host": "http://localhost:8000/v1"},
-               "web_google_client_id": "from-config"}
+        cfg = {
+            "web": True,
+            "serving": {"host": "http://localhost:8000/v1"},
+            "web_google_client_id": "from-config",
+        }
         secrets = {"web_google_client_id": "kr-id"}
         resolved = self._resolve(tmp_path, monkeypatch, cfg, secrets)
         assert resolved["web_google_client_id"] == "from-config"
@@ -206,12 +255,12 @@ class TestWebOAuthCredentialResolution:
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         path = tmp_path / "config.yaml"
         path.write_text(yaml.safe_dump({"serving": {"host": "http://localhost:8000/v1"}}))
-        args = _build_parser().parse_args(
-            ["--config", str(path), "serve", "web", "--no-login"])
+        args = _build_parser().parse_args(["--config", str(path), "serve", "web", "--no-login"])
         resolved = _parse_and_resolve_config(args)
         assert resolved["web"] is True
         assert resolved["web_require_auth"] is False
@@ -220,6 +269,7 @@ class TestWebOAuthCredentialResolution:
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         path = tmp_path / "config.yaml"
@@ -231,6 +281,7 @@ class TestWebOAuthCredentialResolution:
 
 # ── --host serving overrides ──────────────────────────────────────
 
+
 class TestOpenRouterKeyResolution:
     """The legacy OPENROUTER_API_KEY must not be injected in front of a key
     stored for this endpoint's own URL — that authenticates as the wrong
@@ -240,39 +291,43 @@ class TestOpenRouterKeyResolution:
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda k: secrets.get(k))
-        monkeypatch.setattr(setup_mod, "CONFIG_PATH",
-                            str(tmp_path / "no-setup.yaml"))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         path = tmp_path / "config.yaml"
         path.write_text(yaml.safe_dump({"serving": {"host": host}}))
         args = _build_parser().parse_args(["--config", str(path)])
         return _parse_and_resolve_config(args)["serving"]
 
-    def test_an_endpoint_key_is_left_for_chat_to_find(self, tmp_path,
-                                                      monkeypatch):
+    def test_an_endpoint_key_is_left_for_chat_to_find(self, tmp_path, monkeypatch):
         from src import setup as setup_mod
+
         host = "https://openrouter.ai/api/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host, {
-            setup_mod.endpoint_secret_name(host): "sk-endpoint",
-            "host_key": "sk-legacy",
-        })
+        serving = self._resolve(
+            tmp_path,
+            monkeypatch,
+            host,
+            {
+                setup_mod.endpoint_secret_name(host): "sk-endpoint",
+                "host_key": "sk-legacy",
+            },
+        )
         assert "host_key" not in serving
 
-    def test_the_legacy_key_is_still_injected_without_one(self, tmp_path,
-                                                          monkeypatch):
+    def test_the_legacy_key_is_still_injected_without_one(self, tmp_path, monkeypatch):
         host = "https://openrouter.ai/api/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host,
-                                {"host_key": "sk-legacy"})
+        serving = self._resolve(tmp_path, monkeypatch, host, {"host_key": "sk-legacy"})
         assert serving["host_key"] == "sk-legacy"
 
-    def test_an_endpoint_key_satisfies_the_missing_key_check(self, tmp_path,
-                                                             monkeypatch):
+    def test_an_endpoint_key_satisfies_the_missing_key_check(self, tmp_path, monkeypatch):
         """Without this the run exits before it can use the key it has."""
         from src import setup as setup_mod
+
         host = "https://openrouter.ai/api/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host, {
-            setup_mod.endpoint_secret_name(host): "sk-endpoint"})
+        serving = self._resolve(
+            tmp_path, monkeypatch, host, {setup_mod.endpoint_secret_name(host): "sk-endpoint"}
+        )
         assert serving["host"] == host
 
 
@@ -285,9 +340,9 @@ class TestOpenAIKeyResolution:
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda k: secrets.get(k))
-        monkeypatch.setattr(setup_mod, "CONFIG_PATH",
-                            str(tmp_path / "no-setup.yaml"))
+        monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         path = tmp_path / "config.yaml"
@@ -295,37 +350,39 @@ class TestOpenAIKeyResolution:
         args = _build_parser().parse_args(["--config", str(path)])
         return _parse_and_resolve_config(args)["serving"]
 
-    def test_an_endpoint_key_is_left_for_chat_to_find(self, tmp_path,
-                                                      monkeypatch):
+    def test_an_endpoint_key_is_left_for_chat_to_find(self, tmp_path, monkeypatch):
         from src import setup as setup_mod
+
         host = "https://api.openai.com/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host, {
-            setup_mod.endpoint_secret_name(host): "sk-endpoint",
-            "openai_api_key": "sk-legacy",
-        })
+        serving = self._resolve(
+            tmp_path,
+            monkeypatch,
+            host,
+            {
+                setup_mod.endpoint_secret_name(host): "sk-endpoint",
+                "openai_api_key": "sk-legacy",
+            },
+        )
         assert "host_key" not in serving
 
-    def test_the_legacy_key_is_still_injected_without_one(self, tmp_path,
-                                                          monkeypatch):
+    def test_the_legacy_key_is_still_injected_without_one(self, tmp_path, monkeypatch):
         host = "https://api.openai.com/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host,
-                                {"openai_api_key": "sk-legacy"})
+        serving = self._resolve(tmp_path, monkeypatch, host, {"openai_api_key": "sk-legacy"})
         assert serving["host_key"] == "sk-legacy"
 
-    def test_an_endpoint_key_satisfies_the_missing_key_check(self, tmp_path,
-                                                             monkeypatch):
+    def test_an_endpoint_key_satisfies_the_missing_key_check(self, tmp_path, monkeypatch):
         from src import setup as setup_mod
+
         host = "https://api.openai.com/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host, {
-            setup_mod.endpoint_secret_name(host): "sk-endpoint"})
+        serving = self._resolve(
+            tmp_path, monkeypatch, host, {setup_mod.endpoint_secret_name(host): "sk-endpoint"}
+        )
         assert serving["host"] == host
 
-    def test_a_vllm_host_never_receives_the_openai_key(self, tmp_path,
-                                                       monkeypatch):
+    def test_a_vllm_host_never_receives_the_openai_key(self, tmp_path, monkeypatch):
         """The generalized injection must not shadow VLLM_API_KEY."""
         host = "http://localhost:8000/v1"
-        serving = self._resolve(tmp_path, monkeypatch, host,
-                                {"openai_api_key": "sk-openai"})
+        serving = self._resolve(tmp_path, monkeypatch, host, {"openai_api_key": "sk-openai"})
         assert "host_key" not in serving
 
 
@@ -335,15 +392,20 @@ class TestHostOverrides:
     server (Ollama endpoints are fallback-only, so a healthy vLLM second
     host would shadow an explicitly requested Ollama --host entirely)."""
 
-    _CFG = {"serving": {"host": "http://vllm1:8001/v1",
-                        "host2": "http://vllm2:8000/v1",
-                        "model2": "some/vllm-model",
-                        "host2_key": "k2"}}
+    _CFG = {
+        "serving": {
+            "host": "http://vllm1:8001/v1",
+            "host2": "http://vllm2:8000/v1",
+            "model2": "some/vllm-model",
+            "host2_key": "k2",
+        }
+    }
 
     def _resolve(self, tmp_path, monkeypatch, cfg, cli_args):
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         path = tmp_path / "config.yaml"
@@ -352,8 +414,9 @@ class TestHostOverrides:
         return _parse_and_resolve_config(args)
 
     def test_host_alone_drops_config_host2(self, tmp_path, monkeypatch):
-        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                 ["--host", "https://api.ollama.com"])
+        resolved = self._resolve(
+            tmp_path, monkeypatch, self._CFG, ["--host", "https://api.ollama.com"]
+        )
         serving = resolved["serving"]
         assert serving["host"] == "https://api.ollama.com"
         assert "host2" not in serving
@@ -362,8 +425,7 @@ class TestHostOverrides:
 
     def test_host_alone_clears_env_host2(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ONIT_HOST2", "http://vllm2:8000/v1")
-        self._resolve(tmp_path, monkeypatch, self._CFG,
-                      ["--host", "https://api.ollama.com"])
+        self._resolve(tmp_path, monkeypatch, self._CFG, ["--host", "https://api.ollama.com"])
         assert "ONIT_HOST2" not in os.environ
 
     def test_no_host_flag_keeps_config_host2(self, tmp_path, monkeypatch):
@@ -373,13 +435,13 @@ class TestHostOverrides:
         assert serving["host2"] == "http://vllm2:8000/v1"
 
     def test_flag_absent_leaves_config_value(self, tmp_path, monkeypatch):
-        cfg = {"serving": {"host": "http://vllm1:8001/v1",
-                           "ollama_fallback_only": False}}
+        cfg = {"serving": {"host": "http://vllm1:8001/v1", "ollama_fallback_only": False}}
         resolved = self._resolve(tmp_path, monkeypatch, cfg, [])
         assert resolved["serving"]["ollama_fallback_only"] is False
 
 
 # ── --max-tokens / --max-context-tokens ─────────────────────────────────────
+
 
 class TestTokenLimitOverrides:
     """The two token budgets are reachable from the CLI, in the units people
@@ -390,6 +452,7 @@ class TestTokenLimitOverrides:
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         path = tmp_path / "config.yaml"
@@ -399,23 +462,28 @@ class TestTokenLimitOverrides:
 
     _CFG = {"serving": {"host": "http://localhost:8000/v1"}}
 
-    @pytest.mark.parametrize("text,expected", [
-        ("32768", 32768),
-        ("128k", 128_000),
-        ("1M", 1_000_000),
-        ("1m", 1_000_000),
-        ("1.5M", 1_500_000),
-        ("1_048_576", 1_048_576),
-        ("1,048,576", 1_048_576),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("32768", 32768),
+            ("128k", 128_000),
+            ("1M", 1_000_000),
+            ("1m", 1_000_000),
+            ("1.5M", 1_500_000),
+            ("1_048_576", 1_048_576),
+            ("1,048,576", 1_048_576),
+        ],
+    )
     def test_suffixes_and_separators(self, text, expected):
         from src.cli import _token_count
+
         assert _token_count(text) == expected
 
     @pytest.mark.parametrize("text", ["lots", "", "-5", "1G", "1.2.3", "0"])
     def test_rejects_nonsense(self, text):
         import argparse
         from src.cli import _token_count
+
         with pytest.raises(argparse.ArgumentTypeError):
             _token_count(text)
 
@@ -425,23 +493,19 @@ class TestTokenLimitOverrides:
         assert resolved["serving"]["max_tokens"] == 1_000_000
 
     def test_max_context_tokens_overrides_config(self, tmp_path, monkeypatch):
-        cfg = {"serving": {"host": "http://localhost:8000/v1",
-                           "max_context_tokens": 131072}}
-        resolved = self._resolve(tmp_path, monkeypatch, cfg,
-                                 ["--max-context-tokens", "1M"])
+        cfg = {"serving": {"host": "http://localhost:8000/v1", "max_context_tokens": 131072}}
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, ["--max-context-tokens", "1M"])
         assert resolved["serving"]["max_context_tokens"] == 1_000_000
 
     def test_max_context_tokens_sizes_ollama_num_ctx(self, tmp_path, monkeypatch):
         # Ollama auto-sizes num_ctx to a ceiling far below 1M, so the flag has
         # to reach that knob or the window the user asked for never exists.
-        resolved = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                 ["--max-context-tokens", "1M"])
+        resolved = self._resolve(tmp_path, monkeypatch, self._CFG, ["--max-context-tokens", "1M"])
         assert resolved["serving"]["num_ctx"] == 1_000_000
 
     def test_configured_num_ctx_wins(self, tmp_path, monkeypatch):
         cfg = {"serving": {"host": "http://localhost:11434/v1", "num_ctx": 65536}}
-        resolved = self._resolve(tmp_path, monkeypatch, cfg,
-                                 ["--max-context-tokens", "1M"])
+        resolved = self._resolve(tmp_path, monkeypatch, cfg, ["--max-context-tokens", "1M"])
         assert resolved["serving"]["num_ctx"] == 65536
         assert resolved["serving"]["max_context_tokens"] == 1_000_000
 
@@ -454,6 +518,7 @@ class TestTokenLimitOverrides:
 
 
 # ── web-only serving defaults ───────────────────────────────────────────────
+
 
 class TestWebServingDefaults:
     """One config serves both UIs, and now serves them the same way.
@@ -471,15 +536,15 @@ class TestWebServingDefaults:
     about now.
     """
 
-    _CFG = {"serving": {"host": "http://vllm:8000/v1",
-                        "think": True,
-                        "temperature": 0.6,
-                        "top_p": 0.95}}
+    _CFG = {
+        "serving": {"host": "http://vllm:8000/v1", "think": True, "temperature": 0.6, "top_p": 0.95}
+    }
 
     def _resolve(self, tmp_path, monkeypatch, cfg, cli_args):
         import yaml
         from src import setup as setup_mod
         from src.cli import _build_parser, _parse_and_resolve_config
+
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         path = tmp_path / "config.yaml"
@@ -489,8 +554,7 @@ class TestWebServingDefaults:
 
     def test_a_web_run_keeps_the_configured_values(self, tmp_path, monkeypatch):
         """The split is gone: no thinking-off, no sampling swap."""
-        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                ["serve", "web"])["serving"]
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG, ["serve", "web"])["serving"]
         assert serving["think"] is True
         assert serving["temperature"] == 0.6
         assert serving["top_p"] == 0.95
@@ -510,8 +574,9 @@ class TestWebServingDefaults:
 
     def test_other_serve_modes_are_not_web(self, tmp_path, monkeypatch):
         """The loop mode is not someone watching a composer."""
-        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                ["serve", "loop", "check things"])["serving"]
+        serving = self._resolve(
+            tmp_path, monkeypatch, self._CFG, ["serve", "loop", "check things"]
+        )["serving"]
         assert serving["think"] is True
         assert serving["temperature"] == 0.6
 
@@ -526,16 +591,14 @@ class TestWebServingDefaults:
         """Nothing to inherit and nothing invented: a bare block stays bare,
         so chat()'s own defaults (not the CLI's) are what apply."""
         cfg = {"serving": {"host": "http://vllm:8000/v1"}}
-        serving = self._resolve(tmp_path, monkeypatch, cfg,
-                                ["serve", "web"])["serving"]
+        serving = self._resolve(tmp_path, monkeypatch, cfg, ["serve", "web"])["serving"]
         assert "think" not in serving
         assert "top_p" not in serving
         assert "temperature" not in serving
 
     def test_serving_web_block_overrides_for_the_web_run(self, tmp_path, monkeypatch):
         cfg = {"serving": dict(self._CFG["serving"], web={"top_p": 0.9})}
-        serving = self._resolve(tmp_path, monkeypatch, cfg,
-                                ["serve", "web"])["serving"]
+        serving = self._resolve(tmp_path, monkeypatch, cfg, ["serve", "web"])["serving"]
         assert serving["top_p"] == 0.9
         # Keys it does not name are inherited from ``serving:``, unchanged.
         assert serving["think"] is True
@@ -558,19 +621,22 @@ class TestWebServingDefaults:
             assert "web" not in serving
 
     def test_explicit_think_flag_wins(self, tmp_path, monkeypatch):
-        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                ["--think", "serve", "web"])["serving"]
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG, ["--think", "serve", "web"])[
+            "serving"
+        ]
         assert serving["think"] is True
 
     def test_explicit_no_think_flag_wins(self, tmp_path, monkeypatch):
         """``--no-think`` has to reach the config as a value: the default is
         on, so the flag that turns it off is the one that has to be honoured."""
-        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
-                                ["--no-think", "serve", "web"])["serving"]
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG, ["--no-think", "serve", "web"])[
+            "serving"
+        ]
         assert serving["think"] is False
 
 
 # ── onit learn ──────────────────────────────────────────────────────────────
+
 
 class TestLearnCommand:
     """Read-only, and deliberately usable when the rest of the stack is down:
@@ -580,19 +646,33 @@ class TestLearnCommand:
     def store(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ONIT_LEARN_PATH", str(tmp_path / "learned"))
         # No config file to find, so the command falls back to env + defaults.
-        monkeypatch.setattr("src.cli._find_default_config",
-                            lambda: str(tmp_path / "missing.yaml"))
+        monkeypatch.setattr("src.cli._find_default_config", lambda: str(tmp_path / "missing.yaml"))
         from src.learn import record_task
-        record_task(session_id="s1", turn=1, task="what scholarships exist?",
-                    response="two", metrics={"turns": [
-                        {"n": 1, "tool_runs": [
+
+        record_task(
+            session_id="s1",
+            turn=1,
+            task="what scholarships exist?",
+            response="two",
+            metrics={
+                "turns": [
+                    {
+                        "n": 1,
+                        "tool_runs": [
                             {"name": "read_file", "ok": False, "ms": 40},
-                            {"name": "local_search", "ok": True, "ms": 800}]}],
-                        "turn_count": 2, "completion_tokens": 50})
+                            {"name": "local_search", "ok": True, "ms": 800},
+                        ],
+                    }
+                ],
+                "turn_count": 2,
+                "completion_tokens": 50,
+            },
+        )
         return tmp_path
 
     def _run(self, argv):
         from src.cli import main
+
         with patch.object(sys, "argv", ["onit"] + argv):
             try:
                 main()
@@ -632,6 +712,7 @@ class TestLearnCommand:
 
 # ── session selection on startup ────────────────────────────────────────────
 
+
 class TestSessionSelection:
     """Terminal chat picks up where it left off: a bare `onit` resumes the
     last session, and --restart-session is the way to start over."""
@@ -652,10 +733,14 @@ class TestSessionSelection:
             os.utime(path, (mtime, mtime))
 
         cfg = tmp_path / "config.yaml"
-        cfg.write_text(yaml.safe_dump({
-            "session_path": str(sessions_dir),
-            "serving": {"host": "http://localhost:8000/v1"},
-        }))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "session_path": str(sessions_dir),
+                    "serving": {"host": "http://localhost:8000/v1"},
+                }
+            )
+        )
         monkeypatch.setattr("src.cli._find_default_config", lambda: str(cfg))
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         # Keep the real keychain out of credential resolution.
@@ -665,11 +750,13 @@ class TestSessionSelection:
     def _run(self, argv):
         """Run main() up to dispatch and return the resolved config."""
         from src.cli import main
+
         captured = {}
-        with patch.object(sys, "argv", ["onit"] + argv), \
-                patch("src.cli._setup_servers"), \
-                patch("src.cli._dispatch_mode",
-                      side_effect=lambda cfg: captured.update(cfg)):
+        with (
+            patch.object(sys, "argv", ["onit"] + argv),
+            patch("src.cli._setup_servers"),
+            patch("src.cli._dispatch_mode", side_effect=lambda cfg: captured.update(cfg)),
+        ):
             main()
         return captured
 
@@ -683,6 +770,7 @@ class TestSessionSelection:
         confirm before typing into it -- a bare `onit` continues the last one,
         and the id alone does not say which conversation that was."""
         from src.sessions import tag_session
+
         tag_session("new-session-id", "thesis ch3", str(sessions))
         self._run([])
         out = capsys.readouterr().out
@@ -697,6 +785,7 @@ class TestSessionSelection:
 
     def test_the_explicit_resume_message_names_it_too(self, sessions, capsys):
         from src.sessions import tag_session
+
         tag_session("old-session-id", "old work", str(sessions))
         self._run(["--resume", "old-session-id"])
         out = capsys.readouterr().out
@@ -784,6 +873,7 @@ class TestSessionSelection:
         different session."""
         import pathlib
         from src.sessions import register_session, resolve_session_choice
+
         register_session("older", str(pathlib.Path(sessions)), tag="chapter 3")
         config = self._run(["--new-session", "chapter 3"])
         assert config["session_name"] == "chapter 3-2"
@@ -792,8 +882,7 @@ class TestSessionSelection:
         assert "already in use" in out
         # the promise is kept: the announced name is stored verbatim when the
         # session is created, so it is not suffixed a second time
-        stored = register_session("newer", str(pathlib.Path(sessions)),
-                                  tag=config["session_name"])
+        stored = register_session("newer", str(pathlib.Path(sessions)), tag=config["session_name"])
         assert stored == "chapter 3-2"
         assert resolve_session_choice("chapter 3-2", str(pathlib.Path(sessions)))
 
@@ -826,6 +915,7 @@ class TestSessionSelection:
         --help. It still parses, hidden: a flag in muscle memory cannot simply
         be removed."""
         from src.cli import _build_parser
+
         text = _build_parser().format_help()
         assert "--new-session" in text
         assert "--resume-session" in text
@@ -837,13 +927,19 @@ class TestSessionSelection:
         """--help groups them under 'session'; that is what makes the family
         discoverable rather than three flags scattered among twenty."""
         from src.cli import _build_parser
+
         groups = {g.title: g for g in _build_parser()._action_groups}
         assert "session" in groups
         flags = {o for a in groups["session"]._group_actions for o in a.option_strings}
         assert {"--new-session", "--resume-session"} <= flags
         # and nowhere else, so there is one place to look
-        others = {o for t, g in groups.items() if t != "session"
-                  for a in g._group_actions for o in a.option_strings}
+        others = {
+            o
+            for t, g in groups.items()
+            if t != "session"
+            for a in g._group_actions
+            for o in a.option_strings
+        }
         assert not ({"--new-session", "--resume-session"} & others)
 
     def test_a_subcommand_after_the_bare_flag_is_not_eaten(self):
@@ -853,9 +949,9 @@ class TestSessionSelection:
         the recovery step argparse would name a session "serve" and then exit
         2 on the stray "web"."""
         from src.cli import _build_parser, _recover_subcommand
+
         parser = _build_parser()
-        args = parser.parse_args(
-            _recover_subcommand(["--new-session", "serve", "web"], parser))
+        args = parser.parse_args(_recover_subcommand(["--new-session", "serve", "web"], parser))
         assert args.command == "serve"
         assert args.serve_mode == "web"
         assert args.new_session == ""
@@ -865,9 +961,9 @@ class TestSessionSelection:
         written `--new-session=serve` or in a position the subparser cannot
         claim, so a session may still be called "sessions"."""
         from src.cli import _build_parser, _recover_subcommand
+
         parser = _build_parser()
-        args = parser.parse_args(
-            _recover_subcommand(["--new-session=sessions"], parser))
+        args = parser.parse_args(_recover_subcommand(["--new-session=sessions"], parser))
         assert args.command is None
         assert args.new_session == "sessions"
 
@@ -882,6 +978,7 @@ class TestSessionSelection:
         """
         import pathlib
         from src.sessions import register_session, update_session
+
         store = pathlib.Path(sessions)
         for i in range(6):
             register_session(f"row-{i}", str(store))
@@ -901,7 +998,7 @@ class TestSessionSelection:
         out = capsys.readouterr().out
         # the fixture's store holds old-session-id and new-session-id
         assert "old-session-id" in out or "(unnamed)" in out
-        assert "SMOKE-OK" not in out      # that is the real ~/.onit store
+        assert "SMOKE-OK" not in out  # that is the real ~/.onit store
 
     def test_the_listing_prints_every_row(self, sessions, capsys):
         """20 was the default limit and the listing printed 20 rows, so a
@@ -909,6 +1006,7 @@ class TestSessionSelection:
         or deleted by row number at all."""
         import pathlib
         from src.sessions import register_session, update_session
+
         store = pathlib.Path(sessions)
         for i in range(25):
             register_session(f"extra-{i}", str(store))
@@ -918,7 +1016,7 @@ class TestSessionSelection:
         out = capsys.readouterr().out
         # 27 sessions exist, so the last row number is 27
         assert "27 " in out
-        assert "Showing" not in out    # nothing was held back
+        assert "Showing" not in out  # nothing was held back
 
 
 class TestApprovalChannelWiring:
@@ -937,10 +1035,14 @@ class TestApprovalChannelWiring:
         from src import setup as setup_mod
 
         cfg = tmp_path / "config.yaml"
-        cfg.write_text(yaml.safe_dump({
-            "session_path": str(tmp_path / "sessions"),
-            "serving": {"host": "http://localhost:8000/v1"},
-        }))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "session_path": str(tmp_path / "sessions"),
+                    "serving": {"host": "http://localhost:8000/v1"},
+                }
+            )
+        )
         monkeypatch.setattr("src.cli._find_default_config", lambda: str(cfg))
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
@@ -956,9 +1058,12 @@ class TestApprovalChannelWiring:
     def _run(self, argv):
         """Run main() up to dispatch, so only the env wiring is exercised."""
         from src.cli import main
-        with patch.object(sys, "argv", ["onit"] + argv), \
-                patch("src.cli._setup_servers"), \
-                patch("src.cli._dispatch_mode"):
+
+        with (
+            patch.object(sys, "argv", ["onit"] + argv),
+            patch("src.cli._setup_servers"),
+            patch("src.cli._dispatch_mode"),
+        ):
             main()
 
     def test_your_own_run_answers_for_itself(self, sessions):
@@ -1036,8 +1141,7 @@ class TestApprovalChannelWiring:
         assert "Command approvals: approving automatically" in err
         assert "--no-auto" in err
 
-    def test_auto_warns_when_it_has_nothing_to_approve(self, sessions,
-                                                       monkeypatch, capsys):
+    def test_auto_warns_when_it_has_nothing_to_approve(self, sessions, monkeypatch, capsys):
         monkeypatch.setenv("ONIT_ASK_APPROVAL", "0")
         self._run(["--auto"])
         assert "Nothing is left for --auto to approve" in capsys.readouterr().err
@@ -1049,29 +1153,33 @@ class TestApprovalChannelWiring:
 # out of the terminal to act on it.  The verbs below take that number, and
 # `rename` exists as a verb at all instead of hiding inside --tag.
 
-class TestSessionVerbs:
 
+class TestSessionVerbs:
     @pytest.fixture
     def store(self, tmp_path, monkeypatch):
         from src import sessions
+
         d = str(tmp_path / "sessions")
         os.makedirs(d, exist_ok=True)
         monkeypatch.setenv("HOME", str(tmp_path))
-        for sid, task in (("aaaa-1111", "write the quarterly report"),
-                          ("bbbb-2222", "debug the cuda kernel")):
+        for sid, task in (
+            ("aaaa-1111", "write the quarterly report"),
+            ("bbbb-2222", "debug the cuda kernel"),
+        ):
             sessions.register_session(sid, d)
             sessions.update_session(sid, task=task, sessions_dir=d)
         return d
 
     def test_rename_takes_a_row_number(self, store, monkeypatch, capsys):
         from src import cli
+
         # the verb resolves ~/.onit/sessions, so point HOME at the fixture
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "rename", "1", "Report Work"])
+        monkeypatch.setattr(sys, "argv", ["onit", "rename", "1", "Report Work"])
         cli.main()
         out = capsys.readouterr().out
         assert "Report Work" in out
@@ -1079,6 +1187,7 @@ class TestSessionVerbs:
     def test_rename_reports_an_unknown_row(self, store, monkeypatch, capsys):
         from src import cli
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
@@ -1091,6 +1200,7 @@ class TestSessionVerbs:
     def test_rename_refuses_an_empty_name(self, store, monkeypatch, capsys):
         from src import cli
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
@@ -1106,11 +1216,11 @@ class TestSessionVerbs:
         the only spelling inside the listing was --tag."""
         from src import cli, sessions
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "sessions", "--rename", "1", "Report Work"])
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--rename", "1", "Report Work"])
         cli.main()
         out = capsys.readouterr().out
         assert "Report Work" in out
@@ -1120,11 +1230,11 @@ class TestSessionVerbs:
     def test_sessions_rename_refuses_an_empty_name(self, store, monkeypatch, capsys):
         from src import cli
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "sessions", "--rename", "1", "  "])
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--rename", "1", "  "])
         with pytest.raises(SystemExit) as exc:
             cli.main()
         assert exc.value.code == 1
@@ -1135,11 +1245,11 @@ class TestSessionVerbs:
         accepts, down to the row number and the error text."""
         from src import cli
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "sessions", "--rename", "99", "x"])
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--rename", "99", "x"])
         with pytest.raises(SystemExit):
             cli.main()
         via_flag = capsys.readouterr().err
@@ -1153,21 +1263,25 @@ class TestSessionVerbs:
         old script keeps working, but it is not what --help offers."""
         from src import cli, sessions
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "sessions", "--tag", "1", "Old Spelling"])
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--tag", "1", "Old Spelling"])
         cli.main()
         assert "Old Spelling" in capsys.readouterr().out
         assert sessions.find_session_by_tag("Old Spelling", store)
 
     def test_sessions_help_names_rename_and_hides_tag(self):
         from src.cli import _build_parser
+
         # parse the subcommand's own help, so this reads what a user sees
         parser = _build_parser()
-        sub = [a for a in parser._subparsers._group_actions[0].choices.values()
-               if a.prog == "onit sessions"][0]
+        sub = [
+            a
+            for a in parser._subparsers._group_actions[0].choices.values()
+            if a.prog == "onit sessions"
+        ][0]
         text = sub.format_help()
         assert "--rename" in text
         assert "--tag" not in text
@@ -1185,7 +1299,8 @@ class TestSessionVerbs:
         one row a person most wants to delete."""
         from src import cli, sessions
         import pathlib
-        sessions.register_session("cccc-3333", store)   # opened, never used
+
+        sessions.register_session("cccc-3333", store)  # opened, never used
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
@@ -1198,6 +1313,7 @@ class TestSessionVerbs:
     def test_the_listing_names_the_verbs(self, store, monkeypatch, capsys):
         from src import cli
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         (home / ".onit" / "sessions").symlink_to(store)
@@ -1222,11 +1338,14 @@ class TestDeleteSessions:
     def store(self, tmp_path, monkeypatch):
         """Two used sessions in a store the CLI will find via HOME."""
         from src import sessions
+
         d = str(tmp_path / "sessions")
         os.makedirs(d, exist_ok=True)
         monkeypatch.setenv("HOME", str(tmp_path))
-        for sid, task in (("aaaa-1111", "write the quarterly report"),
-                          ("bbbb-2222", "debug the cuda kernel")):
+        for sid, task in (
+            ("aaaa-1111", "write the quarterly report"),
+            ("bbbb-2222", "debug the cuda kernel"),
+        ):
             sessions.register_session(sid, d)
             sessions.update_session(sid, task=task, sessions_dir=d)
             open(os.path.join(d, sid + ".jsonl"), "w").write("{}\n")
@@ -1236,6 +1355,7 @@ class TestDeleteSessions:
         """Run the sessions command against *store*; return (exit, out, err)."""
         from src import cli
         import pathlib
+
         home = pathlib.Path(store).parent
         (home / ".onit").mkdir(exist_ok=True)
         link = home / ".onit" / "sessions"
@@ -1252,10 +1372,10 @@ class TestDeleteSessions:
 
     def test_delete_takes_a_row_number(self, store, monkeypatch, capsys):
         from src.sessions import list_sessions
+
         before = [s["session_id"] for s in list_sessions(store, limit=None)]
         target = before[0]
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "1", "--yes"])
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "1", "--yes"])
         assert code == 0
         after = [s["session_id"] for s in list_sessions(store, limit=None)]
         assert target not in after
@@ -1264,52 +1384,55 @@ class TestDeleteSessions:
 
     def test_delete_takes_a_name(self, store, monkeypatch):
         from src.sessions import find_session_by_tag, list_sessions
+
         sid = find_session_by_tag("write-quarterly-report", store)
         assert sid
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "write-quarterly-report", "--yes"])
+        code = self._cli(
+            store, monkeypatch, ["sessions", "--delete", "write-quarterly-report", "--yes"]
+        )
         assert code == 0
         assert sid not in [s["session_id"] for s in list_sessions(store, limit=None)]
 
     def test_delete_takes_a_uuid_prefix(self, store, monkeypatch):
         from src.sessions import list_sessions
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "aaaa", "--yes"])
+
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "aaaa", "--yes"])
         assert code == 0
-        assert "aaaa-1111" not in [s["session_id"]
-                                   for s in list_sessions(store, limit=None)]
+        assert "aaaa-1111" not in [s["session_id"] for s in list_sessions(store, limit=None)]
 
     def test_delete_takes_several_at_once(self, store, monkeypatch):
         from src.sessions import list_sessions
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "1", "2", "--yes"])
+
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "1", "2", "--yes"])
         assert code == 0
         assert len(list_sessions(store, limit=None)) == 0
 
     def test_delete_asks_before_deleting(self, store, monkeypatch, capsys):
         from src.sessions import list_sessions
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "1"], answer="no")
+
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "1"], answer="no")
         assert code == 0
         out = capsys.readouterr().out
         assert "About to delete" in out and "Cancelled" in out
-        assert len(list_sessions(store, limit=None)) == 2   # nothing went
+        assert len(list_sessions(store, limit=None)) == 2  # nothing went
 
     def test_a_typo_in_a_batch_deletes_nothing(self, store, monkeypatch, capsys):
         """Half a batch is the worst outcome: the person believes the whole
         thing failed and the sessions they meant to keep are gone."""
         from src.sessions import list_sessions
+
         before = [s["session_id"] for s in list_sessions(store, limit=None)]
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "aaaa", "nope-nothing", "--yes"])
+        code = self._cli(
+            store, monkeypatch, ["sessions", "--delete", "aaaa", "nope-nothing", "--yes"]
+        )
         assert code == 1
         assert [s["session_id"] for s in list_sessions(store, limit=None)] == before
         assert "nope-nothing" in capsys.readouterr().err
 
     def test_deleting_the_same_row_twice_deletes_once(self, store, monkeypatch):
         from src.sessions import list_sessions
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "1", "1", "--yes"])
+
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "1", "1", "--yes"])
         assert code == 0
         assert len(list_sessions(store, limit=None)) == 1
 
@@ -1317,19 +1440,22 @@ class TestDeleteSessions:
         """The whole point of listing them: the accidental session is the one
         that needs deleting, and it used to have no row to delete."""
         from src import sessions
+
         sessions.register_session("cccc-3333", store)
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "cccc-3333", "--yes"])
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "cccc-3333", "--yes"])
         assert code == 0
-        assert "cccc-3333" not in [s["session_id"]
-                                   for s in sessions.list_sessions(store, limit=None)]
+        assert "cccc-3333" not in [
+            s["session_id"] for s in sessions.list_sessions(store, limit=None)
+        ]
 
     def test_delete_all_takes_yes_too(self, store, monkeypatch):
         """--yes belongs to the deletion family, not to --delete alone: a
         script that prunes everything has the same reason to skip the prompt."""
         from src.sessions import list_sessions
+
         def boom(prompt=""):
             raise AssertionError("prompted despite --yes")
+
         monkeypatch.setattr("builtins.input", boom)
         code = self._cli(store, monkeypatch, ["sessions", "--delete-all", "--yes"])
         assert code == 0
@@ -1338,14 +1464,13 @@ class TestDeleteSessions:
     def test_delete_removes_the_history_file_too(self, store, monkeypatch):
         import pathlib
         from src.sessions import register_session, update_session
+
         register_session("dddd-4444", store)
         update_session("dddd-4444", task="a real conversation", sessions_dir=store)
         (pathlib.Path(store) / "dddd-4444.jsonl").write_text("{}\n")
-        code = self._cli(store, monkeypatch,
-                         ["sessions", "--delete", "dddd-4444", "--yes"])
+        code = self._cli(store, monkeypatch, ["sessions", "--delete", "dddd-4444", "--yes"])
         assert code == 0
         assert not (pathlib.Path(store) / "dddd-4444.jsonl").exists()
-
 
 
 class TestDeleteByName:
@@ -1367,10 +1492,12 @@ class TestDeleteByName:
 
     def _add(self, store, sid, tag):
         from src import sessions
+
         sessions.register_session(sid, store, tag=tag)
 
     def _cli(self, monkeypatch, argv, answer="yes"):
         from src import cli
+
         monkeypatch.setattr(sys, "argv", ["onit"] + argv)
         monkeypatch.setattr("builtins.input", lambda prompt="": answer)
         code = 0
@@ -1382,6 +1509,7 @@ class TestDeleteByName:
 
     def _ids(self, store):
         from src.sessions import list_sessions
+
         return [s["session_id"] for s in list_sessions(store, limit=None)]
 
     def test_the_listing_shows_the_whole_name(self, store, monkeypatch, capsys):
@@ -1393,21 +1521,20 @@ class TestDeleteByName:
         them -- the newest -- without a word.
         """
         from src.sessions import format_sessions_table, list_sessions
+
         long_name = "marikina-river-water-level-latest-6"
         self._add(store, "aaaa-1111", long_name)
         text = format_sessions_table(list_sessions(store, limit=None))
         assert long_name in text
         assert long_name[:32] + " " in text or long_name in text
 
-    def test_a_name_that_fits_several_is_refused_not_guessed(self, store,
-                                                             monkeypatch,
-                                                             capsys):
+    def test_a_name_that_fits_several_is_refused_not_guessed(self, store, monkeypatch, capsys):
         """Choosing by recency is what deleted the wrong session."""
         for i, sid in enumerate(["aaaa-1111", "bbbb-2222", "cccc-3333"]):
             self._add(store, sid, f"marikina-river-water-level-latest-{i}")
-        code = self._cli(monkeypatch,
-                         ["sessions", "--delete",
-                          "marikina-river-water-level-latest", "--yes"])
+        code = self._cli(
+            monkeypatch, ["sessions", "--delete", "marikina-river-water-level-latest", "--yes"]
+        )
         err = capsys.readouterr().err
         assert code == 1
         assert "matches 3 sessions" in err
@@ -1417,21 +1544,19 @@ class TestDeleteByName:
         # and nothing was deleted
         assert len(self._ids(store)) == 3
 
-    def test_a_full_name_deletes_exactly_that_session(self, store, monkeypatch,
-                                                      capsys):
+    def test_a_full_name_deletes_exactly_that_session(self, store, monkeypatch, capsys):
         """The fix for the refusal: the name that fits one row still works."""
         self._add(store, "aaaa-1111", "marikina-river-water-level-latest")
         self._add(store, "bbbb-2222", "marikina-river-water-level-latest-2")
-        code = self._cli(monkeypatch,
-                         ["sessions", "--delete",
-                          "marikina-river-water-level-latest-2", "--yes"])
+        code = self._cli(
+            monkeypatch, ["sessions", "--delete", "marikina-river-water-level-latest-2", "--yes"]
+        )
         assert code == 0
         assert "bbbb-222" in capsys.readouterr().out
         assert self._ids(store) == ["aaaa-1111"]
 
     @pytest.mark.parametrize("tag", ["2026", "3", "last"])
-    def test_a_session_can_be_named_like_a_row_number(self, store, monkeypatch,
-                                                      capsys, tag):
+    def test_a_session_can_be_named_like_a_row_number(self, store, monkeypatch, capsys, tag):
         """A name is a name, even when it looks like a number.
 
         These three were unreachable: '2026' was a row past the end, '3' was
@@ -1445,11 +1570,11 @@ class TestDeleteByName:
         assert "aaaa-111" in capsys.readouterr().out
         assert self._ids(store) == ["bbbb-2222"]
 
-    def test_a_row_number_still_works_when_no_name_matches(self, store,
-                                                            monkeypatch):
+    def test_a_row_number_still_works_when_no_name_matches(self, store, monkeypatch):
         """The fix must not cost the # column: a bare number that is not a
         name is still the row it was printed next to."""
         from src.sessions import list_sessions
+
         self._add(store, "aaaa-1111", "first")
         self._add(store, "bbbb-2222", "second")
         target = list_sessions(store, limit=None)[0]["session_id"]
@@ -1457,66 +1582,59 @@ class TestDeleteByName:
         assert code == 0
         assert target not in self._ids(store)
 
-    def test_an_unquoted_name_with_spaces_is_one_name(self, store, monkeypatch,
-                                                      capsys):
+    def test_an_unquoted_name_with_spaces_is_one_name(self, store, monkeypatch, capsys):
         """--delete takes a list, so a name with spaces arrived as several ids
         and each was reported as not found."""
         self._add(store, "aaaa-1111", "my thesis chapter 3")
-        code = self._cli(monkeypatch,
-                         ["sessions", "--delete", "my", "thesis", "chapter",
-                          "3", "--yes"])
+        code = self._cli(
+            monkeypatch, ["sessions", "--delete", "my", "thesis", "chapter", "3", "--yes"]
+        )
         assert code == 0
         assert "aaaa-111" in capsys.readouterr().out
         assert self._ids(store) == []
 
-    def test_the_exact_spelling_beats_a_longer_name(self, store, monkeypatch,
-                                                    capsys):
+    def test_the_exact_spelling_beats_a_longer_name(self, store, monkeypatch, capsys):
         """An exact name wins over a name that merely starts with it, and
         'Notes' wins over 'notes' when an old index holds both."""
         self._add(store, "aaaa-1111", "chapter")
         self._add(store, "bbbb-2222", "chapter-2")
-        code = self._cli(monkeypatch, ["sessions", "--delete", "chapter",
-                                       "--yes"])
+        code = self._cli(monkeypatch, ["sessions", "--delete", "chapter", "--yes"])
         assert code == 0
         assert "aaaa-111" in capsys.readouterr().out
         assert self._ids(store) == ["bbbb-2222"]
 
-    def test_a_case_differing_spelling_is_found(self, store, monkeypatch,
-                                                capsys):
+    def test_a_case_differing_spelling_is_found(self, store, monkeypatch, capsys):
         """Typing a name in the wrong case is a typo, not a different
         session -- and it must not fall through to a longer name."""
         self._add(store, "aaaa-1111", "My Thesis Chapter 3")
         self._add(store, "bbbb-2222", "My Thesis Chapter 3-2")
-        code = self._cli(monkeypatch,
-                         ["sessions", "--delete", "MY THESIS CHAPTER 3",
-                          "--yes"])
+        code = self._cli(monkeypatch, ["sessions", "--delete", "MY THESIS CHAPTER 3", "--yes"])
         assert code == 0
         assert "aaaa-111" in capsys.readouterr().out
         assert self._ids(store) == ["bbbb-2222"]
 
-    def test_no_answer_deletes_nothing_and_says_so(self, store, monkeypatch,
-                                                   capsys):
+    def test_no_answer_deletes_nothing_and_says_so(self, store, monkeypatch, capsys):
         """Piped input that runs out used to end in an EOFError traceback."""
+
         def no_input(prompt=""):
             raise EOFError()
+
         self._add(store, "aaaa-1111", "keep-me")
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "sessions", "--delete", "keep-me"])
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete", "keep-me"])
         monkeypatch.setattr("builtins.input", no_input)
         from src import cli
+
         with pytest.raises(SystemExit) as exc:
             cli.main()
         assert exc.value.code == 1
         assert self._ids(store) == ["aaaa-1111"]
         assert "--yes" in capsys.readouterr().err
 
-    def test_rename_refuses_a_name_that_fits_several(self, store, monkeypatch,
-                                                     capsys):
+    def test_rename_refuses_a_name_that_fits_several(self, store, monkeypatch, capsys):
         """Renaming the wrong one of six is the same mistake as deleting it."""
         for i, sid in enumerate(["aaaa-1111", "bbbb-2222"]):
             self._add(store, sid, f"report-{i}")
-        code = self._cli(monkeypatch,
-                         ["sessions", "--rename", "report", "renamed"])
+        code = self._cli(monkeypatch, ["sessions", "--rename", "report", "renamed"])
         assert code == 1
         assert "matches 2 sessions" in capsys.readouterr().err
 
@@ -1543,6 +1661,7 @@ class TestDeleteARangeOfRows:
 
     def _add(self, store, sid, tag):
         from src import sessions
+
         sessions.register_session(sid, store, tag=tag)
         open(os.path.join(store, sid + ".jsonl"), "w").write("{}\n")
 
@@ -1553,6 +1672,7 @@ class TestDeleteARangeOfRows:
 
     def _cli(self, monkeypatch, argv, answer="yes"):
         from src import cli
+
         monkeypatch.setattr(sys, "argv", ["onit"] + argv)
         monkeypatch.setattr("builtins.input", lambda prompt="": answer)
         code = 0
@@ -1564,6 +1684,7 @@ class TestDeleteARangeOfRows:
 
     def _tags(self, store):
         from src.sessions import list_sessions
+
         return [s["tag"] for s in list_sessions(store, limit=None)]
 
     def test_a_range_deletes_the_rows_between_its_ends(self, store, monkeypatch):
@@ -1594,8 +1715,7 @@ class TestDeleteARangeOfRows:
         assert code == 0
         assert self._tags(store) == rows[3:]
 
-    def test_an_end_past_the_last_row_is_clamped(self, store, monkeypatch,
-                                                capsys):
+    def test_an_end_past_the_last_row_is_clamped(self, store, monkeypatch, capsys):
         """-32 on a store of five means five. Refusing it would be pedantry
         about a range whose meaning is not in doubt."""
         self._fill(store, 5)
@@ -1608,8 +1728,7 @@ class TestDeleteARangeOfRows:
         argument."""
         self._fill(store, 10)
         rows = self._tags(store)
-        code = self._cli(monkeypatch, ["sessions", "--delete", "2-3", "9",
-                                       "--yes"])
+        code = self._cli(monkeypatch, ["sessions", "--delete", "2-3", "9", "--yes"])
         assert code == 0
         left = self._tags(store)
         assert rows[1] not in left and rows[2] not in left
@@ -1625,8 +1744,7 @@ class TestDeleteARangeOfRows:
         assert self._tags(store) == before
         assert "8-3" in capsys.readouterr().err
 
-    def test_a_range_past_the_end_deletes_nothing(self, store, monkeypatch,
-                                                  capsys):
+    def test_a_range_past_the_end_deletes_nothing(self, store, monkeypatch, capsys):
         self._fill(store, 5)
         before = self._tags(store)
         code = self._cli(monkeypatch, ["sessions", "--delete", "20-32", "--yes"])
@@ -1635,13 +1753,11 @@ class TestDeleteARangeOfRows:
         err = capsys.readouterr().err
         assert "no rows" in err and "20-32" in err
 
-    def test_the_prompt_lists_every_row_of_the_range(self, store, monkeypatch,
-                                                     capsys):
+    def test_the_prompt_lists_every_row_of_the_range(self, store, monkeypatch, capsys):
         """A block of thirteen is read before it goes, not summarised."""
         self._fill(store, 10)
         rows = self._tags(store)
-        code = self._cli(monkeypatch, ["sessions", "--delete", "4-6"],
-                         answer="no")
+        code = self._cli(monkeypatch, ["sessions", "--delete", "4-6"], answer="no")
         out = capsys.readouterr().out
         assert code == 0
         for tag in rows[3:6]:
@@ -1658,15 +1774,14 @@ class TestDeleteARangeOfRows:
         """Every range check has to survive the names it looks like."""
         self._fill(store, 4)
         self._add(store, "zzzz-9999", "marikina-river-water-level-latest")
-        code = self._cli(monkeypatch,
-                         ["sessions", "--delete",
-                          "marikina-river-water-level-latest", "--yes"])
+        code = self._cli(
+            monkeypatch, ["sessions", "--delete", "marikina-river-water-level-latest", "--yes"]
+        )
         assert code == 0
         assert "marikina-river-water-level-latest" not in self._tags(store)
         assert len(self._tags(store)) == 4
 
-    def test_a_session_named_like_a_range_wins_over_the_range(self, store,
-                                                              monkeypatch):
+    def test_a_session_named_like_a_range_wins_over_the_range(self, store, monkeypatch):
         """A chosen name must stay reachable, as a name beats a row number."""
         self._fill(store, 6)
         self._add(store, "zzzz-9999", "2-4")
@@ -1674,10 +1789,11 @@ class TestDeleteARangeOfRows:
         assert code == 0
         left = self._tags(store)
         assert "2-4" not in left
-        assert len(left) == 6          # the rows the range would have taken stay
+        assert len(left) == 6  # the rows the range would have taken stay
 
     def test_the_listing_advertises_the_range(self, store):
         from src.sessions import format_sessions_table, list_sessions
+
         self._fill(store, 2)
         text = format_sessions_table(list_sessions(store, limit=None))
         assert "<a>-<b>" in text
@@ -1695,19 +1811,23 @@ class TestSubcommandsDoNotPayForTheAgent:
 
     def test_importing_the_cli_does_not_import_the_agent(self):
         import subprocess
-        code = ("import sys, src.cli; "
-                "print(int('src.onit' in sys.modules))")
-        out = subprocess.run([sys.executable, "-c", code],
-                             capture_output=True, text=True,
-                             cwd=os.path.dirname(os.path.dirname(
-                                 os.path.dirname(os.path.abspath(__file__)))))
+
+        code = "import sys, src.cli; print(int('src.onit' in sys.modules))"
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        )
         assert out.stdout.strip() == "0", (
-            "importing src.cli dragged in src.onit: %s" % out.stderr[-400:])
+            "importing src.cli dragged in src.onit: %s" % out.stderr[-400:]
+        )
 
     def test_the_name_is_still_reachable_and_still_patchable(self, monkeypatch):
         """Lazy must not mean unreachable -- ``patch("src.cli.OnIt")`` works."""
         from src import cli
         from unittest.mock import patch
+
         assert cli.OnIt.__name__ == "OnIt"
         with patch("src.cli.OnIt") as fake:
             fake.return_value = "an agent"
@@ -1715,6 +1835,7 @@ class TestSubcommandsDoNotPayForTheAgent:
 
     def test_an_unknown_attribute_is_still_an_attribute_error(self):
         from src import cli
+
         with pytest.raises(AttributeError):
             cli.no_such_attribute
 
@@ -1739,6 +1860,7 @@ class TestTheRealDispatchBuildsTheAgent:
     def uncached(self, monkeypatch):
         """Leave ``src.cli`` with no ``OnIt`` global, and restore after."""
         from src import cli
+
         had = "OnIt" in vars(cli)
         saved = vars(cli).get("OnIt")
         monkeypatch.delitem(vars(cli), "OnIt", raising=False)
@@ -1750,6 +1872,7 @@ class TestTheRealDispatchBuildsTheAgent:
 
     def test_dispatch_mode_builds_and_runs_the_agent(self, uncached, monkeypatch):
         from src import cli
+
         built, ran = [], []
 
         class FakeAgent:
@@ -1764,11 +1887,11 @@ class TestTheRealDispatchBuildsTheAgent:
         assert built == [{"a": 1}]
         assert ran, "the agent was built but never run"
 
-    def test_doctor_builds_the_agent_through_the_same_lookup(self, uncached,
-                                                             monkeypatch):
+    def test_doctor_builds_the_agent_through_the_same_lookup(self, uncached, monkeypatch):
         """The second site: a stubbed agent, or doctor returns 1 silently."""
         import argparse
         from src import cli
+
         built = []
 
         class FakeAgent:
@@ -1781,26 +1904,33 @@ class TestTheRealDispatchBuildsTheAgent:
             return []
 
         monkeypatch.setattr("src.onit.OnIt", FakeAgent)
-        args = argparse.Namespace(json=False, deep=False, keep_session=False,
-                                  endpoints=False)
-        with patch("src.ui.doctor.run_checks", no_checks), \
-                patch("src.ui.doctor.render_report", lambda r, deep=False: ""):
+        args = argparse.Namespace(json=False, deep=False, keep_session=False, endpoints=False)
+        with (
+            patch("src.ui.doctor.run_checks", no_checks),
+            patch("src.ui.doctor.render_report", lambda r, deep=False: ""),
+        ):
             code = cli._run_doctor(args, {"session_path": "/tmp/none"})
         assert code == 0
         assert built == [{"session_path": "/tmp/none"}], (
-            "doctor never reached the agent -- the lookup is broken again")
+            "doctor never reached the agent -- the lookup is broken again"
+        )
 
     def test_the_lookup_does_not_import_the_agent_until_called(self):
         """The fix must not undo the laziness it was added to keep."""
         import subprocess
-        code = ("import sys, src.cli; "
-                "print(int('src.onit' in sys.modules)); "
-                "src.cli._agent_class(); "
-                "print(int('src.onit' in sys.modules))")
+
+        code = (
+            "import sys, src.cli; "
+            "print(int('src.onit' in sys.modules)); "
+            "src.cli._agent_class(); "
+            "print(int('src.onit' in sys.modules))"
+        )
         out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True,
-            cwd=os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__)))))
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        )
         assert out.stdout.split() == ["0", "1"], out.stderr[-400:]
 
 
@@ -1818,22 +1948,25 @@ class TestVersionFlag:
     def test_it_prints_the_package_version(self):
         import subprocess
         from src import __version__
-        out = subprocess.run([sys.executable, "-m", "src.cli", "--version"],
-                             capture_output=True, text=True,
-                             cwd=os.path.dirname(os.path.dirname(
-                                 os.path.dirname(os.path.abspath(__file__)))))
+
+        out = subprocess.run(
+            [sys.executable, "-m", "src.cli", "--version"],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        )
         assert out.returncode == 0
         assert out.stdout.strip() == f"onit {__version__}"
 
     def test_it_matches_the_packaging_metadata(self):
         """Two copies of the number must not drift."""
         import re
-        root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))))
+
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         with open(os.path.join(root, "pyproject.toml")) as fh:
-            declared = re.search(r'^version = "([^"]+)"', fh.read(),
-                                 re.M).group(1)
+            declared = re.search(r'^version = "([^"]+)"', fh.read(), re.M).group(1)
         from src import __version__
+
         assert declared == __version__
 
     def test_it_does_not_import_the_agent_or_any_server(self):
@@ -1844,25 +1977,33 @@ class TestVersionFlag:
         flag fail on exactly the broken install where it is worth having.
         """
         import subprocess
-        code = ("import sys, contextlib, src.cli\n"
-                "with contextlib.suppress(SystemExit):\n"
-                "    src.cli._build_parser().parse_args(['--version'])\n"
-                "print(int('src.onit' in sys.modules),"
-                " int('fastmcp' in sys.modules))")
-        out = subprocess.run([sys.executable, "-c", code],
-                             capture_output=True, text=True,
-                             cwd=os.path.dirname(os.path.dirname(
-                                 os.path.dirname(os.path.abspath(__file__)))))
+
+        code = (
+            "import sys, contextlib, src.cli\n"
+            "with contextlib.suppress(SystemExit):\n"
+            "    src.cli._build_parser().parse_args(['--version'])\n"
+            "print(int('src.onit' in sys.modules),"
+            " int('fastmcp' in sys.modules))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        )
         # The version action prints to stdout first; the answer is the last
         # line, which the script above writes after parsing.
         assert out.stdout.strip().splitlines()[-1] == "0 0", out.stderr[-400:]
 
     def test_it_is_listed_in_help(self):
         import subprocess
-        out = subprocess.run([sys.executable, "-m", "src.cli", "--help"],
-                             capture_output=True, text=True,
-                             cwd=os.path.dirname(os.path.dirname(
-                                 os.path.dirname(os.path.abspath(__file__)))))
+
+        out = subprocess.run(
+            [sys.executable, "-m", "src.cli", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        )
         assert "--version" in out.stdout
         assert "Print the OnIt version and exit." in out.stdout
 
@@ -1875,38 +2016,37 @@ class TestVersionFlag:
 # them.  They interleave with the real sessions by date, so a row range cannot
 # name them -- `--delete 20-32` would take real conversations with it.
 
-class TestDeleteEmptySessions:
 
+class TestDeleteEmptySessions:
     @pytest.fixture
     def store(self, tmp_path, monkeypatch):
         from src import sessions
+
         d = str(tmp_path / "sessions")
         os.makedirs(d, exist_ok=True)
         # The verb resolves ~/.onit/sessions, so point HOME at the fixture.
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / ".onit").mkdir(exist_ok=True)
         (tmp_path / ".onit" / "sessions").symlink_to(d)
-        for sid, task in (("real-1", "write the migration"),
-                          ("real-2", "debug the parser")):
+        for sid, task in (("real-1", "write the migration"), ("real-2", "debug the parser")):
             sessions.register_session(sid, d)
             sessions.update_session(sid, task=task, sessions_dir=d)
         for sid in ("junk-1", "junk-2"):
             sessions.register_session(sid, d)
         return d
 
-    def test_it_deletes_the_empty_ones_and_keeps_the_rest(self, store, monkeypatch,
-                                                         capsys):
+    def test_it_deletes_the_empty_ones_and_keeps_the_rest(self, store, monkeypatch, capsys):
         from src import cli, sessions
-        monkeypatch.setattr(sys, "argv",
-                            ["onit", "sessions", "--delete-empty", "--yes"])
+
+        monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete-empty", "--yes"])
         cli.main()
         out = capsys.readouterr().out
         assert "Deleted 2 empty session(s)." in out
-        assert [r["session_id"] for r in sessions.list_sessions(store)] == [
-            "real-2", "real-1"]
+        assert [r["session_id"] for r in sessions.list_sessions(store)] == ["real-2", "real-1"]
 
     def test_it_says_how_many_before_asking(self, store, monkeypatch, capsys):
         from src import cli
+
         monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete-empty"])
         monkeypatch.setattr("builtins.input", lambda _prompt: "no")
         cli.main()
@@ -1916,14 +2056,15 @@ class TestDeleteEmptySessions:
 
     def test_a_refusal_deletes_nothing(self, store, monkeypatch):
         from src import cli, sessions
+
         monkeypatch.setattr(sys, "argv", ["onit", "sessions", "--delete-empty"])
         monkeypatch.setattr("builtins.input", lambda _prompt: "no")
         cli.main()
         assert len(sessions.list_sessions(store)) == 4
 
-    def test_a_store_with_nothing_empty_says_so(self, tmp_path, monkeypatch,
-                                                capsys):
+    def test_a_store_with_nothing_empty_says_so(self, tmp_path, monkeypatch, capsys):
         from src import cli, sessions
+
         d = str(tmp_path / "sessions")
         os.makedirs(d, exist_ok=True)
         monkeypatch.setenv("HOME", str(tmp_path))

@@ -7,11 +7,18 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.results import (CONTINUATION_PREFIX, MAX_GREP_MATCHES,
-                                   MAX_READ_CHARS, MAX_STORED_RESULTS,
-                                   RESULT_PREVIEW_CHARS, RESULT_STORE_THRESHOLD,
-                                   ResultStore, handle_of, is_continued,
-                                   is_decayed)
+from model.serving.results import (
+    CONTINUATION_PREFIX,
+    MAX_GREP_MATCHES,
+    MAX_READ_CHARS,
+    MAX_STORED_RESULTS,
+    RESULT_PREVIEW_CHARS,
+    RESULT_STORE_THRESHOLD,
+    ResultStore,
+    handle_of,
+    is_continued,
+    is_decayed,
+)
 
 
 def _store(tmp_path, **kwargs):
@@ -26,6 +33,7 @@ def _big(n=50000, marker="NEEDLE"):
 
 
 # ── what gets stored ────────────────────────────────────────────────────────
+
 
 class TestPut:
     def test_a_small_result_is_left_alone(self, tmp_path):
@@ -123,6 +131,7 @@ class TestPut:
 
 # ── read ────────────────────────────────────────────────────────────────────
 
+
 class TestRead:
     def test_round_trip_recovers_the_whole_result(self, tmp_path):
         text = "".join(chr(65 + i % 26) for i in range(30000))
@@ -156,8 +165,11 @@ class TestRead:
     def test_the_last_window_says_it_is_the_last(self, tmp_path):
         store = _store(tmp_path)
         handle = handle_of(store.put("bash", "x" * 9000))
-        assert store.read(handle, offset=8000, limit=4000).rstrip().endswith(
-            f"[end of result {handle}]")
+        assert (
+            store.read(handle, offset=8000, limit=4000)
+            .rstrip()
+            .endswith(f"[end of result {handle}]")
+        )
 
     def test_a_window_with_more_after_it_says_where(self, tmp_path):
         store = _store(tmp_path)
@@ -184,6 +196,7 @@ class TestRead:
 
 
 # ── grep ────────────────────────────────────────────────────────────────────
+
 
 class TestGrep:
     def test_finds_a_line_and_its_context(self, tmp_path):
@@ -229,8 +242,7 @@ class TestGrep:
     def test_overlapping_context_windows_are_merged(self, tmp_path):
         """A cluster of matches reads as one passage, not the same lines over."""
         store = _store(tmp_path)
-        text = "\n".join(["hit" if i in (10, 11, 12) else f"line {i}"
-                          for i in range(5000)])
+        text = "\n".join(["hit" if i in (10, 11, 12) else f"line {i}" for i in range(5000)])
         handle = handle_of(store.put("bash", text))
         out = store.grep(handle, "hit", context=3)
         # One contiguous block: three matches three lines apart share context,
@@ -250,6 +262,7 @@ class TestGrep:
 
 # ── the path jail ───────────────────────────────────────────────────────────
 
+
 class TestTraversalRejected:
     """data_path is a session isolation boundary; a handle is model input."""
 
@@ -259,20 +272,23 @@ class TestTraversalRejected:
         s.put("bash", "x" * 50000)
         return s
 
-    @pytest.mark.parametrize("handle", [
-        "../../../etc/passwd",
-        "..",
-        "../0001",
-        "/etc/passwd",
-        "0001/../../../etc/passwd",
-        "0001.txt",
-        "0001-bash.txt",
-        "*",
-        "",
-        "   ",
-        None,
-        1,
-    ])
+    @pytest.mark.parametrize(
+        "handle",
+        [
+            "../../../etc/passwd",
+            "..",
+            "../0001",
+            "/etc/passwd",
+            "0001/../../../etc/passwd",
+            "0001.txt",
+            "0001-bash.txt",
+            "*",
+            "",
+            "   ",
+            None,
+            1,
+        ],
+    )
     def test_rejected(self, store, handle):
         assert store._path_for(handle) is None
         if isinstance(handle, str):
@@ -296,6 +312,7 @@ class TestTraversalRejected:
 
 
 # ── message helpers the loop uses ───────────────────────────────────────────
+
 
 class TestMessageHelpers:
     def test_handle_of_reads_the_header(self):
@@ -329,12 +346,12 @@ class TestMessageHelpers:
 
 # ── discovery ───────────────────────────────────────────────────────────────
 
+
 class TestStored:
     def test_lists_handle_tool_and_size(self, tmp_path):
         store = _store(tmp_path)
         store.put("local_search", "x" * 50000)
-        assert store.stored() == [
-            {"handle": "0001", "tool": "local_search", "chars": 50000}]
+        assert store.stored() == [{"handle": "0001", "tool": "local_search", "chars": 50000}]
 
     def test_empty_before_anything_is_stored(self, tmp_path):
         assert _store(tmp_path).stored() == []

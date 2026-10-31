@@ -79,6 +79,7 @@ class ServerEndpoint:
     ``priority`` ranks the endpoint against its peers — lower is preferred,
     equal numbers share a tier and load-balance against each other.
     """
+
     host: str
     host_key: str = "EMPTY"
     model: str | None = None
@@ -123,15 +124,21 @@ class LoadBalancer:
             balancer.release(endpoint, success=request_succeeded)
     """
 
-    def __init__(self, endpoints: list[ServerEndpoint],
-                 algorithm: str = DEFAULT_ALGORITHM,
-                 ollama_fallback_only: bool = True):
+    def __init__(
+        self,
+        endpoints: list[ServerEndpoint],
+        algorithm: str = DEFAULT_ALGORITHM,
+        ollama_fallback_only: bool = True,
+    ):
         if not endpoints:
             raise ValueError("LoadBalancer requires at least one endpoint")
         if algorithm not in ALGORITHMS:
             logger.warning(
-                "Unknown load balancing algorithm %r, falling back to %r "
-                "(valid: %s)", algorithm, DEFAULT_ALGORITHM, ", ".join(ALGORITHMS))
+                "Unknown load balancing algorithm %r, falling back to %r (valid: %s)",
+                algorithm,
+                DEFAULT_ALGORITHM,
+                ", ".join(ALGORITHMS),
+            )
             algorithm = DEFAULT_ALGORITHM
         self.endpoints = list(endpoints)
         self.algorithm = algorithm
@@ -140,13 +147,16 @@ class LoadBalancer:
         # supersedes the implicit "Ollama last" rule rather than stacking with
         # it — otherwise a config that ranks Ollama first would be silently
         # overruled by a default the operator never set.
-        self.uses_priority = any(ep.priority != DEFAULT_PRIORITY
-                                 for ep in self.endpoints)
-        if (self.uses_priority and ollama_fallback_only
-                and any(ep.is_ollama for ep in self.endpoints)):
+        self.uses_priority = any(ep.priority != DEFAULT_PRIORITY for ep in self.endpoints)
+        if (
+            self.uses_priority
+            and ollama_fallback_only
+            and any(ep.is_ollama for ep in self.endpoints)
+        ):
             logger.info(
                 "Endpoint priorities are set; ollama_fallback_only is ignored "
-                "(rank the Ollama endpoint higher to keep it as a fallback)")
+                "(rank the Ollama endpoint higher to keep it as a fallback)"
+            )
         self._lock = threading.Lock()
         self._rr_index = 0
         # sticky: session key → index of its assigned endpoint
@@ -184,8 +194,7 @@ class LoadBalancer:
                 return self.endpoints[idx]
         return self.preferred
 
-    def is_fallback_only(self, endpoint: ServerEndpoint,
-                         now: float | None = None) -> bool:
+    def is_fallback_only(self, endpoint: ServerEndpoint, now: float | None = None) -> bool:
         """True while the implicit Ollama rule is keeping ``endpoint`` out of
         rotation — it is in the list, but ``acquire`` will not choose it.
 
@@ -197,8 +206,7 @@ class LoadBalancer:
             return False
         if not endpoint.is_ollama:
             return False
-        return any(not ep.is_ollama and ep.is_healthy(now)
-                   for ep in self.endpoints)
+        return any(not ep.is_ollama and ep.is_healthy(now) for ep in self.endpoints)
 
     def describe(self) -> str:
         """Human-readable endpoint rundown for startup output.
@@ -212,8 +220,7 @@ class LoadBalancer:
         tiers: dict[int, list[str]] = {}
         for ep in self.endpoints:
             tiers.setdefault(ep.priority, []).append(ep.name or ep.host)
-        return " | ".join(f"{prio}: {', '.join(names)}"
-                          for prio, names in sorted(tiers.items()))
+        return " | ".join(f"{prio}: {', '.join(names)}" for prio, names in sorted(tiers.items()))
 
     def _rr_pick(self, candidates: list[ServerEndpoint]) -> ServerEndpoint:
         """Advance the round-robin cursor and land on a candidate.
@@ -280,9 +287,11 @@ class LoadBalancer:
                 else:
                     chosen = random.choice(candidates)
                     if idx is not None:
-                        logger.warning("Sticky failover (%s) → %s",
-                                       key or "default",
-                                       chosen.name or chosen.host)
+                        logger.warning(
+                            "Sticky failover (%s) → %s",
+                            key or "default",
+                            chosen.name or chosen.host,
+                        )
                     self._sticky_map.pop(key, None)
                     self._sticky_map[key] = self.endpoints.index(chosen)
                     while len(self._sticky_map) > MAX_STICKY_KEYS:
@@ -298,8 +307,7 @@ class LoadBalancer:
 
             chosen.in_flight += 1
             if len(self.endpoints) > 1:
-                logger.info("Load balancer (%s) → %s", self.algorithm,
-                            chosen.name or chosen.host)
+                logger.info("Load balancer (%s) → %s", self.algorithm, chosen.name or chosen.host)
             return chosen
 
     def release(self, endpoint: ServerEndpoint, success: bool) -> None:
@@ -313,4 +321,6 @@ class LoadBalancer:
                 if len(self.endpoints) > 1:
                     logger.warning(
                         "Endpoint %s failed; cooling down for %.0fs",
-                        endpoint.name or endpoint.host, FAILURE_COOLDOWN)
+                        endpoint.name or endpoint.host,
+                        FAILURE_COOLDOWN,
+                    )

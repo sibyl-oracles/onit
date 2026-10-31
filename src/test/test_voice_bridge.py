@@ -36,6 +36,7 @@ from ui.voice import (
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+
 class FakeVoiceOnit:
     """Stub agent whose process_task can be made slow and cancellable."""
 
@@ -46,9 +47,17 @@ class FakeVoiceOnit:
         self.cancelled = False
         self.config_data = config_data if config_data is not None else {}
 
-    async def process_task(self, task, session_path=None, data_path=None,
-                           safety_queue=None, tool_status_callback=None,
-                           tool_result_callback=None, session_id=None, **kwargs):
+    async def process_task(
+        self,
+        task,
+        session_path=None,
+        data_path=None,
+        safety_queue=None,
+        tool_status_callback=None,
+        tool_result_callback=None,
+        session_id=None,
+        **kwargs,
+    ):
         self.calls.append(task)
         if tool_status_callback:
             tool_status_callback("web_search(query)")
@@ -68,8 +77,7 @@ class FakeVoiceOnit:
 
 def pcm_frame(amplitude: int, samples: int = FRAME_BYTES // 2) -> str:
     """A base64 PCM16 frame at a fixed amplitude (alternating sign)."""
-    data = array.array("h", [amplitude if i % 2 == 0 else -amplitude
-                             for i in range(samples)])
+    data = array.array("h", [amplitude if i % 2 == 0 else -amplitude for i in range(samples)])
     return base64.b64encode(data.tobytes()).decode("ascii")
 
 
@@ -91,6 +99,7 @@ def bg_loop():
 @pytest.fixture
 def make_ui(tmp_path, bg_loop):
     """Build a voice-enabled UI wired to a fake container."""
+
     def _make(on_send=None, onit=None, **voice_overrides):
         voice = {"enabled": True, "url": "ws://fake:9100/v1/realtime"}
         voice.update(voice_overrides)
@@ -101,13 +110,15 @@ def make_ui(tmp_path, bg_loop):
             require_auth=False,
             voice=voice,
         )
-        ui._onit = onit or FakeVoiceOnit(config_data={
-            "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
+        ui._onit = onit or FakeVoiceOnit(
+            config_data={"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
+        )
         ui._loop = bg_loop
         server = FakeVoiceChat(on_send=on_send)
         ui._voice_ws_connect = server.connect
         ui.build_app()
         return ui, server
+
     return _make
 
 
@@ -133,6 +144,7 @@ def wait_for(predicate, timeout=3.0):
 
 # ── speakable() ─────────────────────────────────────────────────────────────
 
+
 class TestSpeakable:
     def test_output_is_ascii(self):
         # The model card requires ASCII-only tool responses; OnIt's own
@@ -153,8 +165,7 @@ class TestSpeakable:
         assert "link in the transcript" in out
 
     def test_markdown_link_keeps_its_label(self):
-        assert speakable("Read [the paper](https://arxiv.org/abs/1) now.") == \
-            "Read the paper now."
+        assert speakable("Read [the paper](https://arxiv.org/abs/1) now.") == "Read the paper now."
 
     def test_markdown_furniture_is_stripped(self):
         out = speakable("# Title\n\n- **one**\n- _two_\n\n| a | b |\n")
@@ -223,11 +234,14 @@ class TestVoiceConfig:
 
 # ── The route ───────────────────────────────────────────────────────────────
 
+
 class TestVoiceRoute:
     def test_disabled_by_default(self, tmp_path, bg_loop):
-        ui = WebApiUI(data_path=str(tmp_path / "d"),
-                      session_path=str(tmp_path / "s" / "c.jsonl"),
-                      require_auth=False)
+        ui = WebApiUI(
+            data_path=str(tmp_path / "d"),
+            session_path=str(tmp_path / "s" / "c.jsonl"),
+            require_auth=False,
+        )
         ui._loop = bg_loop
         ui.build_app()
         client = TestClient(ui.app)
@@ -253,7 +267,8 @@ class TestVoiceRoute:
         ui = WebApiUI(
             data_path=str(tmp_path / "d"),
             session_path=str(tmp_path / "s" / "c.jsonl"),
-            google_client_id="cid", google_client_secret="secret",
+            google_client_id="cid",
+            google_client_secret="secret",
             voice={"enabled": True},
         )
         ui._loop = bg_loop
@@ -274,7 +289,10 @@ class TestVoiceRoute:
         assert update is not None
         assert update["audio"]["input"]["format"]["rate"] == 24000
         assert [t["name"] for t in update["tools"]] == [
-            "ask_onit", "get_current_datetime", "stop_current_task"]
+            "ask_onit",
+            "get_current_datetime",
+            "stop_current_task",
+        ]
         assert update["instructions"].isascii()
 
     def test_audio_relays_both_ways(self, make_ui):
@@ -297,8 +315,12 @@ class TestVoiceRoute:
             server.emit(EV["user_text_done"], transcript="what is the time")
             server.emit(EV["agent_text_delta"], delta="It is ")
             user, agent = ws.receive_json(), ws.receive_json()
-        assert user == {"type": "transcript", "role": "user",
-                        "text": "what is the time", "final": True}
+        assert user == {
+            "type": "transcript",
+            "role": "user",
+            "text": "what is the time",
+            "final": True,
+        }
         assert agent["role"] == "assistant" and agent["delta"] == "It is "
 
     def test_speech_started_triggers_a_flush(self, make_ui):
@@ -334,9 +356,9 @@ class TestVoiceRoute:
 
 # ── Tool dispatch ───────────────────────────────────────────────────────────
 
+
 def call_tool(server, name, arguments, call_id="call-1"):
-    server.emit(EV["tool_call"], call_id=call_id, name=name,
-                arguments=json.dumps(arguments))
+    server.emit(EV["tool_call"], call_id=call_id, name=name, arguments=json.dumps(arguments))
 
 
 class TestToolDispatch:
@@ -412,8 +434,12 @@ class TestToolDispatch:
         ui, server = make_ui()
         with TestClient(ui.app).websocket_connect("/api/voice") as ws:
             ws.receive_json()
-            server.emit(EV["tool_call"], call_id="c2", name="ask_onit",
-                        arguments='{"request": "find the paper')
+            server.emit(
+                EV["tool_call"],
+                call_id="c2",
+                name="ask_onit",
+                arguments='{"request": "find the paper',
+            )
             assert wait_for(lambda: server.of_type(EV["item_create"]))
         assert ui._onit.calls == ['{"request": "find the paper']
 
@@ -437,6 +463,7 @@ class TestToolDispatch:
 
 # ── Barge-in ────────────────────────────────────────────────────────────────
 
+
 class TestBargeIn:
     def test_speech_during_a_tool_call_cancels_the_task(self, make_ui):
         # The model cannot be interrupted while a tool call is outstanding,
@@ -452,8 +479,7 @@ class TestBargeIn:
             assert wait_for(lambda: server.of_type(EV["item_create"]), timeout=5)
 
         assert onit.cancelled is True
-        assert server.first(EV["item_create"])["item"]["output"].startswith(
-            "The user interrupted")
+        assert server.first(EV["item_create"])["item"]["output"].startswith("The user interrupted")
         assert CANCELLED_MESSAGE.startswith("The user interrupted")
 
     def test_silence_during_a_tool_call_does_not_cancel(self, make_ui):
@@ -500,12 +526,12 @@ class TestBargeIn:
             call_tool(server, "ask_onit", {"request": "a long search"}, call_id="a")
             time.sleep(0.1)
             call_tool(server, "stop_current_task", {}, call_id="b")
-            assert wait_for(lambda: len(server.of_type(EV["item_create"])) == 2,
-                            timeout=5)
+            assert wait_for(lambda: len(server.of_type(EV["item_create"])) == 2, timeout=5)
         assert onit.cancelled is True
 
 
 # ── History ─────────────────────────────────────────────────────────────────
+
 
 class TestHistory:
     def test_spoken_turn_is_recorded(self, make_ui):
@@ -516,7 +542,7 @@ class TestHistory:
             server.emit(EV["user_text_done"], transcript="hello there")
             server.emit(EV["agent_text_delta"], delta="Hi! How can I help?")
             server.emit(EV["audio_done"])
-            read_until(ws, {"transcript"} , limit=10)
+            read_until(ws, {"transcript"}, limit=10)
             time.sleep(0.2)
 
         sid = next(iter(ui._web_sessions))

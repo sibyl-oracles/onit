@@ -14,34 +14,49 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from model.serving.interpreter import shutdown_session
 from model.serving.state import RunState
-from model.serving.chat import (_resolve_api_key, _parse_tool_call_from_content,
-                                _is_planning_response, _build_messages,
-                                _trim_history, _is_acknowledgment_response,
-                                _is_meta_commentary_response, _build_tool_example,
-                                _build_planning_continuation_prompt,
-                                _is_noop_tool_call, _is_content_free_response,
-                                _content_residue, _is_answering_a_nudge,
-                                _signals_pending_work,
-                                _ACK_CONTINUATION_PROMPT,
-                                _CONTINUATION_AFTER_NUDGE_PROMPT,
-                                _NO_THINK_ACT_PROMPT,
-                                _NO_THINK_RETRY_PROMPT,
-                                _extract_final_response, _looks_incomplete,
-                                _output_unaccounted, _log_to_ui_or_verbose,
-                                _reasoning_text, _is_reasoning_only,
-                                _stitch_continuation,
-                                _execute_tool, _compact_context, chat,
-                                _normalize_openai_base_url,
-                                _normalize_ollama_base_url,
-                                _create_ollama_client)
+from model.serving.chat import (
+    _resolve_api_key,
+    _parse_tool_call_from_content,
+    _is_planning_response,
+    _build_messages,
+    _trim_history,
+    _is_acknowledgment_response,
+    _is_meta_commentary_response,
+    _build_tool_example,
+    _build_planning_continuation_prompt,
+    _is_noop_tool_call,
+    _is_content_free_response,
+    _content_residue,
+    _is_answering_a_nudge,
+    _signals_pending_work,
+    _ACK_CONTINUATION_PROMPT,
+    _CONTINUATION_AFTER_NUDGE_PROMPT,
+    _NO_THINK_ACT_PROMPT,
+    _NO_THINK_RETRY_PROMPT,
+    _extract_final_response,
+    _looks_incomplete,
+    _output_unaccounted,
+    _log_to_ui_or_verbose,
+    _reasoning_text,
+    _is_reasoning_only,
+    _stitch_continuation,
+    _execute_tool,
+    _compact_context,
+    chat,
+    _normalize_openai_base_url,
+    _normalize_ollama_base_url,
+    _create_ollama_client,
+)
 import model.serving.chat as chat_mod
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
 
+
 def _make_openai_error(message: str):
     """A 400 the way the OpenAI SDK raises it, status_code attached."""
     from openai import BadRequestError
+
     response = MagicMock()
     response.status_code = 400
     return BadRequestError(message, response=response, body=None)
@@ -56,6 +71,7 @@ class TestResolveApiKey:
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("VLLM_API_KEY", raising=False)
         import src.setup
+
         monkeypatch.setattr(src.setup, "get_secret", lambda key: None)
 
     def test_vllm_returns_host_key(self):
@@ -81,8 +97,7 @@ class TestResolveApiKey:
             _resolve_api_key("https://openrouter.ai/api/v1")
 
     def test_openai_with_host_key(self):
-        assert _resolve_api_key("https://api.openai.com/v1", "sk-openai") \
-            == "sk-openai"
+        assert _resolve_api_key("https://api.openai.com/v1", "sk-openai") == "sk-openai"
 
     def test_openai_from_env(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai")
@@ -98,39 +113,51 @@ class TestResolveApiKey:
 
     def test_an_endpoints_own_key_is_used(self, monkeypatch):
         import src.setup
+
         monkeypatch.setattr(
-            src.setup, "get_secret",
-            lambda key: "sk-endpoint"
-            if key == src.setup.endpoint_secret_name("http://gpu-2:8000/v1")
-            else None)
+            src.setup,
+            "get_secret",
+            lambda key: (
+                "sk-endpoint"
+                if key == src.setup.endpoint_secret_name("http://gpu-2:8000/v1")
+                else None
+            ),
+        )
         assert _resolve_api_key("http://gpu-2:8000/v1") == "sk-endpoint"
 
     def test_two_endpoints_can_hold_different_keys(self, monkeypatch):
         """The whole point of moving keys onto the endpoint: one provider-named
         secret could not tell two vLLM servers apart."""
         import src.setup
-        keys = {src.setup.endpoint_secret_name("http://gpu-1:8000/v1"): "sk-1",
-                src.setup.endpoint_secret_name("http://gpu-2:8000/v1"): "sk-2"}
+
+        keys = {
+            src.setup.endpoint_secret_name("http://gpu-1:8000/v1"): "sk-1",
+            src.setup.endpoint_secret_name("http://gpu-2:8000/v1"): "sk-2",
+        }
         monkeypatch.setattr(src.setup, "get_secret", lambda key: keys.get(key))
         assert _resolve_api_key("http://gpu-1:8000/v1") == "sk-1"
         assert _resolve_api_key("http://gpu-2:8000/v1") == "sk-2"
 
     def test_an_endpoints_own_key_beats_the_legacy_secret(self, monkeypatch):
         import src.setup
+
         host = "https://openrouter.ai/api/v1"
         monkeypatch.setattr(
-            src.setup, "get_secret",
-            lambda key: "sk-endpoint"
-            if key == src.setup.endpoint_secret_name(host) else "sk-legacy")
+            src.setup,
+            "get_secret",
+            lambda key: (
+                "sk-endpoint" if key == src.setup.endpoint_secret_name(host) else "sk-legacy"
+            ),
+        )
         assert _resolve_api_key(host) == "sk-endpoint"
 
     def test_an_explicit_key_beats_the_endpoints_own(self, monkeypatch):
         """A --host-key or an api_key written into the YAML is the most
         specific thing the caller can say."""
         import src.setup
+
         monkeypatch.setattr(src.setup, "get_secret", lambda key: "sk-stored")
-        assert _resolve_api_key("http://gpu-2:8000/v1", "sk-explicit") \
-            == "sk-explicit"
+        assert _resolve_api_key("http://gpu-2:8000/v1", "sk-explicit") == "sk-explicit"
 
     def test_an_endpoint_key_env_var_is_honoured(self, monkeypatch):
         monkeypatch.setenv("ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1", "sk-env")
@@ -138,12 +165,15 @@ class TestResolveApiKey:
 
     def test_the_legacy_secret_still_authenticates_an_old_install(self, monkeypatch):
         import src.setup
-        monkeypatch.setattr(src.setup, "get_secret",
-                            lambda key: "sk-old" if key == "vllm_api_key" else None)
+
+        monkeypatch.setattr(
+            src.setup, "get_secret", lambda key: "sk-old" if key == "vllm_api_key" else None
+        )
         assert _resolve_api_key("http://localhost:8000/v1") == "sk-old"
 
 
 # ── _parse_tool_call_from_content ───────────────────────────────────────────
+
 
 class TestParseToolCallFromContent:
     def _registry(self, names):
@@ -188,6 +218,7 @@ class TestParseToolCallFromContent:
 
 # ── chat (async) ────────────────────────────────────────────────────────────
 
+
 def _mock_completion(content="Hello!", tool_calls=None):
     """Build a mock chat completion response."""
     message = MagicMock()
@@ -223,10 +254,16 @@ class TestOpenAIRequestShaping:
         registry = MagicMock()
         registry.tools = set(names)
         registry.get_tool_items.return_value = [
-            {"type": "function",
-             "function": {"name": n, "description": "d",
-                          "parameters": {"type": "object", "properties": {}}}}
-            for n in names]
+            {
+                "type": "function",
+                "function": {
+                    "name": n,
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for n in names
+        ]
         registry.tool_accepts_param.return_value = False
         registry.blank_required_args.return_value = []
         registry.parameters_schema.return_value = {}
@@ -236,23 +273,30 @@ class TestOpenAIRequestShaping:
     async def _capture(host="https://api.openai.com/v1", **kw):
         """Run one chat() turn and return the kwargs the client received."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("ok")
-        )
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-4o"), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            await chat(host=host, instruction="Reply with one word.",
-                       tool_registry=kw.pop("tool_registry", None),
-                       safety_queue=asyncio.Queue(), **kw)
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-4o",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            await chat(
+                host=host,
+                instruction="Reply with one word.",
+                tool_registry=kw.pop("tool_registry", None),
+                safety_queue=asyncio.Queue(),
+                **kw,
+            )
         return mock_client.chat.completions.create.call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_no_vllm_extensions_reach_openai(self):
-        kw = await self._capture(temperature=0.6, top_p=0.95, top_k=20,
-                                 min_p=0.05, repetition_penalty=1.05)
+        kw = await self._capture(
+            temperature=0.6, top_p=0.95, top_k=20, min_p=0.05, repetition_penalty=1.05
+        )
         assert "extra_body" not in kw
         assert "top_k" not in kw
         assert "min_p" not in kw
@@ -293,18 +337,24 @@ class TestOpenAIRequestShaping:
                     "Function tools with reasoning_effort are not supported "
                     "for gpt-5 in /v1/chat/completions. To use function "
                     "tools, use /v1/responses or set reasoning_effort to "
-                    "'none'."),
+                    "'none'."
+                ),
                 _mock_completion("ok"),
             ]
         )
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-5"), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            result = await chat(host="https://api.openai.com/v1",
-                                instruction="hi", harness_tools=False,
-                                safety_queue=asyncio.Queue())
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="gpt-5"
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="hi",
+                harness_tools=False,
+                safety_queue=asyncio.Queue(),
+            )
         assert result == "ok"
         _first, _second = mock_client.chat.completions.create.call_args_list
         assert "reasoning_effort" not in _first.kwargs
@@ -323,16 +373,23 @@ class TestOpenAIRequestShaping:
         """
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=AssertionError(
-                "gpt-6-astra must not be sent to /v1/chat/completions"))
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            result = await chat(host="https://api.openai.com/v1",
-                                instruction="hi", harness_tools=False,
-                                safety_queue=asyncio.Queue())
+            side_effect=AssertionError("gpt-6-astra must not be sent to /v1/chat/completions")
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-6-astra",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="hi",
+                harness_tools=False,
+                safety_queue=asyncio.Queue(),
+            )
         assert result == ""  # the responses mock returns nothing usable
         mock_client.chat.completions.create.assert_not_called()
 
@@ -347,14 +404,21 @@ class TestOpenAIRequestShaping:
                 _mock_completion("ok"),
             ]
         )
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-4o"), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            result = await chat(host="https://api.openai.com/v1",
-                                instruction="hi", harness_tools=False,
-                                safety_queue=asyncio.Queue())
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-4o",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="hi",
+                harness_tools=False,
+                safety_queue=asyncio.Queue(),
+            )
         assert result == "ok"
         _first, _second = mock_client.chat.completions.create.call_args_list
         assert "reasoning_effort" in _first.kwargs
@@ -364,29 +428,34 @@ class TestOpenAIRequestShaping:
     async def test_vllm_host_keeps_extra_body(self):
         kw = await self._capture(host="http://localhost:8000/v1")
         assert kw["extra_body"]["top_k"] == 20
-        assert kw["max_tokens"] == kw["max_completion_tokens"] if \
-            "max_completion_tokens" in kw else True
+        assert (
+            kw["max_tokens"] == kw["max_completion_tokens"]
+            if "max_completion_tokens" in kw
+            else True
+        )
         assert "max_tokens" in kw
 
     @pytest.mark.asyncio
     async def test_no_context_probe_against_openai(self):
         """OpenAI's /models carries no max_model_len; the probe is a
         wasted roundtrip."""
-        with patch("model.serving.chat._get_model_max_context",
-                   new_callable=AsyncMock) as probe, \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
+        with (
+            patch("model.serving.chat._get_model_max_context", new_callable=AsyncMock) as probe,
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
             mock_client = AsyncMock()
-            mock_client.chat.completions.create = AsyncMock(
-                return_value=_mock_completion("ok")
-            )
-            with patch("model.serving.chat.AsyncOpenAI",
-                       return_value=mock_client), \
-                 patch("model.serving.chat._resolve_model_id",
-                       new_callable=AsyncMock, return_value="gpt-4o"):
-                await chat(host="https://api.openai.com/v1",
-                           instruction="hi",
-                           safety_queue=asyncio.Queue())
+            mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
+            with (
+                patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+                patch(
+                    "model.serving.chat._resolve_model_id",
+                    new_callable=AsyncMock,
+                    return_value="gpt-4o",
+                ),
+            ):
+                await chat(
+                    host="https://api.openai.com/v1", instruction="hi", safety_queue=asyncio.Queue()
+                )
         probe.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -398,36 +467,42 @@ class TestOpenAIRequestShaping:
         /v1/chat/completions/chat/completions and 404s on every call.
         """
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("ok")
-        )
-        with patch("model.serving.chat.AsyncOpenAI",
-                   return_value=mock_client) as mock_ctor, \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-4o"), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            await chat(host="https://api.openai.com/v1/chat/completions",
-                       instruction="hi",
-                       safety_queue=asyncio.Queue())
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client) as mock_ctor,
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-4o",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            await chat(
+                host="https://api.openai.com/v1/chat/completions",
+                instruction="hi",
+                safety_queue=asyncio.Queue(),
+            )
         base_url = mock_ctor.call_args.kwargs["base_url"]
         assert str(base_url).rstrip("/") == "https://api.openai.com/v1"
 
     @pytest.mark.asyncio
     async def test_completions_suffix_also_normalized(self):
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("ok")
-        )
-        with patch("model.serving.chat.AsyncOpenAI",
-                   return_value=mock_client) as mock_ctor, \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-4o"), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            await chat(host="https://api.openai.com/v1/completions",
-                       instruction="hi",
-                       safety_queue=asyncio.Queue())
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client) as mock_ctor,
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-4o",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            await chat(
+                host="https://api.openai.com/v1/completions",
+                instruction="hi",
+                safety_queue=asyncio.Queue(),
+            )
         base_url = mock_ctor.call_args.kwargs["base_url"]
         assert str(base_url).rstrip("/") == "https://api.openai.com/v1"
 
@@ -436,73 +511,74 @@ class TestNormalizeOpenAIBaseUrl:
     """_normalize_openai_base_url collapses full endpoint URLs to the base."""
 
     def test_full_chat_completions_url(self):
-        assert (_normalize_openai_base_url(
-            "https://api.openai.com/v1/chat/completions")
-            == "https://api.openai.com/v1")
+        assert (
+            _normalize_openai_base_url("https://api.openai.com/v1/chat/completions")
+            == "https://api.openai.com/v1"
+        )
 
     def test_full_completions_url(self):
-        assert (_normalize_openai_base_url(
-            "https://api.openai.com/v1/completions")
-            == "https://api.openai.com/v1")
+        assert (
+            _normalize_openai_base_url("https://api.openai.com/v1/completions")
+            == "https://api.openai.com/v1"
+        )
 
     def test_trailing_slash(self):
-        assert (_normalize_openai_base_url("https://api.openai.com/v1/")
-            == "https://api.openai.com/v1")
+        assert (
+            _normalize_openai_base_url("https://api.openai.com/v1/") == "https://api.openai.com/v1"
+        )
 
     def test_base_url_untouched(self):
-        assert (_normalize_openai_base_url("https://api.openai.com/v1")
-            == "https://api.openai.com/v1")
+        assert (
+            _normalize_openai_base_url("https://api.openai.com/v1") == "https://api.openai.com/v1"
+        )
 
     def test_non_openai_host_untouched(self):
-        assert (_normalize_openai_base_url(
-            "http://localhost:8000/v1/chat/completions")
-            == "http://localhost:8000/v1/chat/completions")
+        assert (
+            _normalize_openai_base_url("http://localhost:8000/v1/chat/completions")
+            == "http://localhost:8000/v1/chat/completions"
+        )
 
     def test_empty_host(self):
         assert _normalize_openai_base_url("") == ""
 
     def test_case_insensitive_suffix(self):
-        assert (_normalize_openai_base_url(
-            "https://api.openai.com/v1/Chat/Completions")
-            == "https://api.openai.com/v1")
+        assert (
+            _normalize_openai_base_url("https://api.openai.com/v1/Chat/Completions")
+            == "https://api.openai.com/v1"
+        )
 
 
 class TestNormalizeOllamaBaseUrl:
     """The native SDK appends /api, so a /v1 host asks for /v1/api/chat."""
 
     def test_v1_suffix_is_dropped(self):
-        assert _normalize_ollama_base_url("https://ollama.com/v1") == \
-            "https://ollama.com"
+        assert _normalize_ollama_base_url("https://ollama.com/v1") == "https://ollama.com"
 
     def test_api_suffix_is_dropped(self):
-        assert _normalize_ollama_base_url("https://ollama.com/api") == \
-            "https://ollama.com"
+        assert _normalize_ollama_base_url("https://ollama.com/api") == "https://ollama.com"
 
     def test_trailing_slash_and_suffix(self):
-        assert _normalize_ollama_base_url("https://ollama.com/v1/") == \
-            "https://ollama.com"
+        assert _normalize_ollama_base_url("https://ollama.com/v1/") == "https://ollama.com"
 
     def test_bare_host_untouched(self):
-        assert _normalize_ollama_base_url("https://ollama.com") == \
-            "https://ollama.com"
+        assert _normalize_ollama_base_url("https://ollama.com") == "https://ollama.com"
 
     def test_the_alias_keeps_its_authority(self):
-        assert _normalize_ollama_base_url("https://api.ollama.com/v1") == \
-            "https://api.ollama.com"
+        assert _normalize_ollama_base_url("https://api.ollama.com/v1") == "https://api.ollama.com"
 
     def test_a_local_port_is_not_mistaken_for_a_suffix(self):
-        assert _normalize_ollama_base_url("http://localhost:11434") == \
-            "http://localhost:11434"
+        assert _normalize_ollama_base_url("http://localhost:11434") == "http://localhost:11434"
 
     def test_empty_host(self):
         assert _normalize_ollama_base_url("") == ""
 
     def test_the_client_actually_uses_the_normalized_host(self):
         """The guard is worthless if _create_ollama_client does not apply it."""
-        with patch.object(chat_mod, "OLLAMA_SDK_AVAILABLE", True), \
-             patch.object(chat_mod, "OllamaAsyncClient") as ctor:
-            _create_ollama_client("https://ollama.com/v1", "k", 30,
-                                  stream=False)
+        with (
+            patch.object(chat_mod, "OLLAMA_SDK_AVAILABLE", True),
+            patch.object(chat_mod, "OllamaAsyncClient") as ctor,
+        ):
+            _create_ollama_client("https://ollama.com/v1", "k", 30, stream=False)
         assert ctor.call_args.kwargs["host"] == "https://ollama.com"
 
 
@@ -515,8 +591,14 @@ class TestChat:
             return_value=_mock_completion("The answer is 42.")
         )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="What is 6*7?",
@@ -532,8 +614,14 @@ class TestChat:
             return_value=_mock_completion("<think>pondering</think>Result here")
         )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
@@ -552,8 +640,14 @@ class TestChat:
             return_value=_mock_completion("should not reach")
         )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
@@ -571,8 +665,14 @@ class TestChat:
             side_effect=APITimeoutError(request=MagicMock())
         )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
@@ -586,12 +686,16 @@ class TestChat:
         from openai import OpenAIError
 
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=OpenAIError("fail")
-        )
+        mock_client.chat.completions.create = AsyncMock(side_effect=OpenAIError("fail"))
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
@@ -609,8 +713,10 @@ class TestChat:
         whichever the local environment really has.
         """
         import httpx
+
         try:
             import httpx2
+
             return httpx2.ReadTimeout
         except ImportError:
             return httpx.ReadTimeout
@@ -623,6 +729,7 @@ class TestChat:
         raises ``timeout_cls`` after ``fail_after`` chunks — the shape of a
         stream that stalls mid-generation.
         """
+
         class _Stream:
             def __init__(self):
                 self._i = 0
@@ -636,12 +743,16 @@ class TestChat:
                     token = self._flat[self._i]
                     self._i += 1
                     return SimpleNamespace(
-                        choices=[SimpleNamespace(
-                            delta=SimpleNamespace(
-                                content=token, tool_calls=None,
-                                reasoning_content=None),
-                            finish_reason=None)],
-                        usage=None)
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content=token, tool_calls=None, reasoning_content=None
+                                ),
+                                finish_reason=None,
+                            )
+                        ],
+                        usage=None,
+                    )
                 if fail_after is not None and self._i >= fail_after:
                     raise timeout_cls("timed out")
                 raise StopAsyncIteration
@@ -663,14 +774,22 @@ class TestChat:
         timeout_cls = self._timeout_cls()
 
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
-            self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
+                self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"), \
-             patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
@@ -688,14 +807,22 @@ class TestChat:
         timeout_cls = self._timeout_cls()
 
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
-            self._stream_of([["Hello"]]),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                self._stream_of([["Hel"]], fail_after=1, timeout_cls=timeout_cls),
+                self._stream_of([["Hello"]]),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"), \
-             patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
@@ -737,12 +864,20 @@ class TestChat:
         # Mock tool registry
         mock_handler = AsyncMock(return_value="Weather: sunny, 25C")
         mock_registry = MagicMock()
-        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "search"}}]
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "search"}}
+        ]
         mock_registry.tools = {"search"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="What is the weather?",
@@ -757,14 +892,18 @@ class TestChat:
     async def test_session_history_injected(self):
         """Session history entries are added as user/assistant message pairs."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("ok")
-        )
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
 
         history = [{"task": "prior question", "response": "prior answer"}]
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="follow up",
@@ -787,12 +926,16 @@ class TestChat:
     async def test_custom_prompt_intro(self):
         """Custom prompt_intro overrides the default system message."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("ok")
-        )
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="hello",
@@ -808,6 +951,7 @@ class TestChat:
 
 
 # ── _is_planning_response ───────────────────────────────────────────────────
+
 
 class TestIsPlanningResponse:
     def test_let_me_prefix(self):
@@ -849,16 +993,19 @@ class TestIsPlanningResponse:
             "I checked the repository and it is out of date. Let me update it now."
         )
 
-    @pytest.mark.parametrize("content", [
-        "Now let me update `captions.py` to handle the fused results:",
-        "Now let me understand the full scope of changes needed. I need to:",
-        "Next, let me update the manifest builder.",
-        "Then I'll wire the loader into the manifest builder.",
-        "Alright, let's run the tests now.",
-        "Now I need to check whether `trajectory_clauses` already exists.",
-        "Good — it exists and takes an `AcousticContext`. Now let me update the smoke test.",
-        "Ok, so now let me fix the smoke test.",
-    ])
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Now let me update `captions.py` to handle the fused results:",
+            "Now let me understand the full scope of changes needed. I need to:",
+            "Next, let me update the manifest builder.",
+            "Then I'll wire the loader into the manifest builder.",
+            "Alright, let's run the tests now.",
+            "Now I need to check whether `trajectory_clauses` already exists.",
+            "Good — it exists and takes an `AcousticContext`. Now let me update the smoke test.",
+            "Ok, so now let me fix the smoke test.",
+        ],
+    )
     def test_leadin_before_planning_phrase(self, content):
         """A connective in front of the plan does not make it an answer.
 
@@ -874,21 +1021,25 @@ class TestIsPlanningResponse:
 
     def test_long_answer_ending_in_colon_is_not_a_plan(self):
         """The colon test is bounded — a long answer stays an answer."""
-        answer = ("The scholarship covers full tuition and a monthly stipend. " * 10)
+        answer = "The scholarship covers full tuition and a monthly stipend. " * 10
         assert not _is_planning_response(answer + "\nThe deadline is 30 June:")
 
-    @pytest.mark.parametrize("content", [
-        "Done — 3 files updated and the tests pass.",
-        "The bug was a missing await in loader.py:88; the suite is green now.",
-        "Now the tests pass and the manifest builder emits all four captions.",
-        "I updated the smoke test and it exercises every model.",
-    ])
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Done — 3 files updated and the tests pass.",
+            "The bug was a missing await in loader.py:88; the suite is green now.",
+            "Now the tests pass and the manifest builder emits all four captions.",
+            "I updated the smoke test and it exercises every model.",
+        ],
+    )
     def test_completed_work_is_not_a_plan(self, content):
         """Past-tense reports of finished work must reach the user."""
         assert not _is_planning_response(content)
 
 
 # ── _is_acknowledgment_response ────────────────────────────────────────────
+
 
 class TestIsAcknowledgmentResponse:
     def test_ready_for_next_message(self):
@@ -910,7 +1061,7 @@ class TestIsAcknowledgmentResponse:
         assert _is_acknowledgment_response("All tools called successfully.")
 
     def test_action_task_completion_is_an_answer(self):
-        """"Task completed" reports the work; only "tool" reports the plumbing."""
+        """ "Task completed" reports the work; only "tool" reports the plumbing."""
         assert not _is_acknowledgment_response("Task completed successfully.")
 
     def test_real_answer_returns_false(self):
@@ -934,6 +1085,7 @@ class TestIsAcknowledgmentResponse:
 
 
 # ── _is_meta_commentary_response ───────────────────────────────────────────
+
 
 class TestIsMetaCommentaryResponse:
     def test_narrating_the_continuation_prompt(self):
@@ -1004,12 +1156,13 @@ class TestIsContentFreeResponse:
     def test_mechanics_claim_is_stripped_whole(self):
         """The success clause and its "with no errors" tail both come out, so
         neither is left behind looking like a finding."""
-        assert _content_residue(
-            "The command ran successfully — `ready` was printed with no errors."
-        ) == []
+        assert (
+            _content_residue("The command ran successfully — `ready` was printed with no errors.")
+            == []
+        )
 
     def test_sign_off_after_real_work_survives(self):
-        """"Done" reports the work, not the exchange — the same line
+        """ "Done" reports the work, not the exchange — the same line
         ``_is_acknowledgment_response`` draws at "Task completed successfully."
         A run that finished may say only this."""
         assert not _is_content_free_response("All done!")
@@ -1020,14 +1173,10 @@ class TestIsContentFreeResponse:
 
     def test_success_with_a_finding_survives(self):
         """The mechanics clause is stripped, not treated as proof of filler."""
-        assert not _is_content_free_response(
-            "The command ran successfully and printed 42."
-        )
+        assert not _is_content_free_response("The command ran successfully and printed 42.")
 
     def test_real_answer_survives(self):
-        assert not _is_content_free_response(
-            "The build fails because pytest is run from src/."
-        )
+        assert not _is_content_free_response("The build fails because pytest is run from src/.")
 
     def test_action_task_completion_survives(self):
         assert not _is_content_free_response("Task completed successfully.")
@@ -1055,27 +1204,28 @@ class TestIsAnsweringANudge:
 
     def test_ack_continuation_prompt(self):
         assert _is_answering_a_nudge(
-            [{"role": "user", "content": "summarize the docs"},
-             {"role": "assistant", "content": "Ready."},
-             {"role": "user", "content": _ACK_CONTINUATION_PROMPT}]
+            [
+                {"role": "user", "content": "summarize the docs"},
+                {"role": "assistant", "content": "Ready."},
+                {"role": "user", "content": _ACK_CONTINUATION_PROMPT},
+            ]
         )
 
     def test_compacted_prompt(self):
-        assert _is_answering_a_nudge(
-            [{"role": "user", "content": "[CONTEXT COMPACTED]\n..."}]
-        )
+        assert _is_answering_a_nudge([{"role": "user", "content": "[CONTEXT COMPACTED]\n..."}])
 
     def test_planning_continuation_prompt(self):
         assert _is_answering_a_nudge(
-            [{"role": "user",
-              "content": "Task: x\nCall a tool.\nUse this exact JSON format:\n{}"}]
+            [{"role": "user", "content": "Task: x\nCall a tool.\nUse this exact JSON format:\n{}"}]
         )
 
     def test_real_user_turn(self):
         assert not _is_answering_a_nudge(
-            [{"role": "user", "content": "## Task\nsummarize the docs"},
-             {"role": "assistant", "content": None},
-             {"role": "tool", "content": "results"}]
+            [
+                {"role": "user", "content": "## Task\nsummarize the docs"},
+                {"role": "assistant", "content": None},
+                {"role": "tool", "content": "results"},
+            ]
         )
 
     def test_multimodal_user_turn_is_not_a_nudge(self):
@@ -1087,16 +1237,15 @@ class TestIsAnsweringANudge:
         assert not _is_answering_a_nudge([{"role": "system", "content": "rules"}])
 
     def test_no_think_retry_prompt(self):
-        assert _is_answering_a_nudge(
-            [{"role": "user", "content": _NO_THINK_RETRY_PROMPT}])
+        assert _is_answering_a_nudge([{"role": "user", "content": _NO_THINK_RETRY_PROMPT}])
 
     def test_no_think_act_prompt(self):
-        assert _is_answering_a_nudge(
-            [{"role": "user", "content": _NO_THINK_ACT_PROMPT}])
+        assert _is_answering_a_nudge([{"role": "user", "content": _NO_THINK_ACT_PROMPT}])
 
     def test_continuation_after_nudge_prompt(self):
         assert _is_answering_a_nudge(
-            [{"role": "user", "content": _CONTINUATION_AFTER_NUDGE_PROMPT}])
+            [{"role": "user", "content": _CONTINUATION_AFTER_NUDGE_PROMPT}]
+        )
 
 
 class TestSignalsPendingWork:
@@ -1108,19 +1257,18 @@ class TestSignalsPendingWork:
     def test_the_log_failure_is_caught(self):
         """Verbatim shape from the 23 Sep session: the model argued with the
         final-answer nudge and named the work it could not do."""
-        reply = ("The user wants me to write the final answer now. But wait — "
-                 "I haven't actually made the changes yet. The instruction "
-                 "says do not call any more tools, but the task is to modify "
-                 "cmd_setup and I haven't edited the file.")
+        reply = (
+            "The user wants me to write the final answer now. But wait — "
+            "I haven't actually made the changes yet. The instruction "
+            "says do not call any more tools, but the task is to modify "
+            "cmd_setup and I haven't edited the file."
+        )
         assert _signals_pending_work(reply) is True
 
     def test_tool_constraint_phrases_are_caught(self):
-        assert _signals_pending_work(
-            "I can't call tools anymore, so here is the plan as text.")
-        assert _signals_pending_work(
-            "Since tool calls are no longer allowed, the patch is below.")
-        assert _signals_pending_work(
-            "I cannot apply the change under this constraint.")
+        assert _signals_pending_work("I can't call tools anymore, so here is the plan as text.")
+        assert _signals_pending_work("Since tool calls are no longer allowed, the patch is below.")
+        assert _signals_pending_work("I cannot apply the change under this constraint.")
 
     def test_incomplete_work_phrases_are_caught(self):
         assert _signals_pending_work("The work is incomplete: the tests still need writing.")
@@ -1130,22 +1278,32 @@ class TestSignalsPendingWork:
     def test_a_genuine_answer_is_not_caught(self):
         """An answer about the world may contain these words about someone
         else's work; the detector must not turn it into a continuation."""
-        assert _signals_pending_work(
-            "The maintainers haven't merged the fix upstream; pin 1.2.0.") is False
-        assert _signals_pending_work(
-            "The repo is complete: setup, README and tests are all in place.") is False
-        assert _signals_pending_work(
-            "All done. The patch is applied and the suite passes.") is False
+        assert (
+            _signals_pending_work("The maintainers haven't merged the fix upstream; pin 1.2.0.")
+            is False
+        )
+        assert (
+            _signals_pending_work("The repo is complete: setup, README and tests are all in place.")
+            is False
+        )
+        assert (
+            _signals_pending_work("All done. The patch is applied and the suite passes.") is False
+        )
 
     def test_thinking_is_stripped_before_matching(self):
-        assert _signals_pending_work(
-            "</think>I still need to edit the file.</think>Final answer: everything is done.") is False
+        assert (
+            _signals_pending_work(
+                "</think>I still need to edit the file.</think>Final answer: everything is done."
+            )
+            is False
+        )
 
     def test_empty_is_not_caught(self):
         assert _signals_pending_work("") is False
 
 
 # ── blank required tool arguments ──────────────────────────────────────────
+
 
 class TestBlankRequiredArgs:
     class _Registry:
@@ -1159,23 +1317,33 @@ class TestBlankRequiredArgs:
             return False
 
         def blank_required_args(self, tool_name, arguments):
-            return [n for n in ("command",)
-                    if not str(arguments.get(n, "")).strip()]
+            return [n for n in ("command",) if not str(arguments.get(n, "")).strip()]
 
         def __getitem__(self, name):
             async def handler(log_handler=None, **kwargs):
                 self.called_with = dict(kwargs)
                 return "ready"
+
             return handler
 
     def _run(self, args):
         registry = self._Registry()
         messages = []
-        asyncio.run(_execute_tool(
-            "bash", args, "call_1", registry, timeout=5, data_path=None,
-            chat_ui=None, verbose=False, messages=messages,
-            tool_call_history=[], max_repeated=30,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "bash",
+                args,
+                "call_1",
+                registry,
+                timeout=5,
+                data_path=None,
+                chat_ui=None,
+                verbose=False,
+                messages=messages,
+                tool_call_history=[],
+                max_repeated=30,
+            )
+        )
         return registry, messages
 
     def test_blank_command_is_not_dispatched(self):
@@ -1209,18 +1377,30 @@ class TestBlankRequiredArgs:
                 async def handler(log_handler=None, **kwargs):
                     self.called = True
                     return "ok"
+
                 return handler
 
         registry = _Bare()
-        asyncio.run(_execute_tool(
-            "bash", {"command": ""}, "call_1", registry, timeout=5,
-            data_path=None, chat_ui=None, verbose=False, messages=[],
-            tool_call_history=[], max_repeated=30,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "bash",
+                {"command": ""},
+                "call_1",
+                registry,
+                timeout=5,
+                data_path=None,
+                chat_ui=None,
+                verbose=False,
+                messages=[],
+                tool_call_history=[],
+                max_repeated=30,
+            )
+        )
         assert registry.called is True
 
 
 # ── argument validation against the declared schema ────────────────────────
+
 
 class TestSchemaValidationOnDispatch:
     class _Registry:
@@ -1244,22 +1424,37 @@ class TestSchemaValidationOnDispatch:
             async def handler(log_handler=None, **kwargs):
                 self.called_with = dict(kwargs)
                 return "results"
+
             return handler
 
-    _SCHEMA = {"type": "object",
-               "properties": {"query": {"type": "string"},
-                              "depth": {"type": "integer", "maximum": 10},
-                              "mode": {"type": "string", "enum": ["fast", "deep"]}},
-               "required": ["query"]}
+    _SCHEMA = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "depth": {"type": "integer", "maximum": 10},
+            "mode": {"type": "string", "enum": ["fast", "deep"]},
+        },
+        "required": ["query"],
+    }
 
     def _run(self, args, params=None):
         registry = self._Registry(self._SCHEMA if params is None else params)
         messages = []
-        asyncio.run(_execute_tool(
-            "search", args, "call_1", registry, timeout=5, data_path=None,
-            chat_ui=None, verbose=False, messages=messages,
-            tool_call_history=[], max_repeated=30,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "search",
+                args,
+                "call_1",
+                registry,
+                timeout=5,
+                data_path=None,
+                chat_ui=None,
+                verbose=False,
+                messages=messages,
+                tool_call_history=[],
+                max_repeated=30,
+            )
+        )
         return registry, messages
 
     def test_wrong_type_is_refused_before_dispatch(self):
@@ -1311,8 +1506,7 @@ class TestSchemaValidationOnDispatch:
     def test_harness_injected_params_are_not_rejected(self):
         """session_id/data_path are injected by the harness and are not in the
         declared schema; refusing them would break every sandboxed tool."""
-        registry, _ = self._run({"query": "cats", "session_id": "abc",
-                                 "data_path": "/tmp/x"})
+        registry, _ = self._run({"query": "cats", "session_id": "abc", "data_path": "/tmp/x"})
         assert registry.called_with is not None
 
     def test_empty_schema_dispatches_unchanged(self):
@@ -1336,19 +1530,29 @@ class TestSchemaValidationOnDispatch:
                 async def handler(log_handler=None, **kwargs):
                     self.called = True
                     return "ok"
+
                 return handler
 
         registry = _Bare()
-        asyncio.run(_execute_tool(
-            "search", {"depth": "not a number"}, "call_1", registry, timeout=5,
-            data_path=None, chat_ui=None, verbose=False, messages=[],
-            tool_call_history=[], max_repeated=30,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "search",
+                {"depth": "not a number"},
+                "call_1",
+                registry,
+                timeout=5,
+                data_path=None,
+                chat_ui=None,
+                verbose=False,
+                messages=[],
+                tool_call_history=[],
+                max_repeated=30,
+            )
+        )
         assert registry.called is True
 
     def test_malformed_schema_does_not_block_dispatch(self):
-        registry, _ = self._run({"query": "cats"},
-                                params={"properties": "not a dict"})
+        registry, _ = self._run({"query": "cats"}, params={"properties": "not a dict"})
         assert registry.called_with is not None
 
     def test_blank_required_arg_still_wins(self):
@@ -1361,36 +1565,57 @@ class TestSchemaValidationOnDispatch:
 
         registry = _Reg(self._SCHEMA)
         messages = []
-        asyncio.run(_execute_tool(
-            "search", {"query": "", "depth": "three"}, "call_1", registry,
-            timeout=5, data_path=None, chat_ui=None, verbose=False,
-            messages=messages, tool_call_history=[], max_repeated=30,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "search",
+                {"query": "", "depth": "three"},
+                "call_1",
+                registry,
+                timeout=5,
+                data_path=None,
+                chat_ui=None,
+                verbose=False,
+                messages=messages,
+                tool_call_history=[],
+                max_repeated=30,
+            )
+        )
         assert registry.called_with is None
         assert "no value for: query" in messages[-1]["content"]
 
 
 # ── what actually goes on the wire ─────────────────────────────────────────
 
+
 class TestApiToolPayload:
     def test_returns_is_stripped(self):
         """`returns` is ours alone: no provider reads it, and a strict one
         rejects the request for carrying it."""
         from model.serving.chat import _api_tool_payload
-        items = [{"type": "function", "function": {
-            "name": "search", "description": "d",
-            "parameters": {"type": "object", "properties": {}},
-            "returns": {"hits": {"type": "array"}}}}]
+
+        items = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                    "returns": {"hits": {"type": "array"}},
+                },
+            }
+        ]
         payload = _api_tool_payload(items)
         assert payload[0]["function"] == {
-            "name": "search", "description": "d",
-            "parameters": {"type": "object", "properties": {}}}
+            "name": "search",
+            "description": "d",
+            "parameters": {"type": "object", "properties": {}},
+        }
         assert set(payload[0]) == {"type", "function"}
 
     def test_source_items_are_not_mutated(self):
         from model.serving.chat import _api_tool_payload
-        items = [{"type": "function",
-                  "function": {"name": "a", "returns": {"x": 1}}}]
+
+        items = [{"type": "function", "function": {"name": "a", "returns": {"x": 1}}}]
         _api_tool_payload(items)
         assert "returns" in items[0]["function"]
 
@@ -1398,47 +1623,65 @@ class TestApiToolPayload:
         """A projection, not a deletion — a field added later stays internal
         until someone decides otherwise."""
         from model.serving.chat import _api_tool_payload
-        items = [{"type": "function",
-                  "function": {"name": "a", "cost_hint": 3}}]
+
+        items = [{"type": "function", "function": {"name": "a", "cost_hint": 3}}]
         assert "cost_hint" not in _api_tool_payload(items)[0]["function"]
 
     def test_missing_optional_keys_are_omitted_not_nulled(self):
         from model.serving.chat import _api_tool_payload
-        payload = _api_tool_payload([{"type": "function",
-                                      "function": {"name": "a"}}])
+
+        payload = _api_tool_payload([{"type": "function", "function": {"name": "a"}}])
         assert payload[0]["function"] == {"name": "a"}
 
     def test_non_tool_records_pass_through(self):
         """Test doubles hand this whatever they please; a payload builder is
         the wrong place to start rejecting things."""
         from model.serving.chat import _api_tool_payload
-        assert _api_tool_payload(["nonsense", {"no": "function"}]) == \
-            ["nonsense", {"no": "function"}]
+
+        assert _api_tool_payload(["nonsense", {"no": "function"}]) == [
+            "nonsense",
+            {"no": "function"},
+        ]
 
     @pytest.mark.asyncio
     async def test_chat_sends_the_projected_payload(self):
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion(content="Hi"))
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion(content="Hi"))
         mock_registry = MagicMock()
         mock_registry.tools = {"search"}
-        mock_registry.get_tool_items.return_value = [{
-            "type": "function",
-            "function": {"name": "search", "description": "d",
-                         "parameters": {"type": "object", "properties": {}},
-                         "returns": {"hits": {}}}}]
+        mock_registry.get_tool_items.return_value = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                    "returns": {"hits": {}},
+                },
+            }
+        ]
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=mock_registry, safety_queue=asyncio.Queue())
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=mock_registry,
+                safety_queue=asyncio.Queue(),
+            )
 
         sent = mock_client.chat.completions.create.call_args.kwargs["tools"]
         assert "returns" not in sent[0]["function"]
 
 
 # ── the harness's own tools ────────────────────────────────────────────────
+
 
 class TestHarnessToolsInChat:
     """Phase 2: context_status and the note tools, offered by chat() itself."""
@@ -1448,10 +1691,16 @@ class TestHarnessToolsInChat:
         registry = MagicMock()
         registry.tools = set(names)
         registry.get_tool_items.return_value = [
-            {"type": "function",
-             "function": {"name": n, "description": "d",
-                          "parameters": {"type": "object", "properties": {}}}}
-            for n in names]
+            {
+                "type": "function",
+                "function": {
+                    "name": n,
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for n in names
+        ]
         registry.tool_accepts_param.return_value = False
         registry.blank_required_args.return_value = []
         registry.parameters_schema.return_value = {}
@@ -1459,22 +1708,39 @@ class TestHarnessToolsInChat:
 
     async def _run(self, tmp_path, registry, **kwargs):
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion(content="Hi"))
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=registry, safety_queue=asyncio.Queue(),
-                       data_path=str(tmp_path), **kwargs)
-        return [t["function"]["name"]
-                for t in client.chat.completions.create.call_args.kwargs.get("tools", [])]
+        client.chat.completions.create = AsyncMock(return_value=_mock_completion(content="Hi"))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                **kwargs,
+            )
+        return [
+            t["function"]["name"]
+            for t in client.chat.completions.create.call_args.kwargs.get("tools", [])
+        ]
 
     @pytest.mark.asyncio
     async def test_offered_alongside_the_mcp_tools(self, tmp_path):
         sent = await self._run(tmp_path, self._registry())
-        assert set(sent) == {"search", "context_status", "note_write", "note_read",
-                             "result_read", "result_grep"}
+        assert set(sent) == {
+            "search",
+            "context_status",
+            "note_write",
+            "note_read",
+            "result_read",
+            "result_grep",
+        }
 
     @pytest.mark.asyncio
     async def test_withheld_from_a_run_with_no_tools_of_its_own(self, tmp_path):
@@ -1484,15 +1750,24 @@ class TestHarnessToolsInChat:
     @pytest.mark.asyncio
     async def test_note_tools_need_a_data_path(self):
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion(content="Hi"))
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=self._registry(), safety_queue=asyncio.Queue())
-        sent = [t["function"]["name"]
-                for t in client.chat.completions.create.call_args.kwargs["tools"]]
+        client.chat.completions.create = AsyncMock(return_value=_mock_completion(content="Hi"))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=self._registry(),
+                safety_queue=asyncio.Queue(),
+            )
+        sent = [
+            t["function"]["name"] for t in client.chat.completions.create.call_args.kwargs["tools"]
+        ]
         assert "context_status" in sent
         assert "note_write" not in sent and "note_read" not in sent
 
@@ -1506,17 +1781,29 @@ class TestHarnessToolsInChat:
         """The model asks; the loop's own numbers come back, no server involved."""
         registry = self._registry()
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion(content=None,
-                             tool_calls=[_mock_tool_call("context_status", "{}", "c1")]),
-            _mock_completion(content="Plenty of room left."),
-        ])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await chat(host="http://localhost:8000/v1", instruction="hi",
-                                tool_registry=registry, safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path))
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(
+                    content=None, tool_calls=[_mock_tool_call("context_status", "{}", "c1")]
+                ),
+                _mock_completion(content="Plenty of room left."),
+            ]
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+            )
         assert result == "Plenty of room left."
         registry.__getitem__.assert_not_called()
         sent = client.chat.completions.create.call_args.kwargs["messages"]
@@ -1527,24 +1814,36 @@ class TestHarnessToolsInChat:
     async def test_compaction_tells_the_model_it_happened(self, tmp_path):
         """The UI already got show_context_compaction; this is the model's copy."""
         from model.serving.harness import COMPACTION_NOTICE
-        filled = _mock_completion(content=None,
-                                  tool_calls=[_mock_tool_call("search", "{}", "c1")])
+
+        filled = _mock_completion(content=None, tool_calls=[_mock_tool_call("search", "{}", "c1")])
         filled.usage.prompt_tokens = 9_500  # 95% of the window below
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            filled,                                   # turn 1: calls a tool
-            _mock_completion("Summary of prior work"),  # the compaction call
-            _mock_completion("Done."),                # turn 2: answers
-        ])
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                filled,  # turn 1: calls a tool
+                _mock_completion("Summary of prior work"),  # the compaction call
+                _mock_completion("Done."),  # turn 2: answers
+            ]
+        )
         registry = self._registry()
         registry.__getitem__.return_value = AsyncMock(return_value="result")
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await chat(host="http://localhost:8000/v1", instruction="hi",
-                                tool_registry=registry, safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path), max_context_tokens=10_000,
-                                max_tokens=1024)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                max_context_tokens=10_000,
+                max_tokens=1024,
+            )
         assert result == "Done."
         sent = client.chat.completions.create.call_args.kwargs["messages"]
         notices = sum(str(m.get("content", "")).count(COMPACTION_NOTICE) for m in sent)
@@ -1554,21 +1853,34 @@ class TestHarnessToolsInChat:
     async def test_a_note_written_by_the_model_is_on_disk(self, tmp_path):
         args = json.dumps({"key": "findings", "text": "the port is 8001"})
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion(content=None,
-                             tool_calls=[_mock_tool_call("note_write", args, "c1")]),
-            _mock_completion(content="Saved."),
-        ])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=self._registry(), safety_queue=asyncio.Queue(),
-                       data_path=str(tmp_path))
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(
+                    content=None, tool_calls=[_mock_tool_call("note_write", args, "c1")]
+                ),
+                _mock_completion(content="Saved."),
+            ]
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=self._registry(),
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+            )
         assert (tmp_path / ".onit" / "notes" / "findings.md").read_text() == "the port is 8001"
 
 
 # ── continuation prompt for stuck models ───────────────────────────────────
+
 
 class TestPlanningContinuationPrompt:
     @staticmethod
@@ -1576,23 +1888,34 @@ class TestPlanningContinuationPrompt:
         registry = MagicMock()
         registry.tools = set(names)
         registry.get_tool_items.return_value = [
-            {"function": {"name": "write_file",
-                          "parameters": {"properties": {"path": {"type": "string"},
-                                                        "content": {"type": "string"}}}}},
-            {"function": {"name": "bash",
-                          "parameters": {"properties": {"command": {"type": "string"}}}}},
+            {
+                "function": {
+                    "name": "write_file",
+                    "parameters": {
+                        "properties": {"path": {"type": "string"}, "content": {"type": "string"}}
+                    },
+                }
+            },
+            {
+                "function": {
+                    "name": "bash",
+                    "parameters": {"properties": {"command": {"type": "string"}}},
+                }
+            },
         ]
         return registry
 
     def test_non_shell_task_avoids_bash_example(self):
         """A bash example invites a no-op echo that satisfies the format only."""
-        example = _build_tool_example(self._registry("bash", "write_file"),
-                                      "Summarize the scholarship deadlines.")
+        example = _build_tool_example(
+            self._registry("bash", "write_file"), "Summarize the scholarship deadlines."
+        )
         assert json.loads(example)["name"] == "write_file"
 
     def test_shell_task_prefers_bash_example(self):
-        example = _build_tool_example(self._registry("bash", "write_file"),
-                                      "Run the test suite and report failures.")
+        example = _build_tool_example(
+            self._registry("bash", "write_file"), "Run the test suite and report failures."
+        )
         assert json.loads(example)["name"] == "bash"
 
     def test_bash_still_used_when_it_is_the_only_tool(self):
@@ -1608,9 +1931,7 @@ class TestPlanningContinuationPrompt:
 
     def test_long_task_is_trimmed(self):
         task = "Audit every MCP server for data_path declarations. " * 20
-        prompt = _build_planning_continuation_prompt(
-            self._registry("write_file"), 1, task
-        )
+        prompt = _build_planning_continuation_prompt(self._registry("write_file"), 1, task)
         assert "..." in prompt.splitlines()[0]
         assert len(prompt.splitlines()[0]) < 400
 
@@ -1626,6 +1947,7 @@ class TestPlanningContinuationPrompt:
 
 
 # ── _is_noop_tool_call ─────────────────────────────────────────────────────
+
 
 class TestIsNoopToolCall:
     def test_bare_echo_is_a_noop(self):
@@ -1661,6 +1983,7 @@ class TestIsNoopToolCall:
 
 # ── _compact_context ───────────────────────────────────────────────────────
 
+
 class TestCompactContext:
     @staticmethod
     def _client(summary="Prior work: read three files, fixed one bug."):
@@ -1680,8 +2003,12 @@ class TestCompactContext:
     async def test_compacted_history_ends_on_the_user_turn(self):
         """A trailing assistant ack would make the model reply with filler and stop."""
         out = await _compact_context(
-            self._messages(), self._client(), "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            self._client(),
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
         )
         assert out[-1]["role"] == "user"
         assert not any(m["role"] == "assistant" for m in out)
@@ -1689,16 +2016,24 @@ class TestCompactContext:
     @pytest.mark.asyncio
     async def test_system_message_is_preserved(self):
         out = await _compact_context(
-            self._messages(), self._client(), "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            self._client(),
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
         )
         assert out[0] == {"role": "system", "content": "You are OnIt."}
 
     @pytest.mark.asyncio
     async def test_instruction_is_restated_verbatim(self):
         out = await _compact_context(
-            self._messages(), self._client(), "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            self._client(),
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
             instruction="Fix the failing tests.",
         )
         assert "Fix the failing tests." in out[-1]["content"]
@@ -1707,9 +2042,14 @@ class TestCompactContext:
     async def test_harness_notice_is_shown_to_the_model_exactly_once(self):
         """Compaction was an event only the UI heard about."""
         from model.serving.harness import COMPACTION_NOTICE
+
         out = await _compact_context(
-            self._messages(), self._client(), "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            self._client(),
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
             harness_note=COMPACTION_NOTICE,
         )
         joined = "\n".join(m["content"] for m in out)
@@ -1720,9 +2060,14 @@ class TestCompactContext:
     async def test_the_resume_line_stays_last(self):
         """The notice must not land where "get back to work" belongs."""
         from model.serving.harness import COMPACTION_NOTICE
+
         out = await _compact_context(
-            self._messages(), self._client(), "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            self._client(),
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
             harness_note=COMPACTION_NOTICE,
         )
         assert out[-1]["content"].rstrip().endswith("already done.]")
@@ -1730,9 +2075,14 @@ class TestCompactContext:
     @pytest.mark.asyncio
     async def test_no_notice_when_the_harness_tools_are_off(self):
         from model.serving.harness import COMPACTION_NOTICE
+
         out = await _compact_context(
-            self._messages(), self._client(), "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            self._client(),
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
         )
         assert COMPACTION_NOTICE not in "\n".join(m["content"] for m in out)
 
@@ -1742,8 +2092,12 @@ class TestCompactContext:
         reasoning models reject max_tokens outright."""
         client = self._client()
         await _compact_context(
-            self._messages(), client, "gpt-4o",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            client,
+            "gpt-4o",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
             is_openai=True,
         )
         _kw = client.chat.completions.create.call_args.kwargs
@@ -1755,8 +2109,12 @@ class TestCompactContext:
         """The vLLM spelling must not ride along with the OpenAI one."""
         client = self._client()
         await _compact_context(
-            self._messages(), client, "gpt-4o",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            client,
+            "gpt-4o",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
             is_openai=True,
         )
         _kw = client.chat.completions.create.call_args.kwargs
@@ -1766,8 +2124,12 @@ class TestCompactContext:
     async def test_vllm_compaction_keeps_max_tokens(self):
         client = self._client()
         await _compact_context(
-            self._messages(), client, "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            self._messages(),
+            client,
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
         )
         _kw = client.chat.completions.create.call_args.kwargs
         assert _kw["max_tokens"] == 1024
@@ -1779,13 +2141,18 @@ class TestCompactContext:
         client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
         messages = self._messages()
         out = await _compact_context(
-            messages, client, "test-model",
-            max_tokens=1024, chat_ui=None, verbose=False,
+            messages,
+            client,
+            "test-model",
+            max_tokens=1024,
+            chat_ui=None,
+            verbose=False,
         )
         assert out is messages
 
 
 # ── planning-continuation integration ──────────────────────────────────────
+
 
 def _mock_completion_with_finish(content="Hello!", tool_calls=None, finish_reason="stop"):
     """Build a mock chat completion with an explicit finish_reason."""
@@ -1818,17 +2185,27 @@ class TestPlanningContinuation:
         final_answer = "All done!"
 
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(content=planning_text),
-            _mock_completion_with_finish(content=final_answer),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(content=planning_text),
+                _mock_completion_with_finish(content=final_answer),
+            ]
+        )
 
         mock_registry = MagicMock()
-        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "write_file"}}]
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "write_file"}}
+        ]
         mock_registry.tools = {"write_file"}
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Create a README and push it.",
@@ -1843,8 +2220,9 @@ class TestPlanningContinuation:
         second_call_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
         # Continuation message should include explicit JSON tool-call format
         second_call_messages = second_call_kwargs["messages"]
-        roles_and_contents = [(m["role"], m.get("content", "")) for m in second_call_messages
-                              if isinstance(m, dict)]
+        roles_and_contents = [
+            (m["role"], m.get("content", "")) for m in second_call_messages if isinstance(m, dict)
+        ]
         assert any("json" in c.lower() or "{" in c for _, c in roles_and_contents)
         # tool_choice should be "required" to force tool use (OpenAI/vLLM path)
         assert second_call_kwargs.get("tool_choice") == "required"
@@ -1861,8 +2239,14 @@ class TestPlanningContinuation:
             return_value=_mock_completion_with_finish(content=planning_text)
         )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Think about it.",
@@ -1881,13 +2265,21 @@ class TestPlanningContinuation:
         part2 = "and here is the rest of it."
 
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(content=part1, finish_reason="length"),
-            _mock_completion_with_finish(content=part2, finish_reason="stop"),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(content=part1, finish_reason="length"),
+                _mock_completion_with_finish(content=part2, finish_reason="stop"),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Explain at length.",
@@ -1915,13 +2307,20 @@ class TestPlanningContinuation:
         mock_client = AsyncMock()
         # Always truncated — model never finishes.
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=(_mock_completion_with_finish(
-                content=f"chunk{n} ", finish_reason="length")
-                for n in itertools.count())
+            side_effect=(
+                _mock_completion_with_finish(content=f"chunk{n} ", finish_reason="length")
+                for n in itertools.count()
+            )
         )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Explain forever.",
@@ -1946,11 +2345,19 @@ class TestPlanningContinuation:
         )
 
         mock_registry = MagicMock()
-        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Write a review.",
@@ -1963,7 +2370,6 @@ class TestPlanningContinuation:
         assert "unable to complete" in result.lower() or "tool" in result.lower()
         # Should have tried the initial call + MAX_PLANNING_CONTINUATIONS continuations
         assert mock_client.chat.completions.create.call_count == 3  # 1 initial + 2 continuations
-
 
     @pytest.mark.asyncio
     async def test_noop_tool_call_does_not_refill_the_planning_budget(self):
@@ -1980,24 +2386,37 @@ class TestPlanningContinuation:
         mock_client = AsyncMock()
         # Alternate forever: plan, echo, plan, echo, ...  The test hangs if the
         # planning budget is refilled by the echo.
-        mock_client.chat.completions.create = AsyncMock(side_effect=itertools.chain.from_iterable(
-            itertools.repeat([_mock_completion_with_finish(content=planning_text), echo_call])
-        ))
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=itertools.chain.from_iterable(
+                itertools.repeat([_mock_completion_with_finish(content=planning_text), echo_call])
+            )
+        )
 
         mock_handler = AsyncMock(return_value="ok")
         mock_registry = MagicMock()
-        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Analyze the repository.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Analyze the repository.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
 
         assert "unable to complete" in result.lower()
 
@@ -2008,22 +2427,32 @@ class TestPlanningContinuation:
             content=None, tool_calls=[_mock_tool_call("bash", '{"command": "pytest -q"}')]
         )
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(content="Let me run the tests."),  # count -> 1
-            real_call,                                                      # count -> 0
-            _mock_completion_with_finish(content="Let me check the failures."),  # count -> 1
-            real_call,                                                      # count -> 0
-            _mock_completion_with_finish(content="All 3 failures were path-jail bugs."),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(content="Let me run the tests."),  # count -> 1
+                real_call,  # count -> 0
+                _mock_completion_with_finish(content="Let me check the failures."),  # count -> 1
+                real_call,  # count -> 0
+                _mock_completion_with_finish(content="All 3 failures were path-jail bugs."),
+            ]
+        )
 
         mock_handler = AsyncMock(return_value="3 failed")
         mock_registry = MagicMock()
-        mock_registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
+        mock_registry.get_tool_items.return_value = [
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Run the tests and explain the failures.",
@@ -2041,15 +2470,18 @@ class TestLoopPolicy:
 
     def test_positive_int_passes_through(self):
         from model.serving.chat import _as_positive_or_disabled
+
         assert _as_positive_or_disabled(12) == 12
 
     def test_yaml_string_is_coerced(self):
         """YAML hands back whatever was typed; "25" is a ceiling, not garbage."""
         from model.serving.chat import _as_positive_or_disabled
+
         assert _as_positive_or_disabled("25") == 25
 
     def test_negative_and_zero_are_the_opt_out(self):
         from model.serving.chat import _as_positive_or_disabled
+
         assert _as_positive_or_disabled(-1) == -1
         assert _as_positive_or_disabled(-99) == -1
         assert _as_positive_or_disabled(0) == -1
@@ -2057,6 +2489,7 @@ class TestLoopPolicy:
     def test_garbage_falls_back_to_default_not_to_disabled(self):
         """A typo must not silently turn a bound into an unbounded loop."""
         from model.serving.chat import _as_positive_or_disabled
+
         assert _as_positive_or_disabled(None, default=50) == 50
         assert _as_positive_or_disabled("fifty", default=50) == 50
         assert _as_positive_or_disabled([], default=7) == 7
@@ -2071,20 +2504,23 @@ class TestLoopPolicy:
         means the count never reaches its threshold.
         """
         calls = itertools.chain.from_iterable(
-            itertools.repeat([
-                _mock_completion_with_finish(
-                    content=None,
-                    tool_calls=[_mock_tool_call("bash", '{"command": "ls page-%d"}' % n)],
-                )
-                for n in range(2)
-            ])
+            itertools.repeat(
+                [
+                    _mock_completion_with_finish(
+                        content=None,
+                        tool_calls=[_mock_tool_call("bash", '{"command": "ls page-%d"}' % n)],
+                    )
+                    for n in range(2)
+                ]
+            )
         )
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=calls)
         mock_handler = AsyncMock(return_value="ok")
         mock_registry = MagicMock()
         mock_registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
         return mock_client, mock_registry
@@ -2100,16 +2536,24 @@ class TestLoopPolicy:
         """
         mock_client, mock_registry = self._alternating_registry_and_client(None)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Page through everything.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-                max_chat_iterations=5,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Page through everything.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                    max_chat_iterations=5,
+                ),
+                timeout=30,
+            )
 
         assert result is not None
         assert mock_client.chat.completions.create.call_count == 5
@@ -2124,16 +2568,24 @@ class TestLoopPolicy:
         """
         mock_client, mock_registry = self._alternating_registry_and_client(None)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Page through everything.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-                max_chat_iterations=3,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Page through everything.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                    max_chat_iterations=3,
+                ),
+                timeout=30,
+            )
 
         assert "3 steps" in result
         # The repeated-tool-call bail-out's wording, which this must not reuse.
@@ -2153,25 +2605,33 @@ class TestLoopPolicy:
             tool_calls=[_mock_tool_call("bash", '{"command": "pytest -q"}')],
         )
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(tool_call))
+        mock_client.chat.completions.create = AsyncMock(side_effect=itertools.repeat(tool_call))
         mock_handler = AsyncMock(return_value="ok")
         mock_registry = MagicMock()
         mock_registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Run the tests.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-                max_chat_iterations=2,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Run the tests.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                    max_chat_iterations=2,
+                ),
+                timeout=30,
+            )
 
         assert result.startswith(answer)
         assert "2 steps" in result
@@ -2187,17 +2647,25 @@ class TestLoopPolicy:
         ui = MagicMock()
         mock_client, mock_registry = self._alternating_registry_and_client(None)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Page through everything.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-                chat_ui=ui,
-                max_chat_iterations=3,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Page through everything.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                    chat_ui=ui,
+                    max_chat_iterations=3,
+                ),
+                timeout=30,
+            )
 
         ui.show_turn_limit.assert_called_once_with(3)
 
@@ -2212,28 +2680,41 @@ class TestLoopPolicy:
         answer = "Rewrote the caption builder across all five layers."
         turns = 80
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("bash", '{"command": "sed -i s/x/y/ f%d"}' % n)])
-            for n in range(turns)
-        ] + [_mock_completion_with_finish(content=answer)])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None,
+                    tool_calls=[_mock_tool_call("bash", '{"command": "sed -i s/x/y/ f%d"}' % n)],
+                )
+                for n in range(turns)
+            ]
+            + [_mock_completion_with_finish(content=answer)]
+        )
         mock_handler = AsyncMock(return_value="ok")
         mock_registry = MagicMock()
         mock_registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Rewrite the caption builder.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-            ), timeout=60)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Rewrite the caption builder.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=60,
+            )
 
         assert result == answer
         assert mock_client.chat.completions.create.call_count == turns + 1
@@ -2242,22 +2723,30 @@ class TestLoopPolicy:
     async def test_cap_disabled_does_not_bound_a_short_run(self):
         """-1 restores the old unbounded behavior; a normal run is unaffected."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("bash", '{"command": "ls"}')]),
-            _mock_completion_with_finish(content="Two files."),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("bash", '{"command": "ls"}')]
+                ),
+                _mock_completion_with_finish(content="Two files."),
+            ]
+        )
         mock_handler = AsyncMock(return_value="a\nb")
         mock_registry = MagicMock()
         mock_registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="List the files.",
@@ -2276,24 +2765,33 @@ class TestLoopPolicy:
         planning_text = "Let me start working on the analysis."
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(
-                _mock_completion_with_finish(content=planning_text)))
+            side_effect=itertools.repeat(_mock_completion_with_finish(content=planning_text))
+        )
 
         mock_registry = MagicMock()
         mock_registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Analyze the repository.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-                max_planning_continuations=4,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Analyze the repository.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                    max_planning_continuations=4,
+                ),
+                timeout=30,
+            )
 
         assert "unable to complete" in result.lower()
         # 1 initial + 4 continuations, rather than the default 1 + 2.
@@ -2303,19 +2801,27 @@ class TestLoopPolicy:
     async def test_final_continuations_are_configurable(self):
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion_with_finish(
-                content="chunk ", finish_reason="length"))
+            return_value=_mock_completion_with_finish(content="chunk ", finish_reason="length")
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Explain forever.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_final_continuations=1,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Explain forever.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_final_continuations=1,
+                ),
+                timeout=30,
+            )
 
         # 1 initial + 1 resume, rather than the default 1 + 3.
         assert mock_client.chat.completions.create.call_count == 2
@@ -2327,23 +2833,32 @@ class TestLoopPolicy:
         planning_text = "Let me start working on the analysis."
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(
-                _mock_completion_with_finish(content=planning_text)))
+            side_effect=itertools.repeat(_mock_completion_with_finish(content=planning_text))
+        )
 
         mock_registry = MagicMock()
         mock_registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+            {"type": "function", "function": {"name": "bash"}}
+        ]
         mock_registry.tools = {"bash"}
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Analyze the repository.",
-                tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Analyze the repository.",
+                    tool_registry=mock_registry,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 3  # 1 + 2
 
@@ -2353,12 +2868,14 @@ class TestHangPrevention:
 
     def test_positive_timeout_passed_through(self):
         from model.serving.chat import _build_client_timeout
+
         assert _build_client_timeout(120, stream=True) == 120
         assert _build_client_timeout(0, stream=False) == 0
 
     def test_no_timeout_still_bounds_connect_and_stream_stall(self):
         import httpx
         from model.serving.chat import _build_client_timeout, CONNECT_TIMEOUT, STREAM_STALL_TIMEOUT
+
         for t in (None, -1):
             cfg = _build_client_timeout(t, stream=True)
             assert isinstance(cfg, httpx.Timeout)
@@ -2369,6 +2886,7 @@ class TestHangPrevention:
         """Non-streaming long generations must not be cut off by the stall timeout."""
         import httpx
         from model.serving.chat import _build_client_timeout, CONNECT_TIMEOUT
+
         cfg = _build_client_timeout(-1, stream=False)
         assert isinstance(cfg, httpx.Timeout)
         assert cfg.connect == CONNECT_TIMEOUT
@@ -2427,6 +2945,7 @@ class TestHangPrevention:
         previous = loop.get_exception_handler()
         loop.set_exception_handler(lambda _loop, ctx: logged.append(ctx.get("message", "")))
         try:
+
             async def slow_tool():
                 try:
                     await asyncio.sleep(3600)
@@ -2434,10 +2953,13 @@ class TestHangPrevention:
                     await asyncio.sleep(0.05)  # child unwinds after the cancel
                     raise
 
-            outer = asyncio.ensure_future(_await_with_safety(
-                asyncio.gather(*(slow_tool() for _ in range(3)), return_exceptions=True),
-                asyncio.Queue(), poll=0.05,
-            ))
+            outer = asyncio.ensure_future(
+                _await_with_safety(
+                    asyncio.gather(*(slow_tool() for _ in range(3)), return_exceptions=True),
+                    asyncio.Queue(),
+                    poll=0.05,
+                )
+            )
             await asyncio.sleep(0.2)
             outer.cancel()  # request torn down, e.g. the client disconnected
             with pytest.raises(asyncio.CancelledError):
@@ -2452,6 +2974,7 @@ class TestHangPrevention:
 
 
 # ── answer text written alongside tool calls ────────────────────────────────
+
 
 class TestProseAlongsideToolCalls:
     """A model that answers and then calls one last tool must not lose the answer."""
@@ -2537,10 +3060,12 @@ class TestProseAlongsideToolCalls:
         answer = "The quarterly figures are up 12% year over year. " * 8
         tc = _mock_tool_call("save", '{"path": "report.md"}')
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion(content=answer, tool_calls=[tc]),
-            _mock_completion("Done."),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(content=answer, tool_calls=[tc]),
+                _mock_completion("Done."),
+            ]
+        )
 
         mock_handler = AsyncMock(return_value="saved")
         mock_registry = MagicMock()
@@ -2550,8 +3075,14 @@ class TestProseAlongsideToolCalls:
         mock_registry.tools = {"save"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Summarize the quarter and save it.",
@@ -2572,13 +3103,15 @@ class TestProseAlongsideToolCalls:
         prose = f"{answer}\nLet me verify the current application deadline."
         tc = _mock_tool_call("fetch", '{"url": "https://upd.edu.ph"}')
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion(content=prose, tool_calls=[tc]),
-            _mock_completion(
-                "Research on UPD AI program scholarships is complete. The "
-                "comprehensive answer was provided above."
-            ),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(content=prose, tool_calls=[tc]),
+                _mock_completion(
+                    "Research on UPD AI program scholarships is complete. The "
+                    "comprehensive answer was provided above."
+                ),
+            ]
+        )
 
         mock_handler = AsyncMock(return_value="deadline: 15 March")
         mock_registry = MagicMock()
@@ -2588,8 +3121,14 @@ class TestProseAlongsideToolCalls:
         mock_registry.tools = {"fetch"}
         mock_registry.__getitem__ = MagicMock(return_value=mock_handler)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="UPD AI Program scholarships",
@@ -2602,15 +3141,22 @@ class TestProseAlongsideToolCalls:
 
 # ── the result store, from inside the loop ──────────────────────────────────
 
+
 def _tool_registry(name="local_search", result=""):
     """A registry whose one tool returns ``result``."""
     handler = AsyncMock(return_value=result)
     registry = MagicMock()
     registry.tools = {name}
     registry.get_tool_items.return_value = [
-        {"type": "function",
-         "function": {"name": name, "description": "d",
-                      "parameters": {"type": "object", "properties": {}}}}]
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "d",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
     registry.tool_accepts_param.return_value = False
     registry.blank_required_args.return_value = []
     registry.parameters_schema.return_value = {}
@@ -2628,26 +3174,38 @@ class TestResultStoreInChat:
     @pytest.mark.asyncio
     async def test_a_50k_result_puts_a_bounded_preview_in_the_messages(self, tmp_path):
         """The acceptance criterion: ≤ ~6.5k chars in, all 50k recoverable."""
-        from model.serving.results import (RESULT_PREVIEW_CHARS, ResultStore,
-                                           handle_of)
+        from model.serving.results import RESULT_PREVIEW_CHARS, ResultStore, handle_of
 
         big = "HEAD-MARKER\n" + "".join(f"line {i}\n" for i in range(6000))
         assert len(big) > 50000
         registry = _tool_registry(result=big)
 
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
-            _mock_completion_with_finish(content="Done."),
-        ])
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("local_search", "{}")]
+                ),
+                _mock_completion_with_finish(content="Done."),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await chat(host="http://localhost:8000/v1", instruction="find it",
-                                tool_registry=registry, safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path), verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="find it",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                verify_answers=False,
+            )
 
         assert result == "Done."
         # What the second request carried.
@@ -2679,27 +3237,45 @@ class TestResultStoreInChat:
         registry = _tool_registry(result=big)
 
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call(
-                    "result_read", '{"handle": "0001", "offset": 40000, "limit": 200}')]),
-            _mock_completion_with_finish(content="Found it."),
-        ])
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("local_search", "{}")]
+                ),
+                _mock_completion_with_finish(
+                    content=None,
+                    tool_calls=[
+                        _mock_tool_call(
+                            "result_read", '{"handle": "0001", "offset": 40000, "limit": 200}'
+                        )
+                    ],
+                ),
+                _mock_completion_with_finish(content="Found it."),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            result = await chat(host="http://localhost:8000/v1", instruction="find it",
-                                tool_registry=registry, safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path), verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="find it",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                verify_answers=False,
+            )
 
         assert result == "Found it."
         sent = client.chat.completions.create.call_args_list[2].kwargs["messages"]
-        read_back = [m for m in sent if isinstance(m, dict)
-                     and m.get("name") == "result_read"][0]["content"]
+        read_back = [m for m in sent if isinstance(m, dict) and m.get("name") == "result_read"][0][
+            "content"
+        ]
         assert "showing 40,000–40,200" in read_back
         # The tool was run once; the second look cost no round trip to it.
         assert registry["local_search"].await_count == 1
@@ -2710,18 +3286,31 @@ class TestResultStoreInChat:
         registry = _tool_registry(result="a short answer")
 
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
-            _mock_completion_with_finish(content="Done."),
-        ])
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("local_search", "{}")]
+                ),
+                _mock_completion_with_finish(content="Done."),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=registry, safety_queue=asyncio.Queue(),
-                       data_path=str(tmp_path), verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                verify_answers=False,
+            )
 
         sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
         tool_msg = [m for m in sent if isinstance(m, dict) and m.get("role") == "tool"][0]
@@ -2736,18 +3325,30 @@ class TestResultStoreInChat:
 
         registry = _tool_registry(result="x" * 50000)
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
-            _mock_completion_with_finish(content="Done."),
-        ])
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("local_search", "{}")]
+                ),
+                _mock_completion_with_finish(content="Done."),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=registry, safety_queue=asyncio.Queue(),
-                       verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                verify_answers=False,
+            )
 
         sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
         body = [m for m in sent if isinstance(m, dict) and m.get("role") == "tool"][0]["content"]
@@ -2758,23 +3359,37 @@ class TestResultStoreInChat:
     async def test_switching_the_store_off_restores_the_hard_cut(self, tmp_path):
         registry = _tool_registry(result="x" * 50000)
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None, tool_calls=[_mock_tool_call("local_search", "{}")]),
-            _mock_completion_with_finish(content="Done."),
-        ])
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("local_search", "{}")]
+                ),
+                _mock_completion_with_finish(content="Done."),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       tool_registry=registry, safety_queue=asyncio.Queue(),
-                       data_path=str(tmp_path), result_store=False,
-                       verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                result_store=False,
+                verify_answers=False,
+            )
 
         sent = client.chat.completions.create.call_args_list[1].kwargs
-        body = [m for m in sent["messages"]
-                if isinstance(m, dict) and m.get("role") == "tool"][0]["content"]
+        body = [m for m in sent["messages"] if isinstance(m, dict) and m.get("role") == "tool"][0][
+            "content"
+        ]
         assert "[truncated" in body
         # And the two tools that could never resolve a handle are withheld.
         names = [t["function"]["name"] for t in sent.get("tools", [])]
@@ -2784,8 +3399,7 @@ class TestResultStoreInChat:
     # ── the growth curve ────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_prompt_growth_over_six_tool_calls_is_linear_not_quadratic(
-            self, tmp_path):
+    async def test_prompt_growth_over_six_tool_calls_is_linear_not_quadratic(self, tmp_path):
         """The regression the phase exists to prevent.
 
         Six documents opened one after another used to be re-sent in full on
@@ -2805,8 +3419,10 @@ class TestResultStoreInChat:
             done = len(turns) > 6
             completion = _mock_completion_with_finish(
                 content="Done." if done else None,
-                tool_calls=None if done else [_mock_tool_call(
-                    "local_search", '{"q": %d}' % len(turns))])
+                tool_calls=None
+                if done
+                else [_mock_tool_call("local_search", '{"q": %d}' % len(turns))],
+            )
             completion.usage.prompt_tokens = size
             completion.usage.completion_tokens = 10
             return completion
@@ -2815,13 +3431,23 @@ class TestResultStoreInChat:
         client.chat.completions.create = AsyncMock(side_effect=lambda **kw: _completion(**kw))
 
         metrics = {}
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await chat(host="http://localhost:8000/v1", instruction="research it",
-                       tool_registry=registry, safety_queue=asyncio.Queue(),
-                       data_path=str(tmp_path), metrics=metrics,
-                       verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="research it",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                metrics=metrics,
+                verify_answers=False,
+            )
 
         prompts = [t["prompt_tokens"] for t in metrics["turns"]]
         assert len(prompts) == 7
@@ -2838,10 +3464,12 @@ class TestResultStoreInChat:
 
         # And none of it was lost — all six are on disk in full.
         from model.serving.results import ResultStore
+
         assert len(ResultStore(str(tmp_path)).stored()) == 6
 
 
 # ── code as action, from inside the loop ────────────────────────────────────
+
 
 class TestRunCodeInChat:
     """Phase 5: run_code sits alongside bash and direct tool calling."""
@@ -2852,11 +3480,19 @@ class TestRunCodeInChat:
         registry = MagicMock()
         registry.tools = {"local_search"}
         registry.get_tool_items.return_value = [
-            {"type": "function",
-             "function": {"name": "local_search", "description": "d",
-                          "parameters": {"type": "object",
-                                         "properties": {"query": {"type": "string"}},
-                                         "required": ["query"]}}}]
+            {
+                "type": "function",
+                "function": {
+                    "name": "local_search",
+                    "description": "d",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
         registry.tool_accepts_param.return_value = False
         registry.blank_required_args.return_value = []
         registry.parameters_schema.return_value = {}
@@ -2866,31 +3502,44 @@ class TestRunCodeInChat:
     async def _run(self, tmp_path, completions, **kwargs):
         client = AsyncMock()
         client.chat.completions.create = AsyncMock(side_effect=completions)
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            answer = await chat(host="http://localhost:8000/v1", instruction="do it",
-                                tool_registry=self._registry(),
-                                safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path), verify_answers=False,
-                                **kwargs)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            answer = await chat(
+                host="http://localhost:8000/v1",
+                instruction="do it",
+                tool_registry=self._registry(),
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                verify_answers=False,
+                **kwargs,
+            )
         return answer, client
 
     @pytest.mark.asyncio
     async def test_off_by_default(self, tmp_path):
-        _, client = await self._run(
-            tmp_path, [_mock_completion_with_finish(content="Hi")])
-        names = [t["function"]["name"]
-                 for t in client.chat.completions.create.call_args.kwargs["tools"]]
+        _, client = await self._run(tmp_path, [_mock_completion_with_finish(content="Hi")])
+        names = [
+            t["function"]["name"] for t in client.chat.completions.create.call_args.kwargs["tools"]
+        ]
         assert "run_code" not in names
 
     @pytest.mark.asyncio
     async def test_offered_alongside_the_other_tools_when_enabled(self, tmp_path):
         _, client = await self._run(
-            tmp_path, [_mock_completion_with_finish(content="Hi")],
-            code_execution=True, session_id="chat-1")
-        names = [t["function"]["name"]
-                 for t in client.chat.completions.create.call_args.kwargs["tools"]]
+            tmp_path,
+            [_mock_completion_with_finish(content="Hi")],
+            code_execution=True,
+            session_id="chat-1",
+        )
+        names = [
+            t["function"]["name"] for t in client.chat.completions.create.call_args.kwargs["tools"]
+        ]
         # An additional tool, not a replacement: everything else is still there.
         assert "run_code" in names
         assert {"local_search", "context_status", "note_write"} <= set(names)
@@ -2899,40 +3548,52 @@ class TestRunCodeInChat:
     @pytest.mark.asyncio
     async def test_the_model_can_run_a_block_and_answer_from_it(self, tmp_path):
         """Four dependent steps in one turn instead of four."""
-        code = ('hits = local_search("Q3")\n'
-                'total = sum(h["n"] for h in hits)\n'
-                'print("total:", total)')
-        answer, client = await self._run(tmp_path, [
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("run_code", json.dumps({"code": code}))]),
-            _mock_completion_with_finish(content="The total is 2."),
-        ], code_execution=True, session_id="chat-2")
+        code = (
+            'hits = local_search("Q3")\ntotal = sum(h["n"] for h in hits)\nprint("total:", total)'
+        )
+        answer, client = await self._run(
+            tmp_path,
+            [
+                _mock_completion_with_finish(
+                    content=None,
+                    tool_calls=[_mock_tool_call("run_code", json.dumps({"code": code}))],
+                ),
+                _mock_completion_with_finish(content="The total is 2."),
+            ],
+            code_execution=True,
+            session_id="chat-2",
+        )
 
         assert answer == "The total is 2."
         sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
-        body = [m for m in sent if isinstance(m, dict)
-                and m.get("name") == "run_code"][0]["content"]
+        body = [m for m in sent if isinstance(m, dict) and m.get("name") == "run_code"][0][
+            "content"
+        ]
         assert "total: 2" in body
         await shutdown_session("chat-2")
 
     @pytest.mark.asyncio
     async def test_the_namespace_survives_between_two_calls_in_one_run(self, tmp_path):
-        answer, client = await self._run(tmp_path, [
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("run_code", '{"code": "carried = 41"}')]),
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("run_code",
-                                            '{"code": "print(carried + 1)"}')]),
-            _mock_completion_with_finish(content="42."),
-        ], code_execution=True, session_id="chat-3")
+        answer, client = await self._run(
+            tmp_path,
+            [
+                _mock_completion_with_finish(
+                    content=None,
+                    tool_calls=[_mock_tool_call("run_code", '{"code": "carried = 41"}')],
+                ),
+                _mock_completion_with_finish(
+                    content=None,
+                    tool_calls=[_mock_tool_call("run_code", '{"code": "print(carried + 1)"}')],
+                ),
+                _mock_completion_with_finish(content="42."),
+            ],
+            code_execution=True,
+            session_id="chat-3",
+        )
 
         assert answer == "42."
         sent = client.chat.completions.create.call_args_list[2].kwargs["messages"]
-        bodies = [m["content"] for m in sent if isinstance(m, dict)
-                  and m.get("name") == "run_code"]
+        bodies = [m["content"] for m in sent if isinstance(m, dict) and m.get("name") == "run_code"]
         assert "42" in bodies[-1]
         await shutdown_session("chat-3")
 
@@ -2942,24 +3603,31 @@ class TestRunCodeInChat:
         protections."""
         # Recovery off: the guard must end the run, not convert the bail into
         # another turn — that behavior has its own tests (TestRepeatRecovery).
-        calls = [_mock_completion_with_finish(
-            content=None,
-            tool_calls=[_mock_tool_call("run_code", '{"code": "1"}')])] * 4
+        calls = [
+            _mock_completion_with_finish(
+                content=None, tool_calls=[_mock_tool_call("run_code", '{"code": "1"}')]
+            )
+        ] * 4
         answer, client = await self._run(
-            tmp_path, calls, code_execution=True, session_id="chat-4",
-            max_repeated_tool_calls=2, max_repeat_recoveries=0)
+            tmp_path,
+            calls,
+            code_execution=True,
+            session_id="chat-4",
+            max_repeated_tool_calls=2,
+            max_repeat_recoveries=0,
+        )
         assert "change approach" in answer
         await shutdown_session("chat-4")
 
 
 # ── explicit run state ──────────────────────────────────────────────────────
 
+
 def _bash_registry():
     """A registry with one tool that always succeeds."""
     handler = AsyncMock(return_value="ok")
     registry = MagicMock()
-    registry.get_tool_items.return_value = [
-        {"type": "function", "function": {"name": "bash"}}]
+    registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
     registry.tools = {"bash"}
     registry.__getitem__ = MagicMock(return_value=handler)
     return registry
@@ -2979,16 +3647,23 @@ class TestRunState:
 
         state = RunState()
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("bash", '{"command": "ls"}')]),
-            _mock_completion_with_finish(content="Done."),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content=None, tool_calls=[_mock_tool_call("bash", '{"command": "ls"}')]
+                ),
+                _mock_completion_with_finish(content="Done."),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="List the files.",
@@ -3010,25 +3685,39 @@ class TestRunState:
         from model.serving.state import RunState, STOP_TURN_LIMIT
 
         state = RunState()
-        calls = itertools.chain.from_iterable(itertools.repeat([
-            _mock_completion_with_finish(
-                content=None,
-                tool_calls=[_mock_tool_call("bash", '{"command": "ls %d"}' % n)])
-            for n in range(2)]))
+        calls = itertools.chain.from_iterable(
+            itertools.repeat(
+                [
+                    _mock_completion_with_finish(
+                        content=None,
+                        tool_calls=[_mock_tool_call("bash", '{"command": "ls %d"}' % n)],
+                    )
+                    for n in range(2)
+                ]
+            )
+        )
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=calls)
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
-            await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Page through everything.",
-                tool_registry=_bash_registry(),
-                safety_queue=asyncio.Queue(),
-                max_chat_iterations=3,
-                run_state=state,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
+            await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Page through everything.",
+                    tool_registry=_bash_registry(),
+                    safety_queue=asyncio.Queue(),
+                    max_chat_iterations=3,
+                    run_state=state,
+                ),
+                timeout=30,
+            )
 
         assert state.stop_reason == STOP_TURN_LIMIT
         assert len(state.tool_call_history) == 3
@@ -3038,11 +3727,17 @@ class TestRunState:
         """The kwarg is optional: absent, the loop makes its own."""
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion_with_finish(content="Hello!"))
+            return_value=_mock_completion_with_finish(content="Hello!")
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Hi.",
@@ -3068,11 +3763,18 @@ class TestRunState:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
             return_value=_mock_completion_with_finish(
-                content="Let me create the files and push them."))
+                content="Let me create the files and push them."
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Create a README.",
@@ -3093,14 +3795,21 @@ class TestRunState:
 
         state = RunState(planning_continuation_count=0)
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(content="Let me create the files."),
-            _mock_completion_with_finish(content="All done!"),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(content="Let me create the files."),
+                _mock_completion_with_finish(content="All done!"),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="Create a README.",
@@ -3123,11 +3832,17 @@ class TestRunState:
 
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion_with_finish(content="All done!"))
+            return_value=_mock_completion_with_finish(content="All done!")
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="glm-5.1"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="glm-5.1",
+            ),
+        ):
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="Create a README.",
@@ -3147,11 +3862,17 @@ class TestRunState:
 
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion_with_finish(content="Hi."))
+            return_value=_mock_completion_with_finish(content="Hi.")
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="Hi.",
@@ -3168,6 +3889,7 @@ class TestRunState:
 
 # ── prompt assembly ─────────────────────────────────────────────────────────
 
+
 class TestBuildMessages:
     """Where each half of the instruction lands. The system message is the only
     one ahead of the session history, so it is the only place the standing rules
@@ -3175,7 +3897,9 @@ class TestBuildMessages:
 
     def test_standing_rules_go_to_the_system_message(self):
         messages = _build_messages(
-            "## Task\nwhat scholarships exist", [], "I am OnIt.",
+            "## Task\nwhat scholarships exist",
+            [],
+            "I am OnIt.",
             session_history=None,
             system_rules="## Instructions\nCite your sources.",
         )
@@ -3190,26 +3914,27 @@ class TestBuildMessages:
         """The point of the split: the opening bytes of request N+1 match those
         of request N, so a prefix cache can skip prefilling them."""
         rules = "## Instructions\nCite your sources."
-        turn_one = _build_messages("## Task\nfirst", [], "I am OnIt.",
-                                   session_history=[],
-                                   system_rules=rules)
-        turn_two = _build_messages("## Task\nsecond", [], "I am OnIt.",
-                                   session_history=[{"task": "first",
-                                                     "response": "an answer"}],
-                                   system_rules=rules)
+        turn_one = _build_messages(
+            "## Task\nfirst", [], "I am OnIt.", session_history=[], system_rules=rules
+        )
+        turn_two = _build_messages(
+            "## Task\nsecond",
+            [],
+            "I am OnIt.",
+            session_history=[{"task": "first", "response": "an answer"}],
+            system_rules=rules,
+        )
         assert turn_one[0] == turn_two[0]
 
     def test_no_rules_leaves_the_system_message_alone(self):
         """A custom template yields no static half; nothing should change."""
-        messages = _build_messages("do the thing", [], "I am OnIt.",
-                                   session_history=None)
+        messages = _build_messages("do the thing", [], "I am OnIt.", session_history=None)
         assert messages[0]["content"] == "I am OnIt."
 
 
 class TestTrimHistory:
     def _history(self, n, answer_chars=5000):
-        return [{"task": f"question {i}", "response": "x" * answer_chars}
-                for i in range(n)]
+        return [{"task": f"question {i}", "response": "x" * answer_chars} for i in range(n)]
 
     def test_recent_exchanges_are_untouched(self):
         history = self._history(6)
@@ -3246,6 +3971,7 @@ class TestTrimHistory:
 
 # ── an answer that stops mid-sentence ───────────────────────────────────────
 
+
 class TestLooksIncomplete:
     """The signal that a "stop" finish hides a swallowed tail.
 
@@ -3253,36 +3979,45 @@ class TestLooksIncomplete:
     vLLM host whose reasoning parser ate the rest of the answer.
     """
 
-    @pytest.mark.parametrize("text", [
-        "Three takeaways:\n\n- **The naturalness floor at",
-        "6. **Add the missing test layer:** (a) parity test per graph (max abs diff",
-        "Run it with `onit --host",
-        # An answer cut off inside a fenced block, long enough to be worth
-        # resuming — the 23 Sep failure shape.
-        "Here is the script:\n\n```python\n" + ("x = 1\n" * 40),
-        "See the table in [the appendix",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Three takeaways:\n\n- **The naturalness floor at",
+            "6. **Add the missing test layer:** (a) parity test per graph (max abs diff",
+            "Run it with `onit --host",
+            # An answer cut off inside a fenced block, long enough to be worth
+            # resuming — the 23 Sep failure shape.
+            "Here is the script:\n\n```python\n" + ("x = 1\n" * 40),
+            "See the table in [the appendix",
+        ],
+    )
     def test_unclosed_pairs_are_incomplete(self, text):
         assert _looks_incomplete(text) is True
 
-    @pytest.mark.parametrize("text", [
-        # Below _FENCE_MIN_CHARS: a short reply that ends on a lone fence is
-        # handed back as-is rather than resumed — there is little enough of it
-        # that a resume turn costs more than it saves.
-        "Here is the script:\n\n```python\nx = 1",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Below _FENCE_MIN_CHARS: a short reply that ends on a lone fence is
+            # handed back as-is rather than resumed — there is little enough of it
+            # that a resume turn costs more than it saves.
+            "Here is the script:\n\n```python\nx = 1",
+        ],
+    )
     def test_a_short_unclosed_fence_is_left_alone(self, text):
         assert _looks_incomplete(text) is False
 
-    @pytest.mark.parametrize("text", [
-        "All done.",
-        "Live here: https://github.com/roatienza/onit",
-        "| **Kokoro** | 82M | 4.302 |",
-        "Install it with `pip install onit`.",
-        "Here is the script:\n\n```python\nx = 1\n```",
-        "- **Bold** and (parens) and [a link](https://example.com)",
-        "",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "All done.",
+            "Live here: https://github.com/roatienza/onit",
+            "| **Kokoro** | 82M | 4.302 |",
+            "Install it with `pip install onit`.",
+            "Here is the script:\n\n```python\nx = 1\n```",
+            "- **Bold** and (parens) and [a link](https://example.com)",
+            "",
+        ],
+    )
     def test_finished_answers_are_left_alone(self, text):
         assert _looks_incomplete(text) is False
 
@@ -3293,44 +4028,66 @@ class TestResumeIncompleteAnswer:
         """finish_reason="stop" is not proof the answer finished: a host whose
         reasoning parser swallows the tail reports exactly that."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content="Takeaways:\n\n- **The naturalness floor at",
-                finish_reason="stop"),
-            _mock_completion_with_finish(
-                content=" 4.4 UTMOS** is the new baseline.", finish_reason="stop"),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content="Takeaways:\n\n- **The naturalness floor at", finish_reason="stop"
+                ),
+                _mock_completion_with_finish(
+                    content=" 4.4 UTMOS** is the new baseline.", finish_reason="stop"
+                ),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="What is the SOTA in TTS?",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="What is the SOTA in TTS?",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 2
-        assert result == ("Takeaways:\n\n- **The naturalness floor at"
-                          " 4.4 UTMOS** is the new baseline.")
+        assert result == (
+            "Takeaways:\n\n- **The naturalness floor at 4.4 UTMOS** is the new baseline."
+        )
 
     @pytest.mark.asyncio
     async def test_a_finished_answer_is_not_resumed(self):
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
             return_value=_mock_completion_with_finish(
-                content="Kokoro 82M is still the reference.", finish_reason="stop"))
+                content="Kokoro 82M is still the reference.", finish_reason="stop"
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="What is the SOTA in TTS?",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="What is the SOTA in TTS?",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 1
         assert result == "Kokoro 82M is still the reference."
@@ -3344,21 +4101,31 @@ class TestResumeIncompleteAnswer:
         """
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=(_mock_completion_with_finish(
-                content=f"step {n} and then (", finish_reason="stop")
-                for n in itertools.count()))
+            side_effect=(
+                _mock_completion_with_finish(content=f"step {n} and then (", finish_reason="stop")
+                for n in itertools.count()
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Explain forever.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_final_continuations=2,
-                max_ack_continuations=0,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Explain forever.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_final_continuations=2,
+                    max_ack_continuations=0,
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 3  # 1 + 2
 
@@ -3377,55 +4144,77 @@ class TestStalledResume:
     async def test_an_empty_resume_turn_does_not_end_the_run(self):
         """The resume comes back with nothing; the next ask gets the answer."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(
-                content="Takeaways:\n\n- **The naturalness floor at",
-                finish_reason="stop"),
-            _mock_completion_with_finish(content="", finish_reason="stop"),
-            _mock_completion_with_finish(
-                content=" 4.4 UTMOS** is the new baseline.",
-                finish_reason="stop"),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(
+                    content="Takeaways:\n\n- **The naturalness floor at", finish_reason="stop"
+                ),
+                _mock_completion_with_finish(content="", finish_reason="stop"),
+                _mock_completion_with_finish(
+                    content=" 4.4 UTMOS** is the new baseline.", finish_reason="stop"
+                ),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="What is the SOTA in TTS?",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_ack_continuations=0,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="What is the SOTA in TTS?",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_ack_continuations=0,
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 3
-        assert result == ("Takeaways:\n\n- **The naturalness floor at"
-                          " 4.4 UTMOS** is the new baseline.")
+        assert result == (
+            "Takeaways:\n\n- **The naturalness floor at 4.4 UTMOS** is the new baseline."
+        )
 
     @pytest.mark.asyncio
     async def test_a_repeating_resume_gets_one_more_attempt(self):
         """The resume hands back a copy of the prefix; the retry completes it."""
-        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
-                "quarter, and throughput is unchanged at 42 tokens per second (")
+        para = (
+            "The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+            "quarter, and throughput is unchanged at 42 tokens per second ("
+        )
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(content=para, finish_reason="length"),
-            _mock_completion_with_finish(content=para, finish_reason="stop"),
-            _mock_completion_with_finish(
-                content="95th percentile 38.)", finish_reason="stop"),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(content=para, finish_reason="length"),
+                _mock_completion_with_finish(content=para, finish_reason="stop"),
+                _mock_completion_with_finish(content="95th percentile 38.)", finish_reason="stop"),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Summarize the run.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_ack_continuations=0,
-                verify_answers=False,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Summarize the run.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_ack_continuations=0,
+                    verify_answers=False,
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 3
         assert result.count("naturalness floor") == 1
@@ -3434,24 +4223,36 @@ class TestStalledResume:
     @pytest.mark.asyncio
     async def test_consecutive_stalls_are_bounded(self):
         """Every resume repeats the prefix: the run ends, not loops forever."""
-        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
-                "quarter, and throughput is unchanged at 42 tokens per second (")
+        para = (
+            "The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+            "quarter, and throughput is unchanged at 42 tokens per second ("
+        )
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(_mock_completion_with_finish(
-                content=para, finish_reason="stop")))
+            side_effect=itertools.repeat(
+                _mock_completion_with_finish(content=para, finish_reason="stop")
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Summarize the run.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_ack_continuations=0,
-                verify_answers=False,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Summarize the run.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_ack_continuations=0,
+                    verify_answers=False,
+                ),
+                timeout=30,
+            )
 
         # 1 initial + 1 resume + 1 stall retry, then the second consecutive
         # stall ends the run — the remaining budget is not burned on copies.
@@ -3461,31 +4262,44 @@ class TestStalledResume:
     @pytest.mark.asyncio
     async def test_an_empty_final_answer_is_not_returned(self):
         """Budget spent on empty resumes: the partial is handed back, not \"\"."""
-        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
-                "quarter, and throughput is unchanged at 42 tokens per second (")
+        para = (
+            "The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+            "quarter, and throughput is unchanged at 42 tokens per second ("
+        )
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_finish(content=para, finish_reason="length"),
-            _mock_completion_with_finish(content="", finish_reason="stop"),
-            _mock_completion_with_finish(content="", finish_reason="stop"),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_finish(content=para, finish_reason="length"),
+                _mock_completion_with_finish(content="", finish_reason="stop"),
+                _mock_completion_with_finish(content="", finish_reason="stop"),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Summarize the run.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_ack_continuations=0,
-                verify_answers=False,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Summarize the run.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_ack_continuations=0,
+                    verify_answers=False,
+                ),
+                timeout=30,
+            )
 
         assert result.strip() == para.strip()
 
 
 # ── thinking, whatever the host calls it ────────────────────────────────────
+
 
 class TestReasoningText:
     def test_reads_every_field_a_host_may_use(self):
@@ -3504,28 +4318,35 @@ class TestReasoningText:
     def test_vllm_reasoning_alias_reaches_the_final_answer(self):
         """vLLM 0.27 streams thinking as ``reasoning``.  When it puts the whole
         reply there and leaves content empty, that is still the answer."""
-        assert _extract_final_response(
-            "", _reasoning_text(SimpleNamespace(reasoning="42 is the answer.")), ""
-        ) == "42 is the answer."
+        assert (
+            _extract_final_response(
+                "", _reasoning_text(SimpleNamespace(reasoning="42 is the answer.")), ""
+            )
+            == "42 is the answer."
+        )
 
 
 class TestStripThinkBlocks:
     def test_a_mid_answer_think_block_does_not_eat_the_tail(self):
-        content = ("The floor is <think>which number?</think> 4.4 UTMOS, "
-                   "<think>and the second one?</think> up from 4.1.")
+        content = (
+            "The floor is <think>which number?</think> 4.4 UTMOS, "
+            "<think>and the second one?</think> up from 4.1."
+        )
         assert _extract_final_response(content, "", "") == (
-            "The floor is  4.4 UTMOS,  up from 4.1.")
+            "The floor is  4.4 UTMOS,  up from 4.1."
+        )
 
     def test_an_orphan_closing_tag_still_splits_reasoning_from_answer(self):
-        assert _extract_final_response(
-            "thinking out loud</think>The answer is 4.4.", "", ""
-        ) == "The answer is 4.4."
+        assert (
+            _extract_final_response("thinking out loud</think>The answer is 4.4.", "", "")
+            == "The answer is 4.4."
+        )
 
 
 # ── output the host billed but never sent ───────────────────────────────────
 
-def _mock_completion_with_usage(content, completion_tokens, reasoning="",
-                                finish_reason="stop"):
+
+def _mock_completion_with_usage(content, completion_tokens, reasoning="", finish_reason="stop"):
     """A completion whose usage figures are real numbers, not mocks."""
     message = MagicMock()
     message.content = content
@@ -3570,25 +4391,37 @@ class TestResumeWhenOutputWentMissing:
         """The answer closes every bracket it opens and still stops short: only
         the usage figures show the rest was generated and dropped."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_usage("FP8 halves the weight memory, but those account for",
-                                        completion_tokens=6000),
-            _mock_completion_with_usage(" only part of the cost.", completion_tokens=8),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_usage(
+                    "FP8 halves the weight memory, but those account for", completion_tokens=6000
+                ),
+                _mock_completion_with_usage(" only part of the cost.", completion_tokens=8),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Does FP8 help throughput?",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Does FP8 help throughput?",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 2
-        assert result == ("FP8 halves the weight memory, but those account for"
-                          " only part of the cost.")
+        assert result == (
+            "FP8 halves the weight memory, but those account for only part of the cost."
+        )
 
     @pytest.mark.asyncio
     async def test_a_thinking_turn_is_not_mistaken_for_a_swallowed_tail(self):
@@ -3596,17 +4429,28 @@ class TestResumeWhenOutputWentMissing:
         mock_client.chat.completions.create = AsyncMock(
             return_value=_mock_completion_with_usage(
                 "No — FP8 helps memory, not throughput.",
-                completion_tokens=2000, reasoning="x" * 5900))
+                completion_tokens=2000,
+                reasoning="x" * 5900,
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Does FP8 help throughput?",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Does FP8 help throughput?",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
 
         assert mock_client.chat.completions.create.call_count == 1
         assert result == "No — FP8 helps memory, not throughput."
@@ -3629,25 +4473,34 @@ class TestResumeWhenOutputWentMissing:
 
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(_mock_completion_with_usage(
-                "and then (", completion_tokens=6000)))
+            side_effect=itertools.repeat(
+                _mock_completion_with_usage("and then (", completion_tokens=6000)
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Explain forever.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                chat_ui=_UI(),
-                max_final_continuations=1,
-                max_ack_continuations=0,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Explain forever.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    chat_ui=_UI(),
+                    max_final_continuations=1,
+                    max_ack_continuations=0,
+                ),
+                timeout=30,
+            )
 
         assert any("resuming" in m for _, m in notices), notices
-        assert any(lvl == "warning" and "still incomplete" in m
-                   for lvl, m in notices), notices
+        assert any(lvl == "warning" and "still incomplete" in m for lvl, m in notices), notices
 
 
 # ── resuming a cut-off answer without repeating it ──────────────────────────
@@ -3665,23 +4518,24 @@ class TestStitchContinuation:
         assert _stitch_continuation("", "the answer") == "the answer"
 
     def test_a_clean_continuation_is_concatenated(self):
-        assert _stitch_continuation(
-            "The floor is 4.4 ", "UTMOS.") == "The floor is 4.4 UTMOS."
+        assert _stitch_continuation("The floor is 4.4 ", "UTMOS.") == "The floor is 4.4 UTMOS."
 
     def test_a_restated_line_is_joined_at_the_seam(self):
         """The ordinary case: the model restates where it left off, then goes on."""
         prefix = "Kokoro 82M is the reference, and the naturalness floor"
         partial = " and the naturalness floor sits at 4.4 UTMOS."
         assert _stitch_continuation(prefix, partial) == (
-            "Kokoro 82M is the reference, and the naturalness floor sits at 4.4 UTMOS.")
+            "Kokoro 82M is the reference, and the naturalness floor sits at 4.4 UTMOS."
+        )
 
     def test_a_turn_that_only_repeats_adds_nothing(self):
         assert _stitch_continuation(_THINKING, _THINKING) == _THINKING
 
     def test_a_repeat_that_carries_on_keeps_what_it_added(self):
-        assert _stitch_continuation(
-            "Context. " + _THINKING, _THINKING + " Retrain instead."
-        ) == "Context. " + _THINKING + " Retrain instead."
+        assert (
+            _stitch_continuation("Context. " + _THINKING, _THINKING + " Retrain instead.")
+            == "Context. " + _THINKING + " Retrain instead."
+        )
 
     def test_a_paragraph_rewritten_from_the_middle_is_dropped(self):
         prefix = _THINKING + " So the plan is to let them finish."
@@ -3731,32 +4585,41 @@ class TestThinkingIsNotAPartialAnswer:
 
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(_mock_completion_with_usage(
-                "", completion_tokens=4000, reasoning=_THINKING,
-                finish_reason="length")))
+            side_effect=itertools.repeat(
+                _mock_completion_with_usage(
+                    "", completion_tokens=4000, reasoning=_THINKING, finish_reason="length"
+                )
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Score the candidates.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                chat_ui=_UI(),
-                max_ack_continuations=0,
-                verify_answers=False,  # count the loop's calls, not the checker's
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Score the candidates.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    chat_ui=_UI(),
+                    max_ack_continuations=0,
+                    verify_answers=False,  # count the loop's calls, not the checker's
+                ),
+                timeout=30,
+            )
 
         # 1 initial + 1 answer-or-nothing retry, and no more: the retry is
         # spent once per task whether or not it produced an answer.
         assert mock_client.chat.completions.create.call_count == 2
         _retry = mock_client.chat.completions.create.call_args_list[1]
-        assert (_retry.kwargs["extra_body"]["chat_template_kwargs"]
-                == {"enable_thinking": False})
+        assert _retry.kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
         assert result.count("Now I'm realizing") == 1
-        assert any(lvl == "warning" and "budget thinking" in m
-                   for lvl, m in notices), notices
+        assert any(lvl == "warning" and "budget thinking" in m for lvl, m in notices), notices
 
     @pytest.mark.asyncio
     async def test_thinking_with_no_answer_is_asked_again_without_thinking(self):
@@ -3765,56 +4628,77 @@ class TestThinkingIsNotAPartialAnswer:
         model writes the answer the thinking was already leading to."""
         answer = "c011 is half-scored; c012r is unscored; c013 lands at 03:20."
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion_with_usage(
-                "", completion_tokens=4000, reasoning=_THINKING,
-                finish_reason="length"),
-            _mock_completion_with_usage(answer, completion_tokens=40),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion_with_usage(
+                    "", completion_tokens=4000, reasoning=_THINKING, finish_reason="length"
+                ),
+                _mock_completion_with_usage(answer, completion_tokens=40),
+            ]
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Where does each run stand?",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                think=True,
-                max_ack_continuations=0,
-                verify_answers=False,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Where does each run stand?",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    think=True,
+                    max_ack_continuations=0,
+                    verify_answers=False,
+                ),
+                timeout=30,
+            )
 
         assert result == answer
         # The thinking went into the history so the answer is written from the
         # work already done — but it is not what the user is handed.
         assert "Now I'm realizing" not in result
         _retry = mock_client.chat.completions.create.call_args_list[1]
-        assert (_retry.kwargs["extra_body"]["chat_template_kwargs"]
-                == {"enable_thinking": False})
+        assert _retry.kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
 
     @pytest.mark.asyncio
     async def test_a_resume_that_repeats_itself_stops_the_run(self):
         """A resume that hands back the same text has not resumed anything.
         Spending the rest of the budget on it only buys more copies."""
-        para = ("The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
-                "quarter, and throughput is unchanged at 42 tokens per second (")
+        para = (
+            "The naturalness floor sits at 4.4 UTMOS, up from 4.1 last "
+            "quarter, and throughput is unchanged at 42 tokens per second ("
+        )
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            side_effect=itertools.repeat(_mock_completion_with_finish(
-                content=para, finish_reason="length")))
+            side_effect=itertools.repeat(
+                _mock_completion_with_finish(content=para, finish_reason="length")
+            )
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="Summarize the run.",
-                tool_registry=None,
-                safety_queue=asyncio.Queue(),
-                max_ack_continuations=0,
-                verify_answers=False,  # count the loop's calls, not the checker's
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="Summarize the run.",
+                    tool_registry=None,
+                    safety_queue=asyncio.Queue(),
+                    max_ack_continuations=0,
+                    verify_answers=False,  # count the loop's calls, not the checker's
+                ),
+                timeout=30,
+            )
 
         # 1 initial + 1 resume that repeated itself + 1 stall retry, rather
         # than 1 + 3: the retry is the hiccup allowance, and the second
@@ -3847,6 +4731,7 @@ class TestLogToUiOrVerbose:
 
 # ── default token budgets ───────────────────────────────────────────────────
 
+
 class TestDefaultTokenBudgets:
     """What a run gets when neither the config nor the CLI says anything.  The
     output cap is a ceiling that shrinks to fit the window, and the window
@@ -3854,16 +4739,27 @@ class TestDefaultTokenBudgets:
 
     async def _first_call_kwargs(self, tmp_path, detected, **chat_kwargs):
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("Done."))
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"), \
-             patch("model.serving.chat._get_model_max_context",
-                   new_callable=AsyncMock, return_value=detected):
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       safety_queue=asyncio.Queue(), data_path=str(tmp_path),
-                       **chat_kwargs)
+        client.chat.completions.create = AsyncMock(return_value=_mock_completion("Done."))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch(
+                "model.serving.chat._get_model_max_context",
+                new_callable=AsyncMock,
+                return_value=detected,
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                **chat_kwargs,
+            )
         return client.chat.completions.create.call_args.kwargs
 
     @pytest.mark.asyncio
@@ -3873,8 +4769,8 @@ class TestDefaultTokenBudgets:
         0.50.  The window is a guess either way — what the default decides is
         how much of a long-context model a run gets to use when nobody can
         say, and 262144 turned a 1M model into a quarter of itself."""
-        from model.serving.chat import (DEFAULT_MAX_TOKENS,
-                                        DEFAULT_MAX_CONTEXT_TOKENS)
+        from model.serving.chat import DEFAULT_MAX_TOKENS, DEFAULT_MAX_CONTEXT_TOKENS
+
         assert DEFAULT_MAX_TOKENS == 32768
         assert DEFAULT_MAX_CONTEXT_TOKENS == 1_000_000
         kwargs = await self._first_call_kwargs(tmp_path, detected=None)
@@ -3889,38 +4785,58 @@ class TestDefaultTokenBudgets:
 
     @pytest.mark.asyncio
     async def test_explicit_max_tokens_still_wins(self, tmp_path):
-        kwargs = await self._first_call_kwargs(tmp_path, detected=None,
-                                               max_tokens=4096)
+        kwargs = await self._first_call_kwargs(tmp_path, detected=None, max_tokens=4096)
         assert kwargs["max_tokens"] == 4096
 
 
 # ── the /v1/responses path (gpt-6 family) ──────────────────────────────────
 
-def _mock_response(content="The answer.", reasoning=None, function_calls=None,
-                   status="completed", incomplete_reason=None,
-                   input_tokens=100, output_tokens=50):
+
+def _mock_response(
+    content="The answer.",
+    reasoning=None,
+    function_calls=None,
+    status="completed",
+    incomplete_reason=None,
+    input_tokens=100,
+    output_tokens=50,
+):
     """A mock Responses-API Response object."""
     output = []
     if reasoning:
-        output.append(SimpleNamespace(
-            type="reasoning",
-            summary=[SimpleNamespace(text=reasoning)], content=None))
+        output.append(
+            SimpleNamespace(
+                type="reasoning", summary=[SimpleNamespace(text=reasoning)], content=None
+            )
+        )
     if function_calls:
         for fc in function_calls:
-            output.append(SimpleNamespace(
-                type="function_call", call_id=fc.get("call_id", "call_1"),
-                name=fc["name"], arguments=fc.get("arguments", "{}")))
+            output.append(
+                SimpleNamespace(
+                    type="function_call",
+                    call_id=fc.get("call_id", "call_1"),
+                    name=fc["name"],
+                    arguments=fc.get("arguments", "{}"),
+                )
+            )
     if content is not None:
-        output.append(SimpleNamespace(
-            type="message", role="assistant",
-            content=[SimpleNamespace(type="output_text", text=content)]))
-    resp = SimpleNamespace(output=output, status=status,
-                           incomplete_details=SimpleNamespace(
-                               reason=incomplete_reason) if incomplete_reason else None,
-                           usage=SimpleNamespace(
-                               input_tokens=input_tokens,
-                               output_tokens=output_tokens,
-                               total_tokens=input_tokens + output_tokens))
+        output.append(
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                content=[SimpleNamespace(type="output_text", text=content)],
+            )
+        )
+    resp = SimpleNamespace(
+        output=output,
+        status=status,
+        incomplete_details=SimpleNamespace(reason=incomplete_reason) if incomplete_reason else None,
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        ),
+    )
     return resp
 
 
@@ -3957,35 +4873,52 @@ class TestOpenAIResponsesPath:
         registry = MagicMock()
         registry.tools = set(names)
         registry.get_tool_items.return_value = [
-            {"type": "function",
-             "function": {"name": n, "description": "d",
-                          "parameters": {"type": "object", "properties": {}}}}
-            for n in names]
+            {
+                "type": "function",
+                "function": {
+                    "name": n,
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for n in names
+        ]
         registry.tool_accepts_param.return_value = False
         registry.blank_required_args.return_value = []
         registry.parameters_schema.return_value = {}
         return registry
 
     @staticmethod
-    async def _run(host="https://api.openai.com/v1", model="gpt-6-astra",
-                   responses_create=None, responses_stream=None, **kw):
+    async def _run(
+        host="https://api.openai.com/v1",
+        model="gpt-6-astra",
+        responses_create=None,
+        responses_stream=None,
+        **kw,
+    ):
         """One chat() turn against a mocked responses resource."""
         mock_client = AsyncMock()
         if responses_create is not None:
             mock_client.responses.create = AsyncMock(return_value=responses_create)
         if responses_stream is not None:
             mock_client.responses.stream = MagicMock(
-                return_value=_FakeResponsesStream(responses_stream))
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value=model), \
-             patch("model.serving.chat._resolve_api_key",
-                   return_value="sk-test"):
-            result = await chat(host=host, instruction="hi",
-                                tool_registry=kw.pop("tool_registry", None),
-                                verify_answers=False,
-                                safety_queue=kw.pop("safety_queue",
-                                                    asyncio.Queue()), **kw)
+                return_value=_FakeResponsesStream(responses_stream)
+            )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value=model
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host=host,
+                instruction="hi",
+                tool_registry=kw.pop("tool_registry", None),
+                verify_answers=False,
+                safety_queue=kw.pop("safety_queue", asyncio.Queue()),
+                **kw,
+            )
         return result, mock_client
 
     @pytest.mark.asyncio
@@ -3999,14 +4932,22 @@ class TestOpenAIResponsesPath:
     @pytest.mark.asyncio
     async def test_non_gpt6_models_still_use_chat_completions(self):
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("ok"))
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-4o"), \
-             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
-            result = await chat(host="https://api.openai.com/v1", instruction="hi",
-                                verify_answers=False, safety_queue=asyncio.Queue())
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-4o",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="hi",
+                verify_answers=False,
+                safety_queue=asyncio.Queue(),
+            )
         assert result == "ok"
         mock_client.chat.completions.create.assert_awaited_once()
 
@@ -4025,49 +4966,63 @@ class TestOpenAIResponsesPath:
     async def test_reasoning_effort_low_when_not_thinking(self):
         resp = _mock_response(content="ok")
         _, client = await self._run(responses_create=resp, think=False)
-        assert client.responses.create.call_args.kwargs["reasoning"] == {
-            "effort": "low"}
+        assert client.responses.create.call_args.kwargs["reasoning"] == {"effort": "low"}
 
     @pytest.mark.asyncio
     async def test_reasoning_effort_medium_when_thinking(self):
         resp = _mock_response(content="ok")
         _, client = await self._run(responses_create=resp, think=True)
-        assert client.responses.create.call_args.kwargs["reasoning"] == {
-            "effort": "medium"}
+        assert client.responses.create.call_args.kwargs["reasoning"] == {"effort": "medium"}
 
     @pytest.mark.asyncio
     async def test_tools_flattened_and_tool_choice_auto(self):
         resp = _mock_response(content="ok")
-        _, client = await self._run(responses_create=resp,
-                                    tool_registry=self._registry(),
-                                    harness_tools=False)
+        _, client = await self._run(
+            responses_create=resp, tool_registry=self._registry(), harness_tools=False
+        )
         kw = client.responses.create.call_args.kwargs
-        assert kw["tools"] == [{"type": "function", "name": "search",
-                                "description": "d",
-                                "parameters": {"type": "object", "properties": {}},
-                                "strict": False}]
+        assert kw["tools"] == [
+            {
+                "type": "function",
+                "name": "search",
+                "description": "d",
+                "parameters": {"type": "object", "properties": {}},
+                "strict": False,
+            }
+        ]
         assert kw["tool_choice"] == "auto"
 
     @pytest.mark.asyncio
     async def test_tool_call_round_trip(self):
         """A function_call item is dispatched and its output replayed."""
-        first = _mock_response(content=None, function_calls=[
-            {"call_id": "call_abc", "name": "search",
-             "arguments": '{"query": "weather"}'}])
+        first = _mock_response(
+            content=None,
+            function_calls=[
+                {"call_id": "call_abc", "name": "search", "arguments": '{"query": "weather"}'}
+            ],
+        )
         second = _mock_response(content="It's sunny!")
         handler = AsyncMock(return_value="Weather: sunny, 25C")
         registry = self._registry()
         registry.__getitem__ = MagicMock(return_value=handler)
         mock_client = AsyncMock()
         mock_client.responses.create = AsyncMock(side_effect=[first, second])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
-             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
-            result = await chat(host="https://api.openai.com/v1",
-                                instruction="What is the weather?",
-                                tool_registry=registry, verify_answers=False,
-                                safety_queue=asyncio.Queue())
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-6-astra",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="What is the weather?",
+                tool_registry=registry,
+                verify_answers=False,
+                safety_queue=asyncio.Queue(),
+            )
         assert result == "It's sunny!"
         handler.assert_awaited_once()
         replayed = mock_client.responses.create.call_args_list[1].kwargs["input"]
@@ -4081,22 +5036,35 @@ class TestOpenAIResponsesPath:
     async def test_effort_stepped_down_after_rejection(self):
         """A model that refuses an effort is retried one step lower."""
         from model.serving.chat import reset_endpoint_caches
+
         reset_endpoint_caches()
         first = _mock_response(content="ok")
         mock_client = AsyncMock()
-        mock_client.responses.create = AsyncMock(side_effect=[
-            _make_openai_error(
-                "Unsupported value: 'effort' is not supported for this model. "
-                "Supported values are: 'low', 'high'."),
-            first,
-        ])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
-             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
-            result = await chat(host="https://api.openai.com/v1", instruction="hi",
-                                think=True, verify_answers=False,
-                                safety_queue=asyncio.Queue())
+        mock_client.responses.create = AsyncMock(
+            side_effect=[
+                _make_openai_error(
+                    "Unsupported value: 'effort' is not supported for this model. "
+                    "Supported values are: 'low', 'high'."
+                ),
+                first,
+            ]
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-6-astra",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="hi",
+                think=True,
+                verify_answers=False,
+                safety_queue=asyncio.Queue(),
+            )
         assert result == "ok"
         _first, _second = mock_client.responses.create.call_args_list
         assert _first.kwargs["reasoning"] == {"effort": "medium"}
@@ -4107,8 +5075,7 @@ class TestOpenAIResponsesPath:
         events = [
             _responses_event("response.output_text.delta", delta="Hel"),
             _responses_event("response.output_text.delta", delta="lo"),
-            _responses_event("response.completed",
-                             response=_mock_response(content="Hello")),
+            _responses_event("response.completed", response=_mock_response(content="Hello")),
         ]
         result, client = await self._run(responses_stream=events, stream=True)
         assert result == "Hello"
@@ -4125,44 +5092,68 @@ class TestOpenAIResponsesPath:
         test strikes with side_effect, because a stream that repeats the same
         call forever is a model stuck, and the loop is right to bail on it.
         """
+
         def _tool_call_stream():
-            return _FakeResponsesStream([
-                _responses_event("response.output_item.added", output_index=0,
-                                 item=SimpleNamespace(type="function_call",
-                                                      call_id="call_x",
-                                                      name="bash")),
-                _responses_event("response.function_call_arguments.delta",
-                                 output_index=0, delta='{"command": '),
-                _responses_event("response.function_call_arguments.delta",
-                                 output_index=0, delta='"ls"}'),
-                _responses_event("response.function_call_arguments.done",
-                                 output_index=0, arguments='{"command": "ls"}',
-                                 name="bash", call_id="call_9"),
-                _responses_event("response.completed",
-                                 response=_mock_response(content="")),
-            ])
-        answer_stream = _FakeResponsesStream([
-            _responses_event("response.output_text.delta", delta="file list"),
-            _responses_event("response.completed",
-                             response=_mock_response(content="file list")),
-        ])
+            return _FakeResponsesStream(
+                [
+                    _responses_event(
+                        "response.output_item.added",
+                        output_index=0,
+                        item=SimpleNamespace(type="function_call", call_id="call_x", name="bash"),
+                    ),
+                    _responses_event(
+                        "response.function_call_arguments.delta",
+                        output_index=0,
+                        delta='{"command": ',
+                    ),
+                    _responses_event(
+                        "response.function_call_arguments.delta", output_index=0, delta='"ls"}'
+                    ),
+                    _responses_event(
+                        "response.function_call_arguments.done",
+                        output_index=0,
+                        arguments='{"command": "ls"}',
+                        name="bash",
+                        call_id="call_9",
+                    ),
+                    _responses_event("response.completed", response=_mock_response(content="")),
+                ]
+            )
+
+        answer_stream = _FakeResponsesStream(
+            [
+                _responses_event("response.output_text.delta", delta="file list"),
+                _responses_event(
+                    "response.completed", response=_mock_response(content="file list")
+                ),
+            ]
+        )
         handler = AsyncMock(return_value="file list")
         registry = self._registry(("bash",))
         registry.__getitem__ = MagicMock(return_value=handler)
         mock_client = AsyncMock()
-        mock_client.responses.stream = MagicMock(
-            side_effect=[_tool_call_stream(), answer_stream])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="gpt-6-astra"), \
-             patch("model.serving.chat._resolve_api_key", return_value="sk-test"):
+        mock_client.responses.stream = MagicMock(side_effect=[_tool_call_stream(), answer_stream])
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="gpt-6-astra",
+            ),
+            patch("model.serving.chat._resolve_api_key", return_value="sk-test"),
+        ):
             from model.serving.chat import reset_endpoint_caches
+
             reset_endpoint_caches()
-            result = await chat(host="https://api.openai.com/v1",
-                                instruction="hi", tool_registry=registry,
-                                verify_answers=False,
-                                safety_queue=asyncio.Queue(), stream=True,
-                                max_repeated_tool_calls=5)
+            result = await chat(
+                host="https://api.openai.com/v1",
+                instruction="hi",
+                tool_registry=registry,
+                verify_answers=False,
+                safety_queue=asyncio.Queue(),
+                stream=True,
+                max_repeated_tool_calls=5,
+            )
         assert result == "file list"
         handler.assert_awaited_once()
         # The second request replays the call and its output under the id the
@@ -4179,8 +5170,7 @@ class TestOpenAIResponsesPath:
         events = [
             _responses_event("response.reasoning_text.delta", delta="pondering"),
             _responses_event("response.output_text.delta", delta="Answer"),
-            _responses_event("response.completed",
-                             response=_mock_response(content="Answer")),
+            _responses_event("response.completed", response=_mock_response(content="Answer")),
         ]
         result, client = await self._run(responses_stream=events, stream=True)
         assert result == "Answer"
@@ -4189,10 +5179,12 @@ class TestOpenAIResponsesPath:
     async def test_streaming_incomplete_maps_to_length(self):
         events = [
             _responses_event("response.output_text.delta", delta="partial an"),
-            _responses_event("response.incomplete",
-                             response=_mock_response(
-                                 content="", status="incomplete",
-                                 incomplete_reason="max_output_tokens")),
+            _responses_event(
+                "response.incomplete",
+                response=_mock_response(
+                    content="", status="incomplete", incomplete_reason="max_output_tokens"
+                ),
+            ),
         ]
         result, client = await self._run(responses_stream=events, stream=True)
         # The answer was cut off; the loop resumes it rather than returning
@@ -4211,14 +5203,18 @@ class TestOpenAIResponsesPath:
 
 # ── converters, unit-tested ────────────────────────────────────────────────
 
+
 class TestOpenAIResponsesInput:
     def test_plain_messages(self):
         from model.serving.chat import _openai_responses_input
-        items = _openai_responses_input([
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "done"},
-        ])
+
+        items = _openai_responses_input(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "done"},
+            ]
+        )
         assert items == [
             {"type": "message", "role": "system", "content": "sys"},
             {"type": "message", "role": "user", "content": "hi"},
@@ -4227,40 +5223,68 @@ class TestOpenAIResponsesInput:
 
     def test_tool_calls_become_function_call_items(self):
         from model.serving.chat import _openai_responses_input
-        items = _openai_responses_input([
-            {"role": "assistant", "content": "Let me look.",
-             "tool_calls": [{"id": "c1", "type": "function",
-                             "function": {"name": "search",
-                                          "arguments": '{"q": 1}'}}]},
-            {"role": "tool", "content": "found it", "tool_call_id": "c1"},
-        ])
-        assert items[0] == {"type": "message", "role": "assistant",
-                            "content": "Let me look."}
-        assert items[1] == {"type": "function_call", "call_id": "c1",
-                            "name": "search", "arguments": '{"q": 1}'}
-        assert items[2] == {"type": "function_call_output", "call_id": "c1",
-                            "output": "found it"}
+
+        items = _openai_responses_input(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Let me look.",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": '{"q": 1}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "found it", "tool_call_id": "c1"},
+            ]
+        )
+        assert items[0] == {"type": "message", "role": "assistant", "content": "Let me look."}
+        assert items[1] == {
+            "type": "function_call",
+            "call_id": "c1",
+            "name": "search",
+            "arguments": '{"q": 1}',
+        }
+        assert items[2] == {"type": "function_call_output", "call_id": "c1", "output": "found it"}
 
     def test_dict_arguments_are_reserialized(self):
         """Ollama-shaped history keeps arguments as a dict; the API wants a
         JSON string."""
         from model.serving.chat import _openai_responses_input
-        items = _openai_responses_input([
-            {"role": "assistant", "content": None,
-             "tool_calls": [{"id": "c1", "type": "function",
-                             "function": {"name": "search",
-                                          "arguments": {"q": 1}}}]},
-        ])
+
+        items = _openai_responses_input(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": {"q": 1}},
+                        }
+                    ],
+                },
+            ]
+        )
         assert items[0]["arguments"] == '{"q": 1}'
 
     def test_image_parts_survive(self):
         from model.serving.chat import _openai_responses_input
-        items = _openai_responses_input([
-            {"role": "user", "content": [
-                {"type": "text", "text": "look"},
-                {"type": "image_url",
-                 "image_url": {"url": "data:image/png;base64,AAAA"}}]},
-        ])
+
+        items = _openai_responses_input(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    ],
+                },
+            ]
+        )
         assert items[0]["content"] == [
             {"type": "input_text", "text": "look"},
             {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
@@ -4269,61 +5293,85 @@ class TestOpenAIResponsesInput:
     def test_sdk_message_objects_are_read(self):
         """The non-streaming path keeps the SDK message object as history."""
         from model.serving.chat import _openai_responses_input
+
         msg = SimpleNamespace(role="assistant", content="plain", tool_calls=None)
         items = _openai_responses_input([msg])
-        assert items == [{"type": "message", "role": "assistant",
-                          "content": "plain"}]
+        assert items == [{"type": "message", "role": "assistant", "content": "plain"}]
 
 
 class TestOpenAIResponsesTools:
     def test_flat_shape_and_strict_false(self):
         from model.serving.chat import _openai_responses_tools
-        out = _openai_responses_tools([
-            {"type": "function",
-             "function": {"name": "search", "description": "d",
-                          "parameters": {"type": "object", "properties": {}}}},
-        ])
-        assert out == [{"type": "function", "name": "search",
+
+        out = _openai_responses_tools(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
                         "description": "d",
                         "parameters": {"type": "object", "properties": {}},
-                        "strict": False}]
+                    },
+                },
+            ]
+        )
+        assert out == [
+            {
+                "type": "function",
+                "name": "search",
+                "description": "d",
+                "parameters": {"type": "object", "properties": {}},
+                "strict": False,
+            }
+        ]
 
     def test_missing_schema_gets_an_empty_object(self):
         from model.serving.chat import _openai_responses_tools
-        out = _openai_responses_tools([
-            {"type": "function", "function": {"name": "n", "description": "d"}},
-        ])
+
+        out = _openai_responses_tools(
+            [
+                {"type": "function", "function": {"name": "n", "description": "d"}},
+            ]
+        )
         assert out[0]["parameters"] == {"type": "object", "properties": {}}
 
     def test_passthrough_of_unrecognized_shapes(self):
         from model.serving.chat import _openai_responses_tools
+
         assert _openai_responses_tools(["raw"]) == ["raw"]
 
 
 class TestOpenAIResponsesResult:
     def test_full_mapping(self):
         from model.serving.chat import _openai_responses_result
-        resp = _mock_response(content="The answer.", reasoning="thinking",
-                              function_calls=[{"call_id": "c9", "name": "bash",
-                                               "arguments": '{"command": "ls"}'}],
-                              status="completed")
+
+        resp = _mock_response(
+            content="The answer.",
+            reasoning="thinking",
+            function_calls=[{"call_id": "c9", "name": "bash", "arguments": '{"command": "ls"}'}],
+            status="completed",
+        )
         content, reasoning, tcs, finish, usage = _openai_responses_result(resp)
         assert content == "The answer."
         assert reasoning == "thinking"
         assert [(t.id, t.function.name, t.function.arguments) for t in tcs] == [
-            ("c9", "bash", '{"command": "ls"}')]
+            ("c9", "bash", '{"command": "ls"}')
+        ]
         assert finish == "tool_calls"
         assert usage.prompt_tokens == 100 and usage.completion_tokens == 50
 
     def test_incomplete_max_output_tokens_maps_to_length(self):
         from model.serving.chat import _openai_responses_result
-        resp = _mock_response(content="partial", status="incomplete",
-                              incomplete_reason="max_output_tokens")
+
+        resp = _mock_response(
+            content="partial", status="incomplete", incomplete_reason="max_output_tokens"
+        )
         _, _, _, finish, _ = _openai_responses_result(resp)
         assert finish == "length"
 
     def test_no_tool_calls_is_stop(self):
         from model.serving.chat import _openai_responses_result
+
         resp = _mock_response(content="done")
         content, _, tcs, finish, _ = _openai_responses_result(resp)
         assert content == "done" and tcs is None and finish == "stop"
@@ -4332,12 +5380,14 @@ class TestOpenAIResponsesResult:
 class TestIsOpenAIResponsesModel:
     def test_gpt6_family(self):
         from model.serving.chat import _is_openai_responses_model
+
         assert _is_openai_responses_model("gpt-6-astra")
         assert _is_openai_responses_model("gpt-6")
         assert _is_openai_responses_model("gpt-6.2-mini")
 
     def test_other_models_not(self):
         from model.serving.chat import _is_openai_responses_model
+
         assert not _is_openai_responses_model("gpt-5")
         assert not _is_openai_responses_model("gpt-4o")
         assert not _is_openai_responses_model("o3")
@@ -4346,16 +5396,23 @@ class TestIsOpenAIResponsesModel:
 
 # ── a declined nudge: "the task isn't done" is a continue request ────────────
 
+
 def _module_registry(names=("search",)):
     """A minimal tool registry at module scope, for the end-to-end classes
     below (the class-scoped _registry helpers live inside their classes)."""
     registry = MagicMock()
     registry.tools = set(names)
     registry.get_tool_items.return_value = [
-        {"type": "function",
-         "function": {"name": n, "description": "d",
-                      "parameters": {"type": "object", "properties": {}}}}
-        for n in names]
+        {
+            "type": "function",
+            "function": {
+                "name": n,
+                "description": "d",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for n in names
+    ]
     registry.tool_accepts_param.return_value = False
     registry.blank_required_args.return_value = []
     registry.parameters_schema.return_value = {}
@@ -4378,30 +5435,41 @@ class TestNudgeDeclineRecovery:
         registry = _module_registry()
         registry.__getitem__.return_value = AsyncMock(return_value="result")
         state = RunState()
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await chat(host="http://localhost:8000/v1", instruction="hi",
-                                tool_registry=registry,
-                                safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path),
-                                run_state=state, **kwargs)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                run_state=state,
+                **kwargs,
+            )
         return result, client, state
 
     @pytest.mark.asyncio
     async def test_an_argued_reply_gets_its_tools_back(self, tmp_path):
         """Thinking-only turn, then the model argues with the nudge instead of
         answering: the run must continue, not end on the argument."""
-        arguing = ("I haven't actually made the changes yet. The task is to "
-                   "modify cmd_setup and I haven't edited the file. The "
-                   "instruction says do not call any more tools, but the "
-                   "work is incomplete.")
+        arguing = (
+            "I haven't actually made the changes yet. The task is to "
+            "modify cmd_setup and I haven't edited the file. The "
+            "instruction says do not call any more tools, but the "
+            "work is incomplete."
+        )
         tc = _mock_tool_call("search", '{"query": "next step"}', "c2")
         completions = [
             # Turn 1: thinking only (empty content, reasoning field full).
-            _mock_completion_with_usage("", completion_tokens=4000,
-                                        reasoning=_THINKING,
-                                        finish_reason="length"),
+            _mock_completion_with_usage(
+                "", completion_tokens=4000, reasoning=_THINKING, finish_reason="length"
+            ),
             # Turn 2: the argued reply to the nudge.
             _mock_completion_with_finish(content=arguing),
             # Turn 3: the model acts.
@@ -4414,9 +5482,10 @@ class TestNudgeDeclineRecovery:
         assert state.nudge_decline_count == 1
         # The continue-after-nudge prompt reached the conversation.
         sent = client.chat.completions.create.call_args_list[2].kwargs["messages"]
-        assert any(m.get("role") == "user"
-                   and "task is not finished" in str(m.get("content", ""))
-                   for m in sent), sent
+        assert any(
+            m.get("role") == "user" and "task is not finished" in str(m.get("content", ""))
+            for m in sent
+        ), sent
 
     @pytest.mark.asyncio
     async def test_a_thinking_turn_mid_task_gets_the_act_prompt(self, tmp_path):
@@ -4424,9 +5493,9 @@ class TestNudgeDeclineRecovery:
         calls — the model's thinking ended on a tool it was about to call."""
         tc = _mock_tool_call("search", '{"query": "next"}', "c1")
         completions = [
-            _mock_completion_with_usage("", completion_tokens=4000,
-                                        reasoning=_THINKING,
-                                        finish_reason="length"),
+            _mock_completion_with_usage(
+                "", completion_tokens=4000, reasoning=_THINKING, finish_reason="length"
+            ),
             _mock_completion(content=None, tool_calls=[tc]),
             _mock_completion("Answer after acting."),
         ]
@@ -4442,21 +5511,28 @@ class TestNudgeDeclineRecovery:
         """No tools in the payload: the retry stays answer-only, where
         forbidding tools costs nothing."""
         completions = [
-            _mock_completion_with_usage("", completion_tokens=4000,
-                                        reasoning=_THINKING,
-                                        finish_reason="length"),
+            _mock_completion_with_usage(
+                "", completion_tokens=4000, reasoning=_THINKING, finish_reason="length"
+            ),
             _mock_completion("The plain answer."),
         ]
         client = AsyncMock()
         client.chat.completions.create = AsyncMock(side_effect=completions)
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await chat(host="http://localhost:8000/v1",
-                                instruction="plain question",
-                                tool_registry=None,
-                                safety_queue=asyncio.Queue(),
-                                verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="plain question",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                verify_answers=False,
+            )
         assert result == "The plain answer."
         sent = client.chat.completions.create.call_args_list[1].kwargs["messages"]
         retry = [m for m in sent if m.get("role") == "user"][-1]
@@ -4480,13 +5556,13 @@ class TestNudgeDeclineRecovery:
     async def test_a_second_argument_is_returned_as_is(self, tmp_path):
         """The budget is one: a model that argues again after being handed its
         tools back has said its piece, and the reply is not swallowed."""
-        arguing = ("I still need to edit the file and I can't call tools.")
+        arguing = "I still need to edit the file and I can't call tools."
         tc2 = _mock_tool_call("search", '{"query": "q2"}', "c2")
         completions = [
             # Turn 1: thinking only — the model gets the act prompt.
-            _mock_completion_with_usage("", completion_tokens=4000,
-                                        reasoning=_THINKING,
-                                        finish_reason="length"),
+            _mock_completion_with_usage(
+                "", completion_tokens=4000, reasoning=_THINKING, finish_reason="length"
+            ),
             # Turn 2: the model argues instead of acting.
             _mock_completion_with_finish(content=arguing),
             # Turn 3: handed its tools back, it calls one...
@@ -4502,14 +5578,15 @@ class TestNudgeDeclineRecovery:
     async def test_the_budget_can_be_disabled(self, tmp_path):
         """max_nudge_decline_recoveries=0 restores the old behavior: a
         declined nudge is returned as the final answer."""
-        arguing = ("I still need to edit the file and I can't call tools.")
+        arguing = "I still need to edit the file and I can't call tools."
         tc = _mock_tool_call("search", '{"query": "q"}', "c1")
         completions = [
             _mock_completion(content=None, tool_calls=[tc]),
             _mock_completion_with_finish(content=arguing),
         ]
         result, client, state = await self._run(
-            tmp_path, completions, max_nudge_decline_recoveries=0)
+            tmp_path, completions, max_nudge_decline_recoveries=0
+        )
         assert result == arguing
         assert state.nudge_decline_count == 0
 
@@ -4540,17 +5617,19 @@ class TestUnterminatedFenceResume:
         # shape of the 23 Sep failure.  The body must not repeat a short span:
         # a degenerate loop is the repetition guard's failure, not this one's,
         # and that guard would trim the text and resume it instead.
-        body = ("Here is the change:\n\n```python\ndef cmd_setup(args) -> None:\n"
-                "    from rich.console import Console\n    console = Console()\n"
-                "    dest = Path(args.config or Path.home() / '.baby-onit'\n"
-                "                             / 'config.yaml').expanduser()\n"
-                "    old = load_config(args.config) if dest.is_file() else {}\n"
-                "    for key in ('github_token', 'huggingface_token'):\n"
-                "        answer = Prompt.ask(f'{key}', default=old.get(key, ''))\n"
-                "        if answer:\n"
-                "            old[key] = answer\n"
-                "    dest.write_text(yaml.safe_dump(old, sort_keys=False))\n"
-                "    console.print('[bold]baby-onit setup[/]  enter a number")
+        body = (
+            "Here is the change:\n\n```python\ndef cmd_setup(args) -> None:\n"
+            "    from rich.console import Console\n    console = Console()\n"
+            "    dest = Path(args.config or Path.home() / '.baby-onit'\n"
+            "                             / 'config.yaml').expanduser()\n"
+            "    old = load_config(args.config) if dest.is_file() else {}\n"
+            "    for key in ('github_token', 'huggingface_token'):\n"
+            "        answer = Prompt.ask(f'{key}', default=old.get(key, ''))\n"
+            "        if answer:\n"
+            "            old[key] = answer\n"
+            "    dest.write_text(yaml.safe_dump(old, sort_keys=False))\n"
+            "    console.print('[bold]baby-onit setup[/]  enter a number"
+        )
         tc = _mock_tool_call("search", '{"query": "q"}', "c1")
         completions = [
             _mock_completion(content=None, tool_calls=[tc]),
@@ -4561,15 +5640,23 @@ class TestUnterminatedFenceResume:
         client.chat.completions.create = AsyncMock(side_effect=completions)
         registry = _module_registry()
         registry.__getitem__.return_value = AsyncMock(return_value="result")
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await chat(host="http://localhost:8000/v1", instruction="hi",
-                                tool_registry=registry,
-                                safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path),
-                                max_nudge_decline_recoveries=0,
-                                verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                max_nudge_decline_recoveries=0,
+                verify_answers=False,
+            )
         # The pieces were stitched into one answer, fence closed.
         assert result.count("Here is the change:") == 1
         assert result.count("```") % 2 == 0
@@ -4587,13 +5674,21 @@ class TestUnterminatedFenceResume:
         client.chat.completions.create = AsyncMock(side_effect=completions)
         registry = _module_registry()
         registry.__getitem__.return_value = AsyncMock(return_value="result")
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await chat(host="http://localhost:8000/v1", instruction="hi",
-                                tool_registry=registry,
-                                safety_queue=asyncio.Queue(),
-                                data_path=str(tmp_path),
-                                verify_answers=False)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                data_path=str(tmp_path),
+                verify_answers=False,
+            )
         assert result == body
         assert client.chat.completions.create.call_count == 2

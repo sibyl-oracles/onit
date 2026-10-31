@@ -30,6 +30,7 @@ from src.learn import runner
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
+
 class StubAgent:
     """An agent that answers with a fixed string and records its calls."""
 
@@ -44,8 +45,15 @@ class StubAgent:
 
 
 def _item(task="a question", response="the right answer", item_id="s1#1"):
-    return {"id": item_id, "task": task, "response": response,
-            "model": "m1", "owner": None, "session_id": "s1", "turn": 1}
+    return {
+        "id": item_id,
+        "task": task,
+        "response": response,
+        "model": "m1",
+        "owner": None,
+        "session_id": "s1",
+        "turn": 1,
+    }
 
 
 async def _ask_ok(messages):
@@ -70,6 +78,7 @@ async def _ask_garbage(messages):
 
 
 # ── the grade ───────────────────────────────────────────────────────────────
+
 
 class TestParseGrade:
     """The grade is parsed strictly."""
@@ -142,6 +151,7 @@ class TestGrade:
 
 # ── the summary ─────────────────────────────────────────────────────────────
 
+
 class TestSummarise:
     """The headline numbers, and the ones that keep them honest."""
 
@@ -159,8 +169,10 @@ class TestSummarise:
         would be invisible.
         """
         results = [
-            {"grade": "C"}, {"grade": "C"},
-            {"grade": ""}, {"grade": ""},
+            {"grade": "C"},
+            {"grade": "C"},
+            {"grade": ""},
+            {"grade": ""},
         ]
         summary = runner.summarise(results)
         assert summary["n"] == 4
@@ -181,6 +193,7 @@ class TestSummarise:
 
 
 # ── the comparison ──────────────────────────────────────────────────────────
+
 
 class TestCompare:
     """Two arms, and whether the difference is real."""
@@ -205,10 +218,8 @@ class TestCompare:
         50 correct out of 100 is a delta of zero, and reporting that
         as a win would be reporting nothing.
         """
-        control = ([{"grade": "C"} for _ in range(50)]
-                   + [{"grade": "I"} for _ in range(50)])
-        treatment = ([{"grade": "C"} for _ in range(50)]
-                     + [{"grade": "I"} for _ in range(50)])
+        control = [{"grade": "C"} for _ in range(50)] + [{"grade": "I"} for _ in range(50)]
+        treatment = [{"grade": "C"} for _ in range(50)] + [{"grade": "I"} for _ in range(50)]
         result = runner.compare(control, treatment)
         assert result["delta"] == 0.0
         assert result["stderr"] > 0
@@ -222,10 +233,8 @@ class TestCompare:
         result.  This is the case the plan's own gate is about: a
         delta that does not clear its error bar ships nothing.
         """
-        control = ([{"grade": "C"} for _ in range(99)]
-                   + [{"grade": "I"} for _ in range(101)])
-        treatment = ([{"grade": "C"} for _ in range(100)]
-                     + [{"grade": "I"} for _ in range(100)])
+        control = [{"grade": "C"} for _ in range(99)] + [{"grade": "I"} for _ in range(101)]
+        treatment = [{"grade": "C"} for _ in range(100)] + [{"grade": "I"} for _ in range(100)]
         result = runner.compare(control, treatment)
         assert abs(result["delta"]) < result["stderr"]
         assert not result["significant"]
@@ -248,10 +257,8 @@ class TestCompare:
         assert result["n_items"] == 4
 
     def test_the_text_says_when_a_delta_is_not_significant(self):
-        control = ([{"grade": "C"} for _ in range(50)]
-                   + [{"grade": "I"} for _ in range(50)])
-        treatment = ([{"grade": "C"} for _ in range(50)]
-                     + [{"grade": "I"} for _ in range(50)])
+        control = [{"grade": "C"} for _ in range(50)] + [{"grade": "I"} for _ in range(50)]
+        treatment = [{"grade": "C"} for _ in range(50)] + [{"grade": "I"} for _ in range(50)]
         text = runner.format_comparison(runner.compare(control, treatment))
         assert "not significant" in text
         assert "Ship nothing" in text
@@ -259,29 +266,26 @@ class TestCompare:
 
 # ── the run ─────────────────────────────────────────────────────────────────
 
+
 class TestRunArm:
     """One arm, run over a list of items."""
 
     async def test_every_item_is_answered_and_graded(self, tmp_path):
-        items = [_item("q1", "the reference", "s1#1"),
-                 _item("q2", "the reference", "s1#2")]
+        items = [_item("q1", "the reference", "s1#1"), _item("q2", "the reference", "s1#2")]
         results = await runner.run_arm(
-            items, arm="off", root=str(tmp_path),
-            make_agent=lambda config: StubAgent(),
-            ask=_ask_ok)
+            items, arm="off", root=str(tmp_path), make_agent=lambda config: StubAgent(), ask=_ask_ok
+        )
         assert len(results) == 2
         assert all(r["grade"] == "C" for r in results)
         assert all(r["arm"] == "off" for r in results)
 
     async def test_the_agent_is_asked_each_question(self, tmp_path):
-        items = [_item("first question", "r", "s1#1"),
-                 _item("second question", "r", "s1#2")]
+        items = [_item("first question", "r", "s1#1"), _item("second question", "r", "s1#2")]
         agent = StubAgent()
-        await runner.run_arm(items, arm="off", root=str(tmp_path),
-                             make_agent=lambda config: agent,
-                             ask=_ask_ok)
-        assert [c["task"] for c in agent.calls] == ["first question",
-                                                    "second question"]
+        await runner.run_arm(
+            items, arm="off", root=str(tmp_path), make_agent=lambda config: agent, ask=_ask_ok
+        )
+        assert [c["task"] for c in agent.calls] == ["first question", "second question"]
 
     async def test_a_failed_task_is_recorded_not_raised(self, tmp_path):
         """One bad task must not lose the whole run.
@@ -289,6 +293,7 @@ class TestRunArm:
         The arm's results are a list; a task that raised has no
         answer, and the rest of the run is still worth measuring.
         """
+
         class Flaky:
             async def process_task(self, task, **kwargs):
                 if task == "bad":
@@ -296,25 +301,30 @@ class TestRunArm:
                 return "an answer"
 
         items = [_item("good", "r", "s1#1"), _item("bad", "r", "s1#2")]
-        results = await runner.run_arm(items, arm="off", root=str(tmp_path),
-                                       make_agent=lambda config: Flaky(),
-                                       ask=_ask_ok)
+        results = await runner.run_arm(
+            items, arm="off", root=str(tmp_path), make_agent=lambda config: Flaky(), ask=_ask_ok
+        )
         assert len(results) == 2
         assert results[0]["error"] == ""
         assert results[1]["error"]
 
     async def test_the_limit_caps_the_run(self, tmp_path):
         items = [_item("q%d" % i, "r", "s%d#1" % i) for i in range(10)]
-        results = await runner.run_arm(items, arm="off", root=str(tmp_path),
-                                       make_agent=lambda config: StubAgent(),
-                                       ask=_ask_ok, limit=3)
+        results = await runner.run_arm(
+            items,
+            arm="off",
+            root=str(tmp_path),
+            make_agent=lambda config: StubAgent(),
+            ask=_ask_ok,
+            limit=3,
+        )
         assert len(results) == 3
 
     async def test_the_results_are_written_to_disk(self, tmp_path):
         items = [_item("q", "r", "s1#1")]
-        await runner.run_arm(items, arm="off", root=str(tmp_path),
-                             make_agent=lambda config: StubAgent(),
-                             ask=_ask_ok)
+        await runner.run_arm(
+            items, arm="off", root=str(tmp_path), make_agent=lambda config: StubAgent(), ask=_ask_ok
+        )
         path = os.path.join(str(tmp_path), "arms", "off", "results.json")
         assert os.path.exists(path)
         with open(path, encoding="utf-8") as f:
@@ -336,10 +346,10 @@ class TestRunArm:
             return StubAgent()
 
         items = [_item("q", "r", "s1#1")]
-        await runner.run_arm(items, arm="off", root=str(tmp_path),
-                             make_agent=factory, ask=_ask_ok)
-        await runner.run_arm(items, arm="adapt", root=str(tmp_path),
-                             make_agent=factory, ask=_ask_ok)
+        await runner.run_arm(items, arm="off", root=str(tmp_path), make_agent=factory, ask=_ask_ok)
+        await runner.run_arm(
+            items, arm="adapt", root=str(tmp_path), make_agent=factory, ask=_ask_ok
+        )
         control, treatment = seen["configs"]
         assert control["learn"]["autonomy"] == "off"
         assert treatment["learn"]["autonomy"] == "adapt"
@@ -359,23 +369,31 @@ class TestRunArm:
             seen["config"] = config
             return StubAgent()
 
-        await runner.run_arm([_item()], arm="adapt", root=str(tmp_path),
-                             base_config=base, make_agent=factory,
-                             ask=_ask_ok)
+        await runner.run_arm(
+            [_item()],
+            arm="adapt",
+            root=str(tmp_path),
+            base_config=base,
+            make_agent=factory,
+            ask=_ask_ok,
+        )
         assert seen["config"]["learn"]["path"] != "/somewhere/operator/learned"
 
-    async def test_a_run_without_a_grader_records_but_does_not_grade(self,
-                                                                      tmp_path):
-        results = await runner.run_arm([_item()], arm="off",
-                                       root=str(tmp_path),
-                                       make_agent=lambda config: StubAgent(),
-                                       ask=None)
+    async def test_a_run_without_a_grader_records_but_does_not_grade(self, tmp_path):
+        results = await runner.run_arm(
+            [_item()],
+            arm="off",
+            root=str(tmp_path),
+            make_agent=lambda config: StubAgent(),
+            ask=None,
+        )
         assert len(results) == 1
         assert results[0]["grade"] == ""
         assert results[0]["answer"] == "the right answer"
 
 
 # ── the store ───────────────────────────────────────────────────────────────
+
 
 class TestArmStore:
     def test_the_store_is_under_the_run_root(self, tmp_path):
@@ -400,12 +418,15 @@ class TestArmStore:
 # roughly one time in six.  That is not a missed result -- it is a shipped
 # nothing that looked like something.
 
+
 class TestTheErrorRate:
     """The test's false-positive rate is 5%, and that is a property."""
 
     def _arm(self, p, n, rng):
-        return [{"grade": runner.GRADE_CORRECT if rng.random() < p
-                 else runner.GRADE_INCORRECT} for _ in range(n)]
+        return [
+            {"grade": runner.GRADE_CORRECT if rng.random() < p else runner.GRADE_INCORRECT}
+            for _ in range(n)
+        ]
 
     def test_the_bar_is_1_96_standard_errors_of_the_difference(self):
         """The bar is z * sqrt(se_c^2 + se_t^2), not se_c + se_t.
@@ -414,12 +435,12 @@ class TestTheErrorRate:
         difference is sqrt(2)s, so the old bar was 1.414 sigma.  This is
         the arithmetic the whole test rests on.
         """
-        control = ([{"grade": "C"}] * 50 + [{"grade": "I"}] * 50)
-        treatment = ([{"grade": "C"}] * 50 + [{"grade": "I"}] * 50)
+        control = [{"grade": "C"}] * 50 + [{"grade": "I"}] * 50
+        treatment = [{"grade": "C"}] * 50 + [{"grade": "I"}] * 50
         result = runner.compare(control, treatment)
         se_c = runner._stderr(0.5, 100)
         se_t = runner._stderr(0.5, 100)
-        assert result["se_diff"] == pytest.approx((se_c ** 2 + se_t ** 2) ** 0.5)
+        assert result["se_diff"] == pytest.approx((se_c**2 + se_t**2) ** 0.5)
         assert result["stderr"] == pytest.approx(1.96 * result["se_diff"])
         # And the old bar would have been this much wider than se_diff.
         assert result["se_diff"] < (se_c + se_t)
@@ -433,6 +454,7 @@ class TestTheErrorRate:
         consistent with 5% and anything near 16% is the old bug back.
         """
         import random
+
         rng = random.Random(7)
         trials = 3000
         false_positives = 0
@@ -444,7 +466,8 @@ class TestTheErrorRate:
         rate = false_positives / trials
         assert 0.03 < rate < 0.08, (
             "the null false-positive rate is %.3f; it is meant to be 0.05. "
-            "Near 0.16 means the bar is se_c + se_t again." % rate)
+            "Near 0.16 means the bar is se_c + se_t again." % rate
+        )
 
     def test_a_real_effect_is_still_detected(self):
         """A bar that is too wide would be safe and useless.
@@ -453,14 +476,18 @@ class TestTheErrorRate:
         that could not see it would refuse every real improvement.
         """
         import random
+
         rng = random.Random(11)
         trials = 200
-        hits = sum(1 for _ in range(trials)
-                   if runner.compare(self._arm(0.50, 160, rng),
-                                     self._arm(0.68, 160, rng))["significant"])
+        hits = sum(
+            1
+            for _ in range(trials)
+            if runner.compare(self._arm(0.50, 160, rng), self._arm(0.68, 160, rng))["significant"]
+        )
         assert hits / trials > 0.85, (
             "a +0.18 effect was detected %.0f%% of the time; the bar is too "
-            "wide to be useful" % (100.0 * hits / trials))
+            "wide to be useful" % (100.0 * hits / trials)
+        )
 
 
 class TestTheArmHandsTheAgentAWorkableEnvironment:
@@ -485,10 +512,13 @@ class TestTheArmHandsTheAgentAWorkableEnvironment:
 
     async def test_the_agent_gets_a_queue_it_can_call_empty_on(self, tmp_path):
         agent = StubAgent()
-        await runner.run_arm([_item("q", "r", "s1#1")], arm="off",
-                             root=str(tmp_path),
-                             make_agent=lambda config: agent,
-                             ask=_ask_ok)
+        await runner.run_arm(
+            [_item("q", "r", "s1#1")],
+            arm="off",
+            root=str(tmp_path),
+            make_agent=lambda config: agent,
+            ask=_ask_ok,
+        )
         queue = agent.calls[0]["kwargs"]["safety_queue"]
         assert queue is not None, "a None queue crashes the real agent"
         assert queue.empty() is True
@@ -497,12 +527,16 @@ class TestTheArmHandsTheAgentAWorkableEnvironment:
         """The servers only serve one root, and this has to be it."""
         agent = StubAgent()
         work = tmp_path / "served-root"
-        await runner.run_arm([_item("q", "r", "s1#1")], arm="off",
-                             root=str(tmp_path / "arms"),
-                             base_config={"data_path": str(work)},
-                             make_agent=lambda config: agent,
-                             ask=_ask_ok)
+        await runner.run_arm(
+            [_item("q", "r", "s1#1")],
+            arm="off",
+            root=str(tmp_path / "arms"),
+            base_config={"data_path": str(work)},
+            make_agent=lambda config: agent,
+            ask=_ask_ok,
+        )
         passed = agent.calls[0]["kwargs"]["data_path"]
         assert passed == str(work.resolve()), (
             "the arm must run where the tool servers were registered, "
-            "not in a store directory they do not serve")
+            "not in a store directory they do not serve"
+        )

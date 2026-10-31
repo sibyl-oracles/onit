@@ -183,8 +183,7 @@ def read_manifest(path: str) -> dict | None:
 
 def write_manifest(path: str, manifest: dict) -> bool:
     """Write a manifest."""
-    return _atomic_write(path, yaml.safe_dump(manifest, sort_keys=True,
-                                              default_flow_style=False))
+    return _atomic_write(path, yaml.safe_dump(manifest, sort_keys=True, default_flow_style=False))
 
 
 def read_pin(config_data: dict | None = None) -> dict:
@@ -216,8 +215,7 @@ def write_pin(pin: dict, config_data: dict | None = None) -> bool:
         "updated": _today(),
         "skills": pin.get("skills") or {},
     }
-    return _atomic_write(path, yaml.safe_dump(payload, sort_keys=True,
-                                              default_flow_style=False))
+    return _atomic_write(path, yaml.safe_dump(payload, sort_keys=True, default_flow_style=False))
 
 
 def pinned_skills(config_data: dict | None = None) -> dict:
@@ -234,8 +232,7 @@ def pinned_skills(config_data: dict | None = None) -> dict:
         safe = _safe_name(name)
         if not safe:
             continue
-        if not os.path.isfile(os.path.join(skill_dir(safe, config_data),
-                                           "manifest.yaml")):
+        if not os.path.isfile(os.path.join(skill_dir(safe, config_data), "manifest.yaml")):
             continue
         out[safe] = entry if isinstance(entry, dict) else {}
     return out
@@ -259,15 +256,19 @@ def manifest_errors(manifest: dict | None) -> list:
     elif not _NAME_RE.match(str(name)):
         problems.append(
             "the name %r is not a valid tool name (lower-case, letters "
-            "and digits and underscores, starting with a letter)" % (name,))
+            "and digits and underscores, starting with a letter)" % (name,)
+        )
 
     description = manifest.get("description")
     if not description or not str(description).strip():
-        problems.append("no description -- the model cannot choose a tool "
-                        "it cannot tell apart from the others")
+        problems.append(
+            "no description -- the model cannot choose a tool it cannot tell apart from the others"
+        )
     elif len(str(description)) > MAX_DESCRIPTION_CHARS:
-        problems.append("the description is %d characters; the limit is %d"
-                        % (len(str(description)), MAX_DESCRIPTION_CHARS))
+        problems.append(
+            "the description is %d characters; the limit is %d"
+            % (len(str(description)), MAX_DESCRIPTION_CHARS)
+        )
 
     version = manifest.get("version")
     if version is None:
@@ -282,15 +283,14 @@ def manifest_errors(manifest: dict | None) -> list:
         else:
             params = schema.get("properties")
             if params is not None and not isinstance(params, dict):
-                problems.append("the input schema's properties are not a "
-                                "mapping")
+                problems.append("the input schema's properties are not a mapping")
             elif isinstance(params, dict):
                 for pname in params:
                     if len(str(pname)) > MAX_PARAM_NAME:
                         problems.append(
                             "the parameter %r is %d characters; the limit "
-                            "is %d" % (pname, len(str(pname)),
-                                       MAX_PARAM_NAME))
+                            "is %d" % (pname, len(str(pname)), MAX_PARAM_NAME)
+                        )
     return problems
 
 
@@ -308,8 +308,7 @@ def apply_deltas(pin: dict, deltas: list) -> dict:
     silently ignoring that is how a library drifts away from what it
     says it contains.
     """
-    pin = {"version": int(pin.get("version") or 0),
-           "skills": dict(pin.get("skills") or {})}
+    pin = {"version": int(pin.get("version") or 0), "skills": dict(pin.get("skills") or {})}
     skills = pin["skills"]
     skipped = []
 
@@ -319,8 +318,9 @@ def apply_deltas(pin: dict, deltas: list) -> dict:
         op = str(delta.get("op") or "").lower()
         name = _safe_name(delta.get("name") or "")
         if not name:
-            skipped.append({"op": op, "name": delta.get("name"),
-                            "reason": "not a valid skill name"})
+            skipped.append(
+                {"op": op, "name": delta.get("name"), "reason": "not a valid skill name"}
+            )
             continue
 
         if op == "insert":
@@ -336,8 +336,7 @@ def apply_deltas(pin: dict, deltas: list) -> dict:
             skills[name] = entry
         elif op == "update":
             if name not in skills:
-                skipped.append({"op": op, "name": name,
-                                "reason": "not in the library"})
+                skipped.append({"op": op, "name": name, "reason": "not in the library"})
                 continue
             entry = dict(skills[name])
             patch = delta.get("skill")
@@ -348,8 +347,7 @@ def apply_deltas(pin: dict, deltas: list) -> dict:
             skills[name] = entry
         elif op == "deprecate":
             if name not in skills:
-                skipped.append({"op": op, "name": name,
-                                "reason": "not in the library"})
+                skipped.append({"op": op, "name": name, "reason": "not in the library"})
                 continue
             entry = dict(skills[name])
             entry["status"] = DEPRECATED
@@ -357,8 +355,7 @@ def apply_deltas(pin: dict, deltas: list) -> dict:
             entry["reason"] = delta.get("reason") or ""
             skills[name] = entry
         else:
-            skipped.append({"op": op, "name": name,
-                            "reason": "unknown operation"})
+            skipped.append({"op": op, "name": name, "reason": "unknown operation"})
 
     pin["version"] = int(pin.get("version") or 0) + 1
     if skipped:
@@ -382,8 +379,7 @@ def read_skill(name: str, config_data: dict | None = None) -> dict:
         return {}
     pin = read_pin(config_data)
     entry = (pin.get("skills") or {}).get(safe) or {}
-    return {"name": safe, "dir": directory, "manifest": manifest,
-            "pin": entry}
+    return {"name": safe, "dir": directory, "manifest": manifest, "pin": entry}
 
 
 def list_skills(config_data: dict | None = None) -> list:
@@ -409,12 +405,14 @@ def list_skills(config_data: dict | None = None) -> list:
         manifest = read_manifest(os.path.join(directory, "manifest.yaml"))
         if manifest is None:
             continue
-        out.append({
-            "name": safe,
-            "manifest": manifest,
-            "pinned": safe in (pin.get("skills") or {}),
-            "pin": (pin.get("skills") or {}).get(safe) or {},
-        })
+        out.append(
+            {
+                "name": safe,
+                "manifest": manifest,
+                "pinned": safe in (pin.get("skills") or {}),
+                "pin": (pin.get("skills") or {}).get(safe) or {},
+            }
+        )
     return out
 
 

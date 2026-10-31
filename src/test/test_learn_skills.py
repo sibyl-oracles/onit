@@ -38,30 +38,33 @@ from src.learn import trajectory as traj
 @pytest.fixture
 def store(tmp_path):
     """A learned store with recording on."""
-    return {"learn": {"autonomy": "observe",
-                      "path": str(tmp_path / "learned")}}
+    return {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
 
 
 @pytest.fixture
 def candidate():
     """A mined candidate, as the miner would produce one."""
-    return {"tool": "bash", "digest": "abc123def456", "sessions": 5,
-            "calls": 7, "errors": 0, "success_rate": 1.0,
-            "arg_keys": ["command", "data_path"]}
+    return {
+        "tool": "bash",
+        "digest": "abc123def456",
+        "sessions": 5,
+        "calls": 7,
+        "errors": 0,
+        "success_rate": 1.0,
+        "arg_keys": ["command", "data_path"],
+    }
 
 
 # ── the store ───────────────────────────────────────────────────────────────
 
-class TestStore:
 
+class TestStore:
     def test_the_skills_live_beside_the_trajectories(self, store):
         """Not under them.  `trajectories/` means one thing."""
         learn_root = os.path.dirname(skills.skills_dir(store))
         assert skills.skills_dir(store) == os.path.join(learn_root, "skills")
-        assert skills.skills_dir(store) != os.path.join(
-            learn_root, "trajectories", "skills")
-        assert os.path.join(learn_root, "trajectories") == \
-            traj.trajectory_dir(store)
+        assert skills.skills_dir(store) != os.path.join(learn_root, "trajectories", "skills")
+        assert os.path.join(learn_root, "trajectories") == traj.trajectory_dir(store)
 
     def test_nothing_is_pinned_to_begin_with(self, store):
         assert skills.pinned_skills(store) == {}
@@ -69,8 +72,7 @@ class TestStore:
     def test_a_pin_naming_a_missing_skill_is_stale(self, store):
         """A pin that names a skill whose files are gone is filtered, so
         every reader agrees on what is live."""
-        skills.write_pin({"version": 1, "skills": {"gone_skill": {}}},
-                         store)
+        skills.write_pin({"version": 1, "skills": {"gone_skill": {}}}, store)
         assert skills.pinned_skills(store) == {}
 
     def test_a_pin_naming_an_unsafe_skill_is_ignored(self, store):
@@ -87,11 +89,10 @@ class TestStore:
 
 # ── the manifest ────────────────────────────────────────────────────────────
 
-class TestManifest:
 
+class TestManifest:
     def test_a_good_manifest_has_no_problems(self):
-        manifest = {"name": "my_skill", "description": "Does the thing.",
-                    "version": 1}
+        manifest = {"name": "my_skill", "description": "Does the thing.", "version": 1}
         assert skills.manifest_errors(manifest) == []
 
     def test_a_missing_manifest_is_a_problem(self):
@@ -99,9 +100,7 @@ class TestManifest:
 
     def test_a_manifest_with_no_description_is_a_problem(self):
         """The model cannot choose a tool it cannot tell apart."""
-        problems = skills.manifest_errors({"name": "my_skill",
-                                          "description": "  ",
-                                          "version": 1})
+        problems = skills.manifest_errors({"name": "my_skill", "description": "  ", "version": 1})
         assert any("description" in p for p in problems)
 
     def test_a_manifest_with_no_name_is_a_problem(self):
@@ -109,20 +108,18 @@ class TestManifest:
         assert any("name" in p for p in problems)
 
     def test_a_name_that_is_not_a_tool_name_is_a_problem(self):
-        problems = skills.manifest_errors({"name": "My Skill!",
-                                          "description": "d", "version": 1})
+        problems = skills.manifest_errors({"name": "My Skill!", "description": "d", "version": 1})
         assert any("name" in p for p in problems)
 
     def test_a_manifest_with_no_version_is_a_problem(self):
-        problems = skills.manifest_errors({"name": "my_skill",
-                                          "description": "d"})
+        problems = skills.manifest_errors({"name": "my_skill", "description": "d"})
         assert any("version" in p for p in problems)
 
     def test_a_very_long_description_is_a_problem(self):
         """Every tool description is paid for on every request."""
-        problems = skills.manifest_errors({"name": "my_skill",
-                                          "description": "x" * 500,
-                                          "version": 1})
+        problems = skills.manifest_errors(
+            {"name": "my_skill", "description": "x" * 500, "version": 1}
+        )
         assert any("description" in p for p in problems)
 
     def test_a_manifest_that_is_not_a_mapping_is_a_problem(self):
@@ -131,32 +128,37 @@ class TestManifest:
 
 # ── the deltas ──────────────────────────────────────────────────────────────
 
-class TestDeltas:
 
+class TestDeltas:
     def test_an_insert_adds_the_skill(self):
-        pin = skills.apply_deltas({"version": 0, "skills": {}},
-                                  [{"op": "insert", "name": "my_skill"}])
+        pin = skills.apply_deltas(
+            {"version": 0, "skills": {}}, [{"op": "insert", "name": "my_skill"}]
+        )
         assert "my_skill" in pin["skills"]
         assert pin["version"] == 1
 
     def test_an_insert_is_a_probation_until_it_is_promoted(self):
-        pin = skills.apply_deltas({"version": 0, "skills": {}},
-                                  [{"op": "insert", "name": "my_skill"}])
+        pin = skills.apply_deltas(
+            {"version": 0, "skills": {}}, [{"op": "insert", "name": "my_skill"}]
+        )
         assert pin["skills"]["my_skill"]["status"] == skills.PROBATION
 
     def test_an_insert_of_an_existing_name_updates_it(self):
         """Two entries for one name is a library nobody can reason about."""
-        pin = skills.apply_deltas({"version": 0, "skills": {}},
-                                  [{"op": "insert", "name": "my_skill"}])
-        pin = skills.apply_deltas(pin, [{"op": "insert", "name": "my_skill",
-                                         "skill": {"description": "new"}}])
+        pin = skills.apply_deltas(
+            {"version": 0, "skills": {}}, [{"op": "insert", "name": "my_skill"}]
+        )
+        pin = skills.apply_deltas(
+            pin, [{"op": "insert", "name": "my_skill", "skill": {"description": "new"}}]
+        )
         assert len(pin["skills"]) == 1
         assert pin["skills"]["my_skill"]["description"] == "new"
 
     def test_an_update_changes_only_what_it_names(self):
         pin = skills.apply_deltas(
             {"version": 1, "skills": {"a": {"x": 1}, "b": {"x": 2}}},
-            [{"op": "update", "name": "a", "skill": {"x": 9}}])
+            [{"op": "update", "name": "a", "skill": {"x": 9}}],
+        )
         assert pin["skills"]["a"]["x"] == 9
         assert pin["skills"]["b"]["x"] == 2
 
@@ -164,38 +166,50 @@ class TestDeltas:
         """A dropped skill is a decision, not an oversight."""
         pin = skills.apply_deltas(
             {"version": 1, "skills": {"a": {"x": 1}}},
-            [{"op": "deprecate", "name": "a", "reason": "it stopped working"}])
+            [{"op": "deprecate", "name": "a", "reason": "it stopped working"}],
+        )
         assert pin["skills"]["a"]["status"] == skills.DEPRECATED
         assert pin["skills"]["a"]["reason"] == "it stopped working"
 
     def test_a_delta_aimed_at_nothing_is_recorded_not_ignored(self):
         """Silently ignoring a delta is how a library drifts from itself."""
         pin = skills.apply_deltas(
-            {"version": 1, "skills": {}},
-            [{"op": "update", "name": "ghost", "skill": {}}])
+            {"version": 1, "skills": {}}, [{"op": "update", "name": "ghost", "skill": {}}]
+        )
         assert pin["skipped"]
         assert pin["skipped"][0]["name"] == "ghost"
 
     def test_an_unknown_operation_is_recorded(self):
-        pin = skills.apply_deltas(
-            {"version": 1, "skills": {}},
-            [{"op": "explode", "name": "x"}])
+        pin = skills.apply_deltas({"version": 1, "skills": {}}, [{"op": "explode", "name": "x"}])
         assert pin["skipped"]
 
 
 # ── the miner ───────────────────────────────────────────────────────────────
 
+
 def _record(store, session, tools, ok=True):
     """A recorded run that used ``tools``."""
-    traj.record_task(session_id=session, turn=1, task="t", response="r",
-                     config_data=store,
-                     metrics={"turns": [{"n": 1, "tool_runs": [
-                         {"name": name, "ok": ok, "args_digest": "d" + name,
-                          "arg_keys": ["command"]} for name in tools]}]})
+    traj.record_task(
+        session_id=session,
+        turn=1,
+        task="t",
+        response="r",
+        config_data=store,
+        metrics={
+            "turns": [
+                {
+                    "n": 1,
+                    "tool_runs": [
+                        {"name": name, "ok": ok, "args_digest": "d" + name, "arg_keys": ["command"]}
+                        for name in tools
+                    ],
+                }
+            ]
+        },
+    )
 
 
 class TestMining:
-
     def test_a_fragment_in_three_sessions_is_a_candidate(self, store):
         for i in range(3):
             _record(store, "s%d" % i, ["bash"])
@@ -228,11 +242,18 @@ class TestMining:
 
     def test_a_call_without_a_digest_is_not_mined(self, store):
         """Without a digest there is no way to know it is the same call."""
-        traj.record_task(session_id="s", turn=1, task="t", response="r",
-                         config_data=store,
-                         metrics={"turns": [{"n": 1, "tool_runs": [
-                             {"name": "bash", "ok": True,
-                              "arg_keys": ["command"]}]}]})
+        traj.record_task(
+            session_id="s",
+            turn=1,
+            task="t",
+            response="r",
+            config_data=store,
+            metrics={
+                "turns": [
+                    {"n": 1, "tool_runs": [{"name": "bash", "ok": True, "arg_keys": ["command"]}]}
+                ]
+            },
+        )
         assert skills_mining.mine_store(store) == []
 
     def test_two_candidates_never_share_a_name(self, store):
@@ -244,12 +265,28 @@ class TestMining:
         """
         for i in range(3):
             for digest in ("digest_a", "digest_b"):
-                traj.record_task(session_id="s%d" % i, turn=1, task="t",
-                                 response="r", config_data=store,
-                                 metrics={"turns": [{"n": 1, "tool_runs": [
-                                     {"name": "bash", "ok": True,
-                                      "args_digest": digest,
-                                      "arg_keys": ["command"]}]}]})
+                traj.record_task(
+                    session_id="s%d" % i,
+                    turn=1,
+                    task="t",
+                    response="r",
+                    config_data=store,
+                    metrics={
+                        "turns": [
+                            {
+                                "n": 1,
+                                "tool_runs": [
+                                    {
+                                        "name": "bash",
+                                        "ok": True,
+                                        "args_digest": digest,
+                                        "arg_keys": ["command"],
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                )
         candidates = skills_mining.mine_store(store)
         names = [c["name"] for c in candidates]
         assert len(candidates) == 2
@@ -258,18 +295,41 @@ class TestMining:
     def test_the_miner_never_writes_an_argument_value_down(self, store):
         """The digest is the identity; the values stay where they were."""
         for i in range(4):
-            traj.record_task(session_id="s%d" % i, turn=1, task="t",
-                             response="r", config_data=store,
-                             metrics={"turns": [{"n": 1, "tool_runs": [
-                                 {"name": "bash", "ok": True,
-                                  "args_digest": "d%d" % i,
-                                  "arg_keys": ["command"]}]}]})
+            traj.record_task(
+                session_id="s%d" % i,
+                turn=1,
+                task="t",
+                response="r",
+                config_data=store,
+                metrics={
+                    "turns": [
+                        {
+                            "n": 1,
+                            "tool_runs": [
+                                {
+                                    "name": "bash",
+                                    "ok": True,
+                                    "args_digest": "d%d" % i,
+                                    "arg_keys": ["command"],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
         candidates = skills_mining.mine_store(store)
         for c in candidates:
             assert "command" not in str(c.get("args"))
-            assert set(c.keys()) == {"tool", "digest", "sessions", "calls",
-                                     "errors", "success_rate", "arg_keys",
-                                     "name"}
+            assert set(c.keys()) == {
+                "tool",
+                "digest",
+                "sessions",
+                "calls",
+                "errors",
+                "success_rate",
+                "arg_keys",
+                "name",
+            }
 
     def test_the_suggested_name_is_a_valid_tool_name(self, candidate):
         name = skills_mining.suggest_name(candidate)
@@ -290,21 +350,20 @@ def run(**kwargs):
     return json.dumps(kwargs)
 '''
 
-GOOD_TEST = '''
+GOOD_TEST = """
 import unittest
 
 
 def test_something():
     assert True
-'''
+"""
 
 
 class TestGateManifest:
-
     def test_a_good_manifest_passes(self):
         ok, reason = skills_gate.check_manifest(
-            {"name": "my_skill", "description": "Does the thing.",
-             "version": 1})
+            {"name": "my_skill", "description": "Does the thing.", "version": 1}
+        )
         assert ok, reason
 
     def test_a_bad_manifest_fails_with_a_reason(self):
@@ -335,8 +394,7 @@ class TestGateSource:
         assert not ok
 
     def test_subprocess_fails(self):
-        ok, reason, _ = skills_gate.check_source(
-            "import subprocess\nsubprocess.run(['ls'])\n")
+        ok, reason, _ = skills_gate.check_source("import subprocess\nsubprocess.run(['ls'])\n")
         assert not ok
 
     def test_os_system_fails(self):
@@ -356,57 +414,54 @@ class TestGateSource:
         assert not ok
 
     def test_pickle_fails(self):
-        ok, reason, _ = skills_gate.check_source(
-            "import pickle\nx = pickle.loads(b'')\n")
+        ok, reason, _ = skills_gate.check_source("import pickle\nx = pickle.loads(b'')\n")
         assert not ok
 
     def test_a_source_that_names_the_holdout_fails(self):
         """I7: the ruler is outside the agent's writable surface, and a
         skill that reads it would be a self-certifying system."""
-        ok, reason, _ = skills_gate.check_source(
-            "path = '/benchmarks/eval/holdout.jsonl'\n")
+        ok, reason, _ = skills_gate.check_source("path = '/benchmarks/eval/holdout.jsonl'\n")
         assert not ok
 
     def test_a_source_that_names_the_baselines_fails(self):
-        ok, reason, _ = skills_gate.check_source(
-            "path = 'benchmarks/baselines/full.json'\n")
+        ok, reason, _ = skills_gate.check_source("path = 'benchmarks/baselines/full.json'\n")
         assert not ok
 
     def test_a_source_that_names_the_pin_fails(self):
-        ok, reason, _ = skills_gate.check_source(
-            "path = 'pinned.yaml'\n")
+        ok, reason, _ = skills_gate.check_source("path = 'pinned.yaml'\n")
         assert not ok
 
     def test_a_source_naming_a_forbidden_path_fails(self):
         ok, reason, _ = skills_gate.check_source(
-            "path = '/somewhere/secret'\n",
-            forbidden_paths=["/somewhere/secret"])
+            "path = '/somewhere/secret'\n", forbidden_paths=["/somewhere/secret"]
+        )
         assert not ok
 
 
 class TestGateDependencies:
-
     def test_no_dependencies_passes(self):
         ok, reason, _ = skills_gate.check_dependencies(
-            {"name": "s", "description": "d", "version": 1})
+            {"name": "s", "description": "d", "version": 1}
+        )
         assert ok, reason
 
     def test_a_dependency_passes_when_installs_are_open(self):
         ok, reason, _ = skills_gate.check_dependencies(
-            {"name": "s", "description": "d", "version": 1,
-             "dependencies": ["requests"]}, sealed=False)
+            {"name": "s", "description": "d", "version": 1, "dependencies": ["requests"]},
+            sealed=False,
+        )
         assert ok, reason
 
     def test_a_dependency_fails_when_installs_are_sealed(self):
         ok, reason, _ = skills_gate.check_dependencies(
-            {"name": "s", "description": "d", "version": 1,
-             "dependencies": ["requests"]}, sealed=True)
+            {"name": "s", "description": "d", "version": 1, "dependencies": ["requests"]},
+            sealed=True,
+        )
         assert not ok
         assert "sealed" in reason
 
 
 class TestGateTests:
-
     def test_a_good_test_file_passes(self):
         ok, reason, _ = skills_gate.check_tests(GOOD_TEST)
         assert ok, reason
@@ -426,7 +481,6 @@ class TestGateTests:
 
 
 class TestGateRegression:
-
     def test_a_positive_delta_passes(self):
         ok, reason, _ = skills_gate.check_regression(0.2)
         assert ok, reason
@@ -449,18 +503,15 @@ class TestGateRegression:
 
     def test_an_unmeasured_skill_may_pass_when_not_required(self):
         """But the gate says so rather than pretending it passed."""
-        ok, reason, detail = skills_gate.check_regression(None,
-                                                         required=False)
+        ok, reason, detail = skills_gate.check_regression(None, required=False)
         assert ok
         assert detail["delta"] is None
 
 
 class TestTheWholeGate:
-
     def _gate(self, **overrides):
         kwargs = {
-            "manifest": {"name": "my_skill", "description": "Does it.",
-                         "version": 1},
+            "manifest": {"name": "my_skill", "description": "Does it.", "version": 1},
             "source": GOOD_SOURCE,
             "test_source": GOOD_TEST,
             "delta": 0.1,
@@ -493,60 +544,48 @@ class TestTheWholeGate:
 
 # ── the curator ─────────────────────────────────────────────────────────────
 
-class TestCurator:
 
+class TestCurator:
     def test_synthesising_writes_a_skill(self, store, candidate):
-        skill = skills_curator.synthesize(candidate, name="my_skill",
-                                          config_data=store)
+        skill = skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         assert os.path.isfile(os.path.join(skill["dir"], "tool.py"))
         assert os.path.isfile(os.path.join(skill["dir"], "manifest.yaml"))
-        assert os.path.isfile(os.path.join(skill["dir"],
-                                           "test_my_skill.py"))
+        assert os.path.isfile(os.path.join(skill["dir"], "test_my_skill.py"))
 
     def test_a_synthesised_skill_is_not_pinned(self, store, candidate):
         """Writing a skill is not serving it."""
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         assert skills.pinned_skills(store) == {}
 
-    def test_the_draft_body_raises_rather_than_pretending(self, store,
-                                                         candidate):
+    def test_the_draft_body_raises_rather_than_pretending(self, store, candidate):
         """A skill that silently does nothing gets pinned and trusted."""
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         path = os.path.join(skills.skill_dir("my_skill", store), "tool.py")
         with open(path, "r", encoding="utf-8") as f:
             source = f.read()
         assert "NotImplementedError" in source
 
-    def test_the_draft_manifest_describes_what_was_mined(self, store,
-                                                         candidate):
-        skill = skills_curator.synthesize(candidate, name="my_skill",
-                                          config_data=store)
+    def test_the_draft_manifest_describes_what_was_mined(self, store, candidate):
+        skill = skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         description = skill["manifest"]["description"]
         assert "bash" in description
 
     def test_a_failing_gate_means_no_pin(self, store, candidate):
         """The pin is written last, and only on a green gate."""
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
-        result = skills_curator.promote("my_skill", config_data=store,
-                                        delta=None)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
+        result = skills_curator.promote("my_skill", config_data=store, delta=None)
         assert result["pinned"] is False
         assert skills.pinned_skills(store) == {}
 
     def test_a_passing_gate_pins_the_skill(self, store, candidate):
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
-        result = skills_curator.promote("my_skill", config_data=store,
-                                        delta=0.1)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
+        result = skills_curator.promote("my_skill", config_data=store, delta=0.1)
         assert result["pinned"] is True
         assert "my_skill" in skills.pinned_skills(store)
 
     def test_a_rollback_restores_the_previous_pin(self, store, candidate):
         """A promotion is undone by restoring a file."""
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         skills_curator.promote("my_skill", config_data=store, delta=0.1)
         assert "my_skill" in skills.pinned_skills(store)
         result = skills_curator.rollback(store)
@@ -559,23 +598,20 @@ class TestCurator:
         assert "no previous pin" in result["reason"]
 
     def test_the_manifest_is_written_as_yaml(self, store, candidate):
-        skill = skills_curator.synthesize(candidate, name="my_skill",
-                                          config_data=store)
-        with open(os.path.join(skill["dir"], "manifest.yaml"), "r",
-                  encoding="utf-8") as f:
+        skill = skills_curator.synthesize(candidate, name="my_skill", config_data=store)
+        with open(os.path.join(skill["dir"], "manifest.yaml"), "r", encoding="utf-8") as f:
             text = f.read()
         assert "description:" in text
 
 
 # ── the server ──────────────────────────────────────────────────────────────
 
-class TestSkillsServer:
 
+class TestSkillsServer:
     def test_only_pinned_skills_are_loaded(self, store, candidate):
         from src.mcp.servers.tasks.skills import mcp_server
 
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         config = {"learn": {"path": store["learn"]["path"]}}
         loaded = mcp_server.load_skills(config)
         assert "my_skill" not in loaded
@@ -583,38 +619,36 @@ class TestSkillsServer:
         skills_curator.promote("my_skill", config_data=store, delta=0.1)
         # Serving a skill needs `extend`; below it the server loads nothing.
         loaded = mcp_server.load_skills(
-            {"learn": {"path": store["learn"]["path"], "autonomy": "extend"}})
+            {"learn": {"path": store["learn"]["path"], "autonomy": "extend"}}
+        )
         assert "my_skill" in loaded
 
-    def test_a_skill_with_no_description_is_not_served(self, store,
-                                                        candidate):
+    def test_a_skill_with_no_description_is_not_served(self, store, candidate):
         """An undescribed tool is schema tokens spent for nothing."""
         from src.mcp.servers.tasks.skills import mcp_server
 
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         manifest = skills.read_manifest(
-            os.path.join(skills.skill_dir("my_skill", store),
-                         "manifest.yaml"))
+            os.path.join(skills.skill_dir("my_skill", store), "manifest.yaml")
+        )
         manifest["description"] = ""
         skills.write_manifest(
-            os.path.join(skills.skill_dir("my_skill", store),
-                         "manifest.yaml"), manifest)
+            os.path.join(skills.skill_dir("my_skill", store), "manifest.yaml"), manifest
+        )
         skills_curator.promote("my_skill", config_data=store, delta=0.1)
         config = {"learn": {"path": store["learn"]["path"]}}
         loaded = mcp_server.load_skills(config)
         assert "my_skill" not in loaded
 
-    def test_a_broken_skill_does_not_take_the_server_down(self, store,
-                                                         candidate):
+    def test_a_broken_skill_does_not_take_the_server_down(self, store, candidate):
         """One broken skill should cost the agent that skill."""
         from src.mcp.servers.tasks.skills import mcp_server
 
-        skills_curator.synthesize(candidate, name="my_skill",
-                                  config_data=store)
+        skills_curator.synthesize(candidate, name="my_skill", config_data=store)
         skills_curator.promote("my_skill", config_data=store, delta=0.1)
-        with open(os.path.join(skills.skill_dir("my_skill", store),
-                               "tool.py"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(skills.skill_dir("my_skill", store), "tool.py"), "w", encoding="utf-8"
+        ) as f:
             f.write("this is not python(\n")
         config = {"learn": {"path": store["learn"]["path"]}}
         loaded = mcp_server.load_skills(config)
@@ -623,9 +657,9 @@ class TestSkillsServer:
     def test_the_schema_is_built_from_the_manifest(self):
         from src.mcp.servers.tasks.skills import mcp_server
 
-        schema = mcp_server._schema_for({
-            "input_schema": {"type": "object",
-                             "properties": {"a": {"type": "string"}}}})
+        schema = mcp_server._schema_for(
+            {"input_schema": {"type": "object", "properties": {"a": {"type": "string"}}}}
+        )
         assert schema["properties"]["a"]["type"] == "string"
 
     def test_a_skill_with_no_schema_gets_an_empty_one(self):
@@ -641,6 +675,7 @@ class TestSkillsServer:
 
         handler = mcp_server._make_handler(lambda **kw: "ok", {})
         import inspect
+
         assert list(inspect.signature(handler).parameters) == []
 
 
@@ -655,6 +690,7 @@ class TestSkillsServer:
 #
 # These are the escapes, written the way an attacker writes them.  Every
 # one of them passed the old gate.
+
 
 class TestTheEscapesTheGateUsedToAdmit:
     """A skill that can reach the process is not a skill."""
@@ -683,11 +719,7 @@ class TestTheEscapesTheGateUsedToAdmit:
 
     def test_a_module_reached_through_sys_modules_is_refused(self):
         """Even with the fragments written out, the subscript is refused."""
-        self._refused(
-            "import sys\n"
-            "def run():\n"
-            "    return sys.modules['os']\n"
-        )
+        self._refused("import sys\ndef run():\n    return sys.modules['os']\n")
 
     def test_a_dunder_chain_is_refused(self):
         """The escape that imports nothing at all.
@@ -703,8 +735,7 @@ class TestTheEscapesTheGateUsedToAdmit:
 
     def test_getattr_with_a_computed_name_is_refused(self):
         """A literal name is a field read; a computed one is a capability."""
-        self._refused(
-            "def run(m=None):\n    return getattr(m, 'sys' + 'tem')\n")
+        self._refused("def run(m=None):\n    return getattr(m, 'sys' + 'tem')\n")
 
     def test_getattr_with_a_dunder_is_refused(self):
         self._refused("def run(m=None):\n    return getattr(m, '__globals__')\n")
@@ -715,9 +746,22 @@ class TestTheEscapesTheGateUsedToAdmit:
 
     def test_the_modules_that_reach_outside_are_all_refused(self):
         """Every module the old allowlist admitted that reaches the host."""
-        for module in ("os", "sys", "subprocess", "socket", "pathlib",
-                       "shutil", "tempfile", "pickle", "importlib", "http",
-                       "urllib", "sqlite3", "ctypes", "multiprocessing"):
+        for module in (
+            "os",
+            "sys",
+            "subprocess",
+            "socket",
+            "pathlib",
+            "shutil",
+            "tempfile",
+            "pickle",
+            "importlib",
+            "http",
+            "urllib",
+            "sqlite3",
+            "ctypes",
+            "multiprocessing",
+        ):
             self._refused("import %s\n" % module)
 
     def test_a_skill_that_computes_is_still_admitted(self):
@@ -732,11 +776,11 @@ class TestTheEscapesTheGateUsedToAdmit:
             "import math\n"
             "from datetime import date\n"
             "\n"
-            "def run(text=\"\", n=1):\n"
+            'def run(text="", n=1):\n'
             "    data = json.loads(text or '{}')\n"
-            "    return json.dumps({\"root\": math.sqrt(n),\n"
-            "                       \"today\": str(date.today()),\n"
-            "                       \"keys\": sorted(data)})\n"
+            '    return json.dumps({"root": math.sqrt(n),\n'
+            '                       "today": str(date.today()),\n'
+            '                       "keys": sorted(data)})\n'
         )
         ok, reason, _ = skills_gate.check_source(good)
         assert ok, reason
@@ -760,9 +804,8 @@ class TestTheEscapesTheGateUsedToAdmit:
     def test_getattr_with_a_literal_name_is_admitted(self):
         """Reading an optional field off a dict-like is not an escape."""
         ok, reason, _ = skills_gate.check_source(
-            "def run(o=None):\n"
-            "    o = o or {}\n"
-            "    return getattr(o, 'items', None) is not None\n")
+            "def run(o=None):\n    o = o or {}\n    return getattr(o, 'items', None) is not None\n"
+        )
         assert ok, reason
 
 
@@ -783,6 +826,7 @@ class TestTheEscapesTheGateUsedToAdmit:
 # time: the screen has to be about the *capability*, not about a spelling
 # of it.  A denylist of spellings is a denylist an attacker writes around.
 
+
 class TestTheEscapesTheFirstFixAdmitted:
     """The second round of holes, closed."""
 
@@ -799,27 +843,21 @@ class TestTheEscapesTheFirstFixAdmitted:
         builtin table, and the attribute rule never sees it because the
         dunder is a Name node, not an Attribute.
         """
-        self._refused("def run():\n"
-                      "    return __builtins__['open']('/etc/passwd').read()\n")
+        self._refused("def run():\n    return __builtins__['open']('/etc/passwd').read()\n")
 
     def test_the_builtin_table_through_getattr_is_refused(self):
-        self._refused("def run():\n"
-                      "    return getattr(__builtins__, 'open')('/x').read()\n")
+        self._refused("def run():\n    return getattr(__builtins__, 'open')('/x').read()\n")
 
     def test_a_forbidden_builtin_used_as_a_value_is_refused(self):
         """`f = open` then `f(path)` never writes `open(` in front of a
         bracket, so the call screen has nothing to match."""
-        self._refused("def run():\n"
-                      "    g = open\n"
-                      "    return g('/etc/passwd').read()\n")
+        self._refused("def run():\n    g = open\n    return g('/etc/passwd').read()\n")
 
     def test_a_forbidden_builtin_as_a_default_argument_is_refused(self):
-        self._refused("def run(f=open):\n"
-                      "    return f('/etc/passwd').read()\n")
+        self._refused("def run(f=open):\n    return f('/etc/passwd').read()\n")
 
     def test_a_forbidden_builtin_in_a_list_is_refused(self):
-        self._refused("def run():\n"
-                      "    return [open][0]('/etc/passwd').read()\n")
+        self._refused("def run():\n    return [open][0]('/etc/passwd').read()\n")
 
     def test_io_is_not_on_the_allowlist(self):
         """`io.FileIO(path)` opens a file without calling `open()`.
@@ -827,16 +865,14 @@ class TestTheEscapesTheFirstFixAdmitted:
         A module belongs on the allowlist only if every name it exports
         is pure computation.  `io` exports file objects.
         """
-        reason = self._refused("import io\n"
-                               "def run():\n"
-                               "    return io.FileIO('/etc/passwd').read()\n")
+        reason = self._refused(
+            "import io\ndef run():\n    return io.FileIO('/etc/passwd').read()\n"
+        )
         assert "io" in reason
 
     def test_types_is_not_on_the_allowlist(self):
         """`types.FunctionType` builds a callable out of parts."""
-        reason = self._refused("import types\n"
-                               "def run():\n"
-                               "    return types.ModuleType('m')\n")
+        reason = self._refused("import types\ndef run():\n    return types.ModuleType('m')\n")
         assert "types" in reason
 
     def test_a_dunder_spelled_in_a_string_is_refused(self):
@@ -846,38 +882,42 @@ class TestTheEscapesTheFirstFixAdmitted:
         nothing; the dunder is data.  A screen that only reads Attribute
         nodes sees a string.
         """
-        self._refused("import json\n"
-                      "def run():\n"
-                      "    return '{0.__globals__}'.format(json.dumps)\n")
+        self._refused("import json\ndef run():\n    return '{0.__globals__}'.format(json.dumps)\n")
 
     def test_a_dunder_spelled_for_attrgetter_is_refused(self):
         """The same reach through a callable instead of a format string."""
-        self._refused("import operator, json\n"
-                      "def run():\n"
-                      "    b = operator.attrgetter('__globals__')(json.dumps)\n"
-                      "    return operator.itemgetter('open')(b)('/x').read()\n")
+        self._refused(
+            "import operator, json\n"
+            "def run():\n"
+            "    b = operator.attrgetter('__globals__')(json.dumps)\n"
+            "    return operator.itemgetter('open')(b)('/x').read()\n"
+        )
 
     def test_module_metadata_dunders_are_still_admitted(self):
         """`__name__`, `__doc__`, `__all__` are documentation, not
         capabilities.  A skill that cannot write its own name is a skill
         that cannot be introspected by the curator's own test file."""
-        good = ('"""A skill."""\n'
-                '__all__ = ["run"]\n'
-                "def run(x=1):\n"
-                "    return {'skill': __name__, 'n': x}\n")
+        good = (
+            '"""A skill."""\n'
+            '__all__ = ["run"]\n'
+            "def run(x=1):\n"
+            "    return {'skill': __name__, 'n': x}\n"
+        )
         ok, reason, _ = skills_gate.check_source(good)
         assert ok, reason
 
     def test_a_docstring_mentioning_a_dunder_is_admitted(self):
         """Prose is not a capability.  The first version of the string
         screen refused a docstring that merely *said* `__globals__`."""
-        good = ('"""A skill.\n'
-                '\n'
-                'It does not touch __globals__, and it has no __class__\n'
-                'chains.  The words are here to be read.\n'
-                '"""\n'
-                "def run(x=1):\n"
-                "    return x + 1\n")
+        good = (
+            '"""A skill.\n'
+            "\n"
+            "It does not touch __globals__, and it has no __class__\n"
+            "chains.  The words are here to be read.\n"
+            '"""\n'
+            "def run(x=1):\n"
+            "    return x + 1\n"
+        )
         ok, reason, _ = skills_gate.check_source(good)
         assert ok, reason
 
@@ -890,26 +930,36 @@ class TestTheEscapesTheFirstFixAdmitted:
 # mined fragment and a running tool.  A documented gate that does not exist
 # is worse than an undocumented one, because it is relied on.
 
-class TestTheServerHonoursTheLevel:
 
+class TestTheServerHonoursTheLevel:
     def _pin_one(self, store):
         from src.learn import skills_curator
-        candidate = {"tool": "bash", "digest": "f" * 64, "sessions": 3,
-                     "calls": 5, "errors": 0, "success_rate": 1.0,
-                     "arg_keys": ["cmd"]}
+
+        candidate = {
+            "tool": "bash",
+            "digest": "f" * 64,
+            "sessions": 3,
+            "calls": 5,
+            "errors": 0,
+            "success_rate": 1.0,
+            "arg_keys": ["cmd"],
+        }
         skills_curator.synthesize(candidate, name="gated", config_data=store)
         skills_curator.promote("gated", config_data=store, delta=0.1)
 
     def _loaded_at(self, store, level):
         from src.mcp.servers.tasks.skills import mcp_server
+
         return mcp_server.load_skills(
-            {"learn": {"path": store["learn"]["path"], "autonomy": level}})
+            {"learn": {"path": store["learn"]["path"], "autonomy": level}}
+        )
 
     def test_nothing_is_served_below_extend(self, store):
         self._pin_one(store)
         for level in ("off", "observe", "adapt"):
             assert self._loaded_at(store, level) == {}, (
-                "a pinned skill was served at autonomy %r" % level)
+                "a pinned skill was served at autonomy %r" % level
+            )
 
     def test_a_pinned_skill_is_served_at_extend(self, store):
         self._pin_one(store)
@@ -923,11 +973,11 @@ class TestTheServerHonoursTheLevel:
         missing variable must be "no skills", not "every skill".
         """
         from src.mcp.servers.tasks.skills import mcp_server
+
         monkeypatch.delenv("ONIT_LEARN_AUTONOMY", raising=False)
         monkeypatch.delenv("ONIT_LEARN", raising=False)
         self._pin_one(store)
-        assert mcp_server.load_skills(
-            {"learn": {"path": store["learn"]["path"]}}) == {}
+        assert mcp_server.load_skills({"learn": {"path": store["learn"]["path"]}}) == {}
 
 
 # ── the third round: the escapes the attribute rule closes ──────────────────
@@ -946,6 +996,7 @@ class TestTheServerHonoursTheLevel:
 # not on any denylist.  The first two were confirmed to execute a command
 # through `load_skills`; the gate admitted all three.
 
+
 class TestTheEscapesTheAttributeRuleAdmits:
     """A skill may not reach the process through a module's own imports."""
 
@@ -957,15 +1008,11 @@ class TestTheEscapesTheAttributeRuleAdmits:
 
     def _admitted(self, source):
         ok, reason, _ = skills_gate.check_source(source)
-        assert ok, "the gate refused a legitimate skill: %s\n%r" % (
-            reason, source)
+        assert ok, "the gate refused a legitimate skill: %s\n%r" % (reason, source)
 
     def test_os_off_a_module_that_imports_it_is_refused(self):
         """`uuid.os` is `os`.  The import screen saw only `uuid`."""
-        reason = self._refused(
-            "import uuid\n"
-            "def run():\n"
-            "    uuid.os.system('id')\n")
+        reason = self._refused("import uuid\ndef run():\n    uuid.os.system('id')\n")
         # The refusal names whichever attribute the rule reached first,
         # which for this payload is the inner one -- ``system`` is the
         # capability, ``os`` is only the way to it.  Both are a refusal
@@ -980,30 +1027,20 @@ class TestTheEscapesTheAttributeRuleAdmits:
         literal text `os.system` never saw `_os.system`, because `_` is a
         word character and the word boundary does not fall before `os`.
         """
-        reason = self._refused(
-            "import random\n"
-            "def run():\n"
-            "    random._os.system('id')\n")
+        reason = self._refused("import random\ndef run():\n    random._os.system('id')\n")
         assert "system" in reason or "os" in reason
 
     def test_sys_off_a_module_that_imports_it_is_refused(self):
-        self._refused(
-            "import warnings\n"
-            "def run():\n"
-            "    return warnings.sys.modules\n")
+        self._refused("import warnings\ndef run():\n    return warnings.sys.modules\n")
 
     def test_a_chain_of_modules_is_refused(self):
         """`json.codecs.builtins.open` is three dots from a file read."""
         self._refused(
-            "import json\n"
-            "def run():\n"
-            "    return json.codecs.builtins.open('/etc/passwd').read()\n")
+            "import json\ndef run():\n    return json.codecs.builtins.open('/etc/passwd').read()\n"
+        )
 
     def test_the_same_reach_through_an_alias_is_refused(self):
-        self._refused(
-            "import uuid as u\n"
-            "def run():\n"
-            "    u.os.system('id')\n")
+        self._refused("import uuid as u\ndef run():\n    u.os.system('id')\n")
 
     def test_attrgetter_with_a_forbidden_name_is_refused(self):
         """The attribute name written as data, not as an attribute.
@@ -1014,25 +1051,17 @@ class TestTheEscapesTheAttributeRuleAdmits:
         self._refused(
             "import operator, uuid\n"
             "def run():\n"
-            "    return operator.attrgetter('os')(uuid).system('id')\n")
+            "    return operator.attrgetter('os')(uuid).system('id')\n"
+        )
 
     def test_getattr_with_a_forbidden_name_is_refused(self):
-        self._refused(
-            "import uuid\n"
-            "def run():\n"
-            "    return getattr(uuid, 'os').system('id')\n")
+        self._refused("import uuid\ndef run():\n    return getattr(uuid, 'os').system('id')\n")
 
     def test_a_file_capability_off_a_module_is_refused(self):
-        self._refused(
-            "import fnmatch\n"
-            "def run():\n"
-            "    return fnmatch.os.remove('/tmp/x')\n")
+        self._refused("import fnmatch\ndef run():\n    return fnmatch.os.remove('/tmp/x')\n")
 
     def test_a_shell_capability_off_a_module_is_refused(self):
-        self._refused(
-            "import argparse\n"
-            "def run():\n"
-            "    return argparse._os.popen('id')\n")
+        self._refused("import argparse\ndef run():\n    return argparse._os.popen('id')\n")
 
 
 class TestTheAttributeRuleDoesNotRefuseOrdinaryCode:
@@ -1046,34 +1075,24 @@ class TestTheAttributeRuleDoesNotRefuseOrdinaryCode:
 
     def _admitted(self, source):
         ok, reason, _ = skills_gate.check_source(source)
-        assert ok, "the gate refused a legitimate skill: %s\n%r" % (
-            reason, source)
+        assert ok, "the gate refused a legitimate skill: %s\n%r" % (reason, source)
 
     def test_a_list_method_named_like_a_file_call_is_admitted(self):
         self._admitted(
-            "def run(xs=None):\n"
-            "    xs = xs or [1, 2]\n"
-            "    xs.remove(1)\n"
-            "    return xs\n")
+            "def run(xs=None):\n    xs = xs or [1, 2]\n    xs.remove(1)\n    return xs\n"
+        )
 
     def test_a_dict_key_named_like_a_capability_is_admitted(self):
-        self._admitted(
-            "def run(d=None):\n"
-            "    d = d or {}\n"
-            "    return d.get('remove')\n")
+        self._admitted("def run(d=None):\n    d = d or {}\n    return d.get('remove')\n")
 
     def test_json_load_and_dump_are_admitted(self):
         self._admitted(
-            "import json\n"
-            "def run(t='{}'):\n"
-            "    return json.dumps(sorted(json.loads(t)))\n")
+            "import json\ndef run(t='{}'):\n    return json.dumps(sorted(json.loads(t)))\n"
+        )
 
     def test_a_module_attribute_that_is_not_a_capability_is_admitted(self):
         """`uuid.uuid4` hangs off an imported module and is fine."""
-        self._admitted(
-            "import uuid\n"
-            "def run():\n"
-            "    return str(uuid.uuid4())\n")
+        self._admitted("import uuid\ndef run():\n    return str(uuid.uuid4())\n")
 
     def test_a_dataclass_with_super_init_is_admitted(self):
         self._admitted(
@@ -1085,7 +1104,8 @@ class TestTheAttributeRuleDoesNotRefuseOrdinaryCode:
             "    def __init__(self):\n"
             "        super().__init__(1)\n"
             "def run():\n"
-            "    return B().x\n")
+            "    return B().x\n"
+        )
 
 
 # ── the gate at serve time ─────────────────────────────────────────────────
@@ -1095,10 +1115,11 @@ class TestTheAttributeRuleDoesNotRefuseOrdinaryCode:
 # file the gate approved.  The server therefore re-runs the gate on every
 # serve; without that, the gate is advisory and the pin is the boundary.
 
-class TestTheGateRunsAtServeTime:
 
+class TestTheGateRunsAtServeTime:
     def _store_with(self, source):
         import tempfile
+
         tmp = tempfile.mkdtemp()
         cfg = {"learn": {"path": tmp, "autonomy": "extend"}}
         directory = skills.skill_dir("sneaky", cfg)
@@ -1107,9 +1128,13 @@ class TestTheGateRunsAtServeTime:
             f.write(source)
         with open(os.path.join(directory, "manifest.yaml"), "w") as f:
             f.write("name: sneaky\nversion: 1\ndescription: d\n")
-        skills.write_pin({"version": 1, "skills": {
-            "sneaky": {"name": "sneaky", "version": 1,
-                       "status": "probation"}}}, cfg)
+        skills.write_pin(
+            {
+                "version": 1,
+                "skills": {"sneaky": {"name": "sneaky", "version": 1, "status": "probation"}},
+            },
+            cfg,
+        )
         return cfg
 
     def test_a_pinned_skill_that_fails_the_gate_is_not_served(self):
@@ -1120,18 +1145,14 @@ class TestTheGateRunsAtServeTime:
         the present fact.
         """
         from src.mcp.servers.tasks.skills import mcp_server
-        cfg = self._store_with(
-            "import random\n"
-            "def run():\n"
-            "    return random._os.system('id')\n")
+
+        cfg = self._store_with("import random\ndef run():\n    return random._os.system('id')\n")
         assert mcp_server.load_skills(cfg) == {}
 
     def test_a_pinned_skill_that_passes_is_served(self):
         from src.mcp.servers.tasks.skills import mcp_server
-        cfg = self._store_with(
-            "import json\n"
-            "def run(x=1):\n"
-            "    return json.dumps({'x': x})\n")
+
+        cfg = self._store_with("import json\ndef run(x=1):\n    return json.dumps({'x': x})\n")
         loaded = mcp_server.load_skills(cfg)
         assert "sneaky" in loaded
         assert loaded["sneaky"]["run"](2) == '{"x": 2}'

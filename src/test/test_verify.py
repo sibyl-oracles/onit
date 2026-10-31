@@ -12,44 +12,60 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.verify import (CORRECTION_PREFIX, NOTE_PREFIX, append_note,
-                                  build_revision_messages, build_verdict_messages,
-                                  claim_tokens, covered_by_trusted_sources,
-                                  evidence_digest, is_trusted_url,
-                                  needs_verification, parse_verdict,
-                                  revision_note, trusted_evidence, verify_answer)
+from model.serving.verify import (
+    CORRECTION_PREFIX,
+    NOTE_PREFIX,
+    append_note,
+    build_revision_messages,
+    build_verdict_messages,
+    claim_tokens,
+    covered_by_trusted_sources,
+    evidence_digest,
+    is_trusted_url,
+    needs_verification,
+    parse_verdict,
+    revision_note,
+    trusted_evidence,
+    verify_answer,
+)
 from model.serving.chat import _NO_TEMPLATE_KWARGS, chat, reset_endpoint_caches
 
 
 # ── needs_verification ──────────────────────────────────────────────────────
 
+
 class TestNeedsVerification:
     def test_numeric_claim_is_checked(self):
         assert needs_verification(
             "The library was released in 2019 and the current version is 4.2, "
-            "which dropped support for the older runtime.")
+            "which dropped support for the older runtime."
+        )
 
     def test_attribution_is_checked(self):
         assert needs_verification(
             "According to the filing, the company is based in Delaware and was "
-            "founded by the same team that authored the original specification.")
+            "founded by the same team that authored the original specification."
+        )
 
     def test_absolute_claim_is_checked(self):
         assert needs_verification(
             "It is the only implementation that never allocates on the hot path, "
-            "which is why it remains the fastest option available for this use.")
+            "which is why it remains the fastest option available for this use."
+        )
 
     def test_url_is_checked(self):
         assert needs_verification(
             "The full changelog lives at https://example.com/changelog and covers "
-            "every release since the project moved to its current home.")
+            "every release since the project moved to its current home."
+        )
 
     def test_claim_free_prose_is_skipped(self):
         """No assertion about the world, so there is nothing to check and the
         call is pure latency."""
         assert not needs_verification(
             "I've saved the file for you. Let me know if you'd like it formatted "
-            "differently, or if you want me to walk through any of it with you.")
+            "differently, or if you want me to walk through any of it with you."
+        )
 
     def test_short_reply_is_skipped(self):
         assert not needs_verification("Done — 3 files updated.")
@@ -59,7 +75,8 @@ class TestNeedsVerification:
         it means asking a model to fact-check the agent's own apology."""
         assert not needs_verification(
             "I couldn't find any file matching that pattern in the 4 directories "
-            "I searched, so there is nothing to summarize here for you.")
+            "I searched, so there is nothing to summarize here for you."
+        )
 
     def test_empty_answer_is_skipped(self):
         assert not needs_verification("")
@@ -68,12 +85,15 @@ class TestNeedsVerification:
 
 # ── evidence_digest ─────────────────────────────────────────────────────────
 
+
 class TestEvidenceDigest:
     def test_tool_results_and_user_turns_are_evidence(self):
-        digest = evidence_digest([
-            {"role": "user", "content": "What is the revenue?"},
-            {"role": "tool", "name": "search", "content": "Revenue was 3.1M."},
-        ])
+        digest = evidence_digest(
+            [
+                {"role": "user", "content": "What is the revenue?"},
+                {"role": "tool", "name": "search", "content": "Revenue was 3.1M."},
+            ]
+        )
         assert "Revenue was 3.1M." in digest
         assert "[search]" in digest
         assert "What is the revenue?" in digest
@@ -81,31 +101,41 @@ class TestEvidenceDigest:
     def test_assistant_turns_are_not_evidence(self):
         """An answer that cites an earlier sentence of its own is the failure
         being looked for, not corroboration of it."""
-        digest = evidence_digest([
-            {"role": "assistant", "content": "Revenue was 4.2M, I believe."},
-            {"role": "tool", "name": "search", "content": "Revenue was 3.1M."},
-        ])
+        digest = evidence_digest(
+            [
+                {"role": "assistant", "content": "Revenue was 4.2M, I believe."},
+                {"role": "tool", "name": "search", "content": "Revenue was 3.1M."},
+            ]
+        )
         assert "4.2M" not in digest
 
     def test_newest_evidence_survives_the_budget(self):
-        messages = [{"role": "tool", "name": "search", "content": f"item {i} " + "x" * 500}
-                    for i in range(40)]
+        messages = [
+            {"role": "tool", "name": "search", "content": f"item {i} " + "x" * 500}
+            for i in range(40)
+        ]
         digest = evidence_digest(messages, max_chars=1200)
         assert "item 39" in digest
         assert "item 0 " not in digest
         assert len(digest) <= 1400  # budget plus the last item's own length
 
     def test_long_result_is_clipped_not_dropped(self):
-        digest = evidence_digest(
-            [{"role": "tool", "name": "read_file", "content": "y" * 5000}])
+        digest = evidence_digest([{"role": "tool", "name": "read_file", "content": "y" * 5000}])
         assert "chars omitted" in digest
         assert digest.count("y") < 5000
 
     def test_multipart_content_is_flattened(self):
-        digest = evidence_digest([
-            {"role": "user", "content": [{"type": "text", "text": "check the 2019 filing"},
-                                         {"type": "image_url", "image_url": {}}]},
-        ])
+        digest = evidence_digest(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "check the 2019 filing"},
+                        {"type": "image_url", "image_url": {}},
+                    ],
+                },
+            ]
+        )
         assert "check the 2019 filing" in digest
 
     def test_no_messages_is_empty(self):
@@ -114,6 +144,7 @@ class TestEvidenceDigest:
 
 # ── parse_verdict ───────────────────────────────────────────────────────────
 
+
 class TestParseVerdict:
     def test_clean_verdict_is_an_empty_list(self):
         assert parse_verdict('{"issues": []}') == []
@@ -121,36 +152,37 @@ class TestParseVerdict:
     def test_fenced_json_is_read(self):
         verdict = parse_verdict(
             'Checked them all.\n```json\n{"issues": [{"claim": "4.2M", '
-            '"problem": "contradicted", "correction": "3.1M"}]}\n```')
-        assert verdict == [{"claim": "4.2M", "problem": "contradicted",
-                            "correction": "3.1M"}]
+            '"problem": "contradicted", "correction": "3.1M"}]}\n```'
+        )
+        assert verdict == [{"claim": "4.2M", "problem": "contradicted", "correction": "3.1M"}]
 
     def test_prose_after_the_json_does_not_break_parsing(self):
         """Scanning to the matching brace, not the last one in the string."""
         verdict = parse_verdict(
-            '{"issues": [{"claim": "a", "correction": "b"}]}\nHope that helps {see above}')
+            '{"issues": [{"claim": "a", "correction": "b"}]}\nHope that helps {see above}'
+        )
         assert len(verdict) == 1
 
     def test_braces_inside_strings_are_not_counted(self):
-        verdict = parse_verdict('{"issues": [{"claim": "the {placeholder} value", '
-                                '"correction": "a literal"}]}')
+        verdict = parse_verdict(
+            '{"issues": [{"claim": "the {placeholder} value", "correction": "a literal"}]}'
+        )
         assert verdict[0]["claim"] == "the {placeholder} value"
 
     def test_inline_reasoning_is_stripped_before_parsing(self):
         """A thinking model's reasoning is prose about the claims, full of the
         braces and quoted draft fragments the object scanner looks for."""
         verdict = parse_verdict(
-            '<think>The draft says {revenue: 4.2M} but the evidence says 3.1M. '
+            "<think>The draft says {revenue: 4.2M} but the evidence says 3.1M. "
             'Let me write {"issues": []} — no wait, that is wrong.</think>\n'
-            '{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}')
-        assert verdict == [{"claim": "4.2M", "problem": "contradicted",
-                            "correction": "3.1M"}]
+            '{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}'
+        )
+        assert verdict == [{"claim": "4.2M", "problem": "contradicted", "correction": "3.1M"}]
 
     def test_reasoning_that_never_reaches_a_verdict_is_unreadable(self):
         """Budget spent thinking, cut off mid-thought: there is no verdict
         after the block to find, and inventing one from it would be worse."""
-        assert parse_verdict(
-            '<think>Checking the first claim: {revenue: 4.2M} against') is None
+        assert parse_verdict("<think>Checking the first claim: {revenue: 4.2M} against") is None
 
     def test_verdict_ok_shorthand_is_a_pass(self):
         assert parse_verdict('{"verdict": "ok"}') == []
@@ -165,27 +197,39 @@ class TestParseVerdict:
     def test_malformed_entries_are_dropped(self):
         verdict = parse_verdict(
             '{"issues": ["a bare string", {"claim": "", "correction": ""}, '
-            '{"claim": "real", "correction": "fixed"}]}')
-        assert verdict == [{"claim": "real", "problem": "contradicted",
-                            "correction": "fixed"}]
+            '{"claim": "real", "correction": "fixed"}]}'
+        )
+        assert verdict == [{"claim": "real", "problem": "contradicted", "correction": "fixed"}]
 
 
 # ── notes ───────────────────────────────────────────────────────────────────
 
+
 class TestRevisionNote:
     def test_corrections_are_joined(self):
-        note = revision_note([{"claim": "a", "correction": "3.1M, not 4.2M"},
-                              {"claim": "b", "correction": "founded in 1998"}])
+        note = revision_note(
+            [
+                {"claim": "a", "correction": "3.1M, not 4.2M"},
+                {"claim": "b", "correction": "founded in 1998"},
+            ]
+        )
         assert note == "3.1M, not 4.2M; founded in 1998"
 
     def test_claim_is_used_when_there_is_no_correction(self):
-        assert revision_note([{"claim": "the second figure", "correction": ""}]) \
-            == "the second figure"
+        assert (
+            revision_note([{"claim": "the second figure", "correction": ""}]) == "the second figure"
+        )
 
     def test_long_list_is_counted_rather_than_quoted(self):
-        note = revision_note([{"claim": "", "correction": "correction number %d "
-                               "with quite a lot of detail attached" % i}
-                              for i in range(8)])
+        note = revision_note(
+            [
+                {
+                    "claim": "",
+                    "correction": "correction number %d with quite a lot of detail attached" % i,
+                }
+                for i in range(8)
+            ]
+        )
         assert "more)" in note
         assert len(note) <= 260
 
@@ -204,10 +248,11 @@ class TestRevisionNote:
 
 # ── verify_answer ───────────────────────────────────────────────────────────
 
+
 def _tool_call(name="search", arguments='{"query": "revenue"}'):
     return types.SimpleNamespace(
-        id="call_1",
-        function=types.SimpleNamespace(name=name, arguments=arguments))
+        id="call_1", function=types.SimpleNamespace(name=name, arguments=arguments)
+    )
 
 
 class _Ask:
@@ -223,8 +268,7 @@ class _Ask:
         self.calls: list[dict] = []
 
     async def __call__(self, messages, tools=None, max_tokens=1024):
-        self.calls.append({"messages": messages, "tools": tools,
-                           "max_tokens": max_tokens})
+        self.calls.append({"messages": messages, "tools": tools, "max_tokens": max_tokens})
         if not self.replies:
             raise AssertionError("verify_answer made more calls than the test scripted")
         reply = self.replies.pop(0)
@@ -233,14 +277,15 @@ class _Ask:
         return reply
 
 
-DRAFT = ("The company reported 4.2M in revenue for 2019, its best year since "
-         "the restructuring, and has held that position ever since.")
+DRAFT = (
+    "The company reported 4.2M in revenue for 2019, its best year since "
+    "the restructuring, and has held that position ever since."
+)
 
 # The check runs against what the run gathered, so a test that wants it to run
 # at all has to have gathered something.  A run with an empty transcript has
 # nothing to check the draft against and skips the call entirely.
-EVIDENCE = [{"role": "tool", "name": "search",
-             "content": "Revenue was 3.1M in 2019."}]
+EVIDENCE = [{"role": "tool", "name": "search", "content": "Revenue was 3.1M in 2019."}]
 SEARCH_TOOL = [{"type": "function", "function": {"name": "search"}}]
 
 
@@ -249,7 +294,8 @@ class TestVerifyAnswer:
     async def test_clean_verdict_returns_the_draft_untouched(self):
         ask = _Ask(('{"issues": []}', None))
         answer, note, issues = await verify_answer(
-            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask)
+            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask
+        )
         assert answer == DRAFT
         assert note == ""
         assert issues == []
@@ -257,13 +303,21 @@ class TestVerifyAnswer:
 
     @pytest.mark.asyncio
     async def test_issues_produce_a_revision_and_a_note(self):
-        revised = ("The company reported 3.1M in revenue for 2019, its best year "
-                   "since the restructuring, and has held that position ever since.")
-        ask = _Ask(('{"issues": [{"claim": "4.2M in revenue", "problem": '
-                    '"contradicted", "correction": "3.1M, per the filing"}]}', None),
-                   (revised, None))
+        revised = (
+            "The company reported 3.1M in revenue for 2019, its best year "
+            "since the restructuring, and has held that position ever since."
+        )
+        ask = _Ask(
+            (
+                '{"issues": [{"claim": "4.2M in revenue", "problem": '
+                '"contradicted", "correction": "3.1M, per the filing"}]}',
+                None,
+            ),
+            (revised, None),
+        )
         answer, note, issues = await verify_answer(
-            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask)
+            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask
+        )
         assert answer.startswith(revised)
         assert answer.endswith(f"*{NOTE_PREFIX}3.1M, per the filing*")
         assert note == "3.1M, per the filing"
@@ -278,12 +332,17 @@ class TestVerifyAnswer:
 
         async def run_tools(tool_calls, messages):
             ran.append([tc.function.name for tc in tool_calls])
-            messages.append({"role": "tool", "name": "search",
-                             "content": "Revenue was 4.2M."})
+            messages.append({"role": "tool", "name": "search", "content": "Revenue was 4.2M."})
 
         answer, note, _ = await verify_answer(
-            task="revenue?", answer=DRAFT, messages=EVIDENCE, ask=ask,
-            run_tools=run_tools, tools=SEARCH_TOOL, max_tool_turns=1)
+            task="revenue?",
+            answer=DRAFT,
+            messages=EVIDENCE,
+            ask=ask,
+            run_tools=run_tools,
+            tools=SEARCH_TOOL,
+            max_tool_turns=1,
+        )
         assert ran == [["search"]]
         assert answer == DRAFT
         assert note == ""
@@ -297,9 +356,15 @@ class TestVerifyAnswer:
         async def run_tools(tool_calls, messages):
             messages.append({"role": "tool", "name": "search", "content": "..."})
 
-        await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
-                            run_tools=run_tools, tools=SEARCH_TOOL,
-                            max_tool_turns=1)
+        await verify_answer(
+            task="t",
+            answer=DRAFT,
+            messages=EVIDENCE,
+            ask=ask,
+            run_tools=run_tools,
+            tools=SEARCH_TOOL,
+            max_tool_turns=1,
+        )
         assert ask.calls[0]["tools"] is not None
         assert ask.calls[1]["tools"] is None
 
@@ -315,8 +380,13 @@ class TestVerifyAnswer:
             ran.append(tool_calls)
 
         answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
-            run_tools=run_tools, tools=SEARCH_TOOL)
+            task="t",
+            answer=DRAFT,
+            messages=EVIDENCE,
+            ask=ask,
+            run_tools=run_tools,
+            tools=SEARCH_TOOL,
+        )
         assert ask.calls[0]["tools"] is None
         assert ran == []
         assert len(ask.calls) == 1
@@ -328,8 +398,7 @@ class TestVerifyAnswer:
         """Nothing gathered and no lookups allowed leaves only the weights that
         wrote the draft to check it against, which is not a check."""
         ask = _Ask(('{"issues": []}', None))
-        answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=[], ask=ask)
+        answer, note, issues = await verify_answer(task="t", answer=DRAFT, messages=[], ask=ask)
         assert answer == DRAFT
         assert (note, issues) == ("", [])
         assert ask.calls == []
@@ -341,19 +410,31 @@ class TestVerifyAnswer:
         async def run_tools(tool_calls, messages):
             pass
 
-        await verify_answer(task="t", answer=DRAFT, messages=[], ask=ask,
-                            run_tools=run_tools, tools=SEARCH_TOOL,
-                            max_tool_turns=1)
+        await verify_answer(
+            task="t",
+            answer=DRAFT,
+            messages=[],
+            ask=ask,
+            run_tools=run_tools,
+            tools=SEARCH_TOOL,
+            max_tool_turns=1,
+        )
         assert len(ask.calls) == 1
 
     @pytest.mark.asyncio
     async def test_uncovered_claims_are_dropped_when_nothing_can_settle_them(self):
         """Without a lookup, "unsupported" reports the absence of evidence, not
         an error — acting on it rewrites a good answer to hedge a true claim."""
-        ask = _Ask(('{"issues": [{"claim": "best year", "problem": "unsupported",'
-                    ' "correction": "the evidence does not say"}]}', None))
+        ask = _Ask(
+            (
+                '{"issues": [{"claim": "best year", "problem": "unsupported",'
+                ' "correction": "the evidence does not say"}]}',
+                None,
+            )
+        )
         answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask
+        )
         assert answer == DRAFT
         assert (note, issues) == ("", [])
         assert len(ask.calls) == 1  # no revision was attempted
@@ -361,26 +442,43 @@ class TestVerifyAnswer:
     @pytest.mark.asyncio
     async def test_contradictions_are_still_acted_on_without_lookups(self):
         revised = DRAFT.replace("4.2M", "3.1M")
-        ask = _Ask(('{"issues": [{"claim": "4.2M", "problem": "contradicted",'
-                    ' "correction": "3.1M"}]}', None), (revised, None))
+        ask = _Ask(
+            (
+                '{"issues": [{"claim": "4.2M", "problem": "contradicted", "correction": "3.1M"}]}',
+                None,
+            ),
+            (revised, None),
+        )
         answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask
+        )
         assert answer.startswith(revised)
         assert note == "3.1M"
         assert len(issues) == 1
 
     @pytest.mark.asyncio
     async def test_uncovered_claims_survive_when_lookups_were_available(self):
-        ask = _Ask(('{"issues": [{"claim": "best year", "problem": "unsupported",'
-                    ' "correction": "2021 was higher"}]}', None),
-                   (DRAFT.replace("its best year", "a strong year"), None))
+        ask = _Ask(
+            (
+                '{"issues": [{"claim": "best year", "problem": "unsupported",'
+                ' "correction": "2021 was higher"}]}',
+                None,
+            ),
+            (DRAFT.replace("its best year", "a strong year"), None),
+        )
 
         async def run_tools(tool_calls, messages):
             pass
 
         _, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
-            run_tools=run_tools, tools=SEARCH_TOOL, max_tool_turns=1)
+            task="t",
+            answer=DRAFT,
+            messages=EVIDENCE,
+            ask=ask,
+            run_tools=run_tools,
+            tools=SEARCH_TOOL,
+            max_tool_turns=1,
+        )
         assert note == "2021 was higher"
         assert len(issues) == 1
 
@@ -394,7 +492,8 @@ class TestVerifyAnswer:
     async def test_unreadable_verdict_keeps_the_draft(self):
         ask = _Ask(("I checked everything and it all looks fine to me.", None))
         answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask
+        )
         assert answer == DRAFT
         assert note == ""
         assert issues == []
@@ -402,8 +501,7 @@ class TestVerifyAnswer:
     @pytest.mark.asyncio
     async def test_a_failed_check_never_costs_the_answer(self):
         ask = _Ask(RuntimeError("endpoint down"))
-        answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+        answer, note, _ = await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer == DRAFT
         assert note == ""
 
@@ -415,8 +513,14 @@ class TestVerifyAnswer:
             raise RuntimeError("stopped")
 
         answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask, run_tools=run_tools,
-            tools=SEARCH_TOOL, max_tool_turns=1)
+            task="t",
+            answer=DRAFT,
+            messages=EVIDENCE,
+            ask=ask,
+            run_tools=run_tools,
+            tools=SEARCH_TOOL,
+            max_tool_turns=1,
+        )
         assert answer == DRAFT
         assert note == ""
 
@@ -425,10 +529,13 @@ class TestVerifyAnswer:
         """The model summarized or apologized instead of correcting. The draft
         with the error flagged beats a paragraph that lost the work — and beats
         the draft with the error left silent."""
-        ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
-                   ("Sorry, I cannot verify that.", None))
+        ask = _Ask(
+            ('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
+            ("Sorry, I cannot verify that.", None),
+        )
         answer, note, issues = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask
+        )
         assert answer.startswith(DRAFT)
         assert CORRECTION_PREFIX + "3.1M" in answer
         assert note == "3.1M"
@@ -436,10 +543,11 @@ class TestVerifyAnswer:
 
     @pytest.mark.asyncio
     async def test_a_failed_revision_flags_the_finding(self):
-        ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
-                   RuntimeError("endpoint down"))
-        answer, note, _ = await verify_answer(
-            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
+        ask = _Ask(
+            ('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
+            RuntimeError("endpoint down"),
+        )
+        answer, note, _ = await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask)
         assert answer.startswith(DRAFT)
         assert CORRECTION_PREFIX in answer
         assert note == "3.1M"
@@ -452,7 +560,8 @@ class TestVerifyAnswer:
         long_draft = DRAFT + "\n\n" + ("Supporting detail, 12 of them. " * 800).strip()
         ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None))
         answer, note, issues = await verify_answer(
-            task="t", answer=long_draft, messages=EVIDENCE, ask=ask)
+            task="t", answer=long_draft, messages=EVIDENCE, ask=ask
+        )
         assert answer.startswith(long_draft)
         assert CORRECTION_PREFIX + "3.1M" in answer
         assert len(ask.calls) == 1  # no revision was attempted
@@ -460,17 +569,22 @@ class TestVerifyAnswer:
 
     @pytest.mark.asyncio
     async def test_the_revision_gets_the_callers_token_budget(self):
-        ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
-                   (DRAFT.replace("4.2M", "3.1M"), None))
-        await verify_answer(task="t", answer=DRAFT, messages=EVIDENCE, ask=ask,
-                            revision_max_tokens=32768)
+        ask = _Ask(
+            ('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
+            (DRAFT.replace("4.2M", "3.1M"), None),
+        )
+        await verify_answer(
+            task="t", answer=DRAFT, messages=EVIDENCE, ask=ask, revision_max_tokens=32768
+        )
         assert ask.calls[1]["max_tokens"] == 32768
 
     @pytest.mark.asyncio
     async def test_evidence_reaches_both_prompts(self):
         messages = [{"role": "tool", "name": "search", "content": "Revenue was 3.1M."}]
-        ask = _Ask(('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
-                   (DRAFT.replace("4.2M", "3.1M"), None))
+        ask = _Ask(
+            ('{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}', None),
+            (DRAFT.replace("4.2M", "3.1M"), None),
+        )
         await verify_answer(task="revenue?", answer=DRAFT, messages=messages, ask=ask)
         for call in ask.calls:
             assert "Revenue was 3.1M." in call["messages"][1]["content"]
@@ -478,11 +592,14 @@ class TestVerifyAnswer:
 
 # ── the free pass ───────────────────────────────────────────────────────────
 
+
 class TestTrustedSources:
     def test_figures_and_links_are_what_gets_compared(self):
-        tokens = claim_tokens('Revenue was 3.1M in 2019, per '
-                              'https://example.com/f and "the strongest quarter '
-                              'on record" — 61% margin.')
+        tokens = claim_tokens(
+            "Revenue was 3.1M in 2019, per "
+            'https://example.com/f and "the strongest quarter '
+            'on record" — 61% margin.'
+        )
         assert "3.1" in tokens
         assert "2019" in tokens
         assert "61%" in tokens
@@ -498,42 +615,66 @@ class TestTrustedSources:
         assert "4200" in claim_tokens("Headcount reached 4,200 last year.")
 
     def test_a_document_read_is_its_own_authority(self):
-        messages = [{"role": "tool", "name": "read_file",
-                     "content": "revenue: 3.1M\nheadcount: 118"}]
+        messages = [
+            {"role": "tool", "name": "read_file", "content": "revenue: 3.1M\nheadcount: 118"}
+        ]
         assert covered_by_trusted_sources(
-            "Revenue was 3.1M and headcount finished at 118.", messages)
+            "Revenue was 3.1M and headcount finished at 118.", messages
+        )
 
     def test_a_figure_the_documents_do_not_have_is_not_cleared(self):
-        messages = [{"role": "tool", "name": "read_file",
-                     "content": "revenue: 3.1M\nheadcount: 118"}]
+        messages = [
+            {"role": "tool", "name": "read_file", "content": "revenue: 3.1M\nheadcount: 118"}
+        ]
         assert not covered_by_trusted_sources(
-            "Revenue was 4.2M and headcount finished at 118.", messages)
+            "Revenue was 4.2M and headcount finished at 118.", messages
+        )
 
     def test_what_the_user_typed_is_trusted(self):
         """A figure they gave us is not one the model can have invented."""
         assert covered_by_trusted_sources(
             "Yes — 3.1M against the 2.4M you mentioned is a 29% rise.",
-            [{"role": "user",
-              "content": "we did 3.1M this year against 2.4M last year, is that 29%?"}])
+            [
+                {
+                    "role": "user",
+                    "content": "we did 3.1M this year against 2.4M last year, is that 29%?",
+                }
+            ],
+        )
 
     def test_a_reputable_source_is_trusted(self):
-        messages = [{"role": "tool", "name": "search",
-                     "content": "https://en.wikipedia.org/wiki/Foo — founded 1876, "
-                                "population 2,300"}]
+        messages = [
+            {
+                "role": "tool",
+                "name": "search",
+                "content": "https://en.wikipedia.org/wiki/Foo — founded 1876, population 2,300",
+            }
+        ]
         assert covered_by_trusted_sources(
-            "It was founded in 1876 and has a population of 2,300.", messages)
+            "It was founded in 1876 and has a population of 2,300.", messages
+        )
 
     def test_a_mixed_result_page_is_not_a_reputable_source(self):
         """One trusted link among several does not make the page trusted: there
         is no way to tell from here which hit a given sentence came from."""
-        messages = [{"role": "tool", "name": "search",
-                     "content": "https://en.wikipedia.org/wiki/Foo founded 1876\n"
-                                "https://random-blog.example/x says 1877"}]
+        messages = [
+            {
+                "role": "tool",
+                "name": "search",
+                "content": "https://en.wikipedia.org/wiki/Foo founded 1876\n"
+                "https://random-blog.example/x says 1877",
+            }
+        ]
         assert not covered_by_trusted_sources("It was founded in 1876.", messages)
 
     def test_an_untrusted_site_is_not_trusted(self):
-        messages = [{"role": "tool", "name": "search",
-                     "content": "https://contentfarm.example/a — founded 1876"}]
+        messages = [
+            {
+                "role": "tool",
+                "name": "search",
+                "content": "https://contentfarm.example/a — founded 1876",
+            }
+        ]
         assert not covered_by_trusted_sources("It was founded in 1876.", messages)
 
     def test_government_and_academic_suffixes_are_trusted(self):
@@ -544,37 +685,52 @@ class TestTrustedSources:
         assert not is_trusted_url("notwikipedia.org")
 
     def test_a_deployment_can_add_its_own(self):
-        messages = [{"role": "tool", "name": "search",
-                     "content": "https://docs.internal.corp/rev — revenue 3.1M"}]
+        messages = [
+            {
+                "role": "tool",
+                "name": "search",
+                "content": "https://docs.internal.corp/rev — revenue 3.1M",
+            }
+        ]
         assert covered_by_trusted_sources(
-            "Revenue was 3.1M for the year.", messages,
-            domains=("docs.internal.corp",))
+            "Revenue was 3.1M for the year.", messages, domains=("docs.internal.corp",)
+        )
 
     def test_prose_with_nothing_comparable_is_not_cleared(self):
         """It may still assert plenty; this pass just cannot settle it."""
         assert not covered_by_trusted_sources(
             "It is the only implementation that never allocates.",
-            [{"role": "tool", "name": "read_file", "content": "notes"}])
+            [{"role": "tool", "name": "read_file", "content": "notes"}],
+        )
 
     @pytest.mark.asyncio
     async def test_a_covered_answer_costs_no_call_at_all(self):
         ask = _Ask()  # any call at all raises
         answer, note, issues = await verify_answer(
-            task="revenue?", answer=DRAFT.replace("4.2M", "3.1M"),
-            messages=[{"role": "tool", "name": "read_file",
-                       "content": "2019 revenue: 3.1M — best year since the "
-                                  "restructuring, held ever since"}],
-            ask=ask)
+            task="revenue?",
+            answer=DRAFT.replace("4.2M", "3.1M"),
+            messages=[
+                {
+                    "role": "tool",
+                    "name": "read_file",
+                    "content": "2019 revenue: 3.1M — best year since the "
+                    "restructuring, held ever since",
+                }
+            ],
+            ask=ask,
+        )
         assert (note, issues) == ("", [])
         assert ask.calls == []
 
 
 # ── prompts ─────────────────────────────────────────────────────────────────
 
+
 class TestPrompts:
     def test_verdict_prompt_carries_task_answer_and_evidence(self):
-        messages = build_verdict_messages("what is the revenue?", DRAFT,
-                                          "[search]\nRevenue was 3.1M.")
+        messages = build_verdict_messages(
+            "what is the revenue?", DRAFT, "[search]\nRevenue was 3.1M."
+        )
         assert messages[0]["role"] == "system"
         body = messages[1]["content"]
         assert "what is the revenue?" in body
@@ -589,8 +745,7 @@ class TestPrompts:
         assert "call the tool" not in system
 
     def test_the_tool_prompt_asks_for_uncovered_claims_too(self):
-        system = build_verdict_messages("t", DRAFT, "[search]\n3.1M",
-                                        with_tools=True)[0]["content"]
+        system = build_verdict_messages("t", DRAFT, "[search]\n3.1M", with_tools=True)[0]["content"]
         assert "fails to support" in system
         assert "call the tool" in system
 
@@ -600,15 +755,15 @@ class TestPrompts:
 
     def test_revision_prompt_lists_the_corrections(self):
         body = build_revision_messages(
-            "t", DRAFT,
-            [{"claim": "4.2M", "problem": "contradicted", "correction": "3.1M"}],
-            "")[1]["content"]
+            "t", DRAFT, [{"claim": "4.2M", "problem": "contradicted", "correction": "3.1M"}], ""
+        )[1]["content"]
         assert "4.2M" in body
         assert "contradicted" in body
         assert "3.1M" in body
 
 
 # ── wiring into chat() ──────────────────────────────────────────────────────
+
 
 def _completion(content=None, tool_calls=None, finish_reason="stop"):
     message = MagicMock()
@@ -623,10 +778,14 @@ def _completion(content=None, tool_calls=None, finish_reason="stop"):
     return completion
 
 
-ANSWER = ("The 2019 filing puts revenue at 4.2M, which is the figure quoted in "
-          "the summary table on page 3 of the report you asked about.")
-REVISED = ("The 2019 filing puts revenue at 3.1M, which is the figure quoted in "
-           "the summary table on page 3 of the report you asked about.")
+ANSWER = (
+    "The 2019 filing puts revenue at 4.2M, which is the figure quoted in "
+    "the summary table on page 3 of the report you asked about."
+)
+REVISED = (
+    "The 2019 filing puts revenue at 3.1M, which is the figure quoted in "
+    "the summary table on page 3 of the report you asked about."
+)
 
 
 async def _run_chat(replies, background=None, **kwargs):
@@ -654,15 +813,23 @@ async def _run_chat(replies, background=None, **kwargs):
         replies = [_completion(tool_calls=[tc]), *replies]
     client = AsyncMock()
     client.chat.completions.create = AsyncMock(side_effect=replies)
-    with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-         patch("model.serving.chat._resolve_model_id",
-               new_callable=AsyncMock, return_value="test-model"):
-        result = await asyncio.wait_for(chat(
-            host="http://localhost:8000/v1",
-            instruction="What was the 2019 revenue?",
-            safety_queue=asyncio.Queue(),
-            **kwargs,
-        ), timeout=30)
+    with (
+        patch("model.serving.chat.AsyncOpenAI", return_value=client),
+        patch(
+            "model.serving.chat._resolve_model_id",
+            new_callable=AsyncMock,
+            return_value="test-model",
+        ),
+    ):
+        result = await asyncio.wait_for(
+            chat(
+                host="http://localhost:8000/v1",
+                instruction="What was the 2019 revenue?",
+                safety_queue=asyncio.Queue(),
+                **kwargs,
+            ),
+            timeout=30,
+        )
     return result, client
 
 
@@ -686,10 +853,12 @@ class TestChatWiring:
 
     @pytest.mark.asyncio
     async def test_answer_is_checked_before_it_is_returned(self):
-        result, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ])
+        result, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ]
+        )
         assert result == ANSWER
         assert client.chat.completions.create.call_count == 3
 
@@ -697,27 +866,32 @@ class TestChatWiring:
     async def test_a_finding_is_flagged_without_a_second_generation(self):
         """The stage the user waits on never rewrites: a rewrite costs the
         answer over again, which is the whole latency this split removes."""
-        result, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": [{"claim": "revenue at 4.2M", '
-                                '"problem": "contradicted", "correction": '
-                                '"3.1M in the filing"}]}'),
-        ])
+        result, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(
+                    content='{"issues": [{"claim": "revenue at 4.2M", '
+                    '"problem": "contradicted", "correction": '
+                    '"3.1M in the filing"}]}'
+                ),
+            ]
+        )
         assert result.startswith(ANSWER)
         assert f"{CORRECTION_PREFIX}3.1M in the filing" in result
         assert client.chat.completions.create.call_count == 3
 
     @pytest.mark.asyncio
     async def test_verification_can_be_turned_off(self):
-        result, client = await _run_chat([_completion(content=ANSWER)],
-                                         verify_answers=False)
+        result, client = await _run_chat([_completion(content=ANSWER)], verify_answers=False)
         assert result == ANSWER
         assert client.chat.completions.create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_a_claim_free_answer_is_not_checked(self):
-        plain = ("I've written that up for you. Let me know if you would like a "
-                 "different structure, or a shorter version to share around.")
+        plain = (
+            "I've written that up for you. Let me know if you would like a "
+            "different structure, or a shorter version to share around."
+        )
         result, client = await _run_chat([_completion(content=plain)])
         assert result == plain
         assert client.chat.completions.create.call_count == 2
@@ -727,11 +901,11 @@ class TestChatWiring:
         """The loop reporting on itself is not a claim about the world."""
         planning = "Let me start working on the analysis."
         registry = MagicMock()
-        registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "bash"}}]
+        registry.get_tool_items.return_value = [{"type": "function", "function": {"name": "bash"}}]
         registry.tools = {"bash"}
         result, client = await _run_chat(
-            [_completion(content=planning)] * 4, tool_registry=registry)
+            [_completion(content=planning)] * 4, tool_registry=registry
+        )
         assert "unable to complete" in result.lower()
         assert client.chat.completions.create.call_count == 4
 
@@ -739,10 +913,13 @@ class TestChatWiring:
     async def test_the_ui_is_told_the_check_is_running(self):
         ui = MagicMock()
         ui.messages = []
-        await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ], chat_ui=ui)
+        await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ],
+            chat_ui=ui,
+        )
         ui.verification_start.assert_called_once()
         ui.verification_end.assert_called_once()
         assert ui.verification_end.call_args[0][1] == ""  # nothing was revised
@@ -754,13 +931,18 @@ class TestChatWiring:
         ui = MagicMock()
         ui.messages = []
         checks: list = []
-        result, _ = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-            _completion(content='{"issues": [{"claim": "4.2M", "correction": '
-                                '"3.1M in the filing"}]}'),
-            _completion(content=REVISED),
-        ], chat_ui=ui, background=checks)
+        result, _ = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+                _completion(
+                    content='{"issues": [{"claim": "4.2M", "correction": "3.1M in the filing"}]}'
+                ),
+                _completion(content=REVISED),
+            ],
+            chat_ui=ui,
+            background=checks,
+        )
         assert result == ANSWER  # the user was not kept waiting for any of it
         assert len(checks) == 1
 
@@ -781,11 +963,16 @@ class TestChatWiring:
         ]
         registry.tools = {"bash", "search"}
         checks: list = []
-        _, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-            _completion(content='{"issues": []}'),
-        ], tool_registry=registry, verify_max_tool_turns=1, background=checks)
+        _, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+                _completion(content='{"issues": []}'),
+            ],
+            tool_registry=registry,
+            verify_max_tool_turns=1,
+            background=checks,
+        )
         await checks[0]
         deep_call = client.chat.completions.create.call_args_list[3]
         offered = [t["function"]["name"] for t in deep_call.kwargs["tools"]]
@@ -799,12 +986,16 @@ class TestChatWiring:
         answer the user is already reading."""
         registry = MagicMock()
         registry.get_tool_items.return_value = [
-            {"type": "function", "function": {"name": "search", "parameters": {}}}]
+            {"type": "function", "function": {"name": "search", "parameters": {}}}
+        ]
         registry.tools = {"search"}
-        _, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ], tool_registry=registry)
+        _, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ],
+            tool_registry=registry,
+        )
         assert client.chat.completions.create.call_count == 3
         assert "tools" not in client.chat.completions.create.call_args_list[2].kwargs
 
@@ -812,10 +1003,12 @@ class TestChatWiring:
     async def test_no_deep_check_without_somewhere_to_report_it(self):
         """A caller that cannot show a late correction — a one-shot A2A task,
         a script — should not be paying a model to produce one."""
-        result, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ])
+        result, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ]
+        )
         assert result == ANSWER
         assert client.chat.completions.create.call_count == 3
 
@@ -824,11 +1017,14 @@ class TestChatWiring:
         """chat() is returning the answer; a task it started here would outlive
         it with nobody left to cancel it."""
         checks: list = []
-        result, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-            _completion(content='{"issues": []}'),
-        ], background=checks)
+        result, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+                _completion(content='{"issues": []}'),
+            ],
+            background=checks,
+        )
         assert result == ANSWER
         # Handed over, and nothing has run it yet.
         assert len(checks) == 1
@@ -841,11 +1037,13 @@ class TestChatWiring:
         """The fast pass already put a correction under the answer; sending the
         same answer round again re-reports what the user is looking at."""
         checks: list = []
-        result, _ = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": [{"claim": "4.2M", "correction": '
-                                '"3.1M"}]}'),
-        ], background=checks)
+        result, _ = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}'),
+            ],
+            background=checks,
+        )
         assert CORRECTION_PREFIX in result
         assert checks == []
 
@@ -867,14 +1065,25 @@ class TestChatWiring:
         client = AsyncMock()
         client.chat.completions.create = AsyncMock(side_effect=_create)
         checks: list = []
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             started = time.monotonic()
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1", instruction="q",
-                safety_queue=asyncio.Queue(), verify_timeout_s=0.2,
-                background_verify=checks.append), timeout=30)
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="q",
+                    safety_queue=asyncio.Queue(),
+                    verify_timeout_s=0.2,
+                    background_verify=checks.append,
+                ),
+                timeout=30,
+            )
         assert result == ANSWER
         assert time.monotonic() - started < 3
         assert len(checks) == 1
@@ -887,43 +1096,57 @@ class TestChatWiring:
         from openai import OpenAIError
 
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _completion(tool_calls=[_evidence_tool_call()]),
-            _completion(content=ANSWER),
-            OpenAIError("Request timed out."),
-        ])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1", instruction="q",
-                safety_queue=asyncio.Queue()), timeout=30)
-        assert result == ANSWER                     # the check failed open
-        assert client.chat.completions.create.call_count == 3   # and did not retry
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _completion(tool_calls=[_evidence_tool_call()]),
+                _completion(content=ANSWER),
+                OpenAIError("Request timed out."),
+            ]
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1", instruction="q", safety_queue=asyncio.Queue()
+                ),
+                timeout=30,
+            )
+        assert result == ANSWER  # the check failed open
+        assert client.chat.completions.create.call_count == 3  # and did not retry
         assert _NO_TEMPLATE_KWARGS == {}
 
     @pytest.mark.asyncio
     async def test_a_remembered_refusal_expires(self):
         _NO_TEMPLATE_KWARGS["http://localhost:8000/v1"] = time.monotonic() - 1
-        _, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ])
+        _, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ]
+        )
         verify_call = client.chat.completions.create.call_args_list[2]
-        assert (verify_call.kwargs["extra_body"]["chat_template_kwargs"]
-                == {"enable_thinking": False})
+        assert verify_call.kwargs["extra_body"]["chat_template_kwargs"] == {
+            "enable_thinking": False
+        }
 
     @pytest.mark.asyncio
     async def test_a_host_that_thinks_anyway_gets_room_for_it(self):
         """Where the switch does not exist the verdict arrives behind a
         thousand tokens of reasoning, and a 512 budget truncates it away."""
         _NO_TEMPLATE_KWARGS["http://localhost:8000/v1"] = time.monotonic() + 600
-        _, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ])
-        assert client.chat.completions.create.call_args_list[2].kwargs[
-            "max_tokens"] == 4096
+        _, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ]
+        )
+        assert client.chat.completions.create.call_args_list[2].kwargs["max_tokens"] == 4096
 
     @pytest.mark.asyncio
     async def test_a_verdict_in_the_reasoning_field_is_still_read(self):
@@ -939,10 +1162,13 @@ class TestChatWiring:
         """Measured at 6 output tokens for a clean bill of health and 108 for a
         two-claim finding, with thinking off. A model that wants more than 512
         is reasoning, and this stage does not pay for reasoning."""
-        _, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ], max_tokens=32768)
+        _, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ],
+            max_tokens=32768,
+        )
         verify_call = client.chat.completions.create.call_args_list[2]
         assert verify_call.kwargs["max_tokens"] == 512
 
@@ -952,21 +1178,25 @@ class TestChatWiring:
         figures with the template's default thinking, 1.2s and 79 tokens for
         the same verdict with it off. Reading a claim off a source is
         recognition, not deliberation."""
-        _, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ])
+        _, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ]
+        )
         answer_call = client.chat.completions.create.call_args_list[1]
         verify_call = client.chat.completions.create.call_args_list[2]
-        assert (verify_call.kwargs["extra_body"]["chat_template_kwargs"]
-                == {"enable_thinking": False})
+        assert verify_call.kwargs["extra_body"]["chat_template_kwargs"] == {
+            "enable_thinking": False
+        }
         # The check spends nothing on thinking whatever the run does, and it
         # says so rather than leaving it to the template's default — which on
         # Qwen3 is thinking *on*.  This run has think off, so the answer call
         # says the same thing; with think on it would say the opposite.  What
         # neither call does any more is stay silent about it.
-        assert (answer_call.kwargs["extra_body"]["chat_template_kwargs"]
-                == {"enable_thinking": False})
+        assert answer_call.kwargs["extra_body"]["chat_template_kwargs"] == {
+            "enable_thinking": False
+        }
 
     @pytest.mark.asyncio
     async def test_a_host_that_rejects_template_kwargs_is_retried_plainly(self):
@@ -976,18 +1206,28 @@ class TestChatWiring:
         from openai import OpenAIError
 
         client = AsyncMock()
-        client.chat.completions.create = AsyncMock(side_effect=[
-            _completion(tool_calls=[_evidence_tool_call()]),
-            _completion(content=ANSWER),
-            OpenAIError("unknown chat_template_kwargs"),
-            _completion(content='{"issues": []}'),
-        ])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1", instruction="q",
-                safety_queue=asyncio.Queue()), timeout=30)
+        client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _completion(tool_calls=[_evidence_tool_call()]),
+                _completion(content=ANSWER),
+                OpenAIError("unknown chat_template_kwargs"),
+                _completion(content='{"issues": []}'),
+            ]
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1", instruction="q", safety_queue=asyncio.Queue()
+                ),
+                timeout=30,
+            )
         assert result == ANSWER
         retried = client.chat.completions.create.call_args_list[3]
         assert retried.kwargs["extra_body"] == {}
@@ -997,10 +1237,12 @@ class TestChatWiring:
     @pytest.mark.asyncio
     async def test_a_remembered_rejection_skips_the_doomed_call(self):
         _NO_TEMPLATE_KWARGS["http://localhost:8000/v1"] = time.monotonic() + 600
-        result, client = await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": []}'),
-        ])
+        result, client = await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": []}'),
+            ]
+        )
         assert result == ANSWER
         assert client.chat.completions.create.call_count == 3
         assert client.chat.completions.create.call_args_list[2].kwargs["extra_body"] == {}
@@ -1021,8 +1263,10 @@ class TestChatWiring:
         tool_answer = MagicMock()
         tool_answer.message = MagicMock(
             content=None,
-            tool_calls=[MagicMock(function=MagicMock(
-                name="read_file", arguments={"path": "report.txt"}))])
+            tool_calls=[
+                MagicMock(function=MagicMock(name="read_file", arguments={"path": "report.txt"}))
+            ],
+        )
         tool_answer.done_reason = "stop"
         tool_answer.eval_count = 10
         tool_answer.prompt_eval_count = 100
@@ -1035,26 +1279,42 @@ class TestChatWiring:
 
         ollama = AsyncMock()
         ollama.chat = AsyncMock(side_effect=[tool_answer, answer, verdict])
-        with patch("model.serving.chat._create_ollama_client", return_value=ollama), \
-             patch("model.serving.chat._ollama_resolve_model_id",
-                   new_callable=AsyncMock, return_value="qwen3"), \
-             patch("model.serving.chat._get_ollama_max_context",
-                   new_callable=AsyncMock, return_value=32768):
-            result = await asyncio.wait_for(chat(
-                host="https://ollama.com", host_key="test-key", instruction="q",
-                safety_queue=asyncio.Queue()), timeout=30)
+        with (
+            patch("model.serving.chat._create_ollama_client", return_value=ollama),
+            patch(
+                "model.serving.chat._ollama_resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="qwen3",
+            ),
+            patch(
+                "model.serving.chat._get_ollama_max_context",
+                new_callable=AsyncMock,
+                return_value=32768,
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="https://ollama.com",
+                    host_key="test-key",
+                    instruction="q",
+                    safety_queue=asyncio.Queue(),
+                ),
+                timeout=30,
+            )
         assert result == ANSWER
         assert ollama.chat.call_args_list[2].kwargs["think"] is False
 
     @pytest.mark.asyncio
     async def test_the_check_is_timed_separately(self):
         metrics: dict = {}
-        await _run_chat([
-            _completion(content=ANSWER),
-            _completion(content='{"issues": [{"claim": "4.2M", "correction": '
-                                '"3.1M"}]}'),
-            _completion(content=REVISED),
-        ], metrics=metrics)
+        await _run_chat(
+            [
+                _completion(content=ANSWER),
+                _completion(content='{"issues": [{"claim": "4.2M", "correction": "3.1M"}]}'),
+                _completion(content=REVISED),
+            ],
+            metrics=metrics,
+        )
         assert metrics["verify_issues"] == 1
         assert metrics["verify_revisions"] == 1
         assert "verify_s" in metrics
@@ -1079,19 +1339,28 @@ class TestChatWiring:
             await asyncio.sleep(30)
 
         client.chat.completions.create = AsyncMock(side_effect=_stop_during_the_check)
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
-            result = await asyncio.wait_for(chat(
-                host="http://localhost:8000/v1",
-                instruction="What was the 2019 revenue?",
-                safety_queue=queue,
-            ), timeout=30)
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await asyncio.wait_for(
+                chat(
+                    host="http://localhost:8000/v1",
+                    instruction="What was the 2019 revenue?",
+                    safety_queue=queue,
+                ),
+                timeout=30,
+            )
         assert result == ANSWER
         assert client.chat.completions.create.call_count == 3
 
 
 # ─── A7: trust survives a handle ──────────────────────────────────────────────
+
 
 class TestHandleTrust:
     """A result recovered through result_read arrives with name="result_read"
@@ -1099,34 +1368,43 @@ class TestHandleTrust:
     origin=<tool> restores the lineage."""
 
     def test_handle_read_of_trusted_origin_counts(self):
-        body = ('[result:0007 · origin=search_document · 12,000 chars · '
-                'showing 0–4,000]\nRevenue was $4.2M in 2025.')
-        msgs = [{"role": "user", "content": "task"},
-                {"role": "tool", "name": "result_read", "content": body}]
+        body = (
+            "[result:0007 · origin=search_document · 12,000 chars · "
+            "showing 0–4,000]\nRevenue was $4.2M in 2025."
+        )
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "name": "result_read", "content": body},
+        ]
         ev = trusted_evidence(msgs)
         assert "$4.2M" in ev
 
     def test_handle_read_of_untrusted_origin_ignored(self):
-        body = ('[result:0008 · origin=search · 12,000 chars · '
-                'showing 0–4,000]\nRevenue was $4.2M in 2025.')
-        msgs = [{"role": "user", "content": "task"},
-                {"role": "tool", "name": "result_read", "content": body}]
+        body = (
+            "[result:0008 · origin=search · 12,000 chars · "
+            "showing 0–4,000]\nRevenue was $4.2M in 2025."
+        )
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "name": "result_read", "content": body},
+        ]
         ev = trusted_evidence(msgs)
         assert "$4.2M" not in ev
 
     def test_handle_read_without_origin_header_ignored(self):
         """Old-format headers carry no origin; they stay untrusted."""
-        body = ('[result:0009 · 12,000 chars · showing 0–4,000]\n'
-                'Revenue was $4.2M.')
-        msgs = [{"role": "user", "content": "task"},
-                {"role": "tool", "name": "result_grep", "content": body}]
+        body = "[result:0009 · 12,000 chars · showing 0–4,000]\nRevenue was $4.2M."
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "name": "result_grep", "content": body},
+        ]
         ev = trusted_evidence(msgs)
         assert "$4.2M" not in ev
 
     def test_results_read_header_carries_origin(self, tmp_path):
         from model.serving.results import ResultStore
-        store = ResultStore(data_path=str(tmp_path), preview_chars=500,
-                            threshold=1000)
+
+        store = ResultStore(data_path=str(tmp_path), preview_chars=500, threshold=1000)
         store.put("search_document", "x" * 6000)
         out = store.read("0001")
         assert "origin=search_document" in out, out[:200]

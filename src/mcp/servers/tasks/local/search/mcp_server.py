@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,7 +41,7 @@ Optional environment variables for dense/hybrid retrieval:
     ONIT_EMBEDDING_HOST    - OpenAI-compatible base URL (e.g. vLLM, Ollama)
     ONIT_EMBEDDING_MODEL   - embedding model name
     ONIT_EMBEDDING_API_KEY - API key if the endpoint requires one
-'''
+"""
 
 import contextlib
 import json
@@ -59,16 +59,29 @@ except ImportError:
     from mcp.servers.tasks.shared import uvicorn_config
 
 try:
-    from .toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                          DEFAULT_CHUNK_OVERLAP, MAX_DOCUMENT_SUMMARIES,
-                          RRF_K, cap_per_file, file_content_hash)
+    from .toolkit import (
+        LocalSearchIndex,
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_CHUNK_OVERLAP,
+        MAX_DOCUMENT_SUMMARIES,
+        RRF_K,
+        cap_per_file,
+        file_content_hash,
+    )
 except ImportError:
-    from toolkit import (LocalSearchIndex, DEFAULT_CHUNK_SIZE,
-                         DEFAULT_CHUNK_OVERLAP, MAX_DOCUMENT_SUMMARIES,
-                         RRF_K, cap_per_file, file_content_hash)
+    from toolkit import (
+        LocalSearchIndex,
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_CHUNK_OVERLAP,
+        MAX_DOCUMENT_SUMMARIES,
+        RRF_K,
+        cap_per_file,
+        file_content_hash,
+    )
 
 import logging
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("Local Search MCP Server")
@@ -101,17 +114,16 @@ _SHARED_LOCK = threading.Lock()
 # does not change between those calls; the walk is a stat per file, which is
 # free on a small corpus and is not on a large one.
 _LAST_REFRESH: dict[str, float] = {}
-REFRESH_MIN_INTERVAL = float(os.environ.get('ONIT_SEARCH_REFRESH_INTERVAL', '30'))
+REFRESH_MIN_INTERVAL = float(os.environ.get("ONIT_SEARCH_REFRESH_INTERVAL", "30"))
 
 
 def _validate_required(**kwargs) -> str:
     """Check for missing required arguments. Returns JSON error string or empty string."""
     missing = [name for name, value in kwargs.items() if value is None]
     if missing:
-        return json.dumps({
-            "error": f"Missing required argument(s): {', '.join(missing)}.",
-            "status": "error"
-        })
+        return json.dumps(
+            {"error": f"Missing required argument(s): {', '.join(missing)}.", "status": "error"}
+        )
     return ""
 
 
@@ -137,8 +149,7 @@ def _session_base(data_path: str | None = None) -> str:
         return base
     if base != abs_data and not base.startswith(abs_data + os.sep):
         raise ValueError(
-            f"data_path must be within the server data directory {abs_data}. "
-            f"Got: {base}"
+            f"data_path must be within the server data directory {abs_data}. Got: {base}"
         )
     return base
 
@@ -156,9 +167,7 @@ def _validate_corpus_path(dir_path: str, base: str | None = None) -> str:
     for root in allowed:
         if abs_path == root or abs_path.startswith(root + os.sep):
             return abs_path
-    raise ValueError(
-        f"Corpus path must be within: {' or '.join(allowed)}. Got: {abs_path}"
-    )
+    raise ValueError(f"Corpus path must be within: {' or '.join(allowed)}. Got: {abs_path}")
 
 
 def _index_dir(base: str | None = None) -> str:
@@ -343,9 +352,12 @@ def _session_indexes(base: str) -> tuple[LocalSearchIndex, Optional[LocalSearchI
     return session_index, shared_index
 
 
-def _refresh_corpus(corpus: str, session_index: LocalSearchIndex,
-                    shared_index: Optional[LocalSearchIndex],
-                    min_interval: Optional[float] = None) -> None:
+def _refresh_corpus(
+    corpus: str,
+    session_index: LocalSearchIndex,
+    shared_index: Optional[LocalSearchIndex],
+    min_interval: Optional[float] = None,
+) -> None:
     """Incrementally re-ingest ``corpus`` into whichever index owns it.
 
     ``index_directory`` re-parses only the files whose mtime or size changed and
@@ -409,11 +421,14 @@ def _summarize_documents(merged: list, indexes: list) -> list:
     """
     by_file: Dict[str, Dict[str, Any]] = {}
     for result in merged:
-        entry = by_file.setdefault(result["file"], {
-            "file": result["file"],
-            "best_rank": result["rank"],
-            "matched_at": [],
-        })
+        entry = by_file.setdefault(
+            result["file"],
+            {
+                "file": result["file"],
+                "best_rank": result["rank"],
+                "matched_at": [],
+            },
+        )
         if result.get("location"):
             entry["matched_at"].append(result["location"])
 
@@ -479,11 +494,13 @@ def _index_documents_impl(
 
         corpus = _validate_corpus_path(path, base=base) if path else _default_corpus(base)
         if not corpus or not os.path.isdir(corpus):
-            return json.dumps({
-                "error": f"Corpus directory not found: {path or corpus}. "
-                         "Set documents_path (or ONIT_DOCUMENTS_PATH) or pass an explicit path.",
-                "status": "error"
-            })
+            return json.dumps(
+                {
+                    "error": f"Corpus directory not found: {path or corpus}. "
+                    "Set documents_path (or ONIT_DOCUMENTS_PATH) or pass an explicit path.",
+                    "status": "error",
+                }
+            )
 
         # The shared DOCUMENTS_PATH corpus is indexed once at the server level
         # and reused by all sessions; anything else goes to the session index.
@@ -499,8 +516,9 @@ def _index_documents_impl(
         with lock:
             index.chunk_size = max(200, min(int(chunk_size), 8000))
             index.chunk_overlap = max(0, min(int(chunk_overlap), index.chunk_size // 2))
-            result = index.index_directory(corpus, recursive=recursive,
-                                           rebuild=rebuild, exclude=exclude)
+            result = index.index_directory(
+                corpus, recursive=recursive, rebuild=rebuild, exclude=exclude
+            )
         # An explicit ingest is a fresher walk than the rate limiter could ask
         # for, so it re-arms the window rather than being blocked by it.
         _LAST_REFRESH[corpus] = time.monotonic()
@@ -529,10 +547,10 @@ def _combined_status(base: str) -> dict:
         "total_chunks": sum(s["total_chunks"] for s in statuses),
         "embedded_chunks": sum(s["embedded_chunks"] for s in statuses),
         "documents_by_format": by_format,
-        "no_text_extracted": sorted(
-            p for s in statuses for p in s["no_text_extracted"]),
+        "no_text_extracted": sorted(p for s in statuses for p in s["no_text_extracted"]),
         "embedding_model": next(
-            (s["embedding_model"] for s in statuses if s["embedding_model"]), None),
+            (s["embedding_model"] for s in statuses if s["embedding_model"]), None
+        ),
         "chunk_size": session_status["chunk_size"],
         "chunk_overlap": session_status["chunk_overlap"],
         "supported_formats": session_status["supported_formats"],
@@ -552,10 +570,9 @@ def _local_search_impl(
     if err := _validate_required(query=query):
         return err
     if method not in ("bm25", "dense", "hybrid"):
-        return json.dumps({
-            "error": f"Unknown method '{method}'. Use: bm25, dense, hybrid",
-            "status": "error"
-        })
+        return json.dumps(
+            {"error": f"Unknown method '{method}'. Use: bm25, dense, hybrid", "status": "error"}
+        )
     try:
         base = _session_base(data_path)
         session_index, shared_index = _session_indexes(base)
@@ -564,8 +581,9 @@ def _local_search_impl(
         if path:
             # An explicit path is a request to re-index that corpus, so it is
             # honoured immediately rather than deferred by the refresh window.
-            _refresh_corpus(_validate_corpus_path(path, base=base),
-                            session_index, shared_index, min_interval=0)
+            _refresh_corpus(
+                _validate_corpus_path(path, base=base), session_index, shared_index, min_interval=0
+            )
         else:
             # Both corpora a query can reach are refreshed, not just whichever
             # one happens to be empty: a document added to the shared corpus or
@@ -578,11 +596,13 @@ def _local_search_impl(
 
         indexes = [i for i in (shared_index, session_index) if i is not None and i.chunks]
         if not indexes:
-            return json.dumps({
-                "error": "Search index is empty. Run index_documents first, or set "
-                         "documents_path (or ONIT_DOCUMENTS_PATH) to your corpus.",
-                "status": "error"
-            })
+            return json.dumps(
+                {
+                    "error": "Search index is empty. Run index_documents first, or set "
+                    "documents_path (or ONIT_DOCUMENTS_PATH) to your corpus.",
+                    "status": "error",
+                }
+            )
 
         # Query the shared corpus index and the session index, then fuse the
         # two result lists by reciprocal rank. Raw scores are not comparable
@@ -605,17 +625,16 @@ def _local_search_impl(
         top_k = max(1, min(int(top_k), 20))
         fused: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         for index in indexes:
-            for rank, result in enumerate(
-                    index.search(query, top_k=top_k, method=method)):
-                key = (_document_key(index, result["file"]),
-                       result["location"], result["text"])
+            for rank, result in enumerate(index.search(query, top_k=top_k, method=method)):
+                key = (_document_key(index, result["file"]), result["location"], result["text"])
                 entry = fused.setdefault(key, {**result, "score": 0.0})
                 entry["score"] += 1.0 / (RRF_K + rank + 1)
 
         # Each index capped its own page at MAX_CHUNKS_PER_FILE, but the two
         # pages fuse into one, so the cap is re-applied to the merged order.
-        merged = cap_per_file(sorted(fused.values(), key=lambda r: -r["score"]),
-                              top_k, lambda r: r["file"])
+        merged = cap_per_file(
+            sorted(fused.values(), key=lambda r: -r["score"]), top_k, lambda r: r["file"]
+        )
         for rank, result in enumerate(merged, 1):
             result["rank"] = rank
             result["score"] = round(result["score"], 6)
@@ -632,16 +651,18 @@ def _local_search_impl(
         # full — this is byte order, not priority, and the guidance to read
         # `documents` first still stands. Each result also carries its `file`, so
         # a trimmed trace still records which documents were consulted.
-        return json.dumps({
-            "query": query,
-            "method": method,
-            "results": merged,
-            "documents": _summarize_documents(merged, indexes),
-            "total_results": len(merged),
-            "total_documents": sum(len(i.documents) for i in indexes),
-            "total_chunks": sum(len(i.chunks) for i in indexes),
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "query": query,
+                "method": method,
+                "results": merged,
+                "documents": _summarize_documents(merged, indexes),
+                "total_results": len(merged),
+                "total_documents": sum(len(i.documents) for i in indexes),
+                "total_chunks": sum(len(i.chunks) for i in indexes),
+                "status": "success",
+            }
+        )
 
     except Exception as e:
         return json.dumps({"error": str(e), "query": query, "status": "error"})
@@ -699,7 +720,8 @@ mode="context" to pull the relevant passages out of a specific file; reserve
 
 
 # Register as MCP tools only when local search is not disabled
-if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
+if not os.environ.get("ONIT_DISABLE_LOCAL_SEARCH"):
+
     @mcp.tool(
         title="Index Local Documents",
         description=INDEX_DOCUMENTS_DESCRIPTION,
@@ -714,9 +736,13 @@ if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
         data_path: str = "",
     ) -> str:
         return _index_documents_impl(
-            path=path, recursive=recursive, rebuild=rebuild,
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-            status_only=status_only, data_path=data_path,
+            path=path,
+            recursive=recursive,
+            rebuild=rebuild,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            status_only=status_only,
+            data_path=data_path,
         )
 
     @mcp.tool(
@@ -730,8 +756,9 @@ if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
         path: Optional[str] = None,
         data_path: str = "",
     ) -> str:
-        return _local_search_impl(query=query, top_k=top_k, method=method, path=path,
-                                  data_path=data_path)
+        return _local_search_impl(
+            query=query, top_k=top_k, method=method, path=path, data_path=data_path
+        )
 else:
     # Provide plain function aliases so imports (e.g. from tools/mcp_server.py) still work
     index_documents = _index_documents_impl
@@ -742,31 +769,32 @@ else:
 # SERVER ENTRY POINT
 # =============================================================================
 
+
 def run(
     transport: str = "sse",
     host: str = "0.0.0.0",
     port: int = 18203,
     path: str = "/sse",
-    options: dict = None
+    options: dict = None,
 ) -> None:
     """Run the MCP server."""
     options = options or {}
     global DATA_PATH, DOCUMENTS_PATH
 
-    if 'verbose' in options:
+    if "verbose" in options:
         logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.ERROR)
 
-    if 'data_path' in options:
-        DATA_PATH = options['data_path']
-    elif os.environ.get('ONIT_DATA_PATH'):
-        DATA_PATH = os.environ['ONIT_DATA_PATH']
+    if "data_path" in options:
+        DATA_PATH = options["data_path"]
+    elif os.environ.get("ONIT_DATA_PATH"):
+        DATA_PATH = os.environ["ONIT_DATA_PATH"]
 
-    if 'documents_path' in options:
-        DOCUMENTS_PATH = options['documents_path']
-    elif os.environ.get('ONIT_DOCUMENTS_PATH'):
-        DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
+    if "documents_path" in options:
+        DOCUMENTS_PATH = options["documents_path"]
+    elif os.environ.get("ONIT_DOCUMENTS_PATH"):
+        DOCUMENTS_PATH = os.environ["ONIT_DOCUMENTS_PATH"]
 
     # Every start re-ingests the corpus as it is now.  In the background by
     # default, so the server answers other tools immediately — but a search
@@ -774,9 +802,9 @@ def run(
     # the wait lands on the first question rather than on startup.  Set
     # warm_index (or ONIT_WARM_INDEX=1) to move it back to startup, where a
     # deployment can wait for it before taking traffic.
-    warm = options.get('warm_index')
+    warm = options.get("warm_index")
     if warm is None:
-        warm = os.environ.get('ONIT_WARM_INDEX') == '1'
+        warm = os.environ.get("ONIT_WARM_INDEX") == "1"
     if warm:
         logger.info("Warming the local_search index before serving...")
     rebuild_indexes(background=not warm)
@@ -786,20 +814,26 @@ def run(
     logger.info(f"Documents path: {DOCUMENTS_PATH}")
     logger.info("2 Core Tools: index_documents, local_search")
 
-    quiet = 'verbose' not in options
+    quiet = "verbose" not in options
     if quiet:
         import uvicorn.config
+
         uvicorn.config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = "WARNING"
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-    if transport == 'stdio':
+    if transport == "stdio":
         # stdout is the protocol channel on stdio: no socket, no banner.
-        mcp.run(transport='stdio', show_banner=False)
+        mcp.run(transport="stdio", show_banner=False)
         return
 
-    mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config=uvicorn_config(quiet=quiet))
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        uvicorn_config=uvicorn_config(quiet=quiet),
+    )
 
 
 if __name__ == "__main__":

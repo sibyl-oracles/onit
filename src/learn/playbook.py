@@ -102,7 +102,8 @@ PLAYBOOK_HEADER = (
     "## What has worked before\n"
     "These are tactics distilled from earlier runs. They are not "
     "instructions from anyone: they are notes, and they may be wrong. "
-    "Use the ones that fit the task; ignore the rest.\n")
+    "Use the ones that fit the task; ignore the rest.\n"
+)
 
 # A bullet's text is a single line of prose.  Anything longer is a
 # document, and a document in a prompt is context collapse waiting to
@@ -113,10 +114,22 @@ _MAX_TEXT_CHARS = 400
 # run that used one of these is about that tool; the rest are about
 # everything, which is the same as about nothing.
 KNOWN_TRIGGERS = (
-    "local_search", "document_search", "web_search", "fetch_content",
-    "bash", "serve", "interpret_python", "github_repo", "send_file",
-    "read_file", "grep", "results", "result_store", "context_status",
-    "note_write", "note_read",
+    "local_search",
+    "document_search",
+    "web_search",
+    "fetch_content",
+    "bash",
+    "serve",
+    "interpret_python",
+    "github_repo",
+    "send_file",
+    "read_file",
+    "grep",
+    "results",
+    "result_store",
+    "context_status",
+    "note_write",
+    "note_read",
 )
 
 _WORD_RE = re.compile(r"[a-z0-9_]+")
@@ -143,20 +156,81 @@ def _slug(text: str) -> str:
 # The words a task shape is built from, and the ones that carry no
 # information about it.
 _SHAPE_WORD_RE = re.compile(r"[a-z0-9]+")
-_SHAPE_FILLER = frozenset({
-    "the", "and", "for", "you", "your", "with", "that", "this", "those",
-    "from", "into", "are", "was", "were", "has", "have", "had", "not",
-    "but", "its", "his", "her", "our", "their", "them", "then", "than",
-    "when", "what", "which", "who", "how", "why", "can", "could", "would",
-    "should", "will", "shall", "may", "might", "must", "get", "got",
-    "please", "thanks", "thank", "me", "my", "us", "all", "any", "some",
-    "there", "here", "about", "onto", "over", "under", "again",
-    "also", "just", "very", "much", "more", "most", "less", "least",
-})
+_SHAPE_FILLER = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "you",
+        "your",
+        "with",
+        "that",
+        "this",
+        "those",
+        "from",
+        "into",
+        "are",
+        "was",
+        "were",
+        "has",
+        "have",
+        "had",
+        "not",
+        "but",
+        "its",
+        "his",
+        "her",
+        "our",
+        "their",
+        "them",
+        "then",
+        "than",
+        "when",
+        "what",
+        "which",
+        "who",
+        "how",
+        "why",
+        "can",
+        "could",
+        "would",
+        "should",
+        "will",
+        "shall",
+        "may",
+        "might",
+        "must",
+        "get",
+        "got",
+        "please",
+        "thanks",
+        "thank",
+        "me",
+        "my",
+        "us",
+        "all",
+        "any",
+        "some",
+        "there",
+        "here",
+        "about",
+        "onto",
+        "over",
+        "under",
+        "again",
+        "also",
+        "just",
+        "very",
+        "much",
+        "more",
+        "most",
+        "less",
+        "least",
+    }
+)
 
 
-def bullet_id(text: str, trigger: str | None = None,
-              scope: str = SCOPE_GLOBAL) -> str:
+def bullet_id(text: str, trigger: str | None = None, scope: str = SCOPE_GLOBAL) -> str:
     """The id a bullet gets, derived from its text, trigger and scope.
 
     Derived rather than sequential so that the same tactic proposed
@@ -175,9 +249,11 @@ def bullet_id(text: str, trigger: str | None = None,
     collapsing them would let a private tactic leak into the global
     file — which is the one thing the privacy rule forbids.
     """
-    key = "%s\x00%s\x00%s" % ((text or "").strip().lower(),
-                              (trigger or "").strip(),
-                              (scope or "").strip())
+    key = "%s\x00%s\x00%s" % (
+        (text or "").strip().lower(),
+        (trigger or "").strip(),
+        (scope or "").strip(),
+    )
     digest = hashlib.sha256(key.encode("utf-8"))
     return "pb-" + digest.hexdigest()[:8]
 
@@ -185,8 +261,8 @@ def bullet_id(text: str, trigger: str | None = None,
 def playbook_dir(config_data: dict | None = None) -> str:
     """Directory the playbooks live in, inside the learned store."""
     from .config import trajectory_dir
-    return os.path.join(os.path.dirname(trajectory_dir(config_data)),
-                        "playbook")
+
+    return os.path.join(os.path.dirname(trajectory_dir(config_data)), "playbook")
 
 
 def global_path(config_data: dict | None = None) -> str:
@@ -195,8 +271,7 @@ def global_path(config_data: dict | None = None) -> str:
 
 def owner_path(owner: str, config_data: dict | None = None) -> str:
     """The per-owner playbook.  One file per owner, by owner hash."""
-    return os.path.join(playbook_dir(config_data),
-                        "user", "%s.json" % _safe_owner(owner))
+    return os.path.join(playbook_dir(config_data), "user", "%s.json" % _safe_owner(owner))
 
 
 def _safe_owner(owner: str) -> str:
@@ -205,10 +280,15 @@ def _safe_owner(owner: str) -> str:
 
 # ── the item ──────────────────────────────────────────────────────────────
 
-def make_bullet(text: str, *, scope: str = SCOPE_GLOBAL,
-                trigger: str | None = None,
-                provenance: list | None = None,
-                status: str = PROBATION) -> dict:
+
+def make_bullet(
+    text: str,
+    *,
+    scope: str = SCOPE_GLOBAL,
+    trigger: str | None = None,
+    provenance: list | None = None,
+    status: str = PROBATION,
+) -> dict:
     """A new bullet, in the RFC's schema.
 
     New bullets start on ``probation``: they are sampled rather than
@@ -230,18 +310,19 @@ def make_bullet(text: str, *, scope: str = SCOPE_GLOBAL,
         "used": 0,
         "helped": 0,
         "hurt": 0,
-        "status": status if status in (ACTIVE, PROBATION, DEPRECATED)
-                   else PROBATION,
+        "status": status if status in (ACTIVE, PROBATION, DEPRECATED) else PROBATION,
         "provenance": list(provenance or []),
     }
 
 
 def _valid_bullet(item) -> bool:
     """Whether a dict is a bullet this module can work with."""
-    return (isinstance(item, dict)
-            and isinstance(item.get("text"), str)
-            and item.get("text", "").strip() != ""
-            and isinstance(item.get("id"), str))
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("text"), str)
+        and item.get("text", "").strip() != ""
+        and isinstance(item.get("id"), str)
+    )
 
 
 def _normalize(item: dict) -> dict:
@@ -251,15 +332,15 @@ def _normalize(item: dict) -> dict:
     a person with a typo in it should be skipped, not crash the run.
     """
     out = dict(item)
-    out["id"] = str(out.get("id") or bullet_id(out.get("text", ""),
-                                               out.get("trigger"),
-                                               out.get("scope")))
+    out["id"] = str(
+        out.get("id") or bullet_id(out.get("text", ""), out.get("trigger"), out.get("scope"))
+    )
     out["text"] = " ".join(str(out.get("text", "")).split())[:_MAX_TEXT_CHARS]
     out["scope"] = str(out.get("scope") or SCOPE_GLOBAL)
     out["trigger"] = str(out.get("trigger") or "")
-    out["status"] = (out.get("status")
-                     if out.get("status") in (ACTIVE, PROBATION, DEPRECATED)
-                     else PROBATION)
+    out["status"] = (
+        out.get("status") if out.get("status") in (ACTIVE, PROBATION, DEPRECATED) else PROBATION
+    )
     for field in ("used", "helped", "hurt"):
         try:
             out[field] = int(out.get(field) or 0)
@@ -270,6 +351,7 @@ def _normalize(item: dict) -> dict:
 
 
 # ── reading and writing ──────────────────────────────────────────────────
+
 
 def read_playbook(path: str) -> dict:
     """Read a playbook file.  A missing or broken file reads as empty.
@@ -284,8 +366,7 @@ def read_playbook(path: str) -> dict:
         return {"version": 0, "items": []}
     if not isinstance(data, dict):
         return {"version": 0, "items": []}
-    items = [ _normalize(i) for i in (data.get("items") or [])
-              if _valid_bullet(i) ]
+    items = [_normalize(i) for i in (data.get("items") or []) if _valid_bullet(i)]
     try:
         version = int(data.get("version") or 0)
     except (TypeError, ValueError):
@@ -334,6 +415,7 @@ def load(config_data: dict | None = None, owner: str | None = None) -> dict:
 
 # ── the deltas ───────────────────────────────────────────────────────────
 
+
 def apply_deltas(playbook: dict, deltas: list) -> dict:
     """Apply a list of delta operations to a playbook (I2).
 
@@ -353,9 +435,10 @@ def apply_deltas(playbook: dict, deltas: list) -> dict:
     its text.  Proposing the same tactic twice updates the existing
     bullet's provenance rather than adding a near-duplicate.
     """
-    result = {"version": int(playbook.get("version") or 0),
-              "items": [dict(i) for i in (playbook.get("items") or [])
-                        if _valid_bullet(i)]}
+    result = {
+        "version": int(playbook.get("version") or 0),
+        "items": [dict(i) for i in (playbook.get("items") or []) if _valid_bullet(i)],
+    }
     by_id = {i["id"]: i for i in result["items"]}
     changed = False
 
@@ -371,7 +454,8 @@ def apply_deltas(playbook: dict, deltas: list) -> dict:
                 text,
                 scope=str(delta.get("scope") or SCOPE_GLOBAL),
                 trigger=delta.get("trigger"),
-                provenance=delta.get("provenance"))
+                provenance=delta.get("provenance"),
+            )
             existing = by_id.get(item["id"])
             if existing is None:
                 result["items"].append(item)
@@ -399,7 +483,7 @@ def apply_deltas(playbook: dict, deltas: list) -> dict:
                 if trigger != target["trigger"]:
                     target["trigger"] = trigger
                     changed = True
-            for source in (delta.get("provenance") or []):
+            for source in delta.get("provenance") or []:
                 if source not in target["provenance"]:
                     target["provenance"].append(source)
                     changed = True
@@ -435,9 +519,14 @@ def apply_deltas(playbook: dict, deltas: list) -> dict:
 
 # ── the budget ───────────────────────────────────────────────────────────
 
-def select(items: list, *, token_budget: int = DEFAULT_TOKEN_BUDGET,
-           trigger: str | None = None,
-           sample: float | None = None) -> list:
+
+def select(
+    items: list,
+    *,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
+    trigger: str | None = None,
+    sample: float | None = None,
+) -> list:
     """The bullets to inject, within the budget.
 
     The order is: deprecated bullets are dropped, bullets matching the
@@ -460,8 +549,7 @@ def select(items: list, *, token_budget: int = DEFAULT_TOKEN_BUDGET,
         # does not hide the rest.
         pool = matching + rest
     if sample is not None and sample < 1.0:
-        pool = [i for i in pool
-                if i.get("status") != PROBATION or _sampled(i, sample)]
+        pool = [i for i in pool if i.get("status") != PROBATION or _sampled(i, sample)]
     # The trigger grouping is a *grouping*, not a total order: the
     # bullets inside each group are ordered by their own merit.  Sorting
     # the whole pool by merit alone would undo the grouping, which is
@@ -576,10 +664,13 @@ def render(items: list) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_context(config_data: dict | None = None, owner: str | None = None,
-                  trigger: str | None = None,
-                  token_budget: int = DEFAULT_TOKEN_BUDGET,
-                  sample: float | None = None) -> dict:
+def build_context(
+    config_data: dict | None = None,
+    owner: str | None = None,
+    trigger: str | None = None,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
+    sample: float | None = None,
+) -> dict:
     """Everything a caller needs to inject a playbook block.
 
     Returns ``{"text", "items", "ids", "version"}``.  ``version`` is the
@@ -588,8 +679,7 @@ def build_context(config_data: dict | None = None, owner: str | None = None,
     last one.
     """
     playbook = load(config_data, owner=owner)
-    items = select(playbook["items"], token_budget=token_budget,
-                   trigger=trigger, sample=sample)
+    items = select(playbook["items"], token_budget=token_budget, trigger=trigger, sample=sample)
     return {
         "text": render(items),
         "items": items,
@@ -599,6 +689,7 @@ def build_context(config_data: dict | None = None, owner: str | None = None,
 
 
 # ── the reflector ────────────────────────────────────────────────────────
+
 
 def cluster(records: list) -> list:
     """Group records by the *shape* of what they did.
@@ -632,8 +723,10 @@ def cluster(records: list) -> list:
     for record in records:
         key = task_shape(record)
         buckets.setdefault(key, []).append(record)
-    return [{"key": key, "records": buckets[key]}
-            for key in sorted(buckets, key=lambda k: (-len(buckets[k]), k))]
+    return [
+        {"key": key, "records": buckets[key]}
+        for key in sorted(buckets, key=lambda k: (-len(buckets[k]), k))
+    ]
 
 
 def tool_signature(record: dict) -> str:
@@ -646,11 +739,10 @@ def tool_signature(record: dict) -> str:
     keep it from ever being learned twice.
     """
     parts = []
-    for turn in (record.get("trajectory") or []):
-        for call in (turn.get("tools") or []):
+    for turn in record.get("trajectory") or []:
+        for call in turn.get("tools") or []:
             name = call.get("name") or "?"
-            parts.append("%s:%s" % (name, "ok" if call.get("ok", True)
-                                    else "err"))
+            parts.append("%s:%s" % (name, "ok" if call.get("ok", True) else "err"))
     return "|".join(parts) or "(no tools)"
 
 
@@ -662,8 +754,8 @@ def shape_signature(record: dict) -> str:
     the two sides of a contrast never met.
     """
     parts = []
-    for turn in (record.get("trajectory") or []):
-        for call in (turn.get("tools") or []):
+    for turn in record.get("trajectory") or []:
+        for call in turn.get("tools") or []:
             parts.append(call.get("name") or "?")
     return "|".join(parts) or "(no tools)"
 
@@ -784,23 +876,31 @@ def candidate_deltas(cluster_records: list) -> list:
     bad_ok = _succeeded_set(bad)
     deltas = []
     for tool in sorted(good_tools - bad_tools):
-        deltas.append({
-            "op": "insert",
-            "trigger": tool,
-            "text": ("When this kind of task comes up, %s worked in the runs "
-                     "that went well and did not appear in the ones that "
-                     "did not." % tool),
-            "provenance": [_record_ref(r) for r in good[:3]],
-        })
+        deltas.append(
+            {
+                "op": "insert",
+                "trigger": tool,
+                "text": (
+                    "When this kind of task comes up, %s worked in the runs "
+                    "that went well and did not appear in the ones that "
+                    "did not." % tool
+                ),
+                "provenance": [_record_ref(r) for r in good[:3]],
+            }
+        )
     for tool in sorted(bad_tools - good_tools):
-        deltas.append({
-            "op": "insert",
-            "trigger": tool,
-            "text": ("When this kind of task comes up, %s was present in "
-                     "the runs that went badly and absent from the ones "
-                     "that went well." % tool),
-            "provenance": [_record_ref(r) for r in bad[:3]],
-        })
+        deltas.append(
+            {
+                "op": "insert",
+                "trigger": tool,
+                "text": (
+                    "When this kind of task comes up, %s was present in "
+                    "the runs that went badly and absent from the ones "
+                    "that went well." % tool
+                ),
+                "provenance": [_record_ref(r) for r in bad[:3]],
+            }
+        )
     # The same tool, used badly: it failed in the runs that went badly
     # and worked in the ones that went well.  This is the most specific
     # thing the store can say, and the most actionable.
@@ -813,16 +913,21 @@ def candidate_deltas(cluster_records: list) -> list:
     # *both* sides was dropped, losing the one case this rule exists to
     # report.
     for tool in sorted(good_ok & (bad_tools - bad_ok)):
-        deltas.append({
-            "op": "insert",
-            "trigger": tool,
-            "text": ("When %s is used on this kind of task, it succeeded in "
-                     "the runs that went well and failed in the ones that "
-                     "did not — check how it is called before relying on "
-                     "it." % tool),
-            "provenance": ([_record_ref(r) for r in bad[:3]]
-                           + [_record_ref(r) for r in good[:3]]),
-        })
+        deltas.append(
+            {
+                "op": "insert",
+                "trigger": tool,
+                "text": (
+                    "When %s is used on this kind of task, it succeeded in "
+                    "the runs that went well and failed in the ones that "
+                    "did not — check how it is called before relying on "
+                    "it." % tool
+                ),
+                "provenance": (
+                    [_record_ref(r) for r in bad[:3]] + [_record_ref(r) for r in good[:3]]
+                ),
+            }
+        )
     return deltas
 
 
@@ -830,8 +935,8 @@ def _tool_set(records: list) -> set:
     """Every tool that ran in these records."""
     tools = set()
     for record in records:
-        for turn in (record.get("trajectory") or []):
-            for call in (turn.get("tools") or []):
+        for turn in record.get("trajectory") or []:
+            for call in turn.get("tools") or []:
                 if call.get("name"):
                     tools.add(call["name"])
     return tools
@@ -841,17 +946,21 @@ def _succeeded_set(records: list) -> set:
     """The tools that ran *and worked* in these records."""
     tools = set()
     for record in records:
-        for turn in (record.get("trajectory") or []):
-            for call in (turn.get("tools") or []):
+        for turn in record.get("trajectory") or []:
+            for call in turn.get("tools") or []:
                 if call.get("name") and call.get("ok", True):
                     tools.add(call["name"])
     return tools
 
 
-def reflect(records: list, *, owner: str | None = None,
-            scope: str = SCOPE_GLOBAL,
-            exclude_holdout: bool = True,
-            config_data: dict | None = None) -> list:
+def reflect(
+    records: list,
+    *,
+    owner: str | None = None,
+    scope: str = SCOPE_GLOBAL,
+    exclude_holdout: bool = True,
+    config_data: dict | None = None,
+) -> list:
     """The deltas the whole corpus suggests.
 
     The offline pass the RFC calls the Reflector, in its mechanical
@@ -871,6 +980,7 @@ def reflect(records: list, *, owner: str | None = None,
     # answers, and excluding one of them leaks the other nineteen.
     if exclude_holdout:
         from .eval import filter_excluded
+
         records = filter_excluded(records, config_data)
 
     deltas = []
@@ -884,8 +994,9 @@ def reflect(records: list, *, owner: str | None = None,
     return deltas
 
 
-def curate(playbook: dict, deltas: list, *, config_data: dict | None = None,
-           owner: str | None = None) -> dict:
+def curate(
+    playbook: dict, deltas: list, *, config_data: dict | None = None, owner: str | None = None
+) -> dict:
     """Apply deltas and write the result (the Curator).
 
     Writes to the owner's own file when a scope is given, and to the
@@ -900,8 +1011,7 @@ def curate(playbook: dict, deltas: list, *, config_data: dict | None = None,
     new_playbook = apply_deltas(playbook, deltas)
     if new_playbook == playbook:
         return playbook
-    path = (owner_path(owner, config_data) if owner
-            else global_path(config_data))
+    path = owner_path(owner, config_data) if owner else global_path(config_data)
     _keep_previous(path)
     write_playbook(path, new_playbook)
     return new_playbook
@@ -929,8 +1039,8 @@ def _keep_previous(path: str) -> None:
 
 # ── the lifecycle ────────────────────────────────────────────────────────
 
-def attribute(items: list, ids: list, *, helped: int = 0,
-              hurt: int = 0) -> list:
+
+def attribute(items: list, ids: list, *, helped: int = 0, hurt: int = 0) -> list:
     """Credit the bullets a run was shown, and return the new counters.
 
     This is the credit-assignment half of the loop.  A run that was
@@ -952,8 +1062,7 @@ def attribute(items: list, ids: list, *, helped: int = 0,
     return items
 
 
-def decay(items: list, *, now: float | None = None,
-          max_age_days: int = MAX_AGE_DAYS) -> list:
+def decay(items: list, *, now: float | None = None, max_age_days: int = MAX_AGE_DAYS) -> list:
     """Move stale and counterproductive bullets out of the active set.
 
     Two rules, both from the RFC:

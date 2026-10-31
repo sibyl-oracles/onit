@@ -86,15 +86,38 @@ from difflib import SequenceMatcher
 # "thanks, no, do it again" is a rephrase and the "thanks" would
 # otherwise win.
 _REPHRASE_ANYWHERE = (
-    "not quite", "that's not", "thats not", "that is not",
-    "i said", "i already said", "i asked", "as i said", "like i said",
-    "you didn't", "you did not", "you ignored", "you misunderstood",
-    "that's wrong", "thats wrong", "that's not right", "thats not right",
-    "incorrect", "wrong answer",
-    "still not", "still doesn't", "still does not", "still isn't",
-    "not working", "doesn't work", "does not work",
-    "didn't work", "did not work",
-    "nope", "try again", "not what i", "not what you",
+    "not quite",
+    "that's not",
+    "thats not",
+    "that is not",
+    "i said",
+    "i already said",
+    "i asked",
+    "as i said",
+    "like i said",
+    "you didn't",
+    "you did not",
+    "you ignored",
+    "you misunderstood",
+    "that's wrong",
+    "thats wrong",
+    "that's not right",
+    "thats not right",
+    "incorrect",
+    "wrong answer",
+    "still not",
+    "still doesn't",
+    "still does not",
+    "still isn't",
+    "not working",
+    "doesn't work",
+    "does not work",
+    "didn't work",
+    "did not work",
+    "nope",
+    "try again",
+    "not what i",
+    "not what you",
 )
 
 # The same signal, but only trusted at the start of the task.  Each of
@@ -102,8 +125,17 @@ _REPHRASE_ANYWHERE = (
 # "no" in "there is no way", "again" in "the same again" — so they count
 # only where a correction would put them.
 _REPHRASE_PREFIX = (
-    "no", "not quite", "nope", "again", "wrong", "incorrect",
-    "that's not", "thats not", "that is not", "i said", "i asked",
+    "no",
+    "not quite",
+    "nope",
+    "again",
+    "wrong",
+    "incorrect",
+    "that's not",
+    "thats not",
+    "that is not",
+    "i said",
+    "i asked",
 )
 
 # The openers that mean "good, next thing" — a continuation, not a
@@ -115,9 +147,24 @@ _REPHRASE_PREFIX = (
 # correction that says nothing positive, and reading it as approval is
 # the failure mode this module exists to avoid.
 _ACCEPT_OPENERS = (
-    "thanks", "thank you", "perfect", "great", "nice work",
-    "that works", "that worked", "good", "ok", "okay", "cool", "nice",
-    "awesome", "excellent", "got it", "yep", "yes", "done",
+    "thanks",
+    "thank you",
+    "perfect",
+    "great",
+    "nice work",
+    "that works",
+    "that worked",
+    "good",
+    "ok",
+    "okay",
+    "cool",
+    "nice",
+    "awesome",
+    "excellent",
+    "got it",
+    "yep",
+    "yes",
+    "done",
 )
 
 # A rephrase is judged on how much of the previous task it repeats.  The
@@ -162,11 +209,13 @@ _SUBSTITUTION_MIN_DIFFERENCES = 1
 # Words that carry no subject: changing them does not change the task.
 # "the", "file" and "now" are interchangeable between two requests that
 # are otherwise identical; "mbpp" and "bigcodebench" are not.
-_SUBJECT_MARKERS = frozenset("""
+_SUBJECT_MARKERS = frozenset(
+    """
 file files now then also add run make use get set new old update updated
 write read show list check test tests code script data value values
 result results output outputs step steps line lines number numbers
-""".split())
+""".split()
+)
 
 
 def _numbers_differ(only_a: set, only_b: set) -> bool:
@@ -180,17 +229,20 @@ def _numbers_differ(only_a: set, only_b: set) -> bool:
     counted, so "run test 1" and "run test 2" disagree even though
     "test" is common to both.
     """
+
     def numbers(words):
         return {w for w in words if w.isdigit()}
 
     a_numbers, b_numbers = numbers(only_a), numbers(only_b)
     return bool(a_numbers) and bool(b_numbers)
 
+
 # The comparison runs on this, not on the raw text: punctuation, casing and
 # the filler words that make two spellings of the same request look
 # different.  Removed here rather than by a stopword list so that the
 # comparison is one function, not a stack of them.
-_FILLER = frozenset("""
+_FILLER = frozenset(
+    """
 a an the and or but if then than so as of to in on at for with from by into
 about over under again between within without across after before during
 through out up down off onto upon per via is are was were be been being am
@@ -200,7 +252,8 @@ their he she his her this that these those there here what which who whom
 whose when where why how please pls kindly hi hey hello just some any all
 very really actually maybe let lets like want wants need needs help sure
 also now new please again just really very much more most other another
-""".split())
+""".split()
+)
 
 _WORD_RE = re.compile(r"[a-z0-9_]+")
 
@@ -212,8 +265,11 @@ def _tokens(text: str) -> list:
     CNN" are different requests, and a tokenizer that drops one-digit
     numbers cannot tell them apart.
     """
-    return [w for w in _WORD_RE.findall((text or "").lower())
-            if (w not in _FILLER and len(w) > 1) or w.isdigit()]
+    return [
+        w
+        for w in _WORD_RE.findall((text or "").lower())
+        if (w not in _FILLER and len(w) > 1) or w.isdigit()
+    ]
 
 
 def similarity(a: str, b: str) -> float:
@@ -308,8 +364,8 @@ def _starts_with(text: str, openers) -> bool:
         if lowered == opener.strip():
             return True
         if lowered.startswith(opener) and (
-                len(lowered) == len(opener)
-                or not lowered[len(opener)].isalnum()):
+            len(lowered) == len(opener) or not lowered[len(opener)].isalnum()
+        ):
             return True
     return False
 

@@ -18,6 +18,7 @@ def _schema(properties, required=None):
 
 # ── types ───────────────────────────────────────────────────────────────────
 
+
 class TestTypes:
     def test_matching_types_pass(self):
         schema = _schema({"query": {"type": "string"}, "depth": {"type": "integer"}})
@@ -67,6 +68,7 @@ class TestTypes:
 
 # ── required ────────────────────────────────────────────────────────────────
 
+
 class TestRequired:
     def test_missing_required_is_reported(self):
         schema = _schema({"query": {"type": "string"}}, required=["query"])
@@ -81,12 +83,14 @@ class TestRequired:
     def test_explicit_null_is_not_missing(self):
         """blank_required_args owns the blank/None case and has a better error
         for it; this check is only about absence."""
-        schema = _schema({"query": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
-                         required=["query"])
+        schema = _schema(
+            {"query": {"anyOf": [{"type": "string"}, {"type": "null"}]}}, required=["query"]
+        )
         assert validate_arguments(schema, {"query": None}) == []
 
 
 # ── enum and range ──────────────────────────────────────────────────────────
+
 
 class TestEnumAndRange:
     def test_bad_enum_lists_the_choices(self):
@@ -125,6 +129,7 @@ class TestEnumAndRange:
 
 # ── things that must never refuse a call ────────────────────────────────────
 
+
 class TestUnknownParameters:
     """The failure the recorded trajectories actually show: a model reaching
     for parameters the tool does not define (read_file(offset=..., limit=...))."""
@@ -142,8 +147,7 @@ class TestUnknownParameters:
 
     def test_the_error_names_the_real_parameters(self):
         """Naming them is what turns a guess into a fix."""
-        schema = _schema({"path": {"type": "string"},
-                          "max_chars": {"type": "integer"}})
+        schema = _schema({"path": {"type": "string"}, "max_chars": {"type": "integer"}})
         schema["additionalProperties"] = False
         problems = validate_arguments(schema, {"path": "a.txt", "limit": 10})
         assert "path" in problems[0] and "max_chars" in problems[0]
@@ -155,20 +159,22 @@ class TestUnknownParameters:
         assert len(problems) == 2
 
     def test_declared_parameters_still_pass(self):
-        schema = _schema({"path": {"type": "string"},
-                          "data_path": {"type": "string"}})
+        schema = _schema({"path": {"type": "string"}, "data_path": {"type": "string"}})
         schema["additionalProperties"] = False
         assert validate_arguments(schema, {"path": "a", "data_path": "/tmp"}) == []
 
     def test_harness_injected_params_are_declared_so_they_pass(self):
         """session_id/data_path are injected only when tool_accepts_param says
         the tool declares them, so they are never 'unknown' at this point."""
-        schema = _schema({"q": {"type": "string"},
-                          "session_id": {"type": "string"},
-                          "data_path": {"type": "string"}})
+        schema = _schema(
+            {
+                "q": {"type": "string"},
+                "session_id": {"type": "string"},
+                "data_path": {"type": "string"},
+            }
+        )
         schema["additionalProperties"] = False
-        assert validate_arguments(
-            schema, {"q": "x", "session_id": "s", "data_path": "/d"}) == []
+        assert validate_arguments(schema, {"q": "x", "session_id": "s", "data_path": "/d"}) == []
 
 
 class TestNeverRefuses:
@@ -181,8 +187,14 @@ class TestNeverRefuses:
         assert validate_arguments({}, {"anything": object()}) == []
 
     def test_malformed_schema_does_not_raise(self):
-        for bad in (None, [], "schema", {"properties": "not a dict"},
-                    {"properties": {"q": "not a dict"}}, {"required": "q"}):
+        for bad in (
+            None,
+            [],
+            "schema",
+            {"properties": "not a dict"},
+            {"properties": {"q": "not a dict"}},
+            {"required": "q"},
+        ):
             assert validate_arguments(bad, {"q": 1}) == []
 
     def test_non_dict_arguments_do_not_raise(self):
@@ -190,6 +202,7 @@ class TestNeverRefuses:
 
 
 # ── coercion ────────────────────────────────────────────────────────────────
+
 
 class TestCoercion:
     def test_numeric_string_to_integer(self):

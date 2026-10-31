@@ -34,41 +34,41 @@ import os
 import pytest
 
 from src.learn import signals as sig
-from src.learn.corpus import (format_summary, label_corpus, read_labels,
-                               write_labels)
+from src.learn.corpus import format_summary, label_corpus, read_labels, write_labels
 from src.ui import rating as rating_mod
 
 
 # ── the rephrase test ─────────────────────────────────────────────────────
 
-class TestRephrase:
 
+class TestRephrase:
     def test_the_same_task_twice_is_a_rephrase(self):
-        assert sig.is_rephrase("run the unit tests",
-                               "run the unit tests") is True
+        assert sig.is_rephrase("run the unit tests", "run the unit tests") is True
 
     def test_a_reworded_task_is_a_rephrase(self):
         # Different words, same request.  This is the case a keyword
         # matcher misses and a similarity score catches.
-        assert sig.is_rephrase("please run the unit tests for the parser",
-                               "run the parser unit tests please") is True
+        assert (
+            sig.is_rephrase(
+                "please run the unit tests for the parser", "run the parser unit tests please"
+            )
+            is True
+        )
 
     def test_a_correction_cue_is_a_rephrase(self):
-        assert sig.is_rephrase("summarize the report",
-                               "no, summarize the report") is True
-        assert sig.is_rephrase("summarize the report",
-                               "I said summarize, not summarize") is True
+        assert sig.is_rephrase("summarize the report", "no, summarize the report") is True
+        assert sig.is_rephrase("summarize the report", "I said summarize, not summarize") is True
 
     def test_a_completely_different_task_is_not_a_rephrase(self):
-        assert sig.is_rephrase("run the unit tests",
-                               "now write a haiku about rain") is False
+        assert sig.is_rephrase("run the unit tests", "now write a haiku about rain") is False
 
     def test_a_follow_up_that_shares_a_word_or_two_is_not_a_rephrase(self):
         # The threshold has to be high.  A multi-step task that mentions
         # the same noun as the previous one is a continuation, and calling
         # it a failure would label every real workflow as broken.
-        assert sig.is_rephrase("summarize the quarterly report",
-                               "now email it to the team") is False
+        assert (
+            sig.is_rephrase("summarize the quarterly report", "now email it to the team") is False
+        )
 
     def test_an_empty_task_is_not_a_rephrase(self):
         assert sig.is_rephrase("", "run the tests") is False
@@ -86,63 +86,57 @@ class TestRephrase:
 
 
 class TestSubstitution:
-
     def test_a_swapped_subject_is_a_substitution(self):
         # The corpus's most common false positive: "now do the same for
         # <other subject>".  Same shape, different task.
-        a = ("make a complete mbpp benchmarking using Qwen/Qwen3.8-27B. "
-             "Update the results table of scores.")
-        b = ("make a complete bigcodebench benchmarking using "
-             "Qwen/Qwen3.8-27B. Update the results table of scores.")
+        a = (
+            "make a complete mbpp benchmarking using Qwen/Qwen3.8-27B. "
+            "Update the results table of scores."
+        )
+        b = (
+            "make a complete bigcodebench benchmarking using "
+            "Qwen/Qwen3.8-27B. Update the results table of scores."
+        )
         assert sig.is_substitution(a, b) is True
         assert sig.is_rephrase(a, b) is False
 
     def test_a_reworded_task_is_not_a_substitution(self):
         # Adding a word and changing no subject is the same request.
-        assert sig.is_substitution("run the unit tests",
-                                   "run the parser unit tests") is False
-        assert sig.is_rephrase("run the unit tests",
-                               "run the parser unit tests") is True
+        assert sig.is_substitution("run the unit tests", "run the parser unit tests") is False
+        assert sig.is_rephrase("run the unit tests", "run the parser unit tests") is True
 
     def test_the_same_task_is_not_a_substitution(self):
-        assert sig.is_substitution("run the unit tests",
-                                   "run the unit tests") is False
+        assert sig.is_substitution("run the unit tests", "run the unit tests") is False
 
     def test_an_unrelated_task_is_not_a_substitution(self):
-        assert sig.is_substitution("summarize the report",
-                                   "write a haiku about rain") is False
+        assert sig.is_substitution("summarize the report", "write a haiku about rain") is False
 
     def test_a_very_different_task_is_not_a_substitution(self):
         # Too many differences to be a one-word swap.
         a = "benchmark mbpp with qwen and update the results table"
-        b = ("deploy the service to staging with a canary and watch the "
-             "latency for an hour")
+        b = "deploy the service to staging with a canary and watch the latency for an hour"
         assert sig.is_substitution(a, b) is False
 
 
 # ── the acceptance test ───────────────────────────────────────────────────
 
-class TestAcceptance:
 
+class TestAcceptance:
     def test_an_explicit_thanks_is_an_acceptance(self):
-        assert sig.is_acceptance("summarize the report",
-                                  "thanks, that worked") is True
+        assert sig.is_acceptance("summarize the report", "thanks, that worked") is True
 
     def test_a_thanks_followed_by_more_work_is_an_acceptance(self):
-        assert sig.is_acceptance("summarize the report",
-                                  "thanks, now do the same for Q3") is True
+        assert sig.is_acceptance("summarize the report", "thanks, now do the same for Q3") is True
 
     def test_a_rephrase_is_not_also_an_acceptance(self):
         # "thanks, no, do it again" is a rephrase.  The order of the two
         # checks matters and this is where it shows.
-        assert sig.is_acceptance("summarize the report",
-                                  "thanks, no, do it again") is False
+        assert sig.is_acceptance("summarize the report", "thanks, no, do it again") is False
 
     def test_an_unrelated_next_task_is_not_an_acceptance(self):
         # Silence is not consent.  A follow-up that says nothing about the
         # previous answer must not be read as approval of it.
-        assert sig.is_acceptance("summarize the report",
-                                  "now list the files in the repo") is False
+        assert sig.is_acceptance("summarize the report", "now list the files in the repo") is False
 
     def test_an_empty_task_is_not_an_acceptance(self):
         assert sig.is_acceptance("summarize the report", "") is False
@@ -150,8 +144,8 @@ class TestAcceptance:
 
 # ── the pair label ────────────────────────────────────────────────────────
 
-class TestLabelPair:
 
+class TestLabelPair:
     def test_a_rephrase_labels_bad(self):
         assert sig.label_pair("run the tests", "no, run the tests") == "bad"
 
@@ -168,12 +162,12 @@ class TestLabelPair:
 
 # ── the session label ─────────────────────────────────────────────────────
 
+
 def _rec(task, turn=1):
     return {"task": task, "turn": turn}
 
 
 class TestSessionLabelling:
-
     def test_an_empty_session_labels_nothing(self):
         assert sig.label_session([]) == []
 
@@ -219,8 +213,8 @@ class TestSessionLabelling:
 
 # ── the summary ───────────────────────────────────────────────────────────
 
-class TestSummary:
 
+class TestSummary:
     def test_an_empty_corpus_summarises_to_nothing(self):
         summary = sig.summarize([])
         assert summary["total"] == 0
@@ -260,6 +254,7 @@ class TestSummary:
 
 # ── the corpus, retroactively ─────────────────────────────────────────────
 
+
 @pytest.fixture
 def store(tmp_path):
     """A learned store with two sessions of recorded tasks."""
@@ -269,22 +264,26 @@ def store(tmp_path):
 
 def _write_session(config, session_id, tasks):
     from src.learn import record_task
+
     for turn, task in enumerate(tasks, start=1):
-        record_task(session_id=session_id, turn=turn, task=task,
-                    response="an answer", metrics={}, config_data=config)
+        record_task(
+            session_id=session_id,
+            turn=turn,
+            task=task,
+            response="an answer",
+            metrics={},
+            config_data=config,
+        )
 
 
 class TestCorpusLabelling:
-
     def test_an_empty_store_summarises_to_nothing(self, store):
         summary = label_corpus(store)
         assert summary["total"] == 0
         assert summary["sessions"] == 0
 
     def test_a_session_is_labelled_from_its_own_follow_ups(self, store):
-        _write_session(store, "s1", ["run the tests",
-                                     "no, run the tests",
-                                     "thanks"])
+        _write_session(store, "s1", ["run the tests", "no, run the tests", "thanks"])
         summary = label_corpus(store)
         assert summary["total"] == 3
         assert summary["sessions"] == 1
@@ -309,6 +308,7 @@ class TestCorpusLabelling:
         # destroy the evidence a later audit needs.
         _write_session(store, "s1", ["run the tests", "no, run the tests"])
         from src.learn import read_session
+
         before = json.dumps(read_session("s1", store), sort_keys=True)
         label_corpus(store)
         after = json.dumps(read_session("s1", store), sort_keys=True)
@@ -331,30 +331,48 @@ class TestCorpusLabelling:
 
 
 class TestFormatSummary:
-
     def test_an_empty_store_says_so(self):
         text = format_summary({"total": 0, "sessions": 0})
         assert "nothing to label" in text
 
     def test_the_report_shows_the_coverage(self):
-        text = format_summary({"total": 10, "labeled": 4, "good": 3,
-                                "bad": 1, "unknown": 6, "sessions": 1,
-                                "coverage": 0.4, "positive_rate": 0.75,
-                                "explicit_ratings": 0})
+        text = format_summary(
+            {
+                "total": 10,
+                "labeled": 4,
+                "good": 3,
+                "bad": 1,
+                "unknown": 6,
+                "sessions": 1,
+                "coverage": 0.4,
+                "positive_rate": 0.75,
+                "explicit_ratings": 0,
+            }
+        )
         assert "40.0%" in text
         assert "10" in text
 
     def test_the_report_names_the_weakest_signal(self):
         # A reader has to know which of the three signals they are looking
         # at, because the end-of-session one is the weakest.
-        text = format_summary({"total": 1, "labeled": 1, "good": 1,
-                                "bad": 0, "unknown": 0, "sessions": 1,
-                                "coverage": 1.0, "positive_rate": 1.0,
-                                "explicit_ratings": 0})
+        text = format_summary(
+            {
+                "total": 1,
+                "labeled": 1,
+                "good": 1,
+                "bad": 0,
+                "unknown": 0,
+                "sessions": 1,
+                "coverage": 1.0,
+                "positive_rate": 1.0,
+                "explicit_ratings": 0,
+            }
+        )
         assert "weakest" in text
 
 
 # ── the text UI rating path ───────────────────────────────────────────────
+
 
 class _Agent:
     """The minimum an agent has to look like for \\rate to work.
@@ -367,23 +385,29 @@ class _Agent:
     def __init__(self, tmp_path, turns=2, config=None):
         self.session_id = "sess-1"
         self.session_path = str(tmp_path / "session.jsonl")
-        self.config_data = config if config is not None else {
-            "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}
-        }
+        self.config_data = (
+            config
+            if config is not None
+            else {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
+        )
         with open(self.session_path, "w", encoding="utf-8") as f:
             for index in range(turns):
-                f.write(json.dumps({"task": "t%d" % index,
-                                    "response": "r%d" % index}) + "\n")
+                f.write(json.dumps({"task": "t%d" % index, "response": "r%d" % index}) + "\n")
         if turns:
             from src.learn import record_task
+
             for index in range(turns):
-                record_task(session_id=self.session_id, turn=index + 1,
-                            task="t%d" % index, response="r%d" % index,
-                            metrics={}, config_data=self.config_data)
+                record_task(
+                    session_id=self.session_id,
+                    turn=index + 1,
+                    task="t%d" % index,
+                    response="r%d" % index,
+                    metrics={},
+                    config_data=self.config_data,
+                )
 
 
 class TestRatingCommand:
-
     def test_rating_the_newest_answer(self, tmp_path):
         agent = _Agent(tmp_path)
         out = rating_mod.cmd_rate(agent, "up")
@@ -398,6 +422,7 @@ class TestRatingCommand:
 
     def test_the_rating_lands_in_the_trajectory_store(self, tmp_path):
         from src.learn import read_session
+
         agent = _Agent(tmp_path)
         rating_mod.cmd_rate(agent, "down")
         records = read_session(agent.session_id, agent.config_data)
@@ -408,6 +433,7 @@ class TestRatingCommand:
 
     def test_the_rating_carries_its_source(self, tmp_path):
         from src.learn import read_session
+
         agent = _Agent(tmp_path)
         rating_mod.cmd_rate(agent, "up")
         records = read_session(agent.session_id, agent.config_data)
@@ -424,6 +450,7 @@ class TestRatingCommand:
 
     def test_clearing_removes_the_verdict(self, tmp_path):
         from src.learn import read_session
+
         agent = _Agent(tmp_path)
         rating_mod.cmd_rate(agent, "up")
         out = rating_mod.cmd_rate(agent, "clear")
@@ -442,8 +469,9 @@ class TestRatingCommand:
         assert "no answer 0" in out
 
     def test_recording_off_is_reported_honestly(self, tmp_path):
-        agent = _Agent(tmp_path, config={
-            "learn": {"autonomy": "off", "path": str(tmp_path / "learned")}})
+        agent = _Agent(
+            tmp_path, config={"learn": {"autonomy": "off", "path": str(tmp_path / "learned")}}
+        )
         out = rating_mod.cmd_rate(agent, "up")
         assert "not being recorded" in out
 
@@ -475,13 +503,13 @@ class TestRatingCommand:
 
     def test_the_command_is_reachable_as_a_backslash_command(self):
         from src.ui import commands
+
         assert "\\rate" in commands.render_help()
         assert commands.parse("\\rate up") == ("rate", "up")
         assert commands.parse("\\rate 3 down") == ("rate", "3 down")
 
 
 class TestRatingArgumentParsing:
-
     def test_the_default_is_up(self):
         assert rating_mod._parse_arg("") == (None, 1, "")
 
@@ -511,10 +539,11 @@ class TestRatingArgumentParsing:
 
 # ── the CLI surface ───────────────────────────────────────────────────────
 
-class TestLearnSignalsCommand:
 
+class TestLearnSignalsCommand:
     def test_the_flags_exist(self):
         from src.cli import _build_parser
+
         parser = _build_parser()
         args = parser.parse_args(["learn", "--signals"])
         assert args.command == "learn"

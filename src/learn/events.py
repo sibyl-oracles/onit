@@ -36,7 +36,7 @@ import logging
 import os
 
 from .config import recording_enabled, trajectory_dir
-from .trajectory import (_UNSAFE_NAME, KIND_EVENT, _now, session_file)
+from .trajectory import _UNSAFE_NAME, KIND_EVENT, _now, session_file
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +45,14 @@ logger = logging.getLogger(__name__)
 # module never anticipated, and a store that refused them would be a store the
 # future has to fork.  The known set exists for readers and for the summary.
 TOOL_EVENTS = (
-    "tool.registry_loaded",   # a session discovered its toolset
-    "tool.proposed",          # a candidate tool reached the gate
-    "tool.loaded",            # the gate passed; the tool went live
-    "tool.rejected",          # the gate refused it
-    "tool.updated",           # a live tool's code or manifest changed
-    "tool.reloaded",          # a server re-read its toolset
-    "tool.archived",          # soft deletion — restorable, never destroyed
-    "tool.restored",          # an archive was brought back
+    "tool.registry_loaded",  # a session discovered its toolset
+    "tool.proposed",  # a candidate tool reached the gate
+    "tool.loaded",  # the gate passed; the tool went live
+    "tool.rejected",  # the gate refused it
+    "tool.updated",  # a live tool's code or manifest changed
+    "tool.reloaded",  # a server re-read its toolset
+    "tool.archived",  # soft deletion — restorable, never destroyed
+    "tool.restored",  # an archive was brought back
 )
 
 
@@ -61,11 +61,15 @@ def _safe_session(session_id: str | None) -> str:
     return _UNSAFE_NAME.sub("_", str(session_id or "unknown"))[:96] or "unknown"
 
 
-def record_event(*, event: str, subject: str | None = None,
-                 session_id: str | None = None,
-                 source: str = "loop",
-                 detail: dict | None = None,
-                 config_data: dict | None = None) -> str | None:
+def record_event(
+    *,
+    event: str,
+    subject: str | None = None,
+    session_id: str | None = None,
+    source: str = "loop",
+    detail: dict | None = None,
+    config_data: dict | None = None,
+) -> str | None:
     """Append one lifecycle event to the session's event log.
 
     Returns the path written to, or None when recording is off or the write
@@ -100,22 +104,38 @@ def record_event(*, event: str, subject: str | None = None,
         return None
 
 
-def record_tool_event(*, event: str, tool: str, session_id: str | None = None,
-                      source: str = "loop", detail: dict | None = None,
-                      config_data: dict | None = None) -> str | None:
+def record_tool_event(
+    *,
+    event: str,
+    tool: str,
+    session_id: str | None = None,
+    source: str = "loop",
+    detail: dict | None = None,
+    config_data: dict | None = None,
+) -> str | None:
     """The tool-lifecycle half of the contract.
 
     A thin, named wrapper so the future dynamic loader (Loop C's serving half)
     has one obvious call to make — and so a reader grepping for how tools
     change lands here rather than on the generic function.
     """
-    return record_event(event=event, subject=tool, session_id=session_id,
-                        source=source, detail=detail, config_data=config_data)
+    return record_event(
+        event=event,
+        subject=tool,
+        session_id=session_id,
+        source=source,
+        detail=detail,
+        config_data=config_data,
+    )
 
 
-def iter_events(config_data: dict | None = None, *,
-                event: str | None = None, subject: str | None = None,
-                source: str | None = None):
+def iter_events(
+    config_data: dict | None = None,
+    *,
+    event: str | None = None,
+    subject: str | None = None,
+    source: str | None = None,
+):
     """Every event on disk, oldest first, optionally filtered.
 
     Yields the raw records.  ``event`` matches exactly; ``subject`` matches the

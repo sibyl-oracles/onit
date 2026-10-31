@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +16,7 @@
 ToolRegistry - where all tools are registered and managed.
 RequestHandler - abstract base class for all tools.
 ToolHandler - concrete implementation of RequestHandler that calls a tool via FastMCP client.
-'''
+"""
 
 import asyncio
 import json
@@ -32,7 +32,8 @@ from mcp.types import ImageContent, TextContent, AudioContent
 from typing import Any, Callable, TypedDict
 
 import logging
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 
@@ -66,18 +67,16 @@ class ToolItem(TypedDict):
     function: FunctionSpec
 
 
-def get_tools(tool_registry: 'ToolRegistry') -> list[ToolItem]:
+def get_tools(tool_registry: "ToolRegistry") -> list[ToolItem]:
     """Get the tools from the tool registry"""
     tools: list[ToolItem] = []
     for key in tool_registry.handlers:
         tools.append(tool_registry[key].get_tool())
     return tools
 
+
 class RequestHandler(ABC):
-    def __init__(self,
-                 url: str | None = None,
-                 tool_item: ToolItem | None = None,
-                 **kwargs: object):
+    def __init__(self, url: str | None = None, tool_item: ToolItem | None = None, **kwargs: object):
         super().__init__()
         self.url = url
         self.tool_item = tool_item
@@ -188,10 +187,10 @@ def _sdk_httpx():
 
     try:
         from mcp.shared import _httpx_utils
+
         # What the SDK's own client factory is annotated to return names the
         # module outright, so ask it before guessing by name.
-        returns = inspect.signature(
-            _httpx_utils.create_mcp_http_client).return_annotation
+        returns = inspect.signature(_httpx_utils.create_mcp_http_client).return_annotation
         root = getattr(returns, "__module__", "").split(".")[0]
         if root:
             return importlib.import_module(root)
@@ -205,6 +204,7 @@ def _sdk_httpx():
         logger.debug("cannot locate the MCP SDK's httpx", exc_info=True)
 
     import httpx
+
     return httpx
 
 
@@ -221,8 +221,7 @@ class _StreamingReadTimeoutClient(_HTTPX.AsyncClient):
     its own via the per-request extension.
     """
 
-    async def send(self, request: Any, *, stream: bool = False,
-                   **kwargs: object) -> Any:
+    async def send(self, request: Any, *, stream: bool = False, **kwargs: object) -> Any:
         if stream:
             timeout = dict(request.extensions.get("timeout") or {})
             timeout["read"] = _STREAM_READ_TIMEOUT
@@ -251,8 +250,9 @@ def _http_client_factory(
         timeout=timeout if timeout is not None else _HTTPX.Timeout(30.0, read=300.0),
         headers=headers or {},
         auth=auth,
-        limits=_HTTPX.Limits(max_connections=100, max_keepalive_connections=20,
-                             keepalive_expiry=_KEEPALIVE_EXPIRY),
+        limits=_HTTPX.Limits(
+            max_connections=100, max_keepalive_connections=20, keepalive_expiry=_KEEPALIVE_EXPIRY
+        ),
     )
 
 
@@ -270,10 +270,14 @@ def stdio_url(name: str) -> str:
     return f"{STDIO_SCHEME}{name}"
 
 
-def register_stdio_server(url: str, command: str, args: list[str],
-                          env: dict[str, str] | None = None,
-                          cwd: str | None = None,
-                          log_file: str | None = None) -> None:
+def register_stdio_server(
+    url: str,
+    command: str,
+    args: list[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    log_file: str | None = None,
+) -> None:
     """Record how to spawn the stdio server addressed by ``url``.
 
     ``env`` is merged over the current environment rather than replacing it.
@@ -303,6 +307,7 @@ _STDIO_TRANSPORTS: dict[tuple[str, int], tuple[Any, asyncio.AbstractEventLoop]] 
 def _new_stdio_transport(spec: dict, keep_alive: bool):
     from pathlib import Path
     from fastmcp.client.transports import StdioTransport
+
     return StdioTransport(
         command=spec["command"],
         args=spec["args"],
@@ -368,13 +373,13 @@ def _transport_for(url: str, shared: bool = True):
         return _stdio_transport(url, spec)
     if is_stdio_url(url):
         raise ValueError(
-            f"No launch spec registered for {url}; call register_stdio_server() "
-            f"before connecting.")
+            f"No launch spec registered for {url}; call register_stdio_server() before connecting."
+        )
     if not isinstance(url, str) or not url.startswith("http"):
         return url
     try:
-        from fastmcp.client.transports import (SSETransport,
-                                               StreamableHttpTransport)
+        from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+
         # Matches fastmcp's own inference: a /sse endpoint is SSE, the rest is
         # streamable HTTP.
         cls = SSETransport if url.rstrip("/").endswith("/sse") else StreamableHttpTransport
@@ -410,8 +415,10 @@ class _TransportNoise(logging.Filter):
             return True
         exc = record.exc_info[1] if record.exc_info else None
         logger.warning(
-            "%s (%s); reconnecting on the next call", summary,
-            type(exc).__name__ if exc is not None else "unknown cause")
+            "%s (%s); reconnecting on the next call",
+            summary,
+            type(exc).__name__ if exc is not None else "unknown cause",
+        )
         logger.debug("%s failure", prefix, exc_info=record.exc_info)
         return False
 
@@ -457,9 +464,11 @@ class _PooledClient:
             return self._client
         async with self._connect_lock:
             if self._client is None:
-                client = Client(_transport_for(self.url),
-                                log_handler=self._dispatch_log,
-                                timeout=_REQUEST_TIMEOUT)
+                client = Client(
+                    _transport_for(self.url),
+                    log_handler=self._dispatch_log,
+                    timeout=_REQUEST_TIMEOUT,
+                )
                 await client.__aenter__()
                 self._client = client
             return self._client
@@ -484,8 +493,7 @@ class _PooledClient:
             try:
                 await transport.close()
             except Exception:
-                logger.debug("closing stdio transport for %s failed",
-                             self.url, exc_info=True)
+                logger.debug("closing stdio transport for %s failed", self.url, exc_info=True)
 
     @staticmethod
     def _ping_unsupported(exc: Exception) -> bool:
@@ -546,8 +554,7 @@ class _PooledClient:
         call = asyncio.ensure_future(client.call_tool(name, arguments))
         watchdog = asyncio.ensure_future(self._watch_session(client, call))
         try:
-            await asyncio.wait({call, watchdog},
-                               return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({call, watchdog}, return_when=asyncio.FIRST_COMPLETED)
             if call.done():
                 return call.result()
             # Only a failed ping ends the watchdog before the call: the reply
@@ -557,15 +564,15 @@ class _PooledClient:
             if exc is None:
                 return await call
             raise ConnectionError(
-                f"MCP session to {self.url} is no longer usable: {exc!r}") from exc
+                f"MCP session to {self.url} is no longer usable: {exc!r}"
+            ) from exc
         finally:
             for task in (call, watchdog):
                 if not task.done():
                     task.cancel()
             await asyncio.gather(call, watchdog, return_exceptions=True)
 
-    async def call_tool(self, name: str, arguments: dict,
-                        log_handler: Callable | None = None):
+    async def call_tool(self, name: str, arguments: dict, log_handler: Callable | None = None):
         token = self._next_token
         self._next_token += 1
         if log_handler is not None:
@@ -605,44 +612,47 @@ def _pooled_client(url: str) -> _PooledClient:
 
 
 class ToolHandler(RequestHandler):
-    def __init__(self,
-                 url: str | None = None,
-                 tool_item: ToolItem | None = None,
-                 **kwargs: object):
+    def __init__(self, url: str | None = None, tool_item: ToolItem | None = None, **kwargs: object):
         super().__init__(url=url, tool_item=tool_item, **kwargs)
 
     async def __call__(self, log_handler: Callable | None = None, **kwargs: object) -> str | None:
         # if there is an image in the kwargs, convert it to base64
-        media_types = ['images', 'audios']
+        media_types = ["images", "audios"]
         for media_type in media_types:
             if media_type in kwargs:
                 if isinstance(kwargs[media_type], list) and len(kwargs[media_type]) == 0:
-                    if media_type == 'images':
+                    if media_type == "images":
                         return f"No {media_type} provided. For images, use the camera tool to capture an image first."
                     else:
                         return f"No {media_type} provided. For audios, use the microphone tool to record an audio first."
-                kwargs[media_type] = kwargs[media_type][0] if isinstance(kwargs[media_type], list) else kwargs[media_type]
+                kwargs[media_type] = (
+                    kwargs[media_type][0]
+                    if isinstance(kwargs[media_type], list)
+                    else kwargs[media_type]
+                )
                 if isinstance(kwargs[media_type], str):
                     # check if the path is a valid file path
                     if not os.path.exists(kwargs[media_type]):
                         # try removing leading dot
-                        kwargs[media_type] = kwargs[media_type].lstrip('.')
+                        kwargs[media_type] = kwargs[media_type].lstrip(".")
                         if not os.path.exists(kwargs[media_type]):
                             logger.error(f"File not found: {kwargs[media_type]}")
                             return f"File not found: {kwargs[media_type]}"
-                    with open(kwargs[media_type], 'rb') as image_file:
-                        kwargs[media_type] = [base64.b64encode(image_file.read()).decode('utf-8')]
+                    with open(kwargs[media_type], "rb") as image_file:
+                        kwargs[media_type] = [base64.b64encode(image_file.read()).decode("utf-8")]
                 elif isinstance(kwargs[media_type], bytes):
                     # if the image is already in bytes, convert to base64
-                    kwargs[media_type] = [base64.b64encode(kwargs[media_type]).decode('utf-8')]
+                    kwargs[media_type] = [base64.b64encode(kwargs[media_type]).decode("utf-8")]
                 # if dictionary, extract the value and encode it
                 elif isinstance(kwargs[media_type], dict):
                     for key, value in kwargs[media_type].items():
                         if isinstance(value, str):
-                            with open(value, 'rb') as image_file:
-                                kwargs[media_type] = [base64.b64encode(image_file.read()).decode('utf-8')]
+                            with open(value, "rb") as image_file:
+                                kwargs[media_type] = [
+                                    base64.b64encode(image_file.read()).decode("utf-8")
+                                ]
                         elif isinstance(value, bytes):
-                            kwargs[media_type] = [base64.b64encode(value).decode('utf-8')]
+                            kwargs[media_type] = [base64.b64encode(value).decode("utf-8")]
                         else:
                             logger.error(f"Unsupported image type: {type(value)}")
                             return "Unsupported image type provided."
@@ -650,25 +660,22 @@ class ToolHandler(RequestHandler):
                     logger.error(f"Unsupported images type: {type(kwargs[media_type])}")
                     return f"Unsupported {media_type} type provided. Please provide a list of base64-encoded {media_types} or file paths."
 
-
         # Normalize arguments where a string-typed parameter received a dict.
         # Some models incorrectly nest values, e.g.:
         #   {"query": {"query": "..."}}  → {"query": "..."}   (same-key wrapping)
         #   {"query": {"type": "news"}}  → {"query": None}    (unrelated keys; let
         #                                                       the tool's required
         #                                                       check return an error)
-        props = (self.tool_item.get('function', {})
-                 .get('parameters', {})
-                 .get('properties', {}))
+        props = self.tool_item.get("function", {}).get("parameters", {}).get("properties", {})
         for k in list(kwargs.keys()):
             v = kwargs[k]
             if not isinstance(v, dict):
                 continue
             prop = props.get(k, {})
             # Determine whether the schema expects a scalar string for this param.
-            prop_type = prop.get('type', '')
-            is_string_param = prop_type == 'string' or any(
-                s.get('type') == 'string' for s in prop.get('anyOf', [])
+            prop_type = prop.get("type", "")
+            is_string_param = prop_type == "string" or any(
+                s.get("type") == "string" for s in prop.get("anyOf", [])
             )
             if not is_string_param:
                 continue
@@ -676,10 +683,11 @@ class ToolHandler(RequestHandler):
             # so the tool's own required-argument check returns a clean error.
             kwargs[k] = v[k] if k in v else None
 
-        tool_name = self.tool_item['function']['name']
+        tool_name = self.tool_item["function"]["name"]
         logger.info(f"Calling tool: {tool_name} with arguments: {list(kwargs.keys())}")
         tool_response = await _pooled_client(self.url).call_tool(
-            tool_name, kwargs, log_handler=log_handler)
+            tool_name, kwargs, log_handler=log_handler
+        )
 
         if isinstance(tool_response, str):
             return tool_response
@@ -723,10 +731,22 @@ class ToolHandler(RequestHandler):
                 if audio_format in ("wav", "x-wav", "vnd.wave"):
                     # Only PCM WAV gets a header.  Wrapping an MP3 in one
                     # produces a file whose header contradicts its payload.
-                    channels = int(meta.get('channels', _DEFAULT_WAV_CHANNELS)) if meta else _DEFAULT_WAV_CHANNELS
-                    sample_width = int(meta.get('sample_width', _DEFAULT_WAV_SAMPLE_WIDTH)) if meta else _DEFAULT_WAV_SAMPLE_WIDTH
-                    frame_rate = int(meta.get('frame_rate', _DEFAULT_WAV_FRAME_RATE)) if meta else _DEFAULT_WAV_FRAME_RATE
-                    with wave.open(audio_path, 'wb') as wf:
+                    channels = (
+                        int(meta.get("channels", _DEFAULT_WAV_CHANNELS))
+                        if meta
+                        else _DEFAULT_WAV_CHANNELS
+                    )
+                    sample_width = (
+                        int(meta.get("sample_width", _DEFAULT_WAV_SAMPLE_WIDTH))
+                        if meta
+                        else _DEFAULT_WAV_SAMPLE_WIDTH
+                    )
+                    frame_rate = (
+                        int(meta.get("frame_rate", _DEFAULT_WAV_FRAME_RATE))
+                        if meta
+                        else _DEFAULT_WAV_FRAME_RATE
+                    )
+                    with wave.open(audio_path, "wb") as wf:
                         wf.setnchannels(channels)
                         wf.setsampwidth(sample_width)
                         wf.setframerate(frame_rate)
@@ -785,8 +805,8 @@ def _mime_to_extension(mime_type: str) -> str:
         return _MIME_TO_EXT[mime_type]
     ext = mimetypes.guess_extension(mime_type)
     if ext:
-        return ext.lstrip('.')
-    return 'bin'
+        return ext.lstrip(".")
+    return "bin"
 
 
 def _contract_of(tool_item: ToolItem | None) -> str:
@@ -796,8 +816,8 @@ def _contract_of(tool_item: ToolItem | None) -> str:
     against one server's copy of a tool is valid against another's.  Two
     servers may word the description differently and still be the same tool.
     """
-    fn = (tool_item or {}).get('function') or {}
-    return json.dumps(fn.get('parameters') or {}, sort_keys=True, default=str)
+    fn = (tool_item or {}).get("function") or {}
+    return json.dumps(fn.get("parameters") or {}, sort_keys=True, default=str)
 
 
 # create a tool registry
@@ -837,7 +857,7 @@ class ToolRegistry:
         self.collisions: list[tuple[str, str, str]] = []
 
     def register(self, tool: ToolHandler) -> None:
-        tool_name: str = tool.tool_item['function']['name']
+        tool_name: str = tool.tool_item["function"]["name"]
         tool_url: str = tool.url
 
         # Always addressable by name@url, winner or not: get_handler_by() is
@@ -866,7 +886,10 @@ class ToolRegistry:
             "Tool name collision: %r is offered by %s with different parameters "
             "than %s. Using the first; the other is reachable only by URL. "
             "Reorder mcp.servers to change which one wins.",
-            tool_name, tool_url, self.urls[tool_name][0])
+            tool_name,
+            tool_url,
+            self.urls[tool_name][0],
+        )
 
     def withhold(self, tool_names) -> list:
         """Take a set of tool names out of the registry, reversibly.
@@ -887,7 +910,7 @@ class ToolRegistry:
         server's prefix cache.
         """
         withheld = []
-        for name in (tool_names or []):
+        for name in tool_names or []:
             if name not in self.tools:
                 continue
             self.tools.discard(name)
@@ -934,13 +957,12 @@ class ToolRegistry:
             return self.handlers[key]
         return None
 
-
     def tool_accepts_param(self, tool_name: str, param_name: str) -> bool:
         """Check if a registered tool declares a given parameter in its schema."""
         handler = self[tool_name]
         if not handler or not handler.tool_item:
             return False
-        props = handler.tool_item.get('function', {}).get('parameters', {}).get('properties', {})
+        props = handler.tool_item.get("function", {}).get("parameters", {}).get("properties", {})
         return param_name in props
 
     def parameters_schema(self, tool_name: str) -> dict:
@@ -953,7 +975,7 @@ class ToolRegistry:
         handler = self[tool_name]
         if not handler or not handler.tool_item:
             return {}
-        params = handler.tool_item.get('function', {}).get('parameters')
+        params = handler.tool_item.get("function", {}).get("parameters")
         return params if isinstance(params, dict) else {}
 
     def blank_required_args(self, tool_name: str, arguments: dict) -> list[str]:
@@ -973,8 +995,8 @@ class ToolRegistry:
         handler = self[tool_name]
         if not handler or not handler.tool_item:
             return []
-        params = handler.tool_item.get('function', {}).get('parameters', {}) or {}
-        required = params.get('required') or []
+        params = handler.tool_item.get("function", {}).get("parameters", {}) or {}
+        required = params.get("required") or []
         blank = []
         for name in required:
             if name not in arguments:

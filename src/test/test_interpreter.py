@@ -12,23 +12,42 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.interpreter import (INJECTED_PARAMS, PythonInterpreter,
-                                       _as_data, bindings_for, get_interpreter,
-                                       shutdown_all, shutdown_session)
+from model.serving.interpreter import (
+    INJECTED_PARAMS,
+    PythonInterpreter,
+    _as_data,
+    bindings_for,
+    get_interpreter,
+    shutdown_all,
+    shutdown_session,
+)
 
 
 def _item(name, properties=None, required=None, description="d"):
-    return {"type": "function",
-            "function": {"name": name, "description": description,
-                         "parameters": {"type": "object",
-                                        "properties": properties or {},
-                                        "required": required or []}}}
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties or {},
+                "required": required or [],
+            },
+        },
+    }
 
 
-SEARCH = _item("local_search",
-               {"query": {"type": "string"}, "top_k": {"type": "integer"},
-                "data_path": {"type": "string"}, "session_id": {"type": "string"}},
-               ["query"])
+SEARCH = _item(
+    "local_search",
+    {
+        "query": {"type": "string"},
+        "top_k": {"type": "integer"},
+        "data_path": {"type": "string"},
+        "session_id": {"type": "string"},
+    },
+    ["query"],
+)
 
 
 @pytest.fixture
@@ -48,9 +67,9 @@ async def interp():
             raise LookupError(f"no tool named {name!r}")
         return f"ran {name}"
 
-    it = PythonInterpreter(session_id="s1", tool_items=[SEARCH, _item("boom"),
-                                                        _item("slow")],
-                           dispatch=dispatch)
+    it = PythonInterpreter(
+        session_id="s1", tool_items=[SEARCH, _item("boom"), _item("slow")], dispatch=dispatch
+    )
     it.calls = calls
     try:
         yield it
@@ -60,14 +79,19 @@ async def interp():
 
 # ── generating the bindings ─────────────────────────────────────────────────
 
+
 class TestBindings:
     def test_a_tool_becomes_a_signature(self):
-        assert bindings_for([SEARCH]) == [{
-            "name": "local_search",
-            "params": [{"name": "query", "required": True},
-                       {"name": "top_k", "required": False}],
-            "doc": "d",
-        }]
+        assert bindings_for([SEARCH]) == [
+            {
+                "name": "local_search",
+                "params": [
+                    {"name": "query", "required": True},
+                    {"name": "top_k", "required": False},
+                ],
+                "doc": "d",
+            }
+        ]
 
     def test_the_injected_parameters_are_dropped(self):
         """Not hidden, not ignored — absent. There is nothing to override."""
@@ -78,8 +102,7 @@ class TestBindings:
     def test_required_parameters_come_first(self):
         """Python will not accept a non-default parameter after a defaulted
         one, and a schema is under no obligation to order them."""
-        item = _item("t", {"opt": {"type": "string"}, "req": {"type": "string"}},
-                     ["req"])
+        item = _item("t", {"opt": {"type": "string"}, "req": {"type": "string"}}, ["req"])
         assert [p["name"] for p in bindings_for([item])[0]["params"]] == ["req", "opt"]
 
     def test_a_tool_that_is_not_an_identifier_is_skipped(self):
@@ -97,15 +120,17 @@ class TestBindings:
 
     def test_a_tool_with_no_schema_still_binds(self):
         assert bindings_for([{"type": "function", "function": {"name": "ping"}}]) == [
-            {"name": "ping", "params": [], "doc": ""}]
+            {"name": "ping", "params": [], "doc": ""}
+        ]
 
 
 # ── tool answers, as data ───────────────────────────────────────────────────
 
+
 class TestAsData:
     def test_json_objects_and_arrays_are_parsed(self):
         assert _as_data('{"a": 1}') == {"a": 1}
-        assert _as_data('[1, 2]') == [1, 2]
+        assert _as_data("[1, 2]") == [1, 2]
 
     def test_a_scalar_stays_a_string(self):
         """A tool answering "42" means the string; quietly making it an int is
@@ -125,6 +150,7 @@ class TestAsData:
 
 
 # ── the interpreter itself ──────────────────────────────────────────────────
+
 
 class TestRunning:
     @pytest.mark.asyncio
@@ -192,6 +218,7 @@ class TestRunning:
 
 # ── calling tools from inside ───────────────────────────────────────────────
 
+
 class TestToolsFromCode:
     @pytest.mark.asyncio
     async def test_a_tool_is_a_function_of_the_same_name(self, interp):
@@ -201,8 +228,9 @@ class TestToolsFromCode:
 
     @pytest.mark.asyncio
     async def test_json_answers_arrive_as_objects(self, interp):
-        out = await interp.run('hits = local_search("Q3")\nprint([h.title for h in hits'
-                               ' if "title" in h])')
+        out = await interp.run(
+            'hits = local_search("Q3")\nprint([h.title for h in hits if "title" in h])'
+        )
         assert out["stdout"] == "['Q3 report', 'Q2']\n"
 
     @pytest.mark.asyncio
@@ -212,7 +240,8 @@ class TestToolsFromCode:
             'hits = local_search("Q3")\n'
             'titles = [h["title"] for h in hits]\n'
             'joined = ", ".join(titles)\n'
-            'print(joined.upper())')
+            "print(joined.upper())"
+        )
         assert out["stdout"] == "Q3 REPORT, Q2\n"
         assert len(interp.calls) == 1
 
@@ -230,8 +259,7 @@ class TestToolsFromCode:
     @pytest.mark.asyncio
     async def test_a_failing_tool_raises_a_catchable_error(self, interp):
         """A script looping over ten documents should survive one of them."""
-        out = await interp.run(
-            'try:\n    boom()\nexcept ToolError as e:\n    print("caught:", e)')
+        out = await interp.run('try:\n    boom()\nexcept ToolError as e:\n    print("caught:", e)')
         assert out["ok"] is True
         assert "caught: boom: server said no" in out["stdout"]
 
@@ -246,8 +274,9 @@ class TestToolsFromCode:
         """Reported as a slow tool, not as the whole block dying with nothing
         to show for it."""
         interp.tool_timeout = 0.5
-        out = await interp.run('try:\n    slow()\nexcept ToolError as e:\n'
-                               '    print("caught:", e)', timeout=20)
+        out = await interp.run(
+            'try:\n    slow()\nexcept ToolError as e:\n    print("caught:", e)', timeout=20
+        )
         assert out["ok"] is True
         assert "timed out" in out["stdout"]
 
@@ -269,6 +298,7 @@ class TestToolsFromCode:
 
 
 # ── the trust boundary ──────────────────────────────────────────────────────
+
 
 class TestInjectedParametersCannotBeOverridden:
     """data_path and session_id are the session isolation boundary.  Code
@@ -300,8 +330,9 @@ class TestInjectedParametersCannotBeOverridden:
         model reads a TypeError as a broken tool and retries with a smaller
         one, having done nothing wrong except name a parameter it had seen in
         a needs_approval payload."""
-        out = await interp.run('print(local_search("Q3", '
-                               'approval_token="stolen", approval_scope="session"))')
+        out = await interp.run(
+            'print(local_search("Q3", approval_token="stolen", approval_scope="session"))'
+        )
         assert out["ok"] is True, out["error"]
         name, kwargs = interp.calls[-1]
         assert (name, kwargs) == ("local_search", {"query": "Q3"})
@@ -310,13 +341,15 @@ class TestInjectedParametersCannotBeOverridden:
     async def test_call_tool_cannot_smuggle_them_either(self, interp):
         """The second check, for the same reason a jailed path is resolved
         after a regex has already made it safe."""
-        await interp.run('call_tool("local_search", query="Q3", '
-                         'data_path="/etc", session_id="other")')
+        await interp.run(
+            'call_tool("local_search", query="Q3", data_path="/etc", session_id="other")'
+        )
         name, kwargs = interp.calls[-1]
         assert kwargs == {"query": "Q3"}
 
 
 # ── recovering from a wedged interpreter ────────────────────────────────────
+
 
 class TestTimeout:
     @pytest.mark.asyncio
@@ -345,6 +378,7 @@ class TestTimeout:
 
 
 # ── one interpreter per session ─────────────────────────────────────────────
+
 
 class TestSessionScope:
     @pytest.mark.asyncio
@@ -387,6 +421,7 @@ class TestSessionScope:
     @pytest.mark.asyncio
     async def test_the_least_recently_used_is_evicted_past_the_cap(self):
         from model.serving.interpreter import evict_stale
+
         try:
             first = get_interpreter("old", tool_items=[], dispatch=None)
             await first.run("x = 1")
@@ -413,6 +448,7 @@ class TestSessionScope:
 
 
 # ── the process itself ──────────────────────────────────────────────────────
+
 
 class TestProcess:
     @pytest.mark.asyncio
@@ -444,6 +480,7 @@ class TestProcess:
         out = await interp.run(
             "import os, subprocess, sys\n"
             "subprocess.run([sys.executable, '-c', 'print(\"noise\")'])\n"
-            "print('mine')")
+            "print('mine')"
+        )
         assert out["ok"] is True
         assert "mine" in out["stdout"]

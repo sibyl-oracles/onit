@@ -18,6 +18,7 @@ from src.mcp.servers.run import run_server
 
 # ── run_server ───────────────────────────────────────────────────────────────
 
+
 class TestRunServer:
     def test_run_server_success(self):
         mock_module = MagicMock()
@@ -28,7 +29,7 @@ class TestRunServer:
         assert result is True
         # stdio is the only transport: the module's run() gets it, and the
         # caller's options ride through unchanged.
-        mock_module.run.assert_called_once_with(transport='stdio', options={})
+        mock_module.run.assert_called_once_with(transport="stdio", options={})
 
     def test_the_tasks_shorthand_resolves_into_the_package(self):
         mock_module = MagicMock()
@@ -44,8 +45,7 @@ class TestRunServer:
 
     def test_run_server_import_error(self):
         with patch("builtins.__import__", side_effect=ImportError("no module")):
-            result = run_server(
-                name="Bad", module="tasks.nonexistent", options={})
+            result = run_server(name="Bad", module="tasks.nonexistent", options={})
         assert result is False
 
     def test_run_server_no_module(self):
@@ -54,6 +54,7 @@ class TestRunServer:
 
 
 # ── tool profiles ────────────────────────────────────────────────────────────
+
 
 class TestToolProfiles:
     """The aggregate server is subset by profile so the tools that touch a
@@ -67,8 +68,7 @@ class TestToolProfiles:
         is unset, so a value left in the environment by another test would
         otherwise change what these profiles contain.
         """
-        for var in ("ONIT_DISABLE_WEB_SEARCH", "ONIT_DISABLE_WEATHER",
-                    "ONIT_DISABLE_LOCAL_SEARCH"):
+        for var in ("ONIT_DISABLE_WEB_SEARCH", "ONIT_DISABLE_WEATHER", "ONIT_DISABLE_LOCAL_SEARCH"):
             monkeypatch.delenv(var, raising=False)
 
     @staticmethod
@@ -76,6 +76,7 @@ class TestToolProfiles:
         import asyncio
         import importlib
         import src.mcp.servers.tasks.tools.mcp_server as mod
+
         # Each case needs the full registration set, and _apply_profile
         # mutates it, so rebuild the module per call.
         mod = importlib.reload(mod)
@@ -84,9 +85,19 @@ class TestToolProfiles:
 
     def test_local_profile_keeps_every_data_path_tool(self):
         names = self._names("local")
-        assert {"bash", "read_file", "write_file", "edit_file", "serve",
-                "grep", "send_file", "search_document", "fetch_content",
-                "index_documents", "local_search"} <= names
+        assert {
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "serve",
+            "grep",
+            "send_file",
+            "search_document",
+            "fetch_content",
+            "index_documents",
+            "local_search",
+        } <= names
 
     def test_local_profile_drops_the_stateless_tools(self):
         assert self._names("local").isdisjoint({"search", "get_weather"})
@@ -108,11 +119,13 @@ class TestToolProfiles:
     def test_net_profile_never_exceeds_the_declared_stateless_set(self):
         import importlib
         import src.mcp.servers.tasks.tools.mcp_server as mod
+
         assert self._names("net") <= set(importlib.reload(mod).NET_TOOLS)
 
     def test_unknown_profile_raises(self):
         import importlib
         import src.mcp.servers.tasks.tools.mcp_server as mod
+
         mod = importlib.reload(mod)
         with pytest.raises(ValueError, match="Unknown tool profile"):
             mod._apply_profile("sideways")
@@ -125,14 +138,14 @@ class TestToolProfiles:
         "'FastMCP' object has no attribute 'list_tools'")."""
         import importlib
         import src.mcp.servers.tasks.tools.mcp_server as mod
+
         mod = importlib.reload(mod)
 
         class OldFastMCP:
             """The fastmcp 2.x surface: enumeration via get_tools()."""
 
             async def get_tools(self):
-                return [type("T", (), {"name": "bash"})(),
-                        type("T", (), {"name": "grep"})()]
+                return [type("T", (), {"name": "bash"})(), type("T", (), {"name": "grep"})()]
 
         monkeypatch.setattr(mod, "mcp", OldFastMCP())
         assert mod._registered_tool_names() == ["bash", "grep"]
@@ -141,15 +154,23 @@ class TestToolProfiles:
             """A pre-2.x surface: only the private tool manager."""
 
             def __init__(self):
-                manager = type("TM", (), {
-                    "list_tools": lambda self: [type("T", (), {"name": n})()
-                                                for n in ("bash", "grep")]})()
+                manager = type(
+                    "TM",
+                    (),
+                    {
+                        "list_tools": lambda self: [
+                            type("T", (), {"name": n})() for n in ("bash", "grep")
+                        ]
+                    },
+                )()
                 self._tool_manager = manager
 
         monkeypatch.setattr(mod, "mcp", AncientFastMCP())
         assert mod._registered_tool_names() == ["bash", "grep"]
 
+
 # ── no shared mutable default ────────────────────────────────────────────────
+
 
 class TestOptionsIsNeverASharedDict:
     """Every ``run()`` took ``options: dict = {}``.
@@ -176,17 +197,18 @@ class TestOptionsIsNeverASharedDict:
     def test_no_run_takes_a_mutable_default(self):
         import importlib
         import inspect
+
         offenders = []
         for name in self.SERVERS:
             fn = getattr(importlib.import_module(name), "run")
             default = inspect.signature(fn).parameters["options"].default
             if isinstance(default, (dict, list, set)):
                 offenders.append(f"{name}: {default!r}")
-        assert not offenders, (
-            "a mutable default is shared by every call: %s" % offenders)
+        assert not offenders, "a mutable default is shared by every call: %s" % offenders
 
     def test_the_runner_takes_none_too(self):
         import inspect
+
         default = inspect.signature(run_server).parameters["options"].default
         assert default is None
 
@@ -203,7 +225,7 @@ class TestOptionsIsNeverASharedDict:
         def capture(*args, **kwargs):
             options = kwargs.get("options")
             on_entry.append(dict(options))
-            options["leaked"] = True      # this call's dict, not the next's
+            options["leaked"] = True  # this call's dict, not the next's
 
         mock_module = MagicMock()
         mock_module.run = capture
@@ -211,6 +233,6 @@ class TestOptionsIsNeverASharedDict:
             run_server(name="A", module="tasks.test")
             run_server(name="B", module="tasks.test")
         assert on_entry[0] == {}
-        assert on_entry[-1] == {}, (
-            "the second server saw the first server's mutation: %r"
-            % (on_entry[-1],))
+        assert on_entry[-1] == {}, "the second server saw the first server's mutation: %r" % (
+            on_entry[-1],
+        )

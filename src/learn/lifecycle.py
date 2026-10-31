@@ -91,10 +91,14 @@ def _tool_calls(config_data: dict | None = None) -> dict:
     return stats
 
 
-def should_propose_creation(*, occurrences: int, sessions: int,
-                            category_share: float | None = None,
-                            category_cap: float = 0.40,
-                            config_data: dict | None = None) -> dict:
+def should_propose_creation(
+    *,
+    occurrences: int,
+    sessions: int,
+    category_share: float | None = None,
+    category_cap: float = 0.40,
+    config_data: dict | None = None,
+) -> dict:
     """Whether a recurring pattern has earned a tool *proposal*.
 
     ``occurrences``/``sessions`` come from clustering the bash/run_code
@@ -108,19 +112,17 @@ def should_propose_creation(*, occurrences: int, sessions: int,
     """
     reasons = []
     if occurrences < CREATION_MIN_OCCURRENCES:
-        reasons.append(f"only {occurrences} occurrence(s), "
-                       f"need {CREATION_MIN_OCCURRENCES}")
+        reasons.append(f"only {occurrences} occurrence(s), need {CREATION_MIN_OCCURRENCES}")
     if sessions < CREATION_MIN_SESSIONS:
-        reasons.append(f"seen in {sessions} session(s), "
-                       f"need {CREATION_MIN_SESSIONS}")
+        reasons.append(f"seen in {sessions} session(s), need {CREATION_MIN_SESSIONS}")
     if category_share is not None and category_share > category_cap:
-        reasons.append(f"category at {category_share:.0%} of dynamic toolset, "
-                       f"cap {category_cap:.0%}")
+        reasons.append(
+            f"category at {category_share:.0%} of dynamic toolset, cap {category_cap:.0%}"
+        )
     return {"propose": not reasons, "reasons": reasons}
 
 
-def should_update(*, calls: int, errors: int,
-                  config_data: dict | None = None) -> dict:
+def should_update(*, calls: int, errors: int, config_data: dict | None = None) -> dict:
     """Whether a live tool's failure rate has earned an update pass.
 
     A tool that fails more than ``UPDATE_FAILURE_RATE`` of its last
@@ -130,17 +132,19 @@ def should_update(*, calls: int, errors: int,
     rewrite loop.
     """
     if calls < UPDATE_MIN_CALLS:
-        return {"update": False,
-                "reasons": [f"{calls} call(s), need {UPDATE_MIN_CALLS}"]}
+        return {"update": False, "reasons": [f"{calls} call(s), need {UPDATE_MIN_CALLS}"]}
     rate = errors / max(calls, 1)
-    return {"update": rate > UPDATE_FAILURE_RATE,
-            "reasons": [] if rate > UPDATE_FAILURE_RATE
-            else [f"failure rate {rate:.0%} within tolerance"]}
+    return {
+        "update": rate > UPDATE_FAILURE_RATE,
+        "reasons": []
+        if rate > UPDATE_FAILURE_RATE
+        else [f"failure rate {rate:.0%} within tolerance"],
+    }
 
 
-def should_archive(*, tool: str, last_used_ts: str | None,
-                   calls: int, errors: int,
-                   config_data: dict | None = None) -> dict:
+def should_archive(
+    *, tool: str, last_used_ts: str | None, calls: int, errors: int, config_data: dict | None = None
+) -> dict:
     """Whether a tool has stopped earning its place — soft deletion only.
 
     Three independent grounds, checked in order:
@@ -164,9 +168,11 @@ def should_archive(*, tool: str, last_used_ts: str | None,
     else:
         idle = episodes_since(last_used_ts, config_data)
         if idle > ARCHIVE_UNUSED_EPISODES + ARCHIVE_GRACE_EPISODES:
-            reasons.append(f"unused for {idle} episodes "
-                           f"(threshold {ARCHIVE_UNUSED_EPISODES}, "
-                           f"grace {ARCHIVE_GRACE_EPISODES})")
+            reasons.append(
+                f"unused for {idle} episodes "
+                f"(threshold {ARCHIVE_UNUSED_EPISODES}, "
+                f"grace {ARCHIVE_GRACE_EPISODES})"
+            )
     if calls >= ARCHIVE_NEGATIVE_VALUE_CALLS:
         rate = errors / max(calls, 1)
         if rate > UPDATE_FAILURE_RATE * 2:
@@ -188,16 +194,21 @@ def pending_proposals(config_data: dict | None = None) -> list[dict]:
     for tool, stat in sorted(stats.items()):
         verdict = should_update(calls=stat["calls"], errors=stat["errors"])
         if verdict["update"]:
-            proposals.append({"tool": tool, "action": "update",
-                              "reasons": verdict["reasons"] or
-                              [f"failure rate above "
-                               f"{UPDATE_FAILURE_RATE:.0%}"]})
+            proposals.append(
+                {
+                    "tool": tool,
+                    "action": "update",
+                    "reasons": verdict["reasons"]
+                    or [f"failure rate above {UPDATE_FAILURE_RATE:.0%}"],
+                }
+            )
     # Tools that were once loaded but never called at all are the purest
     # schema-token waste; they surface here even though they have no entry
     # in the call stats.
     for record in iter_events(config_data, event="tool.loaded"):
         subject = record.get("subject")
         if subject and subject not in live:
-            proposals.append({"tool": subject, "action": "review",
-                              "reasons": ["loaded but never called"]})
+            proposals.append(
+                {"tool": subject, "action": "review", "reasons": ["loaded but never called"]}
+            )
     return proposals

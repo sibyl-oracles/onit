@@ -45,7 +45,6 @@ succeeding.  A group that keeps failing is not a skill -- it is a bug
 that recurs, and promoting it would promote the bug.
 """
 
-
 from .trajectory import iter_records
 
 # A candidate must appear in at least this many distinct sessions.  The
@@ -64,11 +63,21 @@ MIN_SUCCESS_RATE = 0.5
 # (context_status, note_read) are the agent talking to itself, and
 # promoting one of those to a tool would add schema tokens to save
 # schema tokens.
-MINABLE_TOOLS = frozenset({
-    "bash", "edit_file", "read_file", "write_file", "grep",
-    "search_document", "fetch_content", "search", "serve",
-    "local_search", "index_documents",
-})
+MINABLE_TOOLS = frozenset(
+    {
+        "bash",
+        "edit_file",
+        "read_file",
+        "write_file",
+        "grep",
+        "search_document",
+        "fetch_content",
+        "search",
+        "serve",
+        "local_search",
+        "index_documents",
+    }
+)
 
 
 def _session_of(record: dict) -> str:
@@ -91,8 +100,8 @@ def collect_calls(records: list) -> dict:
     groups = {}
     for record in records:
         session = _session_of(record)
-        for turn in (record.get("trajectory") or []):
-            for call in (turn.get("tools") or []):
+        for turn in record.get("trajectory") or []:
+            for call in turn.get("tools") or []:
                 tool = call.get("name")
                 if not isinstance(tool, str) or not tool:
                     continue
@@ -100,8 +109,7 @@ def collect_calls(records: list) -> dict:
                 if not digest:
                     continue
                 key = (tool, str(digest))
-                entry = groups.setdefault(key, {"sessions": set(), "calls": 0,
-                                                "errors": 0})
+                entry = groups.setdefault(key, {"sessions": set(), "calls": 0, "errors": 0})
                 if session:
                     entry["sessions"].add(session)
                 entry["calls"] += 1
@@ -110,9 +118,13 @@ def collect_calls(records: list) -> dict:
     return groups
 
 
-def mine(records: list, *, min_sessions: int = MIN_SESSIONS,
-         min_success_rate: float = MIN_SUCCESS_RATE,
-         tools: frozenset | None = MINABLE_TOOLS) -> list:
+def mine(
+    records: list,
+    *,
+    min_sessions: int = MIN_SESSIONS,
+    min_success_rate: float = MIN_SUCCESS_RATE,
+    tools: frozenset | None = MINABLE_TOOLS,
+) -> list:
     """The skill candidates in ``records``.
 
     Each candidate is a dict:
@@ -141,17 +153,18 @@ def mine(records: list, *, min_sessions: int = MIN_SESSIONS,
         success_rate = (calls - errors) / calls if calls else 0.0
         if success_rate < min_success_rate:
             continue
-        candidates.append({
-            "tool": tool,
-            "digest": digest,
-            "sessions": sessions,
-            "calls": calls,
-            "errors": errors,
-            "success_rate": success_rate,
-            "arg_keys": _arg_keys(records, tool, digest),
-        })
-    candidates.sort(key=lambda c: (-c["sessions"], -c["success_rate"],
-                                   c["tool"], c["digest"]))
+        candidates.append(
+            {
+                "tool": tool,
+                "digest": digest,
+                "sessions": sessions,
+                "calls": calls,
+                "errors": errors,
+                "success_rate": success_rate,
+                "arg_keys": _arg_keys(records, tool, digest),
+            }
+        )
+    candidates.sort(key=lambda c: (-c["sessions"], -c["success_rate"], c["tool"], c["digest"]))
     for candidate in candidates:
         candidate["name"] = suggest_name(candidate)
 
@@ -182,24 +195,54 @@ def _arg_keys(records: list, tool: str, digest: str) -> list:
     """
     keys = set()
     for record in records:
-        for turn in (record.get("trajectory") or []):
-            for call in (turn.get("tools") or []):
+        for turn in record.get("trajectory") or []:
+            for call in turn.get("tools") or []:
                 if call.get("name") != tool:
                     continue
                 if str(call.get("args_digest")) != digest:
                     continue
-                for key in (call.get("arg_keys") or []):
+                for key in call.get("arg_keys") or []:
                     keys.add(str(key))
     return sorted(keys)
 
 
 # The words that make a good tool name are the ones that say what the
 # tool *does*, not what it was called during the mining.
-_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "at",
-    "with", "from", "by", "is", "are", "was", "were", "be", "this", "that",
-    "it", "as", "into", "via", "using", "use", "get", "run", "call", "tool",
-})
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "for",
+        "in",
+        "on",
+        "at",
+        "with",
+        "from",
+        "by",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "this",
+        "that",
+        "it",
+        "as",
+        "into",
+        "via",
+        "using",
+        "use",
+        "get",
+        "run",
+        "call",
+        "tool",
+    }
+)
 
 
 def suggest_name(candidate: dict) -> str:
@@ -273,17 +316,23 @@ def format_candidates(candidates: list) -> str:
     print the same thing.
     """
     if not candidates:
-        return ("No skill candidates yet.  A candidate is a tool call that "
-                "repeats across at least %d sessions and mostly succeeds."
-                % MIN_SESSIONS)
+        return (
+            "No skill candidates yet.  A candidate is a tool call that "
+            "repeats across at least %d sessions and mostly succeeds." % MIN_SESSIONS
+        )
     lines = ["Skill candidates", ""]
-    lines.append("  %-30s %-12s %8s %8s %8s" %
-                 ("tool", "digest", "sessions", "calls", "ok"))
+    lines.append("  %-30s %-12s %8s %8s %8s" % ("tool", "digest", "sessions", "calls", "ok"))
     for candidate in candidates:
-        lines.append("  %-30s %-12s %8d %8d %7.0f%%" % (
-            candidate["tool"][:30], candidate["digest"][:12],
-            candidate["sessions"], candidate["calls"],
-            candidate["success_rate"] * 100))
+        lines.append(
+            "  %-30s %-12s %8d %8d %7.0f%%"
+            % (
+                candidate["tool"][:30],
+                candidate["digest"][:12],
+                candidate["sessions"],
+                candidate["calls"],
+                candidate["success_rate"] * 100,
+            )
+        )
         if candidate.get("arg_keys"):
             lines.append("      args: %s" % ", ".join(candidate["arg_keys"]))
     return "\n".join(lines)

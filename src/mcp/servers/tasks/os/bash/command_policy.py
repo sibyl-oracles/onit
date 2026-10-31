@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,7 +29,7 @@ caller blocks the command. Over-blocking is acceptable; under-blocking is not.
 Known, accepted gap: interpreters (python, bash script.sh) can execute
 arbitrary code from files. The allowlist is defense-in-depth on top of the
 container boundary, not a substitute for it.
-'''
+"""
 
 import os
 import re
@@ -73,6 +73,7 @@ CRITICAL = "critical"
 @dataclass
 class Decision:
     """The policy's answer about one command."""
+
     verdict: str = ALLOW
     reason: str = ""
     # What a human would be approving, for the prompt and for session grants:
@@ -92,11 +93,11 @@ class Decision:
 @dataclass
 class Word:
     text: str = ""
-    quoted: bool = False           # any part quoted or backslash-escaped
-    has_expansion: bool = False    # $VAR, ${...}, $((...)), brace expansion
+    quoted: bool = False  # any part quoted or backslash-escaped
+    has_expansion: bool = False  # $VAR, ${...}, $((...)), brace expansion
     has_substitution: bool = False  # $(...), `...`, <(...), >(...)
-    lit_prefix: int = -1           # chars of text before the first quoted part
-                                   # (-1: fully unquoted so far)
+    lit_prefix: int = -1  # chars of text before the first quoted part
+    # (-1: fully unquoted so far)
 
 
 @dataclass
@@ -111,8 +112,18 @@ class SimpleCommand:
 # Keywords that are transparent prefixes of a real command
 # ("if cmd", "while cmd", "! cmd", "{ cmd; }").
 _TRANSPARENT_KEYWORDS = {
-    "if", "then", "else", "elif", "fi", "while", "until",
-    "do", "done", "!", "{", "}",
+    "if",
+    "then",
+    "else",
+    "elif",
+    "fi",
+    "while",
+    "until",
+    "do",
+    "done",
+    "!",
+    "{",
+    "}",
 }
 # Constructs we refuse to analyze (fail closed).
 _UNSUPPORTED_KEYWORDS = {"case", "select", "function", "coproc"}
@@ -176,9 +187,9 @@ def _collect_substitutions(text: str, commands: list, depth: int) -> None:
         elif c == "'":
             j = text.find("'", i + 1)
             i = n if j == -1 else j + 1
-        elif c == "$" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
+        elif c == "$" and text[i + 1 : i + 2] == "(" and text[i + 2 : i + 3] != "(":
             close = _find_closing_paren(text, i + 1)
-            _parse_into(text[i + 2:close], commands, depth + 1)
+            _parse_into(text[i + 2 : close], commands, depth + 1)
             i = close + 1
         elif c == "`":
             j = i + 1
@@ -186,8 +197,9 @@ def _collect_substitutions(text: str, commands: list, depth: int) -> None:
                 j += 2 if text[j] == "\\" else 1
             if j >= n:
                 raise CommandParseError("unterminated backquote")
-            _parse_into(text[i + 1:j].replace("\\`", "`").replace("\\$", "$"),
-                        commands, depth + 1)
+            _parse_into(
+                text[i + 1 : j].replace("\\`", "`").replace("\\$", "$"), commands, depth + 1
+            )
             i = j + 1
         else:
             i += 1
@@ -239,9 +251,9 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
     def handle_dollar(s: str, j: int) -> int:
         """Handle '$' at s[j] (shared by unquoted and double-quoted states).
         Returns index after the consumed construct."""
-        nxt = s[j + 1:j + 2]
+        nxt = s[j + 1 : j + 2]
         if nxt == "(":
-            if s[j + 2:j + 3] == "(":  # $(( arithmetic ))
+            if s[j + 2 : j + 3] == "(":  # $(( arithmetic ))
                 k = j + 3
                 d = 2
                 while k < len(s) and d > 0:
@@ -252,11 +264,11 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
                     k += 1
                 if d > 0:
                     raise CommandParseError("unbalanced arithmetic expansion")
-                _collect_substitutions(s[j + 3:k - 1], commands, depth)
+                _collect_substitutions(s[j + 3 : k - 1], commands, depth)
                 mark(expansion=True)
                 return k
             close = _find_closing_paren(s, j + 1)
-            _parse_into(s[j + 2:close], commands, depth + 1)
+            _parse_into(s[j + 2 : close], commands, depth + 1)
             mark(substitution=True)
             return close + 1
         if nxt == "{":
@@ -272,7 +284,7 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
                 k += 1
             if d > 0:
                 raise CommandParseError("unterminated parameter expansion")
-            _collect_substitutions(s[j + 2:k - 1], commands, depth)
+            _collect_substitutions(s[j + 2 : k - 1], commands, depth)
             mark(expansion=True)
             return k
         if nxt and (nxt in _SPECIAL_PARAMS or _VAR_NAME_RE.match(nxt)):
@@ -304,7 +316,7 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
             if j == -1:
                 raise CommandParseError("unterminated single quote")
             mark(quoted=True)
-            cur.text += text[i + 1:j]
+            cur.text += text[i + 1 : j]
             i = j + 1
         elif c == '"':
             mark(quoted=True)
@@ -324,8 +336,8 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
                     if j >= n:
                         raise CommandParseError("unterminated backquote")
                     _parse_into(
-                        text[i + 1:j].replace("\\`", "`").replace("\\$", "$"),
-                        commands, depth + 1)
+                        text[i + 1 : j].replace("\\`", "`").replace("\\$", "$"), commands, depth + 1
+                    )
                     mark(substitution=True)
                     i = j + 1
                 else:
@@ -341,37 +353,35 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
             end_command()
             i += 1
         elif c == ";":
-            if text[i:i + 2] in (";;", ";&"):
+            if text[i : i + 2] in (";;", ";&"):
                 raise CommandParseError("case terminators are not supported")
             end_command()
             i += 1
         elif c == "&":
-            if text[i:i + 3] == "&>>" or text[i:i + 2] == "&>":
+            if text[i : i + 3] == "&>>" or text[i : i + 2] == "&>":
                 flush_word()
                 expect_redirect_target = True
-                i += 3 if text[i:i + 3] == "&>>" else 2
+                i += 3 if text[i : i + 3] == "&>>" else 2
             else:
                 end_command()
-                i += 2 if text[i:i + 2] in ("&&",) else 1
+                i += 2 if text[i : i + 2] in ("&&",) else 1
         elif c == "|":
             end_command()
-            i += 2 if text[i:i + 2] in ("||", "|&") else 1
+            i += 2 if text[i : i + 2] in ("||", "|&") else 1
         elif c == "(":
             if cur_started:
-                raise CommandParseError(
-                    "function definitions are not supported")
-            if text[i + 1:i + 2] == "(":
-                raise CommandParseError(
-                    "arithmetic commands '((...))' are not supported")
+                raise CommandParseError("function definitions are not supported")
+            if text[i + 1 : i + 2] == "(":
+                raise CommandParseError("arithmetic commands '((...))' are not supported")
             end_command()  # subshell — treat '(' as a command boundary
             i += 1
         elif c == ")":
             end_command()
             i += 1
         elif c in "<>":
-            if text[i + 1:i + 2] == "(":  # process substitution <(...) >(...)
+            if text[i + 1 : i + 2] == "(":  # process substitution <(...) >(...)
                 close = _find_closing_paren(text, i + 1)
-                _parse_into(text[i + 2:close], commands, depth + 1)
+                _parse_into(text[i + 2 : close], commands, depth + 1)
                 mark(substitution=True)
                 i = close + 1
                 continue
@@ -381,15 +391,15 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
                 cur_started = False
             else:
                 flush_word()
-            if text[i:i + 3] == "<<<":
+            if text[i : i + 3] == "<<<":
                 i += 3
-            elif text[i:i + 3] == "<<-":
+            elif text[i : i + 3] == "<<-":
                 i += 3
-            elif text[i:i + 2] == "<<":
+            elif text[i : i + 2] == "<<":
                 i += 2
-            elif text[i:i + 2] in (">>", "<>", ">|"):
+            elif text[i : i + 2] in (">>", "<>", ">|"):
                 i += 2
-            elif text[i:i + 2] in (">&", "<&"):
+            elif text[i : i + 2] in (">&", "<&"):
                 i += 2
                 # >&2, >&- style: consume fd/dash directly, no target word
                 m = re.match(r"\d+-?|-", text[i:])
@@ -407,8 +417,9 @@ def _parse_into(text: str, commands: list, depth: int) -> None:
                 j += 2 if text[j] == "\\" else 1
             if j >= n:
                 raise CommandParseError("unterminated backquote")
-            _parse_into(text[i + 1:j].replace("\\`", "`").replace("\\$", "$"),
-                        commands, depth + 1)
+            _parse_into(
+                text[i + 1 : j].replace("\\`", "`").replace("\\$", "$"), commands, depth + 1
+            )
             mark(substitution=True)
             i = j + 1
         elif c == "{" or c == "}":
@@ -449,8 +460,7 @@ def _finish_command(words: list) -> SimpleCommand | None:
     first = rest[0]
     if not first.quoted:
         if first.text in _UNSUPPORTED_KEYWORDS:
-            raise CommandParseError(
-                f"'{first.text}' statements are not supported")
+            raise CommandParseError(f"'{first.text}' statements are not supported")
         if first.text == "for":
             return None  # loop head is data; the body arrives after 'do'
         if first.text == "[[":
@@ -479,60 +489,267 @@ def parse_commands(command: str) -> list:
 # managers (apt, yum, dnf, pacman, brew, apk, snap, dpkg) are deliberately
 # absent; language package managers (pip, npm, ...) are present but their
 # install subcommands are gated by the package policy below.
-DEFAULT_ALLOWED_COMMANDS = frozenset({
-    # shell builtins / control
-    "cd", "pwd", "true", "false", "test", "[", "echo", "printf", "read",
-    "exit", "set", "unset", "shift", "local", "declare", "typeset", "let",
-    "type", "which", "hash", "wait", "kill", "umask", "getopts", "trap",
-    # shells & wrappers
-    "bash", "sh", "dash", "zsh", "env", "nohup", "time", "timeout", "nice",
-    "stdbuf", "xargs", "command", "builtin", "exec",
-    # core file / text utilities
-    "ls", "cat", "tac", "head", "tail", "wc", "sort", "uniq", "cut", "tr",
-    "tee", "dirname", "basename", "realpath", "readlink", "stat", "file",
-    "du", "df", "touch", "mkdir", "rmdir", "rm", "cp", "mv", "ln", "chmod",
-    "find", "grep", "egrep", "fgrep", "rg", "sed", "awk", "gawk", "mawk",
-    "diff", "cmp", "comm", "paste", "join", "split", "csplit", "nl", "od",
-    "xxd", "hexdump", "strings", "shuf", "seq", "sleep", "date", "cal",
-    "yes", "fold", "fmt", "expand", "unexpand", "column", "rev", "less",
-    "more", "install", "patch", "mktemp",
-    # archives / hashing / encoding
-    "tar", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz",
-    "zstd", "unzstd", "zip", "unzip", "7z", "md5sum", "shasum", "sha1sum",
-    "sha256sum", "sha512sum", "b2sum", "cksum", "base64", "base32",
-    # data / network clients (curl|sh piping is blocked separately)
-    "jq", "curl", "wget", "openssl", "sqlite3", "pandoc",
-    # document text extraction (poppler): read-only converters that grant no
-    # authority `strings` and `pandoc` did not already grant.
-    "pdftotext", "pdfinfo",
-    # dev toolchain
-    "git", "git-lfs", "gh", "python", "pip", "node", "npm", "npx", "pnpm",
-    "yarn", "uv", "pipx", "gem", "cargo", "rustc", "go", "gofmt", "ruby",
-    "perl", "java", "javac", "make", "cmake", "ninja", "gcc", "g++", "cc",
-    "c++", "clang", "clang++", "ld", "ar", "nm", "ranlib", "strip", "objdump",
-    "readelf", "ldd", "pkg-config", "nvcc", "nvidia-smi",
-    # More language runtimes and build tools. Added because they grant no
-    # authority the list did not already grant: an allowlist holding python,
-    # node, perl, ruby and bash is not keeping anyone from executing arbitrary
-    # code, and refusing `deno` while allowing `python` buys nothing except a
-    # turn spent working around it. The real boundary is the container, the
-    # session jail and the never-ask list below.
-    "deno", "bun", "tsc", "tsx", "ts-node", "eslint", "prettier", "jest",
-    "vitest", "mocha", "dotnet", "mvn", "gradle", "php", "composer", "swift",
-    "swiftc", "kotlinc", "scala", "dart", "elixir", "mix", "erl", "lua",
-    "julia", "Rscript", "R", "bazel", "meson", "gmake", "bear", "ctest",
-    # python tooling
-    "pytest", "ruff", "black", "mypy", "flake8", "pylint", "isort",
-    # app servers
-    "uvicorn", "gunicorn", "flask",
-    # media
-    "ffmpeg", "ffprobe", "convert", "magick",
-    # system info
-    "uname", "id", "whoami", "groups", "hostname", "tty", "locale", "clear",
-    "uptime", "tree", "bc", "expr", "iconv", "dos2unix", "uuidgen", "nproc",
-    # onit itself
-    "onit",
-})
+DEFAULT_ALLOWED_COMMANDS = frozenset(
+    {
+        # shell builtins / control
+        "cd",
+        "pwd",
+        "true",
+        "false",
+        "test",
+        "[",
+        "echo",
+        "printf",
+        "read",
+        "exit",
+        "set",
+        "unset",
+        "shift",
+        "local",
+        "declare",
+        "typeset",
+        "let",
+        "type",
+        "which",
+        "hash",
+        "wait",
+        "kill",
+        "umask",
+        "getopts",
+        "trap",
+        # shells & wrappers
+        "bash",
+        "sh",
+        "dash",
+        "zsh",
+        "env",
+        "nohup",
+        "time",
+        "timeout",
+        "nice",
+        "stdbuf",
+        "xargs",
+        "command",
+        "builtin",
+        "exec",
+        # core file / text utilities
+        "ls",
+        "cat",
+        "tac",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "tee",
+        "dirname",
+        "basename",
+        "realpath",
+        "readlink",
+        "stat",
+        "file",
+        "du",
+        "df",
+        "touch",
+        "mkdir",
+        "rmdir",
+        "rm",
+        "cp",
+        "mv",
+        "ln",
+        "chmod",
+        "find",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "sed",
+        "awk",
+        "gawk",
+        "mawk",
+        "diff",
+        "cmp",
+        "comm",
+        "paste",
+        "join",
+        "split",
+        "csplit",
+        "nl",
+        "od",
+        "xxd",
+        "hexdump",
+        "strings",
+        "shuf",
+        "seq",
+        "sleep",
+        "date",
+        "cal",
+        "yes",
+        "fold",
+        "fmt",
+        "expand",
+        "unexpand",
+        "column",
+        "rev",
+        "less",
+        "more",
+        "install",
+        "patch",
+        "mktemp",
+        # archives / hashing / encoding
+        "tar",
+        "gzip",
+        "gunzip",
+        "zcat",
+        "bzip2",
+        "bunzip2",
+        "xz",
+        "unxz",
+        "zstd",
+        "unzstd",
+        "zip",
+        "unzip",
+        "7z",
+        "md5sum",
+        "shasum",
+        "sha1sum",
+        "sha256sum",
+        "sha512sum",
+        "b2sum",
+        "cksum",
+        "base64",
+        "base32",
+        # data / network clients (curl|sh piping is blocked separately)
+        "jq",
+        "curl",
+        "wget",
+        "openssl",
+        "sqlite3",
+        "pandoc",
+        # document text extraction (poppler): read-only converters that grant no
+        # authority `strings` and `pandoc` did not already grant.
+        "pdftotext",
+        "pdfinfo",
+        # dev toolchain
+        "git",
+        "git-lfs",
+        "gh",
+        "python",
+        "pip",
+        "node",
+        "npm",
+        "npx",
+        "pnpm",
+        "yarn",
+        "uv",
+        "pipx",
+        "gem",
+        "cargo",
+        "rustc",
+        "go",
+        "gofmt",
+        "ruby",
+        "perl",
+        "java",
+        "javac",
+        "make",
+        "cmake",
+        "ninja",
+        "gcc",
+        "g++",
+        "cc",
+        "c++",
+        "clang",
+        "clang++",
+        "ld",
+        "ar",
+        "nm",
+        "ranlib",
+        "strip",
+        "objdump",
+        "readelf",
+        "ldd",
+        "pkg-config",
+        "nvcc",
+        "nvidia-smi",
+        # More language runtimes and build tools. Added because they grant no
+        # authority the list did not already grant: an allowlist holding python,
+        # node, perl, ruby and bash is not keeping anyone from executing arbitrary
+        # code, and refusing `deno` while allowing `python` buys nothing except a
+        # turn spent working around it. The real boundary is the container, the
+        # session jail and the never-ask list below.
+        "deno",
+        "bun",
+        "tsc",
+        "tsx",
+        "ts-node",
+        "eslint",
+        "prettier",
+        "jest",
+        "vitest",
+        "mocha",
+        "dotnet",
+        "mvn",
+        "gradle",
+        "php",
+        "composer",
+        "swift",
+        "swiftc",
+        "kotlinc",
+        "scala",
+        "dart",
+        "elixir",
+        "mix",
+        "erl",
+        "lua",
+        "julia",
+        "Rscript",
+        "R",
+        "bazel",
+        "meson",
+        "gmake",
+        "bear",
+        "ctest",
+        # python tooling
+        "pytest",
+        "ruff",
+        "black",
+        "mypy",
+        "flake8",
+        "pylint",
+        "isort",
+        # app servers
+        "uvicorn",
+        "gunicorn",
+        "flask",
+        # media
+        "ffmpeg",
+        "ffprobe",
+        "convert",
+        "magick",
+        # system info
+        "uname",
+        "id",
+        "whoami",
+        "groups",
+        "hostname",
+        "tty",
+        "locale",
+        "clear",
+        "uptime",
+        "tree",
+        "bc",
+        "expr",
+        "iconv",
+        "dos2unix",
+        "uuidgen",
+        "nproc",
+        # onit itself
+        "onit",
+    }
+)
 
 # Read-only process inspection, added to the allowlist by the bash server only
 # where one person owns every process it could list (see _allowed_commands).
@@ -558,22 +775,66 @@ SINGLE_TENANT_COMMANDS = frozenset({"ps", "pgrep"})
 # answering the prompt takes on their own behalf; these are risks they would
 # be taking on behalf of every other user of the host, and nobody is in a
 # position to consent to that through a chat window.
-NEVER_ASK_COMMANDS = frozenset({
-    # container and orchestration runtimes
-    "docker", "dockerd", "podman", "nerdctl", "ctr", "containerd", "runc",
-    "kubectl", "helm", "minikube", "lxc", "lxc-attach", "machinectl",
-    # namespace and privilege manipulation
-    "sudo", "su", "doas", "pkexec", "chroot", "nsenter", "unshare",
-    "setcap", "setpriv", "capsh",
-    # account and credential management
-    "useradd", "usermod", "userdel", "groupadd", "gpasswd", "newgrp",
-    "passwd", "chpasswd", "visudo", "chown", "chgrp",
-    # remote shells and file transfer to other hosts
-    "ssh", "scp", "sftp", "rsync", "telnet", "rlogin", "ftp",
-    # host service, mount and scheduling control
-    "systemctl", "service", "launchctl", "initctl", "mount", "umount",
-    "crontab", "at", "batch", "anacron",
-})
+NEVER_ASK_COMMANDS = frozenset(
+    {
+        # container and orchestration runtimes
+        "docker",
+        "dockerd",
+        "podman",
+        "nerdctl",
+        "ctr",
+        "containerd",
+        "runc",
+        "kubectl",
+        "helm",
+        "minikube",
+        "lxc",
+        "lxc-attach",
+        "machinectl",
+        # namespace and privilege manipulation
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        "chroot",
+        "nsenter",
+        "unshare",
+        "setcap",
+        "setpriv",
+        "capsh",
+        # account and credential management
+        "useradd",
+        "usermod",
+        "userdel",
+        "groupadd",
+        "gpasswd",
+        "newgrp",
+        "passwd",
+        "chpasswd",
+        "visudo",
+        "chown",
+        "chgrp",
+        # remote shells and file transfer to other hosts
+        "ssh",
+        "scp",
+        "sftp",
+        "rsync",
+        "telnet",
+        "rlogin",
+        "ftp",
+        # host service, mount and scheduling control
+        "systemctl",
+        "service",
+        "launchctl",
+        "initctl",
+        "mount",
+        "umount",
+        "crontab",
+        "at",
+        "batch",
+        "anacron",
+    }
+)
 
 # Wrappers that execute another command given as their arguments.
 _SIMPLE_WRAPPERS = {"command", "builtin", "exec", "nohup", "time"}
@@ -591,26 +852,75 @@ _SUFFIXED_EXE_RE = re.compile(r"^(gcc|g\+\+|cc|c\+\+|clang|clang\+\+|node)-[\d.]
 
 # pip-style pinned requirement: name[extras]==version
 _PIP_PIN_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._\s-]*\])?==[A-Za-z0-9.!+*_-]+$")
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._\s-]*\])?==[A-Za-z0-9.!+*_-]+$"
+)
 # apt/conda-style pin: name=version (or name==version for conda)
 _EQ_PIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*={1,2}[A-Za-z0-9.:~+*_-]+$")
 
 # pip flags whose value is the next token (needed to find positional args).
 _PIP_VALUE_FLAGS = {
-    "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
-    "-t", "--target", "--platform", "--python-version", "--implementation",
-    "--abi", "--root", "--prefix", "--src", "--upgrade-strategy",
-    "--install-option", "--global-option", "--config-settings", "--no-binary",
-    "--only-binary", "--progress-bar", "--proxy", "--retries", "--timeout",
-    "--trusted-host", "--cert", "--client-cert", "--cache-dir", "--log",
-    "--python", "--report", "-C",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "-t",
+    "--target",
+    "--platform",
+    "--python-version",
+    "--implementation",
+    "--abi",
+    "--root",
+    "--prefix",
+    "--src",
+    "--upgrade-strategy",
+    "--install-option",
+    "--global-option",
+    "--config-settings",
+    "--no-binary",
+    "--only-binary",
+    "--progress-bar",
+    "--proxy",
+    "--retries",
+    "--timeout",
+    "--trusted-host",
+    "--cert",
+    "--client-cert",
+    "--cache-dir",
+    "--log",
+    "--python",
+    "--report",
+    "-C",
 }
 _PIP_FORBIDDEN_FLAGS = {"-r", "--requirement", "-e", "--editable"}
 
-_NPM_INSTALL_SUBCOMMANDS = {"install", "i", "add", "update", "up", "upgrade",
-                            "uninstall", "remove", "rm", "unlink", "link"}
-_SYSTEM_PKG_MANAGERS = {"apt", "apt-get", "aptitude", "dpkg", "yum", "dnf",
-                        "pacman", "apk", "brew", "snap", "zypper", "emerge"}
+_NPM_INSTALL_SUBCOMMANDS = {
+    "install",
+    "i",
+    "add",
+    "update",
+    "up",
+    "upgrade",
+    "uninstall",
+    "remove",
+    "rm",
+    "unlink",
+    "link",
+}
+_SYSTEM_PKG_MANAGERS = {
+    "apt",
+    "apt-get",
+    "aptitude",
+    "dpkg",
+    "yum",
+    "dnf",
+    "pacman",
+    "apk",
+    "brew",
+    "snap",
+    "zypper",
+    "emerge",
+}
 
 
 def _basename(path: str) -> str:
@@ -660,8 +970,7 @@ def _deny(msg: str, severity: str = POLICY) -> Decision:
     return Decision(DENY, _blocked(msg), severity=severity)
 
 
-def _ask_or_deny(reason: str, subjects: tuple, kind: str,
-                 ask_scope: frozenset) -> Decision:
+def _ask_or_deny(reason: str, subjects: tuple, kind: str, ask_scope: frozenset) -> Decision:
     """An ask when the caller can reach a human for this class, else a deny.
 
     Same ``reason`` either way: the model reads it in both cases, and a
@@ -681,7 +990,8 @@ def _ask_or_deny(reason: str, subjects: tuple, kind: str,
 INSTALL_DENIED_MSG = _blocked(
     "package installation is disabled by default. Set "
     "ONIT_ALLOW_PACKAGE_INSTALL=1 (or use --container-allow-installs) "
-    "to permit installs of pinned package versions.")
+    "to permit installs of pinned package versions."
+)
 
 INSTALL_SEALED_MSG = _blocked(
     "package installation is permanently disabled in web UI mode. This "
@@ -689,7 +999,8 @@ INSTALL_SEALED_MSG = _blocked(
     "--container-allow-installs have no effect here. Do not retry, and "
     "do not look for another way to install. Solve the task with the "
     "packages already present, or tell the user which package the image "
-    "would need so an operator can add it to the Dockerfile and rebuild.")
+    "would need so an operator can add it to the Dockerfile and rebuild."
+)
 
 
 def installs_sealed() -> bool:
@@ -705,19 +1016,18 @@ def installs_sealed() -> bool:
     protection. Rationale in docs/DOCKER.md, "No package installs in web UI
     mode".
     """
-    return (os.environ.get("ONIT_WEB_UI") == "1"
-            and os.environ.get("ONIT_CONTAINER") == "1")
+    return os.environ.get("ONIT_WEB_UI") == "1" and os.environ.get("ONIT_CONTAINER") == "1"
 
 
 # Public alias: the bash server builds decisions for its own pattern and path
 # checks and must use the same ask/deny rule this module applies internally.
-def ask_or_deny(reason: str, subjects: tuple, kind: str,
-                ask_scope: frozenset) -> Decision:
+def ask_or_deny(reason: str, subjects: tuple, kind: str, ask_scope: frozenset) -> Decision:
     return _ask_or_deny(reason, subjects, kind, ask_scope)
 
 
-def _check_pip_install(args: list, allow_installs: bool, denied_msg: str,
-                       ask_scope: frozenset, exe: str = "pip") -> Decision | None:
+def _check_pip_install(
+    args: list, allow_installs: bool, denied_msg: str, ask_scope: frozenset, exe: str = "pip"
+) -> Decision | None:
     sub = None
     sub_idx = -1
     for idx, w in enumerate(args):
@@ -731,29 +1041,26 @@ def _check_pip_install(args: list, allow_installs: bool, denied_msg: str,
         return _ask_or_deny(denied_msg, (f"install:{exe}",), "install", ask_scope)
     if sub == "uninstall":
         return None
-    rest = args[sub_idx + 1:]
+    rest = args[sub_idx + 1 :]
     for w in rest:
         if w.text in _PIP_FORBIDDEN_FLAGS:
             return _deny(
                 f"'pip {sub} {w.text}' is not allowed — requirements files "
                 "and editable installs cannot be pin-verified. Install pinned "
-                "packages explicitly (name==version).")
+                "packages explicitly (name==version)."
+            )
     for w in _positionals(rest, _PIP_VALUE_FLAGS):
         t = w.text
         if w.has_expansion or w.has_substitution:
-            return _deny(
-                "package names must be literal so version pins can be verified.")
+            return _deny("package names must be literal so version pins can be verified.")
         if "://" in t or t.startswith(("git+", ".", "/", "~")):
-            return _deny(
-                f"'pip {sub}' from URLs or local paths is not allowed: {t}")
+            return _deny(f"'pip {sub}' from URLs or local paths is not allowed: {t}")
         if not _PIP_PIN_RE.match(t):
-            return _unpinned(t, f"{t.split('==')[0].split('[')[0]}==1.2.3",
-                             exe, ask_scope)
+            return _unpinned(t, f"{t.split('==')[0].split('[')[0]}==1.2.3", exe, ask_scope)
     return None
 
 
-def _unpinned(pkg: str, example: str, exe: str,
-              ask_scope: frozenset) -> Decision:
+def _unpinned(pkg: str, example: str, exe: str, ask_scope: frozenset) -> Decision:
     """An install of an unpinned package.
 
     Pinning is a reproducibility rule, not a containment boundary — the same
@@ -763,11 +1070,15 @@ def _unpinned(pkg: str, example: str, exe: str,
     """
     return _ask_or_deny(
         _blocked(f"package '{pkg}' is not version-pinned. Use {example}."),
-        (f"install:{exe}",), "install", ask_scope)
+        (f"install:{exe}",),
+        "install",
+        ask_scope,
+    )
 
 
-def _check_node_pkg(exe: str, args: list, allow_installs: bool,
-                    denied_msg: str, ask_scope: frozenset) -> Decision | None:
+def _check_node_pkg(
+    exe: str, args: list, allow_installs: bool, denied_msg: str, ask_scope: frozenset
+) -> Decision | None:
     positionals = _positionals(args, set())
     sub = positionals[0].text if positionals else None
     dlx_like = exe == "npx" or (sub in ("dlx", "exec") and exe in ("pnpm", "yarn", "npm"))
@@ -787,26 +1098,35 @@ def _check_node_pkg(exe: str, args: list, allow_installs: bool,
         return None  # bare `npm install` resolves from the lockfile
     for w in pkgs:
         if w.has_expansion or w.has_substitution:
-            return _deny(
-                "package names must be literal so version pins can be verified.")
+            return _deny("package names must be literal so version pins can be verified.")
         if w.text.rfind("@") <= 0:
             return _unpinned(w.text, "name@version", exe, ask_scope)
     return None
 
 
-def _check_package_policy(exe: str, args: list, allow_installs: bool,
-                          denied_msg: str,
-                          ask_scope: frozenset) -> Decision | None:
+def _check_package_policy(
+    exe: str, args: list, allow_installs: bool, denied_msg: str, ask_scope: frozenset
+) -> Decision | None:
     """Gate package-manager install subcommands; require pins when allowed."""
     if exe in _SYSTEM_PKG_MANAGERS:
         # Only reachable when the user added the manager to the allowlist.
         positionals = _positionals(args, set())
         sub = positionals[0].text if positionals else None
-        if sub in ("install", "add", "remove", "purge", "erase", "upgrade",
-                   "dist-upgrade", "update", "-S", "-R", "-U"):
+        if sub in (
+            "install",
+            "add",
+            "remove",
+            "purge",
+            "erase",
+            "upgrade",
+            "dist-upgrade",
+            "update",
+            "-S",
+            "-R",
+            "-U",
+        ):
             if not allow_installs:
-                return _ask_or_deny(denied_msg, (f"install:{exe}",),
-                                    "install", ask_scope)
+                return _ask_or_deny(denied_msg, (f"install:{exe}",), "install", ask_scope)
             if sub in ("install", "add"):
                 for w in positionals[1:]:
                     if not _EQ_PIN_RE.match(w.text):
@@ -821,21 +1141,18 @@ def _check_package_policy(exe: str, args: list, allow_installs: bool,
         if "-m" in texts:
             m_idx = texts.index("-m")
             if m_idx + 1 < len(texts) and _normalize_exe(texts[m_idx + 1]) == "pip":
-                return _check_pip_install(args[m_idx + 2:], allow_installs,
-                                          denied_msg, ask_scope)
+                return _check_pip_install(args[m_idx + 2 :], allow_installs, denied_msg, ask_scope)
         return None
 
     if exe == "uv":
         texts = [w.text for w in args]
         if texts[:1] == ["pip"]:
-            return _check_pip_install(args[1:], allow_installs, denied_msg,
-                                      ask_scope, exe="uv")
+            return _check_pip_install(args[1:], allow_installs, denied_msg, ask_scope, exe="uv")
         positionals = _positionals(args, set())
         sub = positionals[0].text if positionals else None
         if sub in ("add", "tool", "sync"):
             if not allow_installs:
-                return _ask_or_deny(denied_msg, ("install:uv",), "install",
-                                    ask_scope)
+                return _ask_or_deny(denied_msg, ("install:uv",), "install", ask_scope)
             if sub == "add":
                 for w in positionals[1:]:
                     if not _PIP_PIN_RE.match(w.text):
@@ -847,8 +1164,7 @@ def _check_package_policy(exe: str, args: list, allow_installs: bool,
         sub = positionals[0].text if positionals else None
         if sub in ("install", "run", "upgrade"):
             if not allow_installs:
-                return _ask_or_deny(denied_msg, ("install:pipx",), "install",
-                                    ask_scope)
+                return _ask_or_deny(denied_msg, ("install:pipx",), "install", ask_scope)
             for w in positionals[1:]:
                 if not w.text.startswith("-") and not _PIP_PIN_RE.match(w.text):
                     return _unpinned(w.text, "name==version", exe, ask_scope)
@@ -861,27 +1177,31 @@ def _check_package_policy(exe: str, args: list, allow_installs: bool,
         positionals = _positionals(args, set())
         if positionals and positionals[0].text == "install":
             if not allow_installs:
-                return _ask_or_deny(denied_msg, ("install:gem",), "install",
-                                    ask_scope)
+                return _ask_or_deny(denied_msg, ("install:gem",), "install", ask_scope)
             texts = [w.text for w in args]
-            if "-v" not in texts and "--version" not in texts \
-                    and not any(":" in w.text for w in positionals[1:]):
+            if (
+                "-v" not in texts
+                and "--version" not in texts
+                and not any(":" in w.text for w in positionals[1:])
+            ):
                 return _unpinned(
                     positionals[1].text if len(positionals) > 1 else "gem",
-                    "gem install NAME -v X.Y.Z", exe, ask_scope)
+                    "gem install NAME -v X.Y.Z",
+                    exe,
+                    ask_scope,
+                )
         return None
 
     if exe in ("cargo", "go"):
         positionals = _positionals(args, set())
         sub = positionals[0].text if positionals else None
-        if (exe == "cargo" and sub == "install") or \
-                (exe == "go" and sub in ("install", "get")):
+        if (exe == "cargo" and sub == "install") or (exe == "go" and sub in ("install", "get")):
             if not allow_installs:
-                return _ask_or_deny(denied_msg, (f"install:{exe}",),
-                                    "install", ask_scope)
+                return _ask_or_deny(denied_msg, (f"install:{exe}",), "install", ask_scope)
             texts = [w.text for w in positionals[1:]]
-            if "--version" not in [w.text for w in args] and \
-                    not all("@" in t for t in texts if not t.startswith("-")):
+            if "--version" not in [w.text for w in args] and not all(
+                "@" in t for t in texts if not t.startswith("-")
+            ):
                 return _unpinned(f"{exe} {sub}", "name@version", exe, ask_scope)
         return None
 
@@ -890,8 +1210,7 @@ def _check_package_policy(exe: str, args: list, allow_installs: bool,
         sub = positionals[0].text if positionals else None
         if sub in ("install", "create", "update"):
             if not allow_installs:
-                return _ask_or_deny(denied_msg, (f"install:{exe}",),
-                                    "install", ask_scope)
+                return _ask_or_deny(denied_msg, (f"install:{exe}",), "install", ask_scope)
             if sub == "install":
                 for w in positionals[1:]:
                     if not _EQ_PIN_RE.match(w.text):
@@ -910,8 +1229,7 @@ def _unwrap_command(words: list, allowed: frozenset) -> tuple:
             return None, None
         head = words[0]
         if head.has_substitution or head.has_expansion:
-            raise CommandParseError(
-                "dynamic command names ($VAR, $(...)) cannot be allowlisted")
+            raise CommandParseError("dynamic command names ($VAR, $(...)) cannot be allowlisted")
         exe = _normalize_exe(_basename(head.text))
         if exe not in allowed and _basename(head.text) not in allowed:
             return exe, words[1:]
@@ -950,11 +1268,14 @@ def _unwrap_command(words: list, allowed: frozenset) -> tuple:
     raise CommandParseError("too many wrapper commands")
 
 
-def evaluate_command(command: str, allowed: frozenset,
-                     allow_installs: bool = False,
-                     denied_msg: str = INSTALL_DENIED_MSG,
-                     ask_scope: frozenset = frozenset(),
-                     _depth: int = 0) -> Decision:
+def evaluate_command(
+    command: str,
+    allowed: frozenset,
+    allow_installs: bool = False,
+    denied_msg: str = INSTALL_DENIED_MSG,
+    ask_scope: frozenset = frozenset(),
+    _depth: int = 0,
+) -> Decision:
     """Decide what to do with a command string: allow, ask a human, or deny.
 
     ``ask_scope`` names the classes of refusal this caller can escalate to a
@@ -978,9 +1299,10 @@ def evaluate_command(command: str, allowed: frozenset,
     except CommandParseError as e:
         return _deny(
             f"cannot statically analyze this command for allowlisting ({e}). "
-            "Rewrite it using simpler shell constructs.")
+            "Rewrite it using simpler shell constructs."
+        )
 
-    pending: Decision | None = None   # the ask we will return if nothing denies
+    pending: Decision | None = None  # the ask we will return if nothing denies
 
     def merge(d: Decision) -> Decision | None:
         """Keep a deny (returned at once); accumulate asks."""
@@ -1013,8 +1335,11 @@ def evaluate_command(command: str, allowed: frozenset,
                     _blocked(
                         f"'{exe}' is not available to the agent, and is not "
                         "something a user can authorize: it grants access to "
-                        "other accounts, other hosts, or the machine itself."),
-                    subjects=(exe,), severity=CRITICAL)
+                        "other accounts, other hosts, or the machine itself."
+                    ),
+                    subjects=(exe,),
+                    severity=CRITICAL,
+                )
             # No "Command blocked:" prefix here, unlike the refusals around
             # it: this one reason is read under both verdicts, and which one
             # it was is already carried by the transport — a refusal goes back
@@ -1022,12 +1347,17 @@ def evaluate_command(command: str, allowed: frozenset,
             # status "needs_approval". Prefixing it made an askable command
             # read to the model as permanently denied, and it would abandon
             # the command instead of letting the prompt reach a human.
-            if hit := merge(_ask_or_deny(
+            if hit := merge(
+                _ask_or_deny(
                     f"'{exe}' is not in the command allowlist, so it needs "
                     "authorization before it can run. Extend the list via "
                     "ONIT_ALLOWED_COMMANDS or permissions.allowedCommands in "
                     "settings.json if this command should be permitted.",
-                    (exe,), "command", ask_scope)):
+                    (exe,),
+                    "command",
+                    ask_scope,
+                )
+            ):
                 return hit
             # Not allowlisted and not yet approved: its arguments say nothing
             # useful about package policy, so stop analysing this one here.
@@ -1035,18 +1365,16 @@ def evaluate_command(command: str, allowed: frozenset,
         # Shell re-invocation: validate the -c payload recursively.
         if exe in ("bash", "sh", "zsh", "dash"):
             texts = [w.text for w in args]
-            has_c = any(t.startswith("-") and "c" in t and not t.startswith("--")
-                        for t in texts)
+            has_c = any(t.startswith("-") and "c" in t and not t.startswith("--") for t in texts)
             if has_c:
-                script = next((w for w in args
-                               if not w.text.startswith("-")), None)
+                script = next((w for w in args if not w.text.startswith("-")), None)
                 if script is None:
                     continue
                 if script.has_expansion or script.has_substitution:
-                    return _deny(
-                        "dynamic shell -c payloads cannot be allowlisted.")
-                inner = evaluate_command(script.text, allowed, allow_installs,
-                                         denied_msg, ask_scope, _depth + 1)
+                    return _deny("dynamic shell -c payloads cannot be allowlisted.")
+                inner = evaluate_command(
+                    script.text, allowed, allow_installs, denied_msg, ask_scope, _depth + 1
+                )
                 if not inner.allowed:
                     if hit := merge(inner):
                         return hit
@@ -1057,29 +1385,36 @@ def evaluate_command(command: str, allowed: frozenset,
             for w in args:
                 if expect_cmd:
                     if w.has_expansion or w.has_substitution:
-                        return _deny(
-                            "dynamic find -exec targets cannot be allowlisted.")
+                        return _deny("dynamic find -exec targets cannot be allowlisted.")
                     target = _normalize_exe(_basename(w.text))
                     if target not in allowed:
-                        if hit := merge(_ask_or_deny(
-                                _blocked(f"'{target}' (via find -exec) is not in "
-                                         "the command allowlist."),
-                                (target,), "command", ask_scope)):
+                        if hit := merge(
+                            _ask_or_deny(
+                                _blocked(
+                                    f"'{target}' (via find -exec) is not in the command allowlist."
+                                ),
+                                (target,),
+                                "command",
+                                ask_scope,
+                            )
+                        ):
                             return hit
                     expect_cmd = False
                 elif w.text in ("-exec", "-execdir", "-ok", "-okdir"):
                     expect_cmd = True
-        if d := _check_package_policy(exe, args, allow_installs, denied_msg,
-                                      ask_scope):
+        if d := _check_package_policy(exe, args, allow_installs, denied_msg, ask_scope):
             if hit := merge(d):
                 return hit
     return pending or Decision(ALLOW)
 
 
-def check_command(command: str, allowed: frozenset,
-                  allow_installs: bool = False,
-                  denied_msg: str = INSTALL_DENIED_MSG,
-                  _depth: int = 0) -> str | None:
+def check_command(
+    command: str,
+    allowed: frozenset,
+    allow_installs: bool = False,
+    denied_msg: str = INSTALL_DENIED_MSG,
+    _depth: int = 0,
+) -> str | None:
     """Validate a command string against the allowlist and package policy.
 
     Returns an error string when blocked, else None. Fails closed: parse
@@ -1087,6 +1422,5 @@ def check_command(command: str, allowed: frozenset,
     reach a human, which is the same thing the policy did before asking
     existed — callers that can prompt should use ``evaluate_command``.
     """
-    decision = evaluate_command(command, allowed, allow_installs, denied_msg,
-                                frozenset(), _depth)
+    decision = evaluate_command(command, allowed, allow_installs, denied_msg, frozenset(), _depth)
     return None if decision.allowed else decision.reason

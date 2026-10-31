@@ -34,17 +34,27 @@ def learned(tmp_path):
     sessions = str(tmp_path / "sessions")
     os.makedirs(root, exist_ok=True)
     os.makedirs(sessions, exist_ok=True)
-    yield {"learn": {"autonomy": "adapt", "path": root},
-           "_sessions_dir": sessions}
+    yield {"learn": {"autonomy": "adapt", "path": root}, "_sessions_dir": sessions}
 
 
 def _write_private(learned, owner, text):
     """Give ``owner`` a private playbook bullet."""
     playbook.write_playbook(
         playbook.owner_path(owner, learned),
-        {"version": 1, "items": [
-            {"id": "b-%s" % owner, "text": text, "status": "active",
-             "scope": "owner:%s" % owner, "trigger": "", "provenance": []}]})
+        {
+            "version": 1,
+            "items": [
+                {
+                    "id": "b-%s" % owner,
+                    "text": text,
+                    "status": "active",
+                    "scope": "owner:%s" % owner,
+                    "trigger": "",
+                    "provenance": [],
+                }
+            ],
+        },
+    )
 
 
 def _agent(learned):
@@ -57,6 +67,7 @@ def _agent(learned):
     would then be testing a different object than the one that ships.
     """
     from src.onit import OnIt
+
     # ``_pin_playbook`` resolves the owner from ``dirname(session_path)``,
     # so the session path must be a *file* inside the sessions directory.
     session_file = os.path.join(learned["_sessions_dir"], "sess.jsonl")
@@ -76,8 +87,8 @@ def _agent(learned):
 def _own_session(learned, session_id, owner):
     """Record an owner for a session, the way the web UI does."""
     from src.sessions import set_session_owner
-    set_session_owner(session_id, owner,
-                      sessions_dir=learned["_sessions_dir"])
+
+    set_session_owner(session_id, owner, sessions_dir=learned["_sessions_dir"])
 
 
 class TestPlaybookPinIsPerOwner:
@@ -98,10 +109,10 @@ class TestPlaybookPinIsPerOwner:
         alice_text = agent._pin_playbook("sess-alice")
         bob_text = agent._pin_playbook("sess-bob")
 
-        assert "ALICE PRIVATE bullet" in alice_text, \
+        assert "ALICE PRIVATE bullet" in alice_text, (
             "alice must get her own bullet, or the test proves nothing"
-        assert "ALICE PRIVATE bullet" not in bob_text, \
-            "bob was shown alice's private bullet"
+        )
+        assert "ALICE PRIVATE bullet" not in bob_text, "bob was shown alice's private bullet"
 
     def test_each_owner_gets_their_own_playbook(self, learned):
         """The pin is a per-owner cache, not a per-owner rebuild.
@@ -164,8 +175,9 @@ class TestPlaybookPinIsPerOwner:
         agent._pin_playbook("sess-bob")
         agent._pin_playbook("sess-alice-2")
 
-        assert len(getattr(agent, "_playbook_by_owner", {})) == 2, \
+        assert len(getattr(agent, "_playbook_by_owner", {})) == 2, (
             "the pin was rebuilt instead of cached per owner"
+        )
 
 
 class TestRecallIsAlreadyPerCall:
@@ -180,9 +192,15 @@ class TestRecallIsAlreadyPerCall:
         from src.learn import recall
 
         def _record(session, owner):
-            return {"schema": 1, "kind": "task", "session": session,
-                    "task": "shared question", "response": "an answer",
-                    "owner": owner, "turn": 1}
+            return {
+                "schema": 1,
+                "kind": "task",
+                "session": session,
+                "task": "shared question",
+                "response": "an answer",
+                "owner": owner,
+                "turn": 1,
+            }
 
         for session, owner in (("s1", "alice"), ("s2", "bob")):
             path = os.path.join(learned["learn"]["path"], "trajectories")
@@ -190,8 +208,7 @@ class TestRecallIsAlreadyPerCall:
             with open(os.path.join(path, "%s.jsonl" % session), "w") as fh:
                 fh.write(json.dumps(_record(session, owner)) + "\n")
 
-        alice = recall.recall("shared question", config_data=learned,
-                               owner="alice")
+        alice = recall.recall("shared question", config_data=learned, owner="alice")
         bob = recall.recall("shared question", config_data=learned, owner="bob")
         assert alice and bob, "both owners must get something"
         assert all("s2" not in ep["id"] for ep in alice)

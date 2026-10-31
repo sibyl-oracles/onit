@@ -94,6 +94,7 @@ MIN_DEV_ITEMS = 20
 
 # ─── paths ──────────────────────────────────────────────────────────────────
 
+
 def _repo_root() -> str:
     """The repository root, derived from this file's location.
 
@@ -142,6 +143,7 @@ def split_path(config_data: dict | None = None) -> str:
 
 # ─── the I7 boundary ────────────────────────────────────────────────────────
 
+
 def agent_write_roots(config_data: dict | None = None) -> list:
     """Roots the agent can write to.
 
@@ -158,8 +160,11 @@ def agent_write_roots(config_data: dict | None = None) -> list:
     if isinstance(learn, dict) and learn.get("path"):
         roots.append(os.path.abspath(os.path.expanduser(str(learn["path"]))))
     else:
-        roots.append(os.path.abspath(os.path.expanduser(
-            os.environ.get("ONIT_LEARN_PATH", "~/.onit/learned"))))
+        roots.append(
+            os.path.abspath(
+                os.path.expanduser(os.environ.get("ONIT_LEARN_PATH", "~/.onit/learned"))
+            )
+        )
 
     data_path = (config_data or {}).get("data_path")
     if data_path:
@@ -179,8 +184,7 @@ def _is_within(path: str, root: str) -> bool:
     return path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def assert_outside_agent_surface(path: str,
-                                  config_data: dict | None = None) -> None:
+def assert_outside_agent_surface(path: str, config_data: dict | None = None) -> None:
     """Raise when ``path`` lies inside a root the agent can write to.
 
     This is the I7 check, and it is the reason the ruler cannot be edited by
@@ -196,12 +200,11 @@ def assert_outside_agent_surface(path: str,
             raise PermissionError(
                 "I7: %s lies under the agent's writable surface (%s). The "
                 "holdout, the dev split and the baseline must live outside "
-                "it, or the agent can edit its own exam."
-                % (path, root))
+                "it, or the agent can edit its own exam." % (path, root)
+            )
 
 
-def is_outside_agent_surface(path: str,
-                             config_data: dict | None = None) -> bool:
+def is_outside_agent_surface(path: str, config_data: dict | None = None) -> bool:
     """Boolean form of :func:`assert_outside_agent_surface`."""
     try:
         assert_outside_agent_surface(path, config_data)
@@ -211,6 +214,7 @@ def is_outside_agent_surface(path: str,
 
 
 # ─── task records in the split ──────────────────────────────────────────────
+
 
 def _record_id(record: dict) -> str:
     """A stable identity for a recorded task.
@@ -237,8 +241,7 @@ def _is_usable(record: dict) -> bool:
     return True
 
 
-def _split_entry(record: dict, split: str, model: str | None,
-                 owner: str | None) -> dict:
+def _split_entry(record: dict, split: str, model: str | None, owner: str | None) -> dict:
     """One line of the split file."""
     return {
         "id": _record_id(record),
@@ -266,15 +269,19 @@ def _load_records(config_data: dict | None = None):
     what may be *replayed* is a narrower question.
     """
     from .trajectory import iter_records
+
     return iter_records(config_data)
 
 
-def build_split(*, config_data: dict | None = None,
-                model: str | None = None,
-                owner: str | None = None,
-                holdout_ratio: float = 0.4,
-                max_items: int = 400,
-                seed: int = 20261022) -> dict:
+def build_split(
+    *,
+    config_data: dict | None = None,
+    model: str | None = None,
+    owner: str | None = None,
+    holdout_ratio: float = 0.4,
+    max_items: int = 400,
+    seed: int = 20261022,
+) -> dict:
     """Draw a holdout and a dev split from the recorded corpus.
 
     Pure: writes nothing, raises nothing.  Returns the split as data so the
@@ -319,6 +326,7 @@ def build_split(*, config_data: dict | None = None,
     # Deterministic shuffle: sort by a hash of the id, seeded.  Stable across
     # runs and independent of insertion order.
     import random
+
     rng = random.Random(seed)
     shuffled = list(candidates)
     rng.shuffle(shuffled)
@@ -365,10 +373,10 @@ def build_split(*, config_data: dict | None = None,
     holdout_items = unique[:n_holdout]
     dev_items = unique[n_holdout:]
 
-    holdout = [_split_entry(r, SPLIT_HOLDOUT, r.get("model"), r.get("owner"))
-               for r in holdout_items]
-    dev = [_split_entry(r, SPLIT_DEV, r.get("model"), r.get("owner"))
-           for r in dev_items]
+    holdout = [
+        _split_entry(r, SPLIT_HOLDOUT, r.get("model"), r.get("owner")) for r in holdout_items
+    ]
+    dev = [_split_entry(r, SPLIT_DEV, r.get("model"), r.get("owner")) for r in dev_items]
 
     return {
         "schema": SCHEMA_VERSION,
@@ -394,8 +402,10 @@ def build_split(*, config_data: dict | None = None,
 
 # ─── reading and writing the split ──────────────────────────────────────────
 
+
 def _now() -> str:
     from .trajectory import _now as _t
+
     return _t()
 
 
@@ -410,15 +420,24 @@ def read_split(config_data: dict | None = None) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {"schema": SCHEMA_VERSION, "holdout": [], "dev": [],
-                "counts": {"holdout": 0, "dev": 0, "candidates": 0}}
+        return {
+            "schema": SCHEMA_VERSION,
+            "holdout": [],
+            "dev": [],
+            "counts": {"holdout": 0, "dev": 0, "candidates": 0},
+        }
     if not isinstance(data, dict):
-        return {"schema": SCHEMA_VERSION, "holdout": [], "dev": [],
-                "counts": {"holdout": 0, "dev": 0, "candidates": 0}}
+        return {
+            "schema": SCHEMA_VERSION,
+            "holdout": [],
+            "dev": [],
+            "counts": {"holdout": 0, "dev": 0, "candidates": 0},
+        }
     data.setdefault("holdout", [])
     data.setdefault("dev", [])
-    data.setdefault("counts", {"holdout": len(data["holdout"]),
-                                "dev": len(data["dev"]), "candidates": 0})
+    data.setdefault(
+        "counts", {"holdout": len(data["holdout"]), "dev": len(data["dev"]), "candidates": 0}
+    )
     return data
 
 
@@ -562,6 +581,7 @@ def write_split(split: dict, config_data: dict | None = None) -> dict:
 
 # ── the I1 exclusion set ───────────────────────────────────────────────
 
+
 def task_key(text: str) -> str:
     """The identity of a *question*, as opposed to a recorded run.
 
@@ -640,8 +660,7 @@ def is_excluded(record: dict, config_data: dict | None = None) -> bool:
     exclusions = holdout_exclusions(config_data)
     if not exclusions["ids"] and not exclusions["tasks"]:
         return False
-    record_id = "%s#%s" % (record.get("session_id", "?"),
-                           record.get("turn", "?"))
+    record_id = "%s#%s" % (record.get("session_id", "?"), record.get("turn", "?"))
     if record_id in exclusions["ids"]:
         return True
     key = task_key(record.get("task") or "")
@@ -655,8 +674,7 @@ def filter_excluded(records: list, config_data: dict | None = None) -> list:
         return list(records)
     kept = []
     for record in records:
-        record_id = "%s#%s" % (record.get("session_id", "?"),
-                               record.get("turn", "?"))
+        record_id = "%s#%s" % (record.get("session_id", "?"), record.get("turn", "?"))
         if record_id in exclusions["ids"]:
             continue
         key = task_key(record.get("task") or "")
@@ -689,6 +707,7 @@ def write_baseline(baseline: dict, config_data: dict | None = None) -> str:
 
 # ─── the promotion gate ─────────────────────────────────────────────────────
 
+
 def holdout_is_sealed(config_data: dict | None = None) -> bool:
     """Whether a usable holdout exists.
 
@@ -717,7 +736,8 @@ def assert_readable_by_gate(config_data: dict | None = None) -> list:
     if not items:
         raise FileNotFoundError(
             "No frozen holdout at %s. Draw one with 'onit learn --holdout' "
-            "before promoting anything." % holdout_path(config_data))
+            "before promoting anything." % holdout_path(config_data)
+        )
     return items
 
 
@@ -729,8 +749,7 @@ def summarize(config_data: dict | None = None) -> dict:
     baseline = read_baseline(config_data)
     return {
         "eval_dir": eval_dir(config_data),
-        "outside_agent_surface": is_outside_agent_surface(
-            eval_dir(config_data), config_data),
+        "outside_agent_surface": is_outside_agent_surface(eval_dir(config_data), config_data),
         "holdout": len(holdout),
         "dev": len(dev),
         "holdout_sealed": len(holdout) >= MIN_HOLDOUT_ITEMS,

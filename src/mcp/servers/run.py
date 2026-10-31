@@ -1,4 +1,4 @@
-'''
+"""
 Run one MCP server over stdio, in the foreground.
 
 An MCP client that wants a server it owns spawns this process and speaks the
@@ -11,12 +11,13 @@ Usage (the launch spec the MCP client builds, see lib/tools.py):
 
 rowel.atienza@up.edu.ph
 2025
-'''
+"""
 
 import os
 import sys
 import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
@@ -43,7 +44,7 @@ def _demote_src_on_syspath() -> None:
     imports this module the demotion is harmless: package imports are relative
     and anything needing the bare names appends the entry itself.
     """
-    src_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    src_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
     demoted = [p for p in sys.path if p and os.path.realpath(p) == src_dir]
     for p in demoted:
         sys.path.remove(p)
@@ -62,9 +63,7 @@ except ImportError:  # pragma: no cover - SDK extras genuinely absent
     pass  # servers that need them will fail with their own honest error
 
 
-def run_server(name: str,
-               module: str,
-               options: dict = None) -> bool:
+def run_server(name: str, module: str, options: dict = None) -> bool:
     """
     Serve one MCP server over stdio until the client closes the pipe.
 
@@ -83,14 +82,14 @@ def run_server(name: str,
     options = options or {}
     # Redirect this child process's logging to a file so MCP server output
     # never appears on the onit terminal that spawned it.
-    _log_dir = os.path.expanduser('~/.onit/logs')
+    _log_dir = os.path.expanduser("~/.onit/logs")
     os.makedirs(_log_dir, exist_ok=True)
-    _log_file = os.path.join(_log_dir, f'mcp_{name}.log')
-    _log_level = logging.DEBUG if options.get('verbose') else logging.ERROR
+    _log_file = os.path.join(_log_dir, f"mcp_{name}.log")
+    _log_level = logging.DEBUG if options.get("verbose") else logging.ERROR
     logging.basicConfig(
         filename=_log_file,
         level=_log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         force=True,
     )
     # Anything a server writes straight to stderr (the FastMCP startup banner,
@@ -98,9 +97,9 @@ def run_server(name: str,
     # reroute, so point the file descriptor itself at the log. Only when
     # spawned: run_server() is also called in-process by the tests, where
     # stealing stderr would be wrong.
-    if os.environ.get('ONIT_STDIO_SPAWNED') == '1':
+    if os.environ.get("ONIT_STDIO_SPAWNED") == "1":
         try:
-            _stderr_sink = open(_log_file, 'a', buffering=1)
+            _stderr_sink = open(_log_file, "a", buffering=1)
             os.dup2(_stderr_sink.fileno(), sys.stderr.fileno())
             sys.stderr = _stderr_sink
         except (OSError, AttributeError, ValueError):
@@ -122,7 +121,7 @@ def run_server(name: str,
             full_module = f"src.mcp.servers.{module}"
         else:
             full_module = module  # third-party absolute module path
-        server_module = __import__(full_module, fromlist=['run'])
+        server_module = __import__(full_module, fromlist=["run"])
 
         # basicConfig() above only owns the root logger.  fastmcp installs its
         # own stderr RichHandler when it is imported (just now, under 'spawn')
@@ -130,7 +129,7 @@ def run_server(name: str,
         # i.e. every streamed line of bash stdout, relabelled DEBUG — would
         # bypass the file handler.  Re-point them at it, at the level asked for
         # here rather than fastmcp's own INFO default.
-        _fastmcp_logger = logging.getLogger('fastmcp')
+        _fastmcp_logger = logging.getLogger("fastmcp")
         for _hdlr in _fastmcp_logger.handlers[:]:
             _fastmcp_logger.removeHandler(_hdlr)
         _fastmcp_logger.propagate = True
@@ -139,7 +138,7 @@ def run_server(name: str,
         # Run the server. stdout carries the protocol here: no socket, no
         # banner, no uvicorn.
         logger.info(f"Starting {name} server using stdio transport")
-        server_module.run(transport='stdio', options=options)
+        server_module.run(transport="stdio", options=options)
 
         logger.info(f"Server {name} started successfully")
         return True
@@ -156,32 +155,36 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="MCP stdio server")
-    parser.add_argument('--log-level', default='ERROR',
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='Set the logging level')
+    parser.add_argument(
+        "--log-level",
+        default="ERROR",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level",
+    )
     # Serving one server on stdio, in the foreground, is how an MCP client
     # starts a server it owns: the client spawns this process and speaks the
     # protocol over its stdin/stdout. Nothing is written to stdout by anything
     # except the protocol itself.
-    parser.add_argument('--stdio', action='store_true',
-                        help='Serve a single server over stdio')
-    parser.add_argument('--name', default='StdioMCPServer',
-                        help='Server name, used for log file naming')
-    parser.add_argument('--module', help='Module to serve')
-    parser.add_argument('--profile', help='Tool profile to serve, for servers '
-                                          'that support one')
+    parser.add_argument("--stdio", action="store_true", help="Serve a single server over stdio")
+    parser.add_argument(
+        "--name", default="StdioMCPServer", help="Server name, used for log file naming"
+    )
+    parser.add_argument("--module", help="Module to serve")
+    parser.add_argument("--profile", help="Tool profile to serve, for servers that support one")
     args = parser.parse_args()
 
     if not args.stdio:
-        parser.error('only --stdio serving is supported; the server pool was '
-                     'removed — every built-in server runs over stdio now')
+        parser.error(
+            "only --stdio serving is supported; the server pool was "
+            "removed — every built-in server runs over stdio now"
+        )
     if not args.module:
-        parser.error('--stdio requires --module')
+        parser.error("--stdio requires --module")
     stdio_options = {}
     if args.profile:
-        stdio_options['profile'] = args.profile
-    if args.log_level == 'DEBUG':
-        stdio_options['verbose'] = True
-    os.environ['ONIT_STDIO_SPAWNED'] = '1'
+        stdio_options["profile"] = args.profile
+    if args.log_level == "DEBUG":
+        stdio_options["verbose"] = True
+    os.environ["ONIT_STDIO_SPAWNED"] = "1"
     ok = run_server(name=args.name, module=args.module, options=stdio_options)
     sys.exit(0 if ok else 1)

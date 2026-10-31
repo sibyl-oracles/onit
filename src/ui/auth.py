@@ -29,6 +29,7 @@ try:
     import requests as http_requests
     from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token
+
     GOOGLE_AUTH_AVAILABLE = True
 except ImportError:
     GOOGLE_AUTH_AVAILABLE = False
@@ -36,6 +37,7 @@ except ImportError:
 
 class NullConsole:
     """Stub console so chat.py kwargs work when chat_ui.console is passed."""
+
     def print(self, *args, **kwargs):
         pass
 
@@ -45,6 +47,7 @@ class NullConsole:
 
 class SessionManager:
     """Manages authenticated user sessions."""
+
     def __init__(self, session_duration_hours: int = 24):
         self.sessions: dict[str, dict] = {}
         self.session_duration = timedelta(hours=session_duration_hours)
@@ -77,6 +80,7 @@ class SessionManager:
 
 class OAuthFlowManager:
     """Manages OAuth2 PKCE flows."""
+
     def __init__(self):
         # Store active OAuth flows: state -> {code_verifier, created_at}
         self.active_flows: dict[str, dict] = {}
@@ -92,15 +96,14 @@ class OAuthFlowManager:
 
         # Generate PKCE code verifier and challenge
         code_verifier = secrets.token_urlsafe(64)
-        code_challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode()).digest()
-        ).decode().rstrip('=')
+        code_challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
 
         # Store the flow
-        self.active_flows[state] = {
-            'code_verifier': code_verifier,
-            'created_at': datetime.now()
-        }
+        self.active_flows[state] = {"code_verifier": code_verifier, "created_at": datetime.now()}
 
         # Clean up old flows (older than 10 minutes)
         self._cleanup_old_flows()
@@ -114,18 +117,18 @@ class OAuthFlowManager:
             return None
 
         # Check if flow is too old (10 minutes)
-        if datetime.now() - flow['created_at'] > timedelta(minutes=10):
+        if datetime.now() - flow["created_at"] > timedelta(minutes=10):
             del self.active_flows[state]
             return None
 
-        code_verifier = flow['code_verifier']
+        code_verifier = flow["code_verifier"]
         del self.active_flows[state]  # One-time use
         return code_verifier
 
     def _cleanup_old_flows(self):
         """Remove flows older than 10 minutes."""
         cutoff = datetime.now() - timedelta(minutes=10)
-        expired = [s for s, f in self.active_flows.items() if f['created_at'] < cutoff]
+        expired = [s for s, f in self.active_flows.items() if f["created_at"] < cutoff]
         for state in expired:
             del self.active_flows[state]
 
@@ -138,7 +141,10 @@ _GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
 
 class GoogleAuthenticator:
     """Handles Google OAuth2 authentication."""
-    def __init__(self, client_id: str, client_secret: str, allowed_emails: Optional[list[str]] = None):
+
+    def __init__(
+        self, client_id: str, client_secret: str, allowed_emails: Optional[list[str]] = None
+    ):
         if not GOOGLE_AUTH_AVAILABLE:
             raise ImportError(
                 "Google authentication requires google-auth and requests. "
@@ -151,9 +157,7 @@ class GoogleAuthenticator:
     def verify_token(self, token: str) -> Optional[str]:
         """Verify Google ID token and return email if valid."""
         try:
-            idinfo = id_token.verify_oauth2_token(
-                token, google_requests.Request(), self.client_id
-            )
+            idinfo = id_token.verify_oauth2_token(token, google_requests.Request(), self.client_id)
             email = idinfo.get("email")
 
             # Check if email is verified
@@ -211,7 +215,9 @@ class GoogleAuthenticator:
 
         return False
 
-    def exchange_code_for_token(self, code: str, code_verifier: str, redirect_uri: str) -> Optional[str]:
+    def exchange_code_for_token(
+        self, code: str, code_verifier: str, redirect_uri: str
+    ) -> Optional[str]:
         """Exchange authorization code for ID token using PKCE.
 
         Args:
@@ -225,12 +231,12 @@ class GoogleAuthenticator:
         token_url = "https://oauth2.googleapis.com/token"
 
         data = {
-            'code': code,
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
-            'redirect_uri': redirect_uri,
-            'grant_type': 'authorization_code',
-            'code_verifier': code_verifier,
+            "code": code,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
         }
 
         try:
@@ -238,7 +244,7 @@ class GoogleAuthenticator:
             response.raise_for_status()
 
             tokens = response.json()
-            id_token_str = tokens.get('id_token')
+            id_token_str = tokens.get("id_token")
 
             if not id_token_str:
                 return None

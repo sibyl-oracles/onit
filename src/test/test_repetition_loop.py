@@ -64,22 +64,32 @@ def test_detector_sees_the_reported_loop():
 async def test_repetition_loop_terminates_and_is_trimmed():
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        side_effect=itertools.repeat(_mock_completion(REPEATED)))
+        side_effect=itertools.repeat(_mock_completion(REPEATED))
+    )
 
-    with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-         patch("model.serving.chat._resolve_model_id",
-               new_callable=AsyncMock, return_value="test-model"):
-        result = await asyncio.wait_for(chat(
-            host="http://localhost:8000/v1",
-            instruction="Write the file.",
-            tool_registry=None,
-            safety_queue=asyncio.Queue(),
-            max_ack_continuations=0,
-            verify_answers=False,
-        ), timeout=30)
+    with (
+        patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+        patch(
+            "model.serving.chat._resolve_model_id",
+            new_callable=AsyncMock,
+            return_value="test-model",
+        ),
+    ):
+        result = await asyncio.wait_for(
+            chat(
+                host="http://localhost:8000/v1",
+                instruction="Write the file.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                max_ack_continuations=0,
+                verify_answers=False,
+            ),
+            timeout=30,
+        )
 
     # The user should not be handed the loop back.
     assert result.count("Let me output") <= 2, (
-        f"the loop was returned to the user ({result.count('Let me output')} copies)")
+        f"the loop was returned to the user ({result.count('Let me output')} copies)"
+    )
     # And the run must not spin: a handful of calls at most.
     assert mock_client.chat.completions.create.call_count <= 5

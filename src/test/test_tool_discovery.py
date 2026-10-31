@@ -13,6 +13,7 @@ from lib.tools import discover_tools, _discover_server_tools, _build_parameters
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
+
 def _fake_tool(name="search", description="Search the web"):
     """Create a mock tool object that has inputSchema."""
     tool = MagicMock()
@@ -50,6 +51,7 @@ def _mock_client(tools=None, resources=None, prompts=None):
 
 # ── _build_parameters ───────────────────────────────────────────────────────
 
+
 class TestBuildParameters:
     """What survives the trip from an MCP inputSchema into the tool record."""
 
@@ -63,16 +65,19 @@ class TestBuildParameters:
         """Regression: `required` used to be dropped, which silently disabled
         blank_required_args for every MCP-discovered tool and left the model
         without any signal about which parameters are mandatory."""
-        params = _build_parameters(self._tool({
-            "type": "object",
-            "properties": {"command": {"type": "string"}},
-            "required": ["command"],
-        }))
+        params = _build_parameters(
+            self._tool(
+                {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                }
+            )
+        )
         assert params["required"] == ["command"]
 
     def test_properties_are_preserved(self):
-        params = _build_parameters(self._tool(
-            {"properties": {"query": {"type": "string"}}}))
+        params = _build_parameters(self._tool({"properties": {"query": {"type": "string"}}}))
         assert params["properties"] == {"query": {"type": "string"}}
 
     def test_type_is_pinned_to_object(self):
@@ -82,10 +87,14 @@ class TestBuildParameters:
     def test_ref_definitions_come_along(self):
         """A $ref whose referent was dropped dangles, and nothing — model
         included — can read the property that used it."""
-        params = _build_parameters(self._tool({
-            "properties": {"cfg": {"$ref": "#/$defs/Cfg"}},
-            "$defs": {"Cfg": {"type": "object"}},
-        }))
+        params = _build_parameters(
+            self._tool(
+                {
+                    "properties": {"cfg": {"$ref": "#/$defs/Cfg"}},
+                    "$defs": {"Cfg": {"type": "object"}},
+                }
+            )
+        )
         assert params["$defs"] == {"Cfg": {"type": "object"}}
 
     def test_absent_keys_are_not_invented(self):
@@ -100,17 +109,18 @@ class TestBuildParameters:
         """FastMCP sets it false and means it. Without it the harness cannot
         tell "extras allowed" from "extras rejected", and has to let every such
         call make the round trip to find out."""
-        params = _build_parameters(self._tool(
-            {"properties": {}, "additionalProperties": False}))
+        params = _build_parameters(self._tool({"properties": {}, "additionalProperties": False}))
         assert params["additionalProperties"] is False
 
     def test_mcp_extras_are_dropped(self):
-        params = _build_parameters(self._tool(
-            {"properties": {}, "title": "X", "$schema": "http://json-schema.org/"}))
+        params = _build_parameters(
+            self._tool({"properties": {}, "title": "X", "$schema": "http://json-schema.org/"})
+        )
         assert set(params) == {"type", "properties"}
 
 
 # ── one tool, one contract, across the servers that offer it ────────────────
+
 
 class TestConsolidatedToolContracts:
     """`read_file` and `search_document` are each registered by two servers.
@@ -125,14 +135,17 @@ class TestConsolidatedToolContracts:
     @staticmethod
     def _schemas(name):
         import importlib
+
         out = {}
         for label, mod_path in (
-                ("tools", "src.mcp.servers.tasks.tools.mcp_server"),
-                ("bash", "src.mcp.servers.tasks.os.bash.mcp_server")):
+            ("tools", "src.mcp.servers.tasks.tools.mcp_server"),
+            ("bash", "src.mcp.servers.tasks.os.bash.mcp_server"),
+        ):
             mod = importlib.import_module(mod_path)
             fn = getattr(mod, name)
             fn = getattr(fn, "fn", fn)
             import inspect
+
             out[label] = list(inspect.signature(fn).parameters)
         return out
 
@@ -159,6 +172,7 @@ class TestConsolidatedToolContracts:
         """Two servers offering one name with different description text is a
         collision to ToolRegistry, so the text is shared, not copied."""
         import importlib
+
         shared = importlib.import_module("src.mcp.servers.tasks.shared")
         tools = importlib.import_module("src.mcp.servers.tasks.tools.mcp_server")
         bash = importlib.import_module("src.mcp.servers.tasks.os.bash.mcp_server")
@@ -171,6 +185,7 @@ class TestConsolidatedToolContracts:
         """The `offset`/`limit` hallucination in the recorded trajectories was a
         model filling a documentation gap with another harness's signature."""
         import importlib
+
         shared = importlib.import_module("src.mcp.servers.tasks.shared")
         text = shared.READ_FILE_DESCRIPTION
         for p in self._schemas("read_file")["bash"]:
@@ -180,13 +195,16 @@ class TestConsolidatedToolContracts:
 
 # ── _discover_server_tools ──────────────────────────────────────────────────
 
+
 class TestDiscoverServerTools:
     @pytest.mark.asyncio
     async def test_discovers_tools_with_input_schema(self):
         server = {"name": "ToolsMCPServer", "url": "http://127.0.0.1:18201/sse", "enabled": True}
         mock = _mock_client(tools=[_fake_tool("search")])
-        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
-             patch("lib.tools.Client", return_value=mock):
+        with (
+            patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)),
+            patch("lib.tools.Client", return_value=mock),
+        ):
             handlers = await _discover_server_tools(server)
         assert len(handlers) == 1
         assert handlers[0].tool_item["function"]["name"] == "search"
@@ -199,8 +217,10 @@ class TestDiscoverServerTools:
         # defensive.  discover_tools handles the exception gracefully.
         server = {"name": "Prompts", "url": "http://127.0.0.1:18200/sse", "enabled": True}
         mock = _mock_client(prompts=[_fake_prompt("assistant")])
-        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
-             patch("lib.tools.Client", return_value=mock):
+        with (
+            patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)),
+            patch("lib.tools.Client", return_value=mock),
+        ):
             with pytest.raises(ValueError, match="empty tool list"):
                 await _discover_server_tools(server, max_retries=1)
 
@@ -218,6 +238,7 @@ class TestDiscoverServerTools:
 
 
 # ── discover_tools ──────────────────────────────────────────────────────────
+
 
 def _target_url(target) -> str:
     """URL of whatever discover_tools handed to Client.
@@ -243,8 +264,10 @@ class TestDiscoverTools:
         def client_factory(target):
             return mock_a if "18200" in _target_url(target) else mock_b
 
-        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
-             patch("lib.tools.Client", side_effect=client_factory):
+        with (
+            patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)),
+            patch("lib.tools.Client", side_effect=client_factory),
+        ):
             registry = await discover_tools(servers)
 
         assert len(registry) == 2
@@ -265,8 +288,10 @@ class TestDiscoverTools:
                 raise ConnectionError("Cannot connect")
             return mock_good
 
-        with patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)), \
-             patch("lib.tools.Client", side_effect=client_factory):
+        with (
+            patch("lib.tools._wait_for_port", new=AsyncMock(return_value=True)),
+            patch("lib.tools.Client", side_effect=client_factory),
+        ):
             registry = await discover_tools(servers)
 
         # Only the good server's tool should be registered

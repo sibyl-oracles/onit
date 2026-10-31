@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,7 +28,7 @@ Requires:
 2. fetch_content - Extract content and media URLs from any webpage
 3. get_weather - Weather with automatic location detection
 4. extract_pdf_images - Extract images from PDF files
-'''
+"""
 
 import os
 import re
@@ -62,12 +62,14 @@ except ImportError:
     from web_search import WebSearch
 
 import logging
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 try:
     from ddgs import DDGS
-    logging.getLogger('primp').setLevel(logging.WARNING)
+
+    logging.getLogger("primp").setLevel(logging.WARNING)
 except ImportError:
     raise ImportError("`ddgs` not installed. Please install using `pip install ddgs`")
 
@@ -77,7 +79,9 @@ except ImportError:
     raise ImportError("`geopy` not installed. Please install using `pip install geopy`")
 
 # Get OpenWeather API key from environment
-openweather_api_key = os.environ.get('OPENWEATHER_API_KEY') or os.environ.get('OPENWEATHERMAP_API_KEY')
+openweather_api_key = os.environ.get("OPENWEATHER_API_KEY") or os.environ.get(
+    "OPENWEATHERMAP_API_KEY"
+)
 
 mcp = FastMCP("Web Search MCP Server")
 
@@ -92,17 +96,25 @@ DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
 DEFAULT_MEDIA_DIR = None  # Set in run() based on DATA_PATH
 
 # Common image extensions
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico'}
-VIDEO_EXTENSIONS = {'.mp4', '.webm', '.ogg', '.mov', '.avi'}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico"}
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".ogg", ".mov", ".avi"}
 
 # Preferred extensions for common Content-Types (mimetypes.guess_extension can
 # return oddities like '.jpe' for image/jpeg depending on the platform)
 CONTENT_TYPE_EXTENSIONS = {
-    'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
-    'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
-    'application/pdf': '.pdf', 'video/mp4': '.mp4', 'video/webm': '.webm',
-    'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'text/html': '.html',
-    'text/plain': '.txt',
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+    "image/bmp": ".bmp",
+    "application/pdf": ".pdf",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "text/html": ".html",
+    "text/plain": ".txt",
 }
 
 
@@ -115,10 +127,9 @@ def _validate_required(**kwargs) -> str:
     """Check for missing required arguments. Returns JSON error string or empty string."""
     missing = [name for name, value in kwargs.items() if value is None]
     if missing:
-        return json.dumps({
-            "error": f"Missing required argument(s): {', '.join(missing)}.",
-            "status": "error"
-        })
+        return json.dumps(
+            {"error": f"Missing required argument(s): {', '.join(missing)}.", "status": "error"}
+        )
     return ""
 
 
@@ -144,8 +155,7 @@ def _session_base(data_path: str | None = None) -> str:
         return base
     if base != abs_data and not base.startswith(abs_data + os.sep):
         raise ValueError(
-            f"data_path must be within the server data directory {abs_data}. "
-            f"Got: {base}"
+            f"data_path must be within the server data directory {abs_data}. Got: {base}"
         )
     return base
 
@@ -159,9 +169,7 @@ def _validate_write_path(file_path: str, base: str | None = None) -> str:
         return abs_path
     abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
-        raise ValueError(
-            f"Write path must be within: {abs_data}. Got: {abs_path}"
-        )
+        raise ValueError(f"Write path must be within: {abs_data}. Got: {abs_path}")
     return abs_path
 
 
@@ -174,9 +182,7 @@ def _validate_read_path(file_path: str, base: str | None = None) -> str:
         return abs_path
     abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
-        raise ValueError(
-            f"Read access denied. Path must be within: {abs_data}. Got: {abs_path}"
-        )
+        raise ValueError(f"Read access denied. Path must be within: {abs_data}. Got: {abs_path}")
     return abs_path
 
 
@@ -189,9 +195,11 @@ def _get_media_dir(base: str | None = None) -> str:
 def _get_session():
     """Create a requests session with retry logic."""
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    )
     adapter = HTTPAdapter(max_retries=Retry(total=2, backoff_factor=0.5))
     session.mount("https://", adapter)
     session.mount("http://", adapter)
@@ -206,11 +214,14 @@ def _read_pdf(url: str) -> str:
         response.raise_for_status()
 
         # Verify download is complete if Content-Length was provided
-        expected = response.headers.get('Content-Length')
+        expected = response.headers.get("Content-Length")
         if expected and len(response.content) < int(expected):
-            return f"Error reading PDF: incomplete download ({len(response.content)}/{expected} bytes)"
+            return (
+                f"Error reading PDF: incomplete download ({len(response.content)}/{expected} bytes)"
+            )
 
         from pypdf import PdfReader
+
         pdf_file = BytesIO(response.content)
         reader = PdfReader(pdf_file)
         text = "\n".join(page.extract_text() or "" for page in reader.pages)
@@ -230,11 +241,10 @@ def _get_location_from_ip():
     try:
         response = requests.get("https://get.geojs.io/v1/ip/geo.json", timeout=5)
         data = response.json()
-        lat = data.get('latitude')
-        lon = data.get('longitude')
+        lat = data.get("latitude")
+        lon = data.get("longitude")
         if lat is not None and lon is not None:
-            return (float(lat), float(lon),
-                    data.get('city'), data.get('country'))
+            return (float(lat), float(lon), data.get("city"), data.get("country"))
     except Exception:
         pass
     return None, None, None, None
@@ -283,13 +293,13 @@ def _extract_media_urls(soup: BeautifulSoup, base_url: str) -> dict:
     videos = []
 
     # Extract images
-    for img in soup.find_all('img'):
-        src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
         if src:
             full_url = urljoin(base_url, src)
             # Filter out tiny images, icons, trackers
-            width = img.get('width', '999')
-            height = img.get('height', '999')
+            width = img.get("width", "999")
+            height = img.get("height", "999")
             try:
                 if int(width) < 50 or int(height) < 50:
                     continue
@@ -297,17 +307,20 @@ def _extract_media_urls(soup: BeautifulSoup, base_url: str) -> dict:
                 pass
 
             # Skip common tracking/icon patterns
-            if any(x in full_url.lower() for x in ['pixel', 'tracker', 'beacon', '1x1', 'spacer', 'blank']):
+            if any(
+                x in full_url.lower()
+                for x in ["pixel", "tracker", "beacon", "1x1", "spacer", "blank"]
+            ):
                 continue
 
             if full_url not in images:
                 images.append(full_url)
 
     # Extract from srcset
-    for img in soup.find_all(['img', 'source']):
-        srcset = img.get('srcset')
+    for img in soup.find_all(["img", "source"]):
+        srcset = img.get("srcset")
         if srcset:
-            for part in srcset.split(','):
+            for part in srcset.split(","):
                 url_part = part.strip().split()[0]
                 if url_part:
                     full_url = urljoin(base_url, url_part)
@@ -316,7 +329,7 @@ def _extract_media_urls(soup: BeautifulSoup, base_url: str) -> dict:
 
     # Extract background images from style attributes
     for tag in soup.find_all(style=True):
-        style = tag.get('style', '')
+        style = tag.get("style", "")
         urls = re.findall(r'url\(["\']?([^"\'()]+)["\']?\)', style)
         for url in urls:
             full_url = urljoin(base_url, url)
@@ -325,25 +338,25 @@ def _extract_media_urls(soup: BeautifulSoup, base_url: str) -> dict:
                     images.append(full_url)
 
     # Extract videos
-    for video in soup.find_all('video'):
-        src = video.get('src')
+    for video in soup.find_all("video"):
+        src = video.get("src")
         if src:
             videos.append(urljoin(base_url, src))
-        for source in video.find_all('source'):
-            src = source.get('src')
+        for source in video.find_all("source"):
+            src = source.get("src")
             if src:
                 full_url = urljoin(base_url, src)
                 if full_url not in videos:
                     videos.append(full_url)
 
     # Extract YouTube/Vimeo embeds
-    for iframe in soup.find_all('iframe'):
-        src = iframe.get('src', '')
-        if 'youtube.com' in src or 'youtu.be' in src:
+    for iframe in soup.find_all("iframe"):
+        src = iframe.get("src", "")
+        if "youtube.com" in src or "youtu.be" in src:
             videos.append(src)
-        elif 'vimeo.com' in src:
+        elif "vimeo.com" in src:
             videos.append(src)
-        elif 'player' in src and any(x in src for x in ['video', 'embed']):
+        elif "player" in src and any(x in src for x in ["video", "embed"]):
             videos.append(src)
 
     return {"images": images[:50], "videos": videos[:20]}  # Limit results
@@ -360,18 +373,22 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
 
         # Download
         assert_public_url(url)
-        response = safe_fetch("GET", url, timeout=timeout, stream=True, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
+        response = safe_fetch(
+            "GET",
+            url,
+            timeout=timeout,
+            stream=True,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
         response.raise_for_status()
 
         # Check content type and size
-        content_type = response.headers.get('Content-Type', '')
-        content_length = response.headers.get('Content-Length')
+        content_type = response.headers.get("Content-Type", "")
+        content_length = response.headers.get("Content-Length")
 
         if not os.path.splitext(filename)[1]:
             # No extension in the URL — derive one from the Content-Type
-            ct = content_type.split(';')[0].strip().lower()
+            ct = content_type.split(";")[0].strip().lower()
             ext = CONTENT_TYPE_EXTENSIONS.get(ct) or mimetypes.guess_extension(ct) or ".bin"
             filename += ext
 
@@ -387,7 +404,7 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
         # Write to file with owner-only permissions
         fd = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         bytes_written = 0
-        with os.fdopen(fd, 'wb') as f:
+        with os.fdopen(fd, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
                 bytes_written += len(chunk)
@@ -395,13 +412,16 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
         # Verify complete download if Content-Length was provided
         if content_length and bytes_written < int(content_length):
             os.unlink(filepath)
-            return {"url": url, "error": f"Incomplete download ({bytes_written}/{content_length} bytes)"}
+            return {
+                "url": url,
+                "error": f"Incomplete download ({bytes_written}/{content_length} bytes)",
+            }
 
         return {
             "url": url,
             "path": filepath,
             "size_bytes": os.path.getsize(filepath),
-            "content_type": content_type
+            "content_type": content_type,
         }
     except requests.exceptions.RequestException:
         return {"url": url, "error": "request failed (network error; details withheld)"}
@@ -413,11 +433,8 @@ def _download_file(url: str, output_dir: str, timeout: int = 30) -> dict:
 # TOOL 1: UNIFIED SEARCH
 # =============================================================================
 
-def _search_impl(
-    query: str = None,
-    type: str = "web",
-    max_results: int = 5
-) -> str:
+
+def _search_impl(query: str = None, type: str = "web", max_results: int = 5) -> str:
     """Core search implementation (always defined for import by other modules)."""
     if err := _validate_required(query=query):
         return err
@@ -430,23 +447,25 @@ def _search_impl(
             results = ddgs.news(query=query, max_results=max_results)
             formatted = []
             for r in results:
-                date_pub = r.get('date', '')
+                date_pub = r.get("date", "")
                 try:
                     dt = parser.parse(date_pub)
-                    date_pub = dt.strftime('%B %d, %Y')
+                    date_pub = dt.strftime("%B %d, %Y")
                 except Exception:
                     pass
                 # Snippets are capped: ranking + dates are the evidence, and
                 # the full body is one fetch_content away. Uncapped, a
                 # 10-result news page could carry ~20k chars of body text.
-                snippet = (r.get('body', '') or '')[:300]
-                formatted.append({
-                    "title": r.get('title', ''),
-                    "snippet": snippet,
-                    "date": date_pub,
-                    "source": r.get('source', ''),
-                    "url": r.get('url', '')
-                })
+                snippet = (r.get("body", "") or "")[:300]
+                formatted.append(
+                    {
+                        "title": r.get("title", ""),
+                        "snippet": snippet,
+                        "date": date_pub,
+                        "source": r.get("source", ""),
+                        "url": r.get("url", ""),
+                    }
+                )
             return json.dumps(formatted)
         else:
             # Use the existing WebSearch for general queries
@@ -478,11 +497,9 @@ Returns JSON: [{title, snippet, url, source}] for "web";
 
 
 # Register as MCP tool only when search is not disabled
-if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
-    @mcp.tool(
-        title="Search the Web",
-        description=SEARCH_TOOL_DESCRIPTION
-    )
+if not os.environ.get("ONIT_DISABLE_WEB_SEARCH"):
+
+    @mcp.tool(title="Search the Web", description=SEARCH_TOOL_DESCRIPTION)
     def search(query: str = None, type: str = "web", max_results: int = 5) -> str:
         return _search_impl(query=query, type=type, max_results=max_results)
 else:
@@ -493,6 +510,7 @@ else:
 # =============================================================================
 # TOOL 2: FETCH CONTENT WITH MEDIA EXTRACTION
 # =============================================================================
+
 
 @mcp.tool(
     title="Fetch Web Content",
@@ -506,7 +524,7 @@ Args:
 - media_limit: Max files to download
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {title, url, content, images, videos, downloaded}"""
+Returns JSON: {title, url, content, images, videos, downloaded}""",
 )
 def fetch_content(
     url: str = None,
@@ -531,12 +549,14 @@ def fetch_content(
         # Handle PDFs
         if url.lower().endswith(".pdf"):
             pdf_text = _read_pdf(url)
-            return json.dumps({
-                "title": "PDF Document",
-                "url": url,
-                "content": pdf_text,
-                "content_type": "application/pdf"
-            })
+            return json.dumps(
+                {
+                    "title": "PDF Document",
+                    "url": url,
+                    "content": pdf_text,
+                    "content_type": "application/pdf",
+                }
+            )
 
         # Fetch the page
         assert_public_url(url)
@@ -553,12 +573,14 @@ def fetch_content(
         except requests.exceptions.Timeout:
             return json.dumps({"error": "Request timed out", "url": url})
         except requests.exceptions.RequestException:
-            return json.dumps({"error": "Request failed (network error; details withheld)", "url": url})
+            return json.dumps(
+                {"error": "Request failed (network error; details withheld)", "url": url}
+            )
         finally:
             session.close()
 
         # Check size
-        content_length = response.headers.get('Content-Length')
+        content_length = response.headers.get("Content-Length")
         if content_length and int(content_length) > MAX_SIZE:
             return json.dumps({"error": "File too large", "url": url})
 
@@ -579,11 +601,11 @@ def fetch_content(
         # Decode bytes to string
         raw_content = b"".join(chunks)
         # Try to detect encoding from response, fallback to utf-8
-        encoding = response.encoding or 'utf-8'
+        encoding = response.encoding or "utf-8"
         try:
             html = raw_content.decode(encoding)
         except (UnicodeDecodeError, LookupError):
-            html = raw_content.decode('utf-8', errors='replace')
+            html = raw_content.decode("utf-8", errors="replace")
 
         # Parse HTML
         soup = BeautifulSoup(html, "html.parser")
@@ -603,7 +625,11 @@ def fetch_content(
             tag.decompose()
 
         # Try to find main content
-        main_content = soup.find('main') or soup.find('article') or soup.find('div', {'class': re.compile(r'content|article|post', re.I)})
+        main_content = (
+            soup.find("main")
+            or soup.find("article")
+            or soup.find("div", {"class": re.compile(r"content|article|post", re.I)})
+        )
         if main_content:
             text = main_content.get_text(separator="\n")
         else:
@@ -629,7 +655,9 @@ def fetch_content(
         # Download media if requested
         if download_media and media["images"]:
             base = _session_base(data_path)
-            output_path = _validate_write_path(output_dir, base=base) if output_dir else _get_media_dir(base)
+            output_path = (
+                _validate_write_path(output_dir, base=base) if output_dir else _get_media_dir(base)
+            )
             downloaded = []
             for img_url in media["images"][:media_limit]:
                 dl_result = _download_file(img_url, output_path)
@@ -652,22 +680,24 @@ def fetch_content(
 # TOOL 3: WEATHER (WITH BUILT-IN LOCATION)
 # =============================================================================
 
-def _get_weather_impl(
-    place: str = None,
-    forecast: bool = False
-) -> str:
+
+def _get_weather_impl(place: str = None, forecast: bool = False) -> str:
     """Core weather implementation (always defined for import by other modules)."""
     global openweather_api_key
 
     # Re-check env in case it was set via CLI after module load
     if not openweather_api_key:
-        openweather_api_key = os.environ.get('OPENWEATHER_API_KEY') or os.environ.get('OPENWEATHERMAP_API_KEY')
+        openweather_api_key = os.environ.get("OPENWEATHER_API_KEY") or os.environ.get(
+            "OPENWEATHERMAP_API_KEY"
+        )
 
     if not openweather_api_key:
-        return json.dumps({
-            "error": "OpenWeather API key not set",
-            "help": "Set OPENWEATHERMAP_API_KEY or use --openweathermap-api-key CLI option"
-        })
+        return json.dumps(
+            {
+                "error": "OpenWeather API key not set",
+                "help": "Set OPENWEATHERMAP_API_KEY or use --openweathermap-api-key CLI option",
+            }
+        )
 
     try:
         # Get coordinates
@@ -687,26 +717,28 @@ def _get_weather_impl(
         url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={openweather_api_key}&units=metric"
         weather = requests.get(url, timeout=10).json()
 
-        if weather.get('cod') != 200:
-            return json.dumps({"error": f"Weather API error: {weather.get('message', 'Unknown error')}"})
+        if weather.get("cod") != 200:
+            return json.dumps(
+                {"error": f"Weather API error: {weather.get('message', 'Unknown error')}"}
+            )
 
         # Format sunrise/sunset
-        sunrise = datetime.fromtimestamp(weather['sys']['sunrise']).strftime('%I:%M %p')
-        sunset = datetime.fromtimestamp(weather['sys']['sunset']).strftime('%I:%M %p')
+        sunrise = datetime.fromtimestamp(weather["sys"]["sunrise"]).strftime("%I:%M %p")
+        sunset = datetime.fromtimestamp(weather["sys"]["sunset"]).strftime("%I:%M %p")
 
         result = {
             "location": location_name,
             "coordinates": {"lat": lat, "lon": lon},
             "current": {
-                "description": weather['weather'][0]['description'],
-                "temperature_c": weather['main']['temp'],
-                "feels_like_c": weather['main']['feels_like'],
-                "humidity_percent": weather['main']['humidity'],
-                "wind_speed_ms": weather['wind']['speed'],
+                "description": weather["weather"][0]["description"],
+                "temperature_c": weather["main"]["temp"],
+                "feels_like_c": weather["main"]["feels_like"],
+                "humidity_percent": weather["main"]["humidity"],
+                "wind_speed_ms": weather["wind"]["speed"],
                 "sunrise": sunrise,
-                "sunset": sunset
+                "sunset": sunset,
             },
-            "source": f"https://openweathermap.org/city/{weather['id']}"
+            "source": f"https://openweathermap.org/city/{weather['id']}",
         }
 
         # Fetch forecast if requested
@@ -714,16 +746,18 @@ def _get_weather_impl(
             forecast_url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={openweather_api_key}&units=metric"
             forecast_data = requests.get(forecast_url, timeout=10).json()
 
-            if forecast_data.get('cod') == '200':
+            if forecast_data.get("cod") == "200":
                 forecast_list = []
-                for entry in forecast_data['list']:
-                    dt = datetime.fromtimestamp(entry['dt'])
-                    forecast_list.append({
-                        "datetime": dt.strftime('%Y-%m-%d %H:%M'),
-                        "day": dt.strftime('%A'),
-                        "description": entry['weather'][0]['description'],
-                        "temperature_c": entry['main']['temp']
-                    })
+                for entry in forecast_data["list"]:
+                    dt = datetime.fromtimestamp(entry["dt"])
+                    forecast_list.append(
+                        {
+                            "datetime": dt.strftime("%Y-%m-%d %H:%M"),
+                            "day": dt.strftime("%A"),
+                            "description": entry["weather"][0]["description"],
+                            "temperature_c": entry["main"]["temp"],
+                        }
+                    )
                 result["forecast_5day"] = forecast_list
 
         return json.dumps(result)
@@ -733,7 +767,8 @@ def _get_weather_impl(
 
 
 # Register as MCP tool only when weather is not disabled
-if not os.environ.get('ONIT_DISABLE_WEATHER'):
+if not os.environ.get("ONIT_DISABLE_WEATHER"):
+
     @mcp.tool(
         title="Get Weather",
         description="""Get current weather and optional 5-day forecast. Auto-detects location if not specified.
@@ -744,7 +779,7 @@ if not os.environ.get('ONIT_DISABLE_WEATHER'):
 
     Returns JSON: {location, current: {description, temperature_c, humidity_percent, wind_speed_ms, sunrise, sunset}, forecast_5day}
 
-    Requires: OPENWEATHER_API_KEY environment variable."""
+    Requires: OPENWEATHER_API_KEY environment variable.""",
     )
     def get_weather(place: Optional[str] = None, forecast: bool = False) -> str:
         return _get_weather_impl(place=place, forecast=forecast)
@@ -757,6 +792,7 @@ else:
 # TOOL 4: EXTRACT IMAGES FROM PDF
 # =============================================================================
 
+
 @mcp.tool(
     title="Extract PDF Images",
     description="""Extract all images from a PDF file and save them locally.
@@ -767,7 +803,7 @@ Args:
 - min_size: Minimum image dimension in pixels to extract
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}"""
+Returns JSON: {pdf_path, output_dir, images: [{path, width, height, format}], image_count, status}""",
 )
 def extract_pdf_images(
     pdf_path: str = None,
@@ -784,7 +820,9 @@ def extract_pdf_images(
     """
     base = _session_base(data_path)
     return extract_pdf_images_impl(
-        pdf_path=pdf_path, output_dir=output_dir, min_size=min_size,
+        pdf_path=pdf_path,
+        output_dir=output_dir,
+        min_size=min_size,
         validate_read_path=_validate_read_path,
         validate_write_path=lambda p: _validate_write_path(p, base=base),
         default_output_dir=os.path.join(base, "pdf_images"),
@@ -795,26 +833,27 @@ def extract_pdf_images(
 # SERVER ENTRY POINT
 # =============================================================================
 
+
 def run(
     transport: str = "sse",
     host: str = "0.0.0.0",
     port: int = 18201,
     path: str = "/sse",
-    options: dict = None
+    options: dict = None,
 ) -> None:
     """Run the MCP server."""
     options = options or {}
     global DATA_PATH, DEFAULT_MEDIA_DIR
 
-    if 'verbose' in options:
+    if "verbose" in options:
         logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.ERROR)
 
-    if 'data_path' in options:
-        DATA_PATH = options['data_path']
-    elif os.environ.get('ONIT_DATA_PATH'):
-        DATA_PATH = os.environ['ONIT_DATA_PATH']
+    if "data_path" in options:
+        DATA_PATH = options["data_path"]
+    elif os.environ.get("ONIT_DATA_PATH"):
+        DATA_PATH = os.environ["ONIT_DATA_PATH"]
     abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
     DEFAULT_MEDIA_DIR = os.path.join(abs_data, "media")
     _secure_makedirs(abs_data)
@@ -823,20 +862,26 @@ def run(
     logger.info(f"Data path: {DATA_PATH}")
     logger.info("4 Core Tools: search, fetch_content, get_weather, extract_pdf_images")
 
-    quiet = 'verbose' not in options
+    quiet = "verbose" not in options
     if quiet:
         import uvicorn.config
+
         uvicorn.config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = "WARNING"
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-    if transport == 'stdio':
+    if transport == "stdio":
         # stdout is the protocol channel on stdio: no socket, no banner.
-        mcp.run(transport='stdio', show_banner=False)
+        mcp.run(transport="stdio", show_banner=False)
         return
 
-    mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config=uvicorn_config(quiet=quiet))
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        uvicorn_config=uvicorn_config(quiet=quiet),
+    )
 
 
 if __name__ == "__main__":

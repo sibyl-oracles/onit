@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +18,7 @@ Shared utilities for MCP task servers.
 Common helper functions and tool logic shared between the bash and filesystem
 MCP servers. Server-specific behavior (path validation, command execution) is
 injected via callable parameters so each server retains its own security model.
-'''
+"""
 
 import ipaddress
 import json
@@ -103,8 +103,8 @@ def secure_makedirs(dir_path: str) -> None:
 # inside.
 
 _PRIVATE_HOST_RE = re.compile(
-    r'^(localhost$|127\.|0\.|10\.|192\.168\.|169\.254\.'
-    r'|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cde])',
+    r"^(localhost$|127\.|0\.|10\.|192\.168\.|169\.254\."
+    r"|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cde])",
     re.IGNORECASE,
 )
 
@@ -164,6 +164,7 @@ def assert_public_url(url: str) -> None:
 try:
     import requests as _requests
     from requests import exceptions as _requests_exceptions
+
     _HAS_REQUESTS = True
 except ImportError:  # pragma: no cover
     _requests = None
@@ -211,10 +212,9 @@ def validate_required(**kwargs) -> str:
     """Check for missing required arguments. Returns JSON error string or empty string."""
     missing = [name for name, value in kwargs.items() if value is None]
     if missing:
-        return json.dumps({
-            "error": f"Missing required argument(s): {', '.join(missing)}.",
-            "status": "error"
-        })
+        return json.dumps(
+            {"error": f"Missing required argument(s): {', '.join(missing)}.", "status": "error"}
+        )
     return ""
 
 
@@ -222,6 +222,7 @@ def extract_pdf_text(file_path: str) -> str:
     """Extract text from PDF file."""
     try:
         from pypdf import PdfReader
+
         reader = PdfReader(file_path)
         pages = []
         for page in reader.pages:
@@ -241,6 +242,7 @@ def extract_pdf_tables(file_path: str) -> List[Dict[str, Any]]:
     tables = []
     try:
         import pdfplumber
+
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
                 page_tables = page.extract_tables()
@@ -248,13 +250,15 @@ def extract_pdf_tables(file_path: str) -> List[Dict[str, Any]]:
                     if table and len(table) > 0:
                         headers = table[0] if table else []
                         rows = table[1:] if len(table) > 1 else []
-                        tables.append({
-                            "page": page_num,
-                            "table_index": table_idx,
-                            "headers": headers,
-                            "rows": rows,
-                            "row_count": len(rows)
-                        })
+                        tables.append(
+                            {
+                                "page": page_num,
+                                "table_index": table_idx,
+                                "headers": headers,
+                                "rows": rows,
+                                "row_count": len(rows),
+                            }
+                        )
         return tables
     except ImportError:
         logger.warning("pdfplumber not installed. Run: pip install pdfplumber")
@@ -267,28 +271,30 @@ def extract_pdf_tables(file_path: str) -> List[Dict[str, Any]]:
 def extract_markdown_tables(content: str) -> List[Dict[str, Any]]:
     """Extract tables from markdown content."""
     tables = []
-    table_pattern = r'(\|[^\n]+\|\n\|[-:\| ]+\|\n(?:\|[^\n]+\|\n)*)'
+    table_pattern = r"(\|[^\n]+\|\n\|[-:\| ]+\|\n(?:\|[^\n]+\|\n)*)"
 
     matches = re.finditer(table_pattern, content)
     for idx, match in enumerate(matches, 1):
         table_text = match.group(1)
-        lines = table_text.strip().split('\n')
+        lines = table_text.strip().split("\n")
 
         if len(lines) >= 2:
-            headers = [cell.strip() for cell in lines[0].split('|')[1:-1]]
+            headers = [cell.strip() for cell in lines[0].split("|")[1:-1]]
             rows = []
             for line in lines[2:]:
-                cells = [cell.strip() for cell in line.split('|')[1:-1]]
+                cells = [cell.strip() for cell in line.split("|")[1:-1]]
                 if cells:
                     rows.append(cells)
 
-            tables.append({
-                "table_index": idx,
-                "headers": headers,
-                "rows": rows,
-                "row_count": len(rows),
-                "raw": table_text
-            })
+            tables.append(
+                {
+                    "table_index": idx,
+                    "headers": headers,
+                    "rows": rows,
+                    "row_count": len(rows),
+                    "raw": table_text,
+                }
+            )
 
     return tables
 
@@ -302,13 +308,13 @@ def get_file_content(file_path: str) -> tuple[str, str]:
 
     ext = Path(file_path).suffix.lower()
 
-    if ext == '.pdf':
+    if ext == ".pdf":
         return extract_pdf_text(file_path), "pdf"
     else:
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
-            if ext == '.md':
+            if ext == ".md":
                 return content, "markdown"
             else:
                 return content, "text"
@@ -342,32 +348,24 @@ def search_document_impl(
         file_path = validate_read_path(path)
 
         if not os.path.isfile(file_path):
-            return json.dumps({
-                "error": f"File not found: {file_path}",
-                "path": path,
-                "status": "error"
-            })
+            return json.dumps(
+                {"error": f"File not found: {file_path}", "path": path, "status": "error"}
+            )
 
         content, file_format = get_file_content(file_path)
 
         if file_format == "error":
-            return json.dumps({
-                "error": "Failed to read file",
-                "path": path,
-                "status": "error"
-            })
+            return json.dumps({"error": "Failed to read file", "path": path, "status": "error"})
 
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(pattern, flags)
         except re.error as e:
-            return json.dumps({
-                "error": f"Invalid regex pattern: {e}",
-                "pattern": pattern,
-                "status": "error"
-            })
+            return json.dumps(
+                {"error": f"Invalid regex pattern: {e}", "pattern": pattern, "status": "error"}
+            )
 
-        lines = content.split('\n')
+        lines = content.split("\n")
         matches = []
 
         for i, line in enumerate(lines):
@@ -375,32 +373,32 @@ def search_document_impl(
                 start = max(0, i - context_lines)
                 end = min(len(lines), i + context_lines + 1)
 
-                matches.append({
-                    "line_number": i + 1,
-                    "match": line.strip(),
-                    "context_before": [l.strip() for l in lines[start:i]],
-                    "context_after": [l.strip() for l in lines[i+1:end]]
-                })
+                matches.append(
+                    {
+                        "line_number": i + 1,
+                        "match": line.strip(),
+                        "context_before": [l.strip() for l in lines[start:i]],
+                        "context_after": [l.strip() for l in lines[i + 1 : end]],
+                    }
+                )
 
                 if len(matches) >= max_matches:
                     break
 
-        return json.dumps({
-            "matches": matches,
-            "total_matches": len(matches),
-            "pattern": pattern,
-            "file": file_path,
-            "format": file_format,
-            "truncated": len(matches) >= max_matches,
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "matches": matches,
+                "total_matches": len(matches),
+                "pattern": pattern,
+                "file": file_path,
+                "format": file_format,
+                "truncated": len(matches) >= max_matches,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "path": path,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "path": path, "status": "error"})
 
 
 def search_directory_impl(
@@ -420,11 +418,13 @@ def search_directory_impl(
         dir_path = validate_dir_path(directory)
 
         if not os.path.isdir(dir_path):
-            return json.dumps({
-                "error": f"Directory not found: {dir_path}",
-                "directory": directory,
-                "status": "error"
-            })
+            return json.dumps(
+                {
+                    "error": f"Directory not found: {dir_path}",
+                    "directory": directory,
+                    "status": "error",
+                }
+            )
 
         grep_flags = "-rn"
         if not case_sensitive:
@@ -444,37 +444,37 @@ def search_directory_impl(
         output = result.get("stdout", "")
 
         if output:
-            for line in output.split('\n'):
-                if ':' in line:
-                    parts = line.split(':', 2)
+            for line in output.split("\n"):
+                if ":" in line:
+                    parts = line.split(":", 2)
                     if len(parts) >= 3:
-                        results.append({
-                            "file": parts[0],
-                            "line_number": int(parts[1]) if parts[1].isdigit() else parts[1],
-                            # Clip the match line: a minified bundle or a
-                            # data blob matched by a loose pattern can carry
-                            # a megabyte on one line, and grep results are
-                            # re-read, not quoted.  300 chars is a full
-                            # sentence of context; the file is one read away.
-                            "content": parts[2].strip()[:300]
-                        })
+                        results.append(
+                            {
+                                "file": parts[0],
+                                "line_number": int(parts[1]) if parts[1].isdigit() else parts[1],
+                                # Clip the match line: a minified bundle or a
+                                # data blob matched by a loose pattern can carry
+                                # a megabyte on one line, and grep results are
+                                # re-read, not quoted.  300 chars is a full
+                                # sentence of context; the file is one read away.
+                                "content": parts[2].strip()[:300],
+                            }
+                        )
 
-        return json.dumps({
-            "results": results,
-            "total_matches": len(results),
-            "pattern": pattern,
-            "directory": dir_path,
-            "file_pattern": file_pattern,
-            "truncated": len(results) >= max_results,
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "results": results,
+                "total_matches": len(results),
+                "pattern": pattern,
+                "directory": dir_path,
+                "file_pattern": file_pattern,
+                "truncated": len(results) >= max_results,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "directory": directory,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "directory": directory, "status": "error"})
 
 
 def extract_tables_impl(
@@ -490,43 +490,45 @@ def extract_tables_impl(
         file_path = validate_read_path(path)
 
         if not os.path.isfile(file_path):
-            return json.dumps({
-                "error": f"File not found: {file_path}",
-                "path": path,
-                "status": "error"
-            })
+            return json.dumps(
+                {"error": f"File not found: {file_path}", "path": path, "status": "error"}
+            )
 
         ext = Path(file_path).suffix.lower()
         tables = []
 
-        if ext == '.pdf':
+        if ext == ".pdf":
             tables = extract_pdf_tables(file_path)
-        elif ext in ['.md', '.markdown']:
-            with open(file_path, 'r', encoding='utf-8') as f:
+        elif ext in [".md", ".markdown"]:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
             tables = extract_markdown_tables(content)
         else:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
                 tables = extract_markdown_tables(content)
             except Exception:
-                return json.dumps({
-                    "error": "File format not supported for table extraction",
-                    "path": path,
-                    "supported_formats": ["pdf", "md", "markdown"],
-                    "status": "error"
-                })
+                return json.dumps(
+                    {
+                        "error": "File format not supported for table extraction",
+                        "path": path,
+                        "supported_formats": ["pdf", "md", "markdown"],
+                        "status": "error",
+                    }
+                )
 
         if table_index is not None:
             if 1 <= table_index <= len(tables):
                 tables = [tables[table_index - 1]]
             else:
-                return json.dumps({
-                    "error": f"Table index {table_index} out of range (1-{len(tables)})",
-                    "total_tables": len(tables),
-                    "status": "error"
-                })
+                return json.dumps(
+                    {
+                        "error": f"Table index {table_index} out of range (1-{len(tables)})",
+                        "total_tables": len(tables),
+                        "status": "error",
+                    }
+                )
 
         if output_format == "markdown":
             md_tables = []
@@ -539,27 +541,27 @@ def extract_tables_impl(
                     md += "| " + " | ".join("---" for _ in headers) + " |\n"
                     for row in rows:
                         md += "| " + " | ".join(str(c) for c in row) + " |\n"
-                    md_tables.append({
-                        "table_index": table.get("table_index"),
-                        "page": table.get("page"),
-                        "markdown": md
-                    })
+                    md_tables.append(
+                        {
+                            "table_index": table.get("table_index"),
+                            "page": table.get("page"),
+                            "markdown": md,
+                        }
+                    )
             tables = md_tables
 
-        return json.dumps({
-            "tables": tables,
-            "total_tables": len(tables),
-            "file": file_path,
-            "format": ext.lstrip('.'),
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "tables": tables,
+                "total_tables": len(tables),
+                "file": file_path,
+                "format": ext.lstrip("."),
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "path": path,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "path": path, "status": "error"})
 
 
 def find_files_impl(
@@ -578,11 +580,13 @@ def find_files_impl(
         dir_path = validate_dir_path(directory)
 
         if not os.path.isdir(dir_path):
-            return json.dumps({
-                "error": f"Directory not found: {dir_path}",
-                "directory": directory,
-                "status": "error"
-            })
+            return json.dumps(
+                {
+                    "error": f"Directory not found: {dir_path}",
+                    "directory": directory,
+                    "status": "error",
+                }
+            )
 
         max_results = int(max_results)
         if max_results <= 0:
@@ -596,20 +600,26 @@ def find_files_impl(
         if modified_days is not None:
             modified_days = int(modified_days)
             if modified_days < 0:
-                return json.dumps({"error": "modified_days must be non-negative", "status": "error"})
+                return json.dumps(
+                    {"error": "modified_days must be non-negative", "status": "error"}
+                )
 
         allowed_file_types = {"f", "d", "l", "b", "c", "p", "s"}
         if file_type and file_type not in allowed_file_types:
-            return json.dumps({
-                "error": f"Invalid file_type: {file_type}. Must be one of: {', '.join(sorted(allowed_file_types))}",
-                "status": "error"
-            })
+            return json.dumps(
+                {
+                    "error": f"Invalid file_type: {file_type}. Must be one of: {', '.join(sorted(allowed_file_types))}",
+                    "status": "error",
+                }
+            )
 
-        if size_filter and not re.match(r'^[+-]?\d+[bcwkMG]?$', size_filter):
-            return json.dumps({
-                "error": f"Invalid size_filter: {size_filter}. Expected format: [+-]N[bcwkMG]",
-                "status": "error"
-            })
+        if size_filter and not re.match(r"^[+-]?\d+[bcwkMG]?$", size_filter):
+            return json.dumps(
+                {
+                    "error": f"Invalid size_filter: {size_filter}. Expected format: [+-]N[bcwkMG]",
+                    "status": "error",
+                }
+            )
 
         cmd_parts = ["find", shlex.quote(dir_path)]
 
@@ -636,36 +646,36 @@ def find_files_impl(
             return json.dumps(result)
 
         output = result.get("stdout", "")
-        files = [f.strip() for f in output.split('\n') if f.strip()]
+        files = [f.strip() for f in output.split("\n") if f.strip()]
 
         file_info = []
         for f in files:
             try:
                 stat = os.stat(f)
-                file_info.append({
-                    "path": f,
-                    "name": os.path.basename(f),
-                    "size_bytes": stat.st_size,
-                    "is_dir": os.path.isdir(f)
-                })
+                file_info.append(
+                    {
+                        "path": f,
+                        "name": os.path.basename(f),
+                        "size_bytes": stat.st_size,
+                        "is_dir": os.path.isdir(f),
+                    }
+                )
             except Exception:
                 file_info.append({"path": f, "name": os.path.basename(f)})
 
-        return json.dumps({
-            "files": file_info,
-            "total_files": len(file_info),
-            "directory": dir_path,
-            "pattern": name_pattern,
-            "truncated": len(files) >= max_results,
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "files": file_info,
+                "total_files": len(file_info),
+                "directory": dir_path,
+                "pattern": name_pattern,
+                "truncated": len(files) >= max_results,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "directory": directory,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "directory": directory, "status": "error"})
 
 
 def transform_text_impl(
@@ -682,24 +692,25 @@ def transform_text_impl(
         return err
     try:
         if operation not in ["sed", "awk", "tr"]:
-            return json.dumps({
-                "error": f"Invalid operation: {operation}. Use 'sed', 'awk', or 'tr'",
-                "status": "error"
-            })
+            return json.dumps(
+                {
+                    "error": f"Invalid operation: {operation}. Use 'sed', 'awk', or 'tr'",
+                    "status": "error",
+                }
+            )
 
         temp_path = None
         if is_file:
             file_path = validate_read_path(input_text)
             if not os.path.isfile(file_path):
-                return json.dumps({
-                    "error": f"File not found: {file_path}",
-                    "status": "error"
-                })
+                return json.dumps({"error": f"File not found: {file_path}", "status": "error"})
             input_source = f"cat {shlex.quote(file_path)}"
         else:
             tmp_dir = os.path.join(os.path.abspath(os.path.expanduser(data_path)), "tmp")
             secure_makedirs(tmp_dir)
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, dir=tmp_dir) as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False, dir=tmp_dir
+            ) as f:
                 f.write(input_text)
                 temp_path = f.name
             os.chmod(temp_path, 0o600)
@@ -715,10 +726,7 @@ def transform_text_impl(
                 quoted_tr_args = " ".join(shlex.quote(arg) for arg in tr_args)
                 cmd = f"{input_source} | tr {quoted_tr_args}"
             except ValueError as e:
-                return json.dumps({
-                    "error": f"Invalid tr expression: {e}",
-                    "status": "error"
-                })
+                return json.dumps({"error": f"Invalid tr expression: {e}", "status": "error"})
 
         result = run_command(cmd)
 
@@ -733,19 +741,17 @@ def transform_text_impl(
 
         output = truncate_output(result.get("stdout", ""))
 
-        return json.dumps({
-            "output": output,
-            "operation": operation,
-            "expression": expression,
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "output": output,
+                "operation": operation,
+                "expression": expression,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "operation": operation,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "operation": operation, "status": "error"})
 
 
 def get_document_context_impl(
@@ -763,34 +769,59 @@ def get_document_context_impl(
         file_path = validate_read_path(path)
 
         if not os.path.isfile(file_path):
-            return json.dumps({
-                "error": f"File not found: {file_path}",
-                "path": path,
-                "status": "error"
-            })
+            return json.dumps(
+                {"error": f"File not found: {file_path}", "path": path, "status": "error"}
+            )
 
         content, file_format = get_file_content(file_path)
 
         if file_format == "error" or not content:
-            return json.dumps({
-                "error": "Failed to read file",
-                "path": path,
-                "status": "error"
-            })
+            return json.dumps({"error": "Failed to read file", "path": path, "status": "error"})
 
         search_terms = set()
 
-        stopwords = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can',
-                     'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been',
-                     'what', 'when', 'where', 'which', 'who', 'how', 'this', 'that',
-                     'with', 'from', 'they', 'will', 'would', 'there', 'their'}
+        stopwords = {
+            "the",
+            "and",
+            "for",
+            "are",
+            "but",
+            "not",
+            "you",
+            "all",
+            "can",
+            "had",
+            "her",
+            "was",
+            "one",
+            "our",
+            "out",
+            "has",
+            "have",
+            "been",
+            "what",
+            "when",
+            "where",
+            "which",
+            "who",
+            "how",
+            "this",
+            "that",
+            "with",
+            "from",
+            "they",
+            "will",
+            "would",
+            "there",
+            "their",
+        }
 
-        for word in re.findall(r'\b\w+\b', query.lower()):
+        for word in re.findall(r"\b\w+\b", query.lower()):
             if len(word) > 3 and word not in stopwords:
                 search_terms.add(word)
 
         if keywords:
-            for kw in keywords.split(','):
+            for kw in keywords.split(","):
                 kw = kw.strip().lower()
                 if kw:
                     search_terms.add(kw)
@@ -803,10 +834,7 @@ def get_document_context_impl(
 
         for term in search_terms:
             for match in re.finditer(re.escape(term), content_lower):
-                matches.append({
-                    "position": match.start(),
-                    "term": term
-                })
+                matches.append({"position": match.start(), "term": term})
 
         matches.sort(key=lambda x: x["position"])
 
@@ -824,12 +852,12 @@ def get_document_context_impl(
             end = min(len(content), pos + context_chars // 2)
 
             if start > 0:
-                sentence_start = content.rfind('.', start - 100, start)
+                sentence_start = content.rfind(".", start - 100, start)
                 if sentence_start > start - 100:
                     start = sentence_start + 1
 
             if end < len(content):
-                sentence_end = content.find('.', end, end + 100)
+                sentence_end = content.find(".", end, end + 100)
                 if sentence_end != -1:
                     end = sentence_end + 1
 
@@ -837,34 +865,34 @@ def get_document_context_impl(
 
             section_keywords = [t for t in search_terms if t in section_content.lower()]
 
-            sections.append({
-                "content": section_content,
-                "relevance_keywords": section_keywords,
-                "position": pos,
-                "char_range": [start, end]
-            })
+            sections.append(
+                {
+                    "content": section_content,
+                    "relevance_keywords": section_keywords,
+                    "position": pos,
+                    "char_range": [start, end],
+                }
+            )
 
             used_ranges.append((start, end))
 
             if len(sections) >= max_sections:
                 break
 
-        return json.dumps({
-            "sections": sections,
-            "total_sections": len(sections),
-            "query": query,
-            "search_terms": list(search_terms),
-            "file": file_path,
-            "format": file_format,
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "sections": sections,
+                "total_sections": len(sections),
+                "query": query,
+                "search_terms": list(search_terms),
+                "file": file_path,
+                "format": file_format,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "path": path,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "path": path, "status": "error"})
 
 
 # =============================================================================
@@ -893,31 +921,33 @@ def extract_pdf_images_impl(
     try:
         import fitz  # PyMuPDF
     except ImportError:
-        return json.dumps({
-            "error": "PyMuPDF not installed. Run: pip install PyMuPDF",
-            "pdf_path": pdf_path
-        })
+        return json.dumps(
+            {"error": "PyMuPDF not installed. Run: pip install PyMuPDF", "pdf_path": pdf_path}
+        )
 
     try:
-        output_path = (validate_write_path(output_dir) if output_dir
-                       else default_output_dir)
+        output_path = validate_write_path(output_dir) if output_dir else default_output_dir
         secure_makedirs(output_path)
 
         # Handle URL or local path
-        if pdf_path.startswith(('http://', 'https://')):
+        if pdf_path.startswith(("http://", "https://")):
             # Imported here rather than at module scope: this module is also
             # the sandbox filesystem server's dependency, and it should not
             # acquire an HTTP stack just by being imported.
             from urllib.parse import urlparse
+
             assert_public_url(pdf_path)
             response = safe_fetch("GET", pdf_path, timeout=30)
             response.raise_for_status()
-            expected = response.headers.get('Content-Length')
+            expected = response.headers.get("Content-Length")
             if expected and len(response.content) < int(expected):
-                return json.dumps({
-                    "error": f"Incomplete PDF download "
-                             f"({len(response.content)}/{expected} bytes)",
-                    "pdf_path": pdf_path})
+                return json.dumps(
+                    {
+                        "error": f"Incomplete PDF download "
+                        f"({len(response.content)}/{expected} bytes)",
+                        "pdf_path": pdf_path,
+                    }
+                )
             doc = fitz.open(stream=response.content, filetype="pdf")
             pdf_name = os.path.basename(urlparse(pdf_path).path) or "document"
         else:
@@ -947,23 +977,23 @@ def extract_pdf_images_impl(
                     if width < min_size or height < min_size:
                         continue
 
-                    image_filename = (f"{pdf_name}_p{page_num + 1}"
-                                      f"_img{img_index + 1}.{image_ext}")
+                    image_filename = f"{pdf_name}_p{page_num + 1}_img{img_index + 1}.{image_ext}"
                     image_path = os.path.join(output_path, image_filename)
 
                     # Owner-only permissions
-                    fd = os.open(image_path,
-                                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    fd = os.open(image_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                     with os.fdopen(fd, "wb") as f:
                         f.write(image_bytes)
 
-                    extracted_images.append({
-                        "path": image_path,
-                        "width": width,
-                        "height": height,
-                        "format": image_ext,
-                        "page": page_num + 1
-                    })
+                    extracted_images.append(
+                        {
+                            "path": image_path,
+                            "width": width,
+                            "height": height,
+                            "format": image_ext,
+                            "page": page_num + 1,
+                        }
+                    )
 
                 except Exception:
                     # Skip images that can't be extracted
@@ -971,20 +1001,18 @@ def extract_pdf_images_impl(
 
         doc.close()
 
-        return json.dumps({
-            "pdf_path": pdf_path,
-            "output_dir": output_path,
-            "images": extracted_images,
-            "image_count": len(extracted_images),
-            "status": "success" if extracted_images else "no images found"
-        })
+        return json.dumps(
+            {
+                "pdf_path": pdf_path,
+                "output_dir": output_path,
+                "images": extracted_images,
+                "image_count": len(extracted_images),
+                "status": "success" if extracted_images else "no images found",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "pdf_path": pdf_path,
-            "status": "failed"
-        })
+        return json.dumps({"error": str(e), "pdf_path": pdf_path, "status": "failed"})
 
 
 # =============================================================================
@@ -1093,15 +1121,12 @@ def read_file_impl(
     if mode == "text":
         return read_text(path=path, encoding=encoding, max_chars=max_chars)
     if mode == "tables":
-        return extract_tables(path=path, table_index=table_index,
-                              output_format=output_format)
+        return extract_tables(path=path, table_index=table_index, output_format=output_format)
     if mode == "images":
-        return extract_images(pdf_path=path, output_dir=output_dir,
-                              min_size=min_size)
-    return json.dumps({
-        "error": f"Unknown mode '{mode}'. Use: {', '.join(READ_FILE_MODES)}",
-        "status": "error"
-    })
+        return extract_images(pdf_path=path, output_dir=output_dir, min_size=min_size)
+    return json.dumps(
+        {"error": f"Unknown mode '{mode}'. Use: {', '.join(READ_FILE_MODES)}", "status": "error"}
+    )
 
 
 # =============================================================================
@@ -1159,20 +1184,30 @@ def search_document_dispatch_impl(
         if err := validate_required(pattern=pattern):
             return err
         return search_pattern(
-            path=path, pattern=pattern, case_sensitive=case_sensitive,
-            context_lines=context_lines, max_matches=max_matches)
+            path=path,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+            context_lines=context_lines,
+            max_matches=max_matches,
+        )
     if mode == "context":
         # A model that reaches for "context" mode often fills in `pattern`
         # out of habit; treat it as the query rather than refusing.
         effective_query = query or pattern
         if not effective_query:
-            return json.dumps({
-                "error": "query (or pattern) is required for mode='context'",
-                "status": "error"})
+            return json.dumps(
+                {"error": "query (or pattern) is required for mode='context'", "status": "error"}
+            )
         return search_context(
-            path=path, query=effective_query, keywords=keywords,
-            context_chars=context_chars, max_sections=max_sections)
-    return json.dumps({
-        "error": f"Unknown mode '{mode}'. Use: {', '.join(SEARCH_DOCUMENT_MODES)}",
-        "status": "error"
-    })
+            path=path,
+            query=effective_query,
+            keywords=keywords,
+            context_chars=context_chars,
+            max_sections=max_sections,
+        )
+    return json.dumps(
+        {
+            "error": f"Unknown mode '{mode}'. Use: {', '.join(SEARCH_DOCUMENT_MODES)}",
+            "status": "error",
+        }
+    )

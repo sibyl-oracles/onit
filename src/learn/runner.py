@@ -96,14 +96,14 @@ ARM_TREATMENT = "adapt"
 
 # ── the grader ──────────────────────────────────────────────────────────────
 
+
 def _grade_prompt(task: str, reference: str, answer: str) -> str:
     """The grading prompt, in the shape the rubric expects."""
-    return (
-        "%s\n\n"
-        "Question:\n%s\n\n"
-        "Reference answer:\n%s\n\n"
-        "Submitted answer:\n%s"
-        % (_RUBRIC, task, reference, answer)
+    return "%s\n\nQuestion:\n%s\n\nReference answer:\n%s\n\nSubmitted answer:\n%s" % (
+        _RUBRIC,
+        task,
+        reference,
+        answer,
     )
 
 
@@ -120,7 +120,7 @@ def parse_grade(text: str) -> str:
     marker = upper.find("GRADE:")
     if marker < 0:
         return ""
-    tail = upper[marker + len("GRADE:"):].strip()
+    tail = upper[marker + len("GRADE:") :].strip()
     for value in _GRADE_VALUES:
         if tail.startswith(value):
             return value
@@ -154,6 +154,7 @@ async def grade(ask, task: str, reference: str, answer: str) -> dict:
 
 # ── the run ─────────────────────────────────────────────────────────────────
 
+
 def _arm_store(root: str, arm: str) -> str:
     """A store directory for one arm."""
     path = os.path.join(root, "store", arm)
@@ -164,6 +165,7 @@ def _arm_store(root: str, arm: str) -> str:
 def _items_for(split: str, config_data: dict | None = None) -> list:
     """The items of a split, by name."""
     from .eval import read_dev, read_holdout
+
     if split == "holdout":
         return read_holdout(config_data)
     if split == "dev":
@@ -198,11 +200,17 @@ def _record_arm_result(path: str, results: list) -> None:
     os.replace(tmp, path)
 
 
-async def run_arm(items: list, *, arm: str, root: str,
-                  base_config: dict | None = None,
-                  make_agent=None, ask=None,
-                  limit: int | None = None,
-                  data_path: str | None = None) -> list:
+async def run_arm(
+    items: list,
+    *,
+    arm: str,
+    root: str,
+    base_config: dict | None = None,
+    make_agent=None,
+    ask=None,
+    limit: int | None = None,
+    data_path: str | None = None,
+) -> list:
     """Run one arm over a list of items and grade the answers.
 
     ``make_agent(config)`` returns an object with ``process_task``; it
@@ -224,8 +232,7 @@ async def run_arm(items: list, *, arm: str, root: str,
     base_config = dict(base_config or {})
     store = _arm_store(root, arm)
     if data_path is None:
-        data_path = (base_config.get("data_path")
-                     or os.path.join(root, "data"))
+        data_path = base_config.get("data_path") or os.path.join(root, "data")
     data_path = os.path.abspath(os.path.expanduser(str(data_path)))
     os.makedirs(data_path, exist_ok=True)
     config = _config_for_arm(base_config, arm, store)
@@ -257,8 +264,9 @@ async def run_arm(items: list, *, arm: str, root: str,
         try:
             answer = await agent.process_task(
                 task,
-                session_path=os.path.join(store, "sessions",
-                                         "%s.jsonl" % (item.get("id") or "item")),
+                session_path=os.path.join(
+                    store, "sessions", "%s.jsonl" % (item.get("id") or "item")
+                ),
                 # The working directory must be the one the MCP tool servers
                 # were registered with.  They take it from the config's
                 # ``data_path`` at launch (``cli._ensure_mcp_servers`` sets
@@ -274,22 +282,24 @@ async def run_arm(items: list, *, arm: str, root: str,
             )
         except Exception as e:
             error = str(e)[:300]
-        verdict = await grade(ask, task, reference, answer) if ask else {
-            "grade": "", "raw": ""}
-        results.append({
-            "id": item.get("id"),
-            "task": task,
-            "answer": answer,
-            "grade": verdict["grade"],
-            "error": error,
-            "wall_s": round(time.time() - started, 3),
-            "arm": arm,
-        })
+        verdict = await grade(ask, task, reference, answer) if ask else {"grade": "", "raw": ""}
+        results.append(
+            {
+                "id": item.get("id"),
+                "task": task,
+                "answer": answer,
+                "grade": verdict["grade"],
+                "error": error,
+                "wall_s": round(time.time() - started, 3),
+                "arm": arm,
+            }
+        )
     _record_arm_result(os.path.join(root, "arms", arm, RESULTS_NAME), results)
     return results
 
 
 # ── the comparison ──────────────────────────────────────────────────────────
+
 
 def summarise(results: list) -> dict:
     """The headline numbers for one arm.
@@ -370,7 +380,7 @@ def compare(control: list, treatment: list) -> dict:
     delta = t["accuracy"] - c["accuracy"]
     se_c = _stderr(c["accuracy"], c["n"])
     se_t = _stderr(t["accuracy"], t["n"])
-    se_diff = (se_c ** 2 + se_t ** 2) ** 0.5
+    se_diff = (se_c**2 + se_t**2) ** 0.5
     err = Z_95 * se_diff
     # Significant when the delta clears the bar.  A zero error bar is the
     # case of perfect separation -- one arm got everything right and the
@@ -397,20 +407,40 @@ def format_comparison(result: dict, *, label: str = "") -> str:
     lines = []
     if label:
         lines.append(label)
-    lines.append("  control  (%s): %.3f  n=%d  correct=%d  wrong=%d  "
-                 "not-attempted=%d  ungraded=%d  errors=%d"
-                 % (ARM_CONTROL, c["accuracy"], c["n"], c["correct"],
-                    c["incorrect"], c["not_attempted"], c["ungraded"],
-                    c["errors"]))
-    lines.append("  treatment(%s): %.3f  n=%d  correct=%d  wrong=%d  "
-                 "not-attempted=%d  ungraded=%d  errors=%d"
-                 % (ARM_TREATMENT, t["accuracy"], t["n"], t["correct"],
-                    t["incorrect"], t["not_attempted"], t["ungraded"],
-                    t["errors"]))
+    lines.append(
+        "  control  (%s): %.3f  n=%d  correct=%d  wrong=%d  "
+        "not-attempted=%d  ungraded=%d  errors=%d"
+        % (
+            ARM_CONTROL,
+            c["accuracy"],
+            c["n"],
+            c["correct"],
+            c["incorrect"],
+            c["not_attempted"],
+            c["ungraded"],
+            c["errors"],
+        )
+    )
+    lines.append(
+        "  treatment(%s): %.3f  n=%d  correct=%d  wrong=%d  "
+        "not-attempted=%d  ungraded=%d  errors=%d"
+        % (
+            ARM_TREATMENT,
+            t["accuracy"],
+            t["n"],
+            t["correct"],
+            t["incorrect"],
+            t["not_attempted"],
+            t["ungraded"],
+            t["errors"],
+        )
+    )
     verdict = "SIGNIFICANT" if result["significant"] else "not significant"
-    lines.append("  delta: %+.3f  (stderr %.3f)  -> %s"
-                 % (result["delta"], result["stderr"], verdict))
+    lines.append(
+        "  delta: %+.3f  (stderr %.3f)  -> %s" % (result["delta"], result["stderr"], verdict)
+    )
     if not result["significant"]:
-        lines.append("  A delta smaller than its error bar is not a result. "
-                     "Ship nothing on this evidence.")
+        lines.append(
+            "  A delta smaller than its error bar is not a result. Ship nothing on this evidence."
+        )
     return "\n".join(lines)

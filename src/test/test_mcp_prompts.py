@@ -44,9 +44,7 @@ class TestAssistantInstruction:
 
     @pytest.mark.asyncio
     async def test_custom_template(self, tmp_path):
-        template_content = {
-            "instruction_template": "Custom: {task} in {data_path}"
-        }
+        template_content = {"instruction_template": "Custom: {task} in {data_path}"}
         template_file = tmp_path / "custom.yaml"
         template_file.write_text(yaml.dump(template_content))
 
@@ -130,10 +128,13 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and citations"):]
-        steps = section[:section.index("###")]
-        assert steps.index("`local_search`") < steps.index("`search_document`") \
+        section = result[result.index("## Research and citations") :]
+        steps = section[: section.index("###")]
+        assert (
+            steps.index("`local_search`")
+            < steps.index("`search_document`")
             < steps.index("Search the web")
+        )
 
     @pytest.mark.asyncio
     async def test_web_search_is_gated_on_an_incomplete_local_answer(self, tmp_path):
@@ -144,7 +145,7 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and citations"):]
+        section = result[result.index("## Research and citations") :]
         # The web covers what is left after the local documents have been read.
         # It may now be fetched alongside local_search when the question has a
         # public side — fetching the two together is a latency decision and does
@@ -168,8 +169,7 @@ class TestResearchHierarchy:
         )
         # Line-wrap-insensitive: the rule is what is asserted, not where the
         # paragraph happens to break.
-        section = " ".join(
-            result[result.index("## Research and citations"):].split())
+        section = " ".join(result[result.index("## Research and citations") :].split())
         assert "issue the web `search` in that same reply" in section
         assert "one wait instead of two" in section
 
@@ -186,7 +186,7 @@ class TestResearchHierarchy:
         )
         # Scoped to the instructions: data_path is echoed into the prompt, and a
         # pytest tmp dir carries the test's own name.
-        section = result[result.index("## Research and citations"):]
+        section = result[result.index("## Research and citations") :]
         assert "search_document" not in section
         assert "`read_file`" in section
 
@@ -199,7 +199,7 @@ class TestResearchHierarchy:
             document_search_available=True,
             web_search_available=False,
         )
-        section = result[result.index("## Research and citations"):]
+        section = result[result.index("## Research and citations") :]
         assert section.index("`local_search`") < section.index("`search_document`")
         assert "Search the web" not in section
 
@@ -221,7 +221,7 @@ class TestRecency:
             local_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and citations"):]
+        section = result[result.index("## Research and citations") :]
         assert "Name the gap before you search" in section
         assert "does not close a gap it does not answer" in section
         assert "unless step 1 already covered it" not in section
@@ -237,7 +237,7 @@ class TestRecency:
             local_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("### Recency and source quality"):]
+        section = result[result.index("### Recency and source quality") :]
         assert 'type="news"' in section
         assert "undated" in section
         assert "primary source" in section
@@ -299,11 +299,10 @@ class TestPromptShape:
     @pytest.mark.asyncio
     async def test_preamble_is_identical_across_tasks(self, tmp_path):
         dp = str(tmp_path / "data")
-        kwargs = dict(data_path=dp, local_search_available=True,
-                      web_search_available=True)
+        kwargs = dict(data_path=dp, local_search_available=True, web_search_available=True)
         a = await _assistant_fn(task="what scholarships exist", **kwargs)
         b = await _assistant_fn(task="who runs admissions", **kwargs)
-        assert a[:a.index("## Task")] == b[:b.index("## Task")]
+        assert a[: a.index("## Task")] == b[: b.index("## Task")]
 
     @pytest.mark.asyncio
     async def test_custom_template_still_places_the_task_itself(self, tmp_path):
@@ -312,7 +311,8 @@ class TestPromptShape:
         template = tmp_path / "t.yaml"
         template.write_text('instruction_template: "Do {task} now."')
         result = await _assistant_fn(
-            task="my task", data_path=str(tmp_path / "data"),
+            task="my task",
+            data_path=str(tmp_path / "data"),
             template_path=str(template),
         )
         assert "Do my task now." in result
@@ -327,12 +327,15 @@ class TestInstructionSplit:
 
     @pytest.mark.asyncio
     async def test_static_half_is_identical_across_sessions_and_tasks(self, tmp_path):
-        kwargs = dict(local_search_available=True, web_search_available=True,
-                      document_search_available=True)
-        a = await _assistant_fn(task="what scholarships exist",
-                                data_path=str(tmp_path / "session-a"), **kwargs)
-        b = await _assistant_fn(task="who runs admissions",
-                                data_path=str(tmp_path / "session-b"), **kwargs)
+        kwargs = dict(
+            local_search_available=True, web_search_available=True, document_search_available=True
+        )
+        a = await _assistant_fn(
+            task="what scholarships exist", data_path=str(tmp_path / "session-a"), **kwargs
+        )
+        b = await _assistant_fn(
+            task="who runs admissions", data_path=str(tmp_path / "session-b"), **kwargs
+        )
         static_a, volatile_a = split_instruction(a)
         static_b, volatile_b = split_instruction(b)
         assert static_a and static_a == static_b
@@ -341,8 +344,9 @@ class TestInstructionSplit:
     @pytest.mark.asyncio
     async def test_the_volatile_half_carries_what_varies(self, tmp_path):
         dp = str(tmp_path / "data")
-        result = await _assistant_fn(task="what scholarships exist", data_path=dp,
-                                     local_search_available=True)
+        result = await _assistant_fn(
+            task="what scholarships exist", data_path=dp, local_search_available=True
+        )
         static, volatile = split_instruction(result)
         # Nothing session-specific may leak into the half that is shared.
         assert dp not in static
@@ -372,10 +376,10 @@ class TestInstructionSplit:
         template = tmp_path / "t.yaml"
         template.write_text('instruction_template: "You are a helper."')
         kwargs = dict(template_path=str(template), local_search_available=True)
-        a = await _assistant_fn(task="my task",
-                                data_path=str(tmp_path / "session-a"), **kwargs)
-        b = await _assistant_fn(task="another task",
-                                data_path=str(tmp_path / "session-b"), **kwargs)
+        a = await _assistant_fn(task="my task", data_path=str(tmp_path / "session-a"), **kwargs)
+        b = await _assistant_fn(
+            task="another task", data_path=str(tmp_path / "session-b"), **kwargs
+        )
         static_a, volatile_a = split_instruction(a)
         static_b, volatile_b = split_instruction(b)
         assert "You are a helper." in static_a
@@ -393,8 +397,9 @@ class TestInstructionSplit:
         kwargs = dict(template_path=str(template), local_search_available=True)
         dp_a = str(tmp_path / "session-a")
         a = await _assistant_fn(task="my task", data_path=dp_a, **kwargs)
-        b = await _assistant_fn(task="another task",
-                                data_path=str(tmp_path / "session-b"), **kwargs)
+        b = await _assistant_fn(
+            task="another task", data_path=str(tmp_path / "session-b"), **kwargs
+        )
         static_a, volatile_a = split_instruction(a)
         static_b, _ = split_instruction(b)
         # Nothing session-specific may leak into the half that is shared.
@@ -417,7 +422,7 @@ class TestResearchFanOut:
             web_search_available=True,
             max_documents=2,
         )
-        section = result[result.index("## Research and citations"):]
+        section = result[result.index("## Research and citations") :]
         assert "at most 2" in section
 
     @pytest.mark.asyncio
@@ -431,7 +436,7 @@ class TestResearchFanOut:
             document_search_available=True,
             web_search_available=True,
         )
-        section = result[result.index("## Research and citations"):]
+        section = result[result.index("## Research and citations") :]
         assert "`documents`" in section
         assert "opening" in section
 
@@ -448,8 +453,10 @@ class TestResearchFanOut:
     @pytest.mark.asyncio
     async def test_a_bad_budget_falls_back_instead_of_raising(self, tmp_path):
         result = await _assistant_fn(
-            task="t", data_path=str(tmp_path / "data"),
-            local_search_available=True, max_documents="null",
+            task="t",
+            data_path=str(tmp_path / "data"),
+            local_search_available=True,
+            max_documents="null",
         )
         assert "at most 6" in result
 
@@ -461,14 +468,16 @@ class TestSealedNoInstallBlock:
     restriction that is not enforced is as bad as enforcing a silent one."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("web_ui,container,announced", [
-        ("1", "1", True),     # containerized web UI: sealed
-        (None, None, False),  # terminal on the host
-        ("1", None, False),   # bare-metal `onit serve web`: local dev loop
-        (None, "1", False),   # containerized terminal/loop
-    ])
-    async def test_block_tracks_the_gate(self, tmp_path, monkeypatch,
-                                         web_ui, container, announced):
+    @pytest.mark.parametrize(
+        "web_ui,container,announced",
+        [
+            ("1", "1", True),  # containerized web UI: sealed
+            (None, None, False),  # terminal on the host
+            ("1", None, False),  # bare-metal `onit serve web`: local dev loop
+            (None, "1", False),  # containerized terminal/loop
+        ],
+    )
+    async def test_block_tracks_the_gate(self, tmp_path, monkeypatch, web_ui, container, announced):
         for var, val in (("ONIT_WEB_UI", web_ui), ("ONIT_CONTAINER", container)):
             if val is None:
                 monkeypatch.delenv(var, raising=False)
@@ -498,16 +507,18 @@ class TestHarnessToolsBlock:
 
     @pytest.mark.asyncio
     async def test_present_when_available(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     harness_tools_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), harness_tools_available=True
+        )
         assert "context_status" in result
         assert "note_write" in result and "note_read" in result
 
     @pytest.mark.asyncio
     async def test_rides_in_the_cacheable_half(self, tmp_path):
         """Same bytes every request, so it must not shift the prefix."""
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     harness_tools_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), harness_tools_available=True
+        )
         static, volatile = split_instruction(result)
         assert "context_status" in static
         assert "context_status" not in volatile
@@ -516,18 +527,20 @@ class TestHarnessToolsBlock:
     async def test_string_falsy_values_are_normalized(self, tmp_path):
         """Arriving over MCP, every argument is a string."""
         for value in ("false", "null", "none", "0", ""):
-            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                         harness_tools_available=value)
+            result = await _assistant_fn(
+                task="t", data_path=str(tmp_path / "d"), harness_tools_available=value
+            )
             assert "context_status" not in result
-
 
 
 class TestPriorAttemptsBlock:
     """Phase 6: a resumed session is told what it has already tried."""
 
-    NOTE = ("\n## Earlier in this session\n"
-            "Reference only. Do not repeat or acknowledge this section.\n"
-            "- Tools already run in this session: bash×2\n")
+    NOTE = (
+        "\n## Earlier in this session\n"
+        "Reference only. Do not repeat or acknowledge this section.\n"
+        "- Tools already run in this session: bash×2\n"
+    )
 
     @pytest.mark.asyncio
     async def test_absent_by_default(self, tmp_path):
@@ -536,8 +549,9 @@ class TestPriorAttemptsBlock:
 
     @pytest.mark.asyncio
     async def test_present_when_supplied(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     prior_attempts=self.NOTE)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), prior_attempts=self.NOTE
+        )
         assert "Earlier in this session" in result
         assert "bash×2" in result
 
@@ -545,27 +559,29 @@ class TestPriorAttemptsBlock:
     async def test_rides_in_the_volatile_half(self, tmp_path):
         """It differs per session and per task, so it must not sit in the
         prefix every other session shares."""
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     prior_attempts=self.NOTE)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), prior_attempts=self.NOTE
+        )
         static, volatile = split_instruction(result)
         assert "Earlier in this session" in volatile
         assert "Earlier in this session" not in static
 
     @pytest.mark.asyncio
     async def test_sits_ahead_of_the_task(self, tmp_path):
-        """"What has already been tried" belongs next to the question it
+        """ "What has already been tried" belongs next to the question it
         answers, and the task stays last."""
-        result = await _assistant_fn(task="unique-task-text",
-                                     data_path=str(tmp_path / "d"),
-                                     prior_attempts=self.NOTE)
+        result = await _assistant_fn(
+            task="unique-task-text", data_path=str(tmp_path / "d"), prior_attempts=self.NOTE
+        )
         assert result.index("Earlier in this session") < result.index("unique-task-text")
 
     @pytest.mark.asyncio
     async def test_string_falsy_values_are_normalized(self, tmp_path):
         """Arriving over MCP, every argument is a string."""
         for value in ("", "null", None):
-            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                         prior_attempts=value)
+            result = await _assistant_fn(
+                task="t", data_path=str(tmp_path / "d"), prior_attempts=value
+            )
             assert "Earlier in this session" not in result
 
 
@@ -579,8 +595,9 @@ class TestResultStoreBlock:
 
     @pytest.mark.asyncio
     async def test_present_when_available(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     result_store_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), result_store_available=True
+        )
         assert "result_read" in result and "result_grep" in result
         assert "[result:NNNN" in result
 
@@ -588,16 +605,20 @@ class TestResultStoreBlock:
     async def test_gated_separately_from_the_note_tools(self, tmp_path):
         """The store switches off on its own; describing two tools the run does
         not offer is how a model calls one and is told it does not exist."""
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     harness_tools_available=True,
-                                     result_store_available=False)
+        result = await _assistant_fn(
+            task="t",
+            data_path=str(tmp_path / "d"),
+            harness_tools_available=True,
+            result_store_available=False,
+        )
         assert "note_write" in result
         assert "result_read" not in result
 
     @pytest.mark.asyncio
     async def test_rides_in_the_cacheable_half(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     result_store_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), result_store_available=True
+        )
         static, volatile = split_instruction(result)
         assert "result_read" in static
         assert "result_read" not in volatile
@@ -605,8 +626,9 @@ class TestResultStoreBlock:
     @pytest.mark.asyncio
     async def test_it_says_not_to_re_run_the_tool(self, tmp_path):
         """The one instruction the phase exists to make true."""
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     result_store_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), result_store_available=True
+        )
         assert "Never re-run a" in result
         assert "tool to recover output you already hold a handle for" in result
 
@@ -614,8 +636,9 @@ class TestResultStoreBlock:
     async def test_string_falsy_values_are_normalized(self, tmp_path):
         """Arriving over MCP, every argument is a string."""
         for value in ("false", "null", "none", "0", ""):
-            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                         result_store_available=value)
+            result = await _assistant_fn(
+                task="t", data_path=str(tmp_path / "d"), result_store_available=value
+            )
             assert "result_read" not in result
 
 
@@ -629,8 +652,9 @@ class TestCodeExecutionBlock:
 
     @pytest.mark.asyncio
     async def test_present_when_available(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     code_execution_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), code_execution_available=True
+        )
         assert "run_code" in result
         assert "ToolError" in result
 
@@ -638,30 +662,36 @@ class TestCodeExecutionBlock:
     async def test_it_says_when_not_to_use_it(self, tmp_path):
         """A model that wraps every single tool call in run_code has added an
         interpreter round trip to buy nothing."""
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     code_execution_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), code_execution_available=True
+        )
         assert "Do not" in result and "single tool call" in result
 
     @pytest.mark.asyncio
     async def test_rides_in_the_cacheable_half(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     code_execution_available=True)
+        result = await _assistant_fn(
+            task="t", data_path=str(tmp_path / "d"), code_execution_available=True
+        )
         static, volatile = split_instruction(result)
         assert "run_code" in static
         assert "run_code" not in volatile
 
     @pytest.mark.asyncio
     async def test_gated_separately_from_the_other_harness_blocks(self, tmp_path):
-        result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                     harness_tools_available=True,
-                                     result_store_available=True,
-                                     code_execution_available=False)
+        result = await _assistant_fn(
+            task="t",
+            data_path=str(tmp_path / "d"),
+            harness_tools_available=True,
+            result_store_available=True,
+            code_execution_available=False,
+        )
         assert "note_write" in result and "result_read" in result
         assert "run_code" not in result
 
     @pytest.mark.asyncio
     async def test_string_falsy_values_are_normalized(self, tmp_path):
         for value in ("false", "null", "none", "0", ""):
-            result = await _assistant_fn(task="t", data_path=str(tmp_path / "d"),
-                                         code_execution_available=value)
+            result = await _assistant_fn(
+                task="t", data_path=str(tmp_path / "d"), code_execution_available=value
+            )
             assert "run_code" not in result

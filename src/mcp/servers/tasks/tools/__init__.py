@@ -5,6 +5,7 @@ the config names the *package* (``module: tasks.tools``), and ``run.py``
 does ``getattr(server_module, "run")``, so the name has to be on the
 package.  ``__all__`` says so to a reader and to a linter.
 """
+
 from .mcp_server import run
 
 __all__ = ["run"]

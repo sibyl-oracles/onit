@@ -32,6 +32,7 @@ from fastmcp import Client
 
 import logging
 import warnings
+
 warnings.filterwarnings("ignore", message="Pydantic serializer warnings:.*")
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-from .lib.tools import (discover_tools, register_stdio_servers,
-                        apply_default_mcp_servers)
+from .lib.tools import discover_tools, register_stdio_servers, apply_default_mcp_servers
 from .type.tools import _transport_for
 from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
@@ -49,11 +49,15 @@ from .lib.files import has_code_files
 from .ui import ChatUI
 from .ui.protocol import ChatUIProtocol
 from .ui.commands import dispatch as dispatch_command
-from .model.serving.chat import (chat, decode_rate, summarize_metrics,
-                                DEFAULT_MAX_TOKENS, DEFAULT_THINK)
+from .model.serving.chat import (
+    chat,
+    decode_rate,
+    summarize_metrics,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_THINK,
+)
 from .model.serving.state import RunState, state_path_for
-from .model.serving.balancer import (DEFAULT_PRIORITY, LoadBalancer,
-                                     ServerEndpoint)
+from .model.serving.balancer import DEFAULT_PRIORITY, LoadBalancer, ServerEndpoint
 
 AGENT_CURSOR = "OnIt"
 USER_CURSOR = "You"
@@ -68,36 +72,51 @@ MAX_FAILOVER_ATTEMPTS = 2
 
 # ``serving:`` keys forwarded to chat() only when the config sets them, so
 # chat()'s own default stays the single place each one is defined.
-SERVING_PASSTHROUGH = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty',
-                       'repetition_penalty', 'num_ctx', 'think_tool_turns',
-                       # Loop policy — the ceilings on the ways the agent loop
-                       # can fail to terminate.  Defaults live in chat().
-                       'max_chat_iterations', 'max_repeated_tool_calls',
-                       'max_api_retries', 'max_planning_continuations',
-                       'max_ack_continuations', 'max_final_continuations',
-                       'max_repetition_continuations',
-                       'max_repeat_recoveries', 'max_nudge_decline_recoveries',
-                       # Fact-checking the finished answer.  Defaults live in
-                       # chat(): `verify_answers: false` turns it off,
-                       # `verify_timeout_s` caps what the user waits for, and
-                       # the rest govern the check that keeps going behind the
-                       # answer once it has been handed over.
-                       'verify_answers', 'verify_max_tool_turns',
-                       'verify_timeout_s', 'verify_background',
-                       'verify_trusted_domains',
-                       # The harness's own tools — context_status and the note
-                       # scratchpad.  Off turns them off everywhere: the prompt
-                       # block below is gated on the same key.
-                       'harness_tools',
-                       # Large tool results kept on disk and passed by handle.
-                       # Off restores the old behavior: a hard cut at
-                       # MAX_TOOL_RESPONSE with the middle gone for good.
-                       'result_store',
-                       # Code as action — run_code and its per-session Python
-                       # interpreter.  Default off: it runs model-written
-                       # Python with this process's privileges, and small
-                       # models write worse Python than they write JSON.
-                       'code_execution', 'code_timeout')
+SERVING_PASSTHROUGH = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "presence_penalty",
+    "repetition_penalty",
+    "num_ctx",
+    "think_tool_turns",
+    # Loop policy — the ceilings on the ways the agent loop
+    # can fail to terminate.  Defaults live in chat().
+    "max_chat_iterations",
+    "max_repeated_tool_calls",
+    "max_api_retries",
+    "max_planning_continuations",
+    "max_ack_continuations",
+    "max_final_continuations",
+    "max_repetition_continuations",
+    "max_repeat_recoveries",
+    "max_nudge_decline_recoveries",
+    # Fact-checking the finished answer.  Defaults live in
+    # chat(): `verify_answers: false` turns it off,
+    # `verify_timeout_s` caps what the user waits for, and
+    # the rest govern the check that keeps going behind the
+    # answer once it has been handed over.
+    "verify_answers",
+    "verify_max_tool_turns",
+    "verify_timeout_s",
+    "verify_background",
+    "verify_trusted_domains",
+    # The harness's own tools — context_status and the note
+    # scratchpad.  Off turns them off everywhere: the prompt
+    # block below is gated on the same key.
+    "harness_tools",
+    # Large tool results kept on disk and passed by handle.
+    # Off restores the old behavior: a hard cut at
+    # MAX_TOOL_RESPONSE with the middle gone for good.
+    "result_store",
+    # Code as action — run_code and its per-session Python
+    # interpreter.  Default off: it runs model-written
+    # Python with this process's privileges, and small
+    # models write worse Python than they write JSON.
+    "code_execution",
+    "code_timeout",
+)
 
 
 async def _call_sandbox_stop(tool_registry, session_id: str = "") -> None:
@@ -112,6 +131,7 @@ async def _call_sandbox_stop(tool_registry, session_id: str = "") -> None:
     """
     try:
         from .model.serving.interpreter import shutdown_session
+
         await shutdown_session(session_id)
     except Exception as e:  # a stop that fails must not fail the stop
         logger.debug("interpreter not shut down for %s: %s", session_id, e)
@@ -128,10 +148,15 @@ async def _call_sandbox_stop(tool_registry, session_id: str = "") -> None:
         logger.warning("sandbox_stop failed: %s", e)
 
 
-async def _chat_with_failover(onit, *, instruction: str, kwargs: dict,
-                              safety_queue: asyncio.Queue,
-                              session_key: str | None,
-                              images: list | None = None) -> str | None:
+async def _chat_with_failover(
+    onit,
+    *,
+    instruction: str,
+    kwargs: dict,
+    safety_queue: asyncio.Queue,
+    session_key: str | None,
+    images: list | None = None,
+) -> str | None:
     """Run one chat() call with load-balancer failover around it.
 
     The single failover layer every whole-run caller goes through —
@@ -170,25 +195,26 @@ async def _chat_with_failover(onit, *, instruction: str, kwargs: dict,
                 safety_queue=safety_queue,
                 think=onit.model_serving.get("think", DEFAULT_THINK),
                 timeout=onit.timeout,
-                **kwargs)
+                **kwargs,
+            )
             # Treat empty/whitespace-only responses as failures too.
             _usable = last_response and remove_tags(last_response).strip()
         finally:
             # A stop request is not an endpoint failure — don't cool down.
-            onit.load_balancer.release(
-                endpoint,
-                success=bool(_usable) or not safety_queue.empty())
+            onit.load_balancer.release(endpoint, success=bool(_usable) or not safety_queue.empty())
         if _usable:
             break
         if attempt < MAX_FAILOVER_ATTEMPTS and safety_queue.empty():
             kind = "Empty" if last_response is not None else "No"
-            retry_msg = (f"{kind} response from {endpoint.name or endpoint.host}, "
-                         f"retrying ({attempt}/{MAX_FAILOVER_ATTEMPTS})...")
+            retry_msg = (
+                f"{kind} response from {endpoint.name or endpoint.host}, "
+                f"retrying ({attempt}/{MAX_FAILOVER_ATTEMPTS})..."
+            )
             logger.warning(retry_msg)
-            chat_ui = getattr(onit, 'chat_ui', None)
-            if chat_ui and hasattr(chat_ui, 'add_log'):
+            chat_ui = getattr(onit, "chat_ui", None)
+            if chat_ui and hasattr(chat_ui, "add_log"):
                 chat_ui.add_log(retry_msg, level="warning")
-            await asyncio.sleep(min(2 ** attempt, 10))
+            await asyncio.sleep(min(2**attempt, 10))
     return last_response
 
 
@@ -263,13 +289,13 @@ def _withhold_archived_tools(tool_registry, config_data) -> None:
     """
     try:
         from .learn.actuator import withheld_tools
+
         withheld = withheld_tools(config_data)
         if not withheld or tool_registry is None:
             return
         dropped = tool_registry.withhold(withheld)
         if dropped:
-            print("  Withheld by the lifecycle policy: %s"
-                  % ", ".join(sorted(dropped)))
+            print("  Withheld by the lifecycle policy: %s" % ", ".join(sorted(dropped)))
             print("  (reversible — 'onit learn --lifecycle --restore TOOL')")
     except Exception as e:
         logger.debug("archived tools not withheld: %s", e)
@@ -308,12 +334,18 @@ def friendly_tool_status(name: str, data) -> str:
 _STATUS_ARG_KEYS = ("query", "path", "file", "file_path", "url", "command")
 
 _TOOL_VERBS = {
-    "read_file": "Reading", "search_document": "Reading",
-    "get_document_context": "Reading", "extract_tables": "Reading",
-    "local_search": "Searching documents for", "search": "Searching the web for",
-    "fetch_content": "Fetching", "grep": "Searching for",
-    "find_files": "Looking for", "search_directory": "Looking for",
-    "write_file": "Writing", "edit_file": "Editing",
+    "read_file": "Reading",
+    "search_document": "Reading",
+    "get_document_context": "Reading",
+    "extract_tables": "Reading",
+    "local_search": "Searching documents for",
+    "search": "Searching the web for",
+    "fetch_content": "Fetching",
+    "grep": "Searching for",
+    "find_files": "Looking for",
+    "search_directory": "Looking for",
+    "write_file": "Writing",
+    "edit_file": "Editing",
 }
 
 # What a tool is doing, said without its arguments.  Used when several tools
@@ -397,8 +429,7 @@ def tool_batch_text(calls) -> str:
     if len(pairs) == 1:
         return tool_status_text(pairs[0][0], pairs[0][1])
     first = tool_status_text(*pairs[0])
-    if (len({name for name, _ in pairs}) == 1
-            and not first.startswith(("Running ", _OPAQUE_STATUS))):
+    if len({name for name, _ in pairs}) == 1 and not first.startswith(("Running ", _OPAQUE_STATUS)):
         # Six searches in one turn are six angles on one question; showing the
         # first is a truer picture of the wait than "searching the web" alone.
         return f"{first.rstrip('… ')} (+{len(pairs) - 1} more)…"
@@ -411,8 +442,7 @@ def tool_batch_activity(calls) -> str:
     if not pairs:
         return ""
     # dict, not set: the order tools were called in is the order they are named
-    activities = list(dict.fromkeys(
-        _TOOL_ACTIVITIES.get(name, "working") for name, _ in pairs))
+    activities = list(dict.fromkeys(_TOOL_ACTIVITIES.get(name, "working") for name, _ in pairs))
     # "Reading files and reading documents" says "reading" twice for no gain;
     # activities sharing a verb are folded into one ("reading files and
     # documents"), which is how a person would say it.
@@ -422,14 +452,13 @@ def tool_batch_activity(calls) -> str:
         by_verb.setdefault(verb, [])
         if rest and rest not in by_verb[verb]:
             by_verb[verb].append(rest)
-    phrases = [f"{verb} {_join_words(rests)}" if rests else verb
-               for verb, rests in by_verb.items()]
+    phrases = [f"{verb} {_join_words(rests)}" if rests else verb for verb, rests in by_verb.items()]
     phrase = _join_words(phrases)
     return f"{phrase[0].upper()}{phrase[1:]}…"
 
 
 def _join_words(parts: list[str]) -> str:
-    """"a", "a and b", "a, b and c"."""
+    """ "a", "a and b", "a, b and c"."""
     if len(parts) <= 2:
         return " and ".join(parts)
     return f"{', '.join(parts[:-1])} and {parts[-1]}"
@@ -445,10 +474,19 @@ class StreamingAdapter:
     chat() probes for it, and its absence refuses every gated command.
     """
 
-    def __init__(self, on_token=None, on_complete=None, show_logs=False,
-                 throttle_tokens=0, on_tool_status=None, on_tool_result=None,
-                 on_answer_start=None, on_correction=None, on_think=None,
-                 on_approval=None):
+    def __init__(
+        self,
+        on_token=None,
+        on_complete=None,
+        show_logs=False,
+        throttle_tokens=0,
+        on_tool_status=None,
+        on_tool_result=None,
+        on_answer_start=None,
+        on_correction=None,
+        on_think=None,
+        on_approval=None,
+    ):
         self.on_token = on_token
         self.on_complete = on_complete
         self.on_think = on_think
@@ -674,8 +712,7 @@ class StreamingAdapter:
                 self._batch_done += 1
                 done = f"{self._batch_done} of {self._batch_total} done"
                 stem = self._batch_label.rstrip("… ")
-                self._on_tool_status(
-                    f"{stem} — {done}…" if stem else f"{done}…")
+                self._on_tool_status(f"{stem} — {done}…" if stem else f"{done}…")
             else:
                 self._on_tool_status(self._idle_status())
         if self.show_logs:
@@ -725,8 +762,7 @@ class StreamingAdapter:
         """No-op for external clients; context % is informational only."""
         pass
 
-    def set_token_budgets(self, max_output_tokens: int = 0,
-                          max_context_tokens: int = 0) -> None:
+    def set_token_budgets(self, max_output_tokens: int = 0, max_context_tokens: int = 0) -> None:
         """No-op for external clients; budgets are informational only."""
         pass
 
@@ -777,7 +813,8 @@ class StreamingAdapter:
     def show_context_compaction(self, orig_msg_count: int, summary_chars: int) -> None:
         """Forward context compaction notice as a streaming token."""
         self._emit_notice(
-            f"\n[Context compacted: {orig_msg_count} messages → {summary_chars:,} char summary]\n")
+            f"\n[Context compacted: {orig_msg_count} messages → {summary_chars:,} char summary]\n"
+        )
 
     def show_turn_limit(self, limit: int) -> None:
         """Forward the turn-limit stop as a streaming token.
@@ -785,8 +822,7 @@ class StreamingAdapter:
         The run ends here, so a client that only renders streamed tokens would
         otherwise show the last step as though it were the answer.
         """
-        self._emit_notice(
-            f"\n[Stopped at the {limit}-step turn limit — the task did not finish]\n")
+        self._emit_notice(f"\n[Stopped at the {limit}-step turn limit — the task did not finish]\n")
 
     def _emit_notice(self, msg: str) -> None:
         """Push an out-of-band notice into the token stream."""
@@ -807,7 +843,9 @@ class OnIt(BaseModel):
     tool_registry: Any | None = Field(default=None)
     theme: str | None = Field(default="white", exclude=True)
     messages: dict[str, str] = Field(default_factory=dict)
-    stop_commands: list[str] = Field(default_factory=lambda: ['\\goodbye', '\\bye', '\\quit', '\\exit'])
+    stop_commands: list[str] = Field(
+        default_factory=lambda: ["\\goodbye", "\\bye", "\\quit", "\\exit"]
+    )
     model_serving: dict[str, Any] = Field(default_factory=dict)
     input_queue: asyncio.Queue | None = Field(default=None, exclude=True)
     output_queue: asyncio.Queue | None = Field(default=None, exclude=True)
@@ -928,15 +966,14 @@ class OnIt(BaseModel):
     @property
     def document_search_available(self) -> bool:
         """Check if the within-document search tool was discovered."""
-        return (self.tool_registry is not None
-                and "search_document" in self.tool_registry.tools)
+        return self.tool_registry is not None and "search_document" in self.tool_registry.tools
 
     @property
     def web_search_available(self) -> bool:
         """Check if the web search tool was discovered."""
         return self.tool_registry is not None and "search" in self.tool_registry.tools
 
-    def __init__(self, config: Union[str, os.PathLike[str], dict[str, Any], None] = None) -> None :
+    def __init__(self, config: Union[str, os.PathLike[str], dict[str, Any], None] = None) -> None:
         super().__init__()
 
         if config is not None:
@@ -955,6 +992,7 @@ class OnIt(BaseModel):
         if not self.loop:
             if self.web:
                 from .ui.api import WebApiUI
+
                 self.chat_ui = WebApiUI(
                     theme=self.theme,
                     data_path=self.data_path,
@@ -974,17 +1012,21 @@ class OnIt(BaseModel):
                 self.chat_ui._onit = self
             else:
                 banner = "OnIt Chat Interface"
-                self.chat_ui = ChatUI(self.theme, show_logs=self.show_logs,
-                                     show_intermediate=self.show_intermediate,
-                                     banner_title=banner)
+                self.chat_ui = ChatUI(
+                    self.theme,
+                    show_logs=self.show_logs,
+                    show_intermediate=self.show_intermediate,
+                    banner_title=banner,
+                )
                 self._describe_session_to_ui()
                 # When resuming a session, pre-populate input history for arrow-key nav
-                if self.config_data.get('resume_session_id'):
+                if self.config_data.get("resume_session_id"):
                     history = self.load_session_history(max_turns=100)
                     for entry in history:
                         task = entry.get("task", "").strip()
-                        if task and (not self.chat_ui.input_history
-                                     or self.chat_ui.input_history[-1] != task):
+                        if task and (
+                            not self.chat_ui.input_history or self.chat_ui.input_history[-1] != task
+                        ):
                             self.chat_ui.input_history.append(task)
 
     def _describe_session_to_ui(self) -> None:
@@ -1012,6 +1054,7 @@ class OnIt(BaseModel):
             lb = getattr(self, "load_balancer", None)
             if lb is not None:
                 from .model.serving.chat import provider_label
+
                 try:
                     ui.provider_name = provider_label(lb.preferred.host)
                 except Exception:
@@ -1030,6 +1073,7 @@ class OnIt(BaseModel):
         answer, straight from the index.
         """
         from .sessions import session_label
+
         label = session_label(session_id, sessions_dir)
         if not label:
             return
@@ -1054,32 +1098,42 @@ class OnIt(BaseModel):
 
     def _setup_mcp_servers(self) -> None:
         """Parse MCP server list from config and resolve the prompts server URL."""
-        self.mcp_servers = self.config_data['mcp']['servers'] if 'mcp' in self.config_data and 'servers' in self.config_data['mcp'] else []
+        self.mcp_servers = (
+            self.config_data["mcp"]["servers"]
+            if "mcp" in self.config_data and "servers" in self.config_data["mcp"]
+            else []
+        )
         # Ensure default servers are present if missing from config. Normally
         # the CLI has already done this, before it registered the stdio launch
         # specs.
         apply_default_mcp_servers(self.mcp_servers)
         # Point external socket-served servers at the configured host. A stdio
         # server is a subprocess of this process, so there is no host to move.
-        mcp_host = self.config_data.get('mcp', {}).get('mcp_host')
+        mcp_host = self.config_data.get("mcp", {}).get("mcp_host")
         if mcp_host:
             from urllib.parse import urlparse, urlunparse
+
             for server in self.mcp_servers:
-                url = server.get('url')
-                if url and not str(url).startswith('stdio://'):
+                url = server.get("url")
+                if url and not str(url).startswith("stdio://"):
                     parsed = urlparse(url)
-                    server['url'] = urlunparse(parsed._replace(netloc=f"{mcp_host}:{parsed.port}" if parsed.port else mcp_host))
+                    server["url"] = urlunparse(
+                        parsed._replace(
+                            netloc=f"{mcp_host}:{parsed.port}" if parsed.port else mcp_host
+                        )
+                    )
         # Give every stdio server its launch spec. The CLI does this too, but
         # OnIt is also built directly — by the web server and by anything
         # embedding it — and a stdio server that was never registered has no
         # address and no way to start.
-        register_stdio_servers(self.mcp_servers, self._mcp_data_path(),
-                               config_data=self.config_data)
+        register_stdio_servers(
+            self.mcp_servers, self._mcp_data_path(), config_data=self.config_data
+        )
 
         # Find the prompts server URL from the MCP servers list
         for server in self.mcp_servers:
-            if server.get('name') == 'PromptsMCPServer' and server.get('enabled', True):
-                self.prompt_url = server.get('url')
+            if server.get("name") == "PromptsMCPServer" and server.get("enabled", True):
+                self.prompt_url = server.get("url")
                 break
         if not self.prompt_url:
             raise ValueError(
@@ -1093,13 +1147,13 @@ class OnIt(BaseModel):
         Read straight from the config rather than from ``self.data_path``,
         which is not set until later in initialize().
         """
-        configured = self.config_data.get('data_path')
+        configured = self.config_data.get("data_path")
         base = Path(configured) if configured else Path.home() / "sandbox"
         return str(base.expanduser().resolve())
 
     def _setup_tool_registry(self) -> None:
         """Discover tools from MCP servers (excluding the prompts server)."""
-        tool_servers = [s for s in self.mcp_servers if s.get('name') != 'PromptsMCPServer']
+        tool_servers = [s for s in self.mcp_servers if s.get("name") != "PromptsMCPServer"]
         self.tool_registry = asyncio.run(discover_tools(tool_servers))
         # The lifecycle actuator (Loop C's tool half).  A tool the policy
         # has archived is not *offered* -- it is out of the registry the
@@ -1119,13 +1173,16 @@ class OnIt(BaseModel):
         # (docs/SELF_IMPROVEMENT.md §4.4 — one event log, two loops).
         try:
             from .learn.events import record_event
+
             record_event(
                 event="tool.registry_loaded",
                 subject="registry",
                 session_id=self.session_id,
                 source="harness",
-                detail={"tools": sorted(self.tool_registry.tools),
-                        "count": len(self.tool_registry.tools)},
+                detail={
+                    "tools": sorted(self.tool_registry.tools),
+                    "count": len(self.tool_registry.tools),
+                },
                 config_data=self.config_data,
             )
         except Exception as e:
@@ -1133,18 +1190,17 @@ class OnIt(BaseModel):
 
     def _setup_model_serving(self) -> None:
         """Configure model serving host and related settings."""
-        self.theme = self.config_data.get('theme', 'white')
-        self.messages = self.config_data.get('messages', {})
-        self.stop_commands = list(self.config_data.get('stop_command', self.stop_commands))
-        self.model_serving = self.config_data.get('serving', {})
+        self.theme = self.config_data.get("theme", "white")
+        self.messages = self.config_data.get("messages", {})
+        self.stop_commands = list(self.config_data.get("stop_command", self.stop_commands))
+        self.model_serving = self.config_data.get("serving", {})
         # resolve host: CLI/config > env var ONIT_HOST. Skipped when
         # serving.endpoints supplies the hosts instead; _setup_load_balancer
         # raises if that list turns out to hold nothing usable.
-        if (not self.model_serving.get('endpoints')
-                and not self.model_serving.get('host')):
-            env_host = os.environ.get('ONIT_HOST')
+        if not self.model_serving.get("endpoints") and not self.model_serving.get("host"):
+            env_host = os.environ.get("ONIT_HOST")
             if env_host:
-                self.model_serving['host'] = env_host
+                self.model_serving["host"] = env_host
             else:
                 raise ValueError(
                     "No serving host configured. Set it via:\n"
@@ -1155,9 +1211,9 @@ class OnIt(BaseModel):
         self._setup_load_balancer()
         # Mirror the preferred endpoint onto serving.host so config readers
         # that expect a single host keep working under an endpoints list.
-        self.model_serving.setdefault('host', self.load_balancer.preferred.host)
+        self.model_serving.setdefault("host", self.load_balancer.preferred.host)
         self.status = "initialized"
-        self.verbose = self.config_data.get('verbose', False)
+        self.verbose = self.config_data.get("verbose", False)
         # Suppress noisy logs unless verbose
         if not self.verbose:
             logging.getLogger("src.lib.tools").setLevel(logging.WARNING)
@@ -1188,9 +1244,9 @@ class OnIt(BaseModel):
         ``serving.ollama_fallback_only: false`` disables.
         """
         serving = self.model_serving
-        endpoints = self._parse_endpoint_list(serving.get('endpoints'))
+        endpoints = self._parse_endpoint_list(serving.get("endpoints"))
         if not endpoints:
-            if serving.get('endpoints') and not serving.get('host'):
+            if serving.get("endpoints") and not serving.get("host"):
                 raise ValueError(
                     "serving.endpoints is configured but no entry has a "
                     "usable 'host'. Give each entry a host URL, or fall back "
@@ -1198,11 +1254,15 @@ class OnIt(BaseModel):
                 )
             endpoints = self._single_endpoint(serving)
         self.load_balancer = LoadBalancer(
-            endpoints, serving.get('load_balancer', 'sticky'),
-            ollama_fallback_only=serving.get('ollama_fallback_only', True))
+            endpoints,
+            serving.get("load_balancer", "sticky"),
+            ollama_fallback_only=serving.get("ollama_fallback_only", True),
+        )
         if len(endpoints) > 1:
-            print(f"  Load balancing ({self.load_balancer.algorithm}) across: "
-                  f"{self.load_balancer.describe()}")
+            print(
+                f"  Load balancing ({self.load_balancer.algorithm}) across: "
+                f"{self.load_balancer.describe()}"
+            )
 
     @staticmethod
     def _parse_endpoint_list(raw) -> list:
@@ -1220,43 +1280,53 @@ class OnIt(BaseModel):
         endpoints, seen = [], set()
         for i, entry in enumerate(raw):
             if isinstance(entry, str):
-                entry = {'host': entry}
+                entry = {"host": entry}
             if not isinstance(entry, dict):
-                logger.warning("Ignoring serving.endpoints[%d]: expected a "
-                               "mapping or URL string, got %r", i, entry)
+                logger.warning(
+                    "Ignoring serving.endpoints[%d]: expected a mapping or URL string, got %r",
+                    i,
+                    entry,
+                )
                 continue
-            host = str(entry.get('host') or '').strip()
+            host = str(entry.get("host") or "").strip()
             if not host:
                 logger.warning("Ignoring serving.endpoints[%d]: no host", i)
                 continue
             # Identity is the URL *and* the model on it. Ollama cloud is one
             # host serving many models, so keying on the URL alone dropped
             # every model after the first.
-            identity = (host, str(entry.get('model') or '').strip())
+            identity = (host, str(entry.get("model") or "").strip())
             if identity in seen:
-                logger.warning("Ignoring serving.endpoints[%d]: duplicate "
-                               "endpoint %s (%s)", i, host,
-                               identity[1] or 'auto-detect')
+                logger.warning(
+                    "Ignoring serving.endpoints[%d]: duplicate endpoint %s (%s)",
+                    i,
+                    host,
+                    identity[1] or "auto-detect",
+                )
                 continue
             seen.add(identity)
             try:
-                priority = int(entry.get('priority', DEFAULT_PRIORITY))
+                priority = int(entry.get("priority", DEFAULT_PRIORITY))
             except (TypeError, ValueError):
-                logger.warning("serving.endpoints[%d]: priority %r is not an "
-                               "integer, using %d", i, entry.get('priority'),
-                               DEFAULT_PRIORITY)
+                logger.warning(
+                    "serving.endpoints[%d]: priority %r is not an integer, using %d",
+                    i,
+                    entry.get("priority"),
+                    DEFAULT_PRIORITY,
+                )
                 priority = DEFAULT_PRIORITY
-            endpoints.append(ServerEndpoint(
-                host=host,
-                # A key written into the YAML. Left "EMPTY", chat() looks up
-                # the key stored for this URL by 'onit setup', then the legacy
-                # provider-named secrets. 'host_key' is the old spelling.
-                host_key=str(entry.get('api_key')
-                             or entry.get('host_key') or 'EMPTY'),
-                model=entry.get('model'),
-                name=str(entry.get('name') or f'server{i + 1}'),
-                priority=priority,
-            ))
+            endpoints.append(
+                ServerEndpoint(
+                    host=host,
+                    # A key written into the YAML. Left "EMPTY", chat() looks up
+                    # the key stored for this URL by 'onit setup', then the legacy
+                    # provider-named secrets. 'host_key' is the old spelling.
+                    host_key=str(entry.get("api_key") or entry.get("host_key") or "EMPTY"),
+                    model=entry.get("model"),
+                    name=str(entry.get("name") or f"server{i + 1}"),
+                    priority=priority,
+                )
+            )
         return endpoints
 
     @staticmethod
@@ -1267,18 +1337,22 @@ class OnIt(BaseModel):
         flag's removal is reported once and ignored — the endpoints list is
         the way to run more than one server now.
         """
-        for legacy_key in ('host2', 'model2', 'host2_key'):
+        for legacy_key in ("host2", "model2", "host2_key"):
             if serving.get(legacy_key):
                 logger.warning(
                     "serving.%s is no longer read: move it into "
                     "serving.endpoints to use a second model server "
-                    "(see docs/MODEL_SERVING.md).", legacy_key)
-        return [ServerEndpoint(
-            host=serving['host'],
-            host_key=serving.get('host_key', 'EMPTY'),
-            model=serving.get('model'),
-            name='server1',
-        )]
+                    "(see docs/MODEL_SERVING.md).",
+                    legacy_key,
+                )
+        return [
+            ServerEndpoint(
+                host=serving["host"],
+                host_key=serving.get("host_key", "EMPTY"),
+                model=serving.get("model"),
+                name="server1",
+            )
+        ]
 
     def _setup_session(self) -> None:
         """Create session ID, session file, and data directory.
@@ -1288,10 +1362,10 @@ class OnIt(BaseModel):
         """
         from .sessions import register_session, session_label
 
-        sessions_base = self.config_data.get('session_path', '~/.onit/sessions')
+        sessions_base = self.config_data.get("session_path", "~/.onit/sessions")
         sessions_base = os.path.expanduser(sessions_base)
 
-        resume_id = self.config_data.get('resume_session_id')
+        resume_id = self.config_data.get("resume_session_id")
         if resume_id:
             # Resume an existing session
             self.session_id = resume_id
@@ -1323,8 +1397,8 @@ class OnIt(BaseModel):
             # name, and the second gets a suffix.  Kept on the instance so a
             # caller that told the user "call it X" can correct itself.
             self.session_name = register_session(
-                self.session_id, sessions_base,
-                tag=self.config_data.pop('session_name', None))
+                self.session_id, sessions_base, tag=self.config_data.pop("session_name", None)
+            )
 
         # A session created with no name has none in the index either, and the
         # footer still has to say which row this is: fall back to the short id,
@@ -1337,7 +1411,7 @@ class OnIt(BaseModel):
         # can fold into it without a null check.
         self.run_state = RunState.load(state_path_for(self.session_path))
 
-        configured_data_path = self.config_data.get('data_path')
+        configured_data_path = self.config_data.get("data_path")
         if configured_data_path:
             self.data_path = str(Path(configured_data_path).expanduser().resolve())
         else:
@@ -1347,10 +1421,11 @@ class OnIt(BaseModel):
     def _setup_file_server_url(self) -> None:
         """Compute file_server_url for file transfer via callback_url."""
         self.file_server_url = None
-        mcp_host = self.config_data.get('mcp', {}).get('mcp_host')
-        if mcp_host and self.config_data.get('web', False):
+        mcp_host = self.config_data.get("mcp", {}).get("mcp_host")
+        if mcp_host and self.config_data.get("web", False):
             import socket
-            web_port = self.config_data.get('web_port', 9000)
+
+            web_port = self.config_data.get("web_port", 9000)
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect((mcp_host, 80))
@@ -1362,43 +1437,45 @@ class OnIt(BaseModel):
 
     def _setup_config_fields(self) -> None:
         """Assign remaining configuration fields from config_data."""
-        self.template_path = self.config_data.get('template_path', None)
-        self.topic = self.config_data.get('topic', None)
-        self.prompt_intro = self.config_data.get('prompt_intro', None)
-        self.max_documents = int(self.config_data.get('max_documents', DEFAULT_MAX_DOCUMENTS))
-        self.history_turns = int(self.config_data.get('history_turns', 6))
-        self.prompt_in_process = bool(self.config_data.get('prompt_in_process', True))
-        self.timeout = self.config_data.get('timeout', None)  # default timeout 300 seconds
+        self.template_path = self.config_data.get("template_path", None)
+        self.topic = self.config_data.get("topic", None)
+        self.prompt_intro = self.config_data.get("prompt_intro", None)
+        self.max_documents = int(self.config_data.get("max_documents", DEFAULT_MAX_DOCUMENTS))
+        self.history_turns = int(self.config_data.get("history_turns", 6))
+        self.prompt_in_process = bool(self.config_data.get("prompt_in_process", True))
+        self.timeout = self.config_data.get("timeout", None)  # default timeout 300 seconds
         if self.timeout is not None and self.timeout < 0:
             self.timeout = None  # no timeout
-        self.show_logs = self.config_data.get('show_logs', False)
-        self.show_intermediate = self.config_data.get('show_intermediate', False)
-        self.stream = self.config_data.get('stream', True)
-        self.loop = self.config_data.get('loop', False)
-        self.period = float(self.config_data.get('period', 20.0))
-        self.task = self.config_data.get('task', None)
-        self.web = self.config_data.get('web', False)
-        self.web_port = self.config_data.get('web_port', 9000)
-        self.web_google_client_id = self.config_data.get('web_google_client_id', None)
-        self.web_google_client_secret = self.config_data.get('web_google_client_secret', None)
+        self.show_logs = self.config_data.get("show_logs", False)
+        self.show_intermediate = self.config_data.get("show_intermediate", False)
+        self.stream = self.config_data.get("stream", True)
+        self.loop = self.config_data.get("loop", False)
+        self.period = float(self.config_data.get("period", 20.0))
+        self.task = self.config_data.get("task", None)
+        self.web = self.config_data.get("web", False)
+        self.web_port = self.config_data.get("web_port", 9000)
+        self.web_google_client_id = self.config_data.get("web_google_client_id", None)
+        self.web_google_client_secret = self.config_data.get("web_google_client_secret", None)
         # Nullify placeholder credentials so auth is cleanly disabled
-        for attr in ('web_google_client_id', 'web_google_client_secret'):
+        for attr in ("web_google_client_id", "web_google_client_secret"):
             val = getattr(self, attr, None)
             if val and "YOUR_" in str(val).upper():
                 setattr(self, attr, None)
-        self.web_allowed_emails = self.config_data.get('web_allowed_emails', None)
-        self.web_require_auth = bool(self.config_data.get('web_require_auth', True))
-        self.web_title = self.config_data.get('web_title', 'OnIt Chat')
-        self.web_ga_measurement_id = self.config_data.get('web_ga_measurement_id', None)
+        self.web_allowed_emails = self.config_data.get("web_allowed_emails", None)
+        self.web_require_auth = bool(self.config_data.get("web_require_auth", True))
+        self.web_title = self.config_data.get("web_title", "OnIt Chat")
+        self.web_ga_measurement_id = self.config_data.get("web_ga_measurement_id", None)
         # Generated pages run in a sandboxed frame in the reply; set false to
         # keep them as source and a download instead.
-        self.web_html_preview = bool(self.config_data.get('web_html_preview', True))
-        _voice = self.config_data.get('voice') or {}
+        self.web_html_preview = bool(self.config_data.get("web_html_preview", True))
+        _voice = self.config_data.get("voice") or {}
         self.voice = _voice if isinstance(_voice, dict) else {}
-        self.agent_name = self.config_data.get('agent_name', 'OnIt')
-        self.developer = self.config_data.get('developer', 'Rowel Atienza')
+        self.agent_name = self.config_data.get("agent_name", "OnIt")
+        self.developer = self.config_data.get("developer", "Rowel Atienza")
 
-    def load_session_history(self, max_turns: int | None = None, session_path: str | None = None) -> list[dict]:
+    def load_session_history(
+        self, max_turns: int | None = None, session_path: str | None = None
+    ) -> list[dict]:
         """Load recent session history from the JSONL session file.
 
         Args:
@@ -1454,12 +1531,21 @@ class OnIt(BaseModel):
         # return only the most recent turns
         return history[-max_turns:]
 
-    def _chat_kwargs(self, *, metrics: dict, run_state: 'RunState',
-                     chat_ui: ChatUIProtocol | None, verbose: bool, data_path: str,
-                     session_id: str, session_history: list,
-                     background_verify=None, stream: bool | None = None,
-                     with_prompt_intro: bool = True,
-                     task: str | None = None) -> dict:
+    def _chat_kwargs(
+        self,
+        *,
+        metrics: dict,
+        run_state: "RunState",
+        chat_ui: ChatUIProtocol | None,
+        verbose: bool,
+        data_path: str,
+        session_id: str,
+        session_history: list,
+        background_verify=None,
+        stream: bool | None = None,
+        with_prompt_intro: bool = True,
+        task: str | None = None,
+    ) -> dict:
         """Build the kwargs dict handed to chat().
 
         One builder for every chat() caller — process_task, run_loop,
@@ -1491,30 +1577,31 @@ class OnIt(BaseModel):
             The kwargs dict for chat().
         """
         kwargs = {
-            'metrics': metrics,
-            'run_state': run_state,
-            'chat_ui': chat_ui,
-            'verbose': verbose,
-            'data_path': data_path,
-            'session_id': session_id,
-            'session_history': session_history,
-            'max_tokens': self.model_serving.get('max_tokens', DEFAULT_MAX_TOKENS),
-            'max_context_tokens': self.model_serving.get('max_context_tokens', None),
-            'stream': self.stream if stream is None else stream,
+            "metrics": metrics,
+            "run_state": run_state,
+            "chat_ui": chat_ui,
+            "verbose": verbose,
+            "data_path": data_path,
+            "session_id": session_id,
+            "session_history": session_history,
+            "max_tokens": self.model_serving.get("max_tokens", DEFAULT_MAX_TOKENS),
+            "max_context_tokens": self.model_serving.get("max_context_tokens", None),
+            "stream": self.stream if stream is None else stream,
         }
         for _k in SERVING_PASSTHROUGH:
             if _k in self.model_serving:
                 kwargs[_k] = self.model_serving[_k]
         if with_prompt_intro and self.prompt_intro:
-            kwargs['prompt_intro'] = self.prompt_intro
+            kwargs["prompt_intro"] = self.prompt_intro
         if background_verify is not None:
-            kwargs['background_verify'] = background_verify
+            kwargs["background_verify"] = background_verify
         self._attach_learned_context(run_state, session_id, task)
         self._attach_playbook(run_state, session_id)
         return kwargs
 
-    def _attach_learned_context(self, run_state: Any, session_id: str,
-                                 task: str | None = None) -> None:
+    def _attach_learned_context(
+        self, run_state: Any, session_id: str, task: str | None = None
+    ) -> None:
         """Put Loop A's recalled episodes on the run state, if any.
 
         Called from ``_chat_kwargs`` so that every path into the model gets
@@ -1534,26 +1621,26 @@ class OnIt(BaseModel):
         """
         try:
             from .learn.config import ADAPT, autonomy
+
             if autonomy(self.config_data) < ADAPT:
                 return
             from .learn.recall import build_context
+
             owner = None
             try:
                 from .sessions import get_session_owner
-                owner = get_session_owner(session_id,
-                                         os.path.dirname(self.session_path))
+
+                owner = get_session_owner(session_id, os.path.dirname(self.session_path))
             except Exception:
                 owner = None
-            model = self.model_serving.get('model') or None
+            model = self.model_serving.get("model") or None
             context = build_context(
-                task or "",
-                config_data=self.config_data,
-                owner=owner,
-                model=model)
-            if not context['text']:
+                task or "", config_data=self.config_data, owner=owner, model=model
+            )
+            if not context["text"]:
                 return
-            run_state.learned_context = context['text']
-            run_state.learned_episodes = context['ids']
+            run_state.learned_context = context["text"]
+            run_state.learned_episodes = context["ids"]
         except Exception as e:
             logger.debug("learned context not attached: %s", e)
 
@@ -1592,8 +1679,8 @@ class OnIt(BaseModel):
         owner = None
         try:
             from .sessions import get_session_owner
-            owner = get_session_owner(session_id,
-                                     os.path.dirname(self.session_path))
+
+            owner = get_session_owner(session_id, os.path.dirname(self.session_path))
         except Exception:
             owner = None
         # The cache is keyed by the owner, with ``None`` for the
@@ -1604,9 +1691,11 @@ class OnIt(BaseModel):
             return self._playbook_context
         try:
             from .learn.config import ADAPT, autonomy
+
             if autonomy(self.config_data) < ADAPT:
                 return ""
             from .learn.playbook import build_context
+
             cached = self._playbook_by_owner.get(key)
             if cached is not None:
                 self._playbook_pinned = True
@@ -1617,14 +1706,14 @@ class OnIt(BaseModel):
                 return self._playbook_context
             context = build_context(config_data=self.config_data, owner=owner)
             self._playbook_by_owner[key] = {
-                "text": context['text'],
-                "ids": list(context['ids']),
-                "version": context['version'],
+                "text": context["text"],
+                "ids": list(context["ids"]),
+                "version": context["version"],
             }
             self._playbook_pinned = True
-            self._playbook_context = context['text']
-            self._playbook_items = list(context['ids'])
-            self._playbook_version = context['version']
+            self._playbook_context = context["text"]
+            self._playbook_items = list(context["ids"])
+            self._playbook_version = context["version"]
             self._playbook_owner = key
             return self._playbook_context
         except Exception as e:
@@ -1642,6 +1731,7 @@ class OnIt(BaseModel):
         """
         try:
             from .learn.config import ADAPT, autonomy
+
             if autonomy(self.config_data) < ADAPT:
                 return
             self._pin_playbook(session_id)
@@ -1662,7 +1752,7 @@ class OnIt(BaseModel):
             if self.loop:
                 await self.run_loop()
             else:
-                if self.web and hasattr(self.chat_ui, 'launch'):
+                if self.web and hasattr(self.chat_ui, "launch"):
                     self.chat_ui.launch(asyncio.get_event_loop())
                     # Web sessions call process_task() directly; keep loop alive
                     while self.status == "running":
@@ -1675,21 +1765,25 @@ class OnIt(BaseModel):
         finally:
             self.status = "stopped"
 
-    async def process_task(self, task: str, images: list[str] | None = None,
-                           session_path: str | None = None,
-                           data_path: str | None = None,
-                           safety_queue: asyncio.Queue | None = None,
-                           stream_callback=None,
-                           stream_complete_callback=None,
-                           stream_throttle: int = 0,
-                           stats: dict | None = None,
-                           tool_status_callback=None,
-                           tool_result_callback=None,
-                           answer_start_callback=None,
-                           correction_callback=None,
-                           think_callback=None,
-                           approval_callback=None,
-                           session_id: str | None = None) -> str:
+    async def process_task(
+        self,
+        task: str,
+        images: list[str] | None = None,
+        session_path: str | None = None,
+        data_path: str | None = None,
+        safety_queue: asyncio.Queue | None = None,
+        stream_callback=None,
+        stream_complete_callback=None,
+        stream_throttle: int = 0,
+        stats: dict | None = None,
+        tool_status_callback=None,
+        tool_result_callback=None,
+        answer_start_callback=None,
+        correction_callback=None,
+        think_callback=None,
+        approval_callback=None,
+        session_id: str | None = None,
+    ) -> str:
         """Process a single task and return the response string.
 
         Args:
@@ -1754,13 +1848,17 @@ class OnIt(BaseModel):
         # nothing else measures it.
         _instruction_start = time.monotonic()
         instruction = await self._assistant_instruction(
-            task, effective_data_path, session_path=effective_session_path)
+            task, effective_data_path, session_path=effective_session_path
+        )
         _instruction_s = time.monotonic() - _instruction_start
 
         # Use a StreamingAdapter when streaming tokens or tracking tool status.
         _adapter = None
-        if (((stream_callback or think_callback) and self.stream)
-                or tool_result_callback or approval_callback):
+        if (
+            ((stream_callback or think_callback) and self.stream)
+            or tool_result_callback
+            or approval_callback
+        ):
             _adapter = StreamingAdapter(
                 on_token=stream_callback,
                 on_complete=stream_complete_callback,
@@ -1797,11 +1895,16 @@ class OnIt(BaseModel):
             session_id=effective_session_id,
             session_history=self.load_session_history(session_path=effective_session_path),
             background_verify=_deep_checks.append if correction_callback else None,
-            task=task)
+            task=task,
+        )
         last_response = await _chat_with_failover(
-            self, instruction=instruction, kwargs=kwargs,
+            self,
+            instruction=instruction,
+            kwargs=kwargs,
             safety_queue=effective_safety_queue,
-            session_key=effective_session_id, images=images)
+            session_key=effective_session_id,
+            images=images,
+        )
 
         # If the safety queue fired, stop the sandbox container.
         if not effective_safety_queue.empty():
@@ -1824,13 +1927,16 @@ class OnIt(BaseModel):
             # and the web footer is built after chat() has returned.
             stats["model_name"] = getattr(_adapter, "model_name", "") or ""
             stats["provider_name"] = getattr(_adapter, "provider_name", "") or ""
-        logger.info("task timing: instruction %.2fs | %s",
-                    _instruction_s, summarize_metrics(_metrics))
+        logger.info(
+            "task timing: instruction %.2fs | %s", _instruction_s, summarize_metrics(_metrics)
+        )
 
         if not last_response or not remove_tags(last_response).strip():
-            logger.error("chat() returned empty/None after %d failover "
-                         "attempts across hosts: %s",
-                         MAX_FAILOVER_ATTEMPTS, ", ".join(self.load_balancer.hosts))
+            logger.error(
+                "chat() returned empty/None after %d failover attempts across hosts: %s",
+                MAX_FAILOVER_ATTEMPTS,
+                ", ".join(self.load_balancer.hosts),
+            )
             for _stale in _deep_checks:
                 _stale.close()
             # A run that spent thirty turns and came back with nothing is
@@ -1852,6 +1958,7 @@ class OnIt(BaseModel):
         # Update session index (auto-tag on first message, track turns)
         try:
             from .sessions import update_session
+
             effective_sid = session_id or self.session_id
             sessions_dir = os.path.dirname(effective_session_path)
             update_session(effective_sid, task=task, sessions_dir=sessions_dir)
@@ -1859,10 +1966,15 @@ class OnIt(BaseModel):
         except Exception:
             pass
         self._persist_run_state(_run_state, effective_session_path)
-        self._record_trajectory(task, response, _metrics,
-                                effective_session_path,
-                                session_id or self.session_id, _adapter,
-                                run_state=_run_state)
+        self._record_trajectory(
+            task,
+            response,
+            _metrics,
+            effective_session_path,
+            session_id or self.session_id,
+            _adapter,
+            run_state=_run_state,
+        )
         # The answer is saved, so the check behind it now has something to
         # correct.  Anything the run collected earlier belonged to an attempt
         # that was retried over, and is closed rather than run.
@@ -1870,7 +1982,8 @@ class OnIt(BaseModel):
             _stale.close()
         if _deep_checks and effective_safety_queue.empty():
             self._schedule_background_check(
-                effective_session_id, _deep_checks[-1], effective_session_path)
+                effective_session_id, _deep_checks[-1], effective_session_path
+            )
         return response
 
     # ── fact-checks that outlive the answer ────────────────────────────────
@@ -1882,8 +1995,7 @@ class OnIt(BaseModel):
     # tokens, and arriving late next to a newer answer it does not describe is
     # worse than not arriving.
 
-    def _schedule_background_check(self, session_id: str, coro,
-                                   session_path: str) -> None:
+    def _schedule_background_check(self, session_id: str, coro, session_path: str) -> None:
         """Own a deep check for this session, replacing any still running.
 
         Showing the correction is not this method's job — the check tells the
@@ -1913,7 +2025,10 @@ class OnIt(BaseModel):
         task.add_done_callback(
             lambda t, sid=session_id: (
                 self.background_checks.pop(sid, None)
-                if self.background_checks.get(sid) is t else None))
+                if self.background_checks.get(sid) is t
+                else None
+            )
+        )
 
     def _cancel_background_check(self, session_id: str) -> None:
         """End the check still running for this session, if there is one."""
@@ -1974,11 +2089,13 @@ class OnIt(BaseModel):
             # One OnIt serves many sessions in web mode, so the file — not the
             # in-memory copy — is the source of truth for any session but the
             # one this process was started on.
-            own = bool(self.session_path
-                       and os.path.abspath(session_path)
-                       == os.path.abspath(self.session_path))
-            session_state = (self.run_state if own and self.run_state is not None
-                             else RunState.load(path))
+            own = bool(
+                self.session_path
+                and os.path.abspath(session_path) == os.path.abspath(self.session_path)
+            )
+            session_state = (
+                self.run_state if own and self.run_state is not None else RunState.load(path)
+            )
             session_state.merge(state)
             session_state.save(path)
             if own:
@@ -1990,19 +2107,31 @@ class OnIt(BaseModel):
         """What to tell the next task about the ones before it, or ""."""
         try:
             effective = session_path or self.session_path
-            own = bool(self.session_path and effective
-                       and os.path.abspath(effective)
-                       == os.path.abspath(self.session_path))
-            state = (self.run_state if own and self.run_state is not None
-                     else RunState.load(state_path_for(effective)))
+            own = bool(
+                self.session_path
+                and effective
+                and os.path.abspath(effective) == os.path.abspath(self.session_path)
+            )
+            state = (
+                self.run_state
+                if own and self.run_state is not None
+                else RunState.load(state_path_for(effective))
+            )
             return state.resume_note()
         except Exception as e:
             logger.debug("prior run note unavailable: %s", e)
             return ""
 
-    def _record_trajectory(self, task: str, response: str, metrics: dict,
-                           session_path: str, session_id: str, adapter,
-                           run_state: Any = None) -> None:
+    def _record_trajectory(
+        self,
+        task: str,
+        response: str,
+        metrics: dict,
+        session_path: str,
+        session_id: str,
+        adapter,
+        run_state: Any = None,
+    ) -> None:
         """Write what this task actually did to the trajectory store.
 
         The session file above keeps the conversation; this keeps the run — the
@@ -2017,9 +2146,11 @@ class OnIt(BaseModel):
         """
         try:
             from .learn import record_task, recording_enabled
+
             if not recording_enabled(self.config_data):
                 return
             from .sessions import _turn_count_from_jsonl, get_session_owner
+
             sessions_dir = os.path.dirname(session_path)
             record_task(
                 session_id=session_id,
@@ -2046,12 +2177,10 @@ class OnIt(BaseModel):
                 # hook: without it, "did the recall work" is a question
                 # with no data behind it.
                 playbook_version=getattr(run_state, "playbook_version", None),
-                episodes_used=list(getattr(run_state, "learned_episodes", None)
-                                   or []),
+                episodes_used=list(getattr(run_state, "learned_episodes", None) or []),
                 # Which playbook bullets the run was shown, so the run
                 # can be credited or blamed for them afterwards.
-                playbook_items=list(getattr(run_state, "playbook_items", None)
-                                    or []),
+                playbook_items=list(getattr(run_state, "playbook_items", None) or []),
             )
             # Credit the playbook bullets this run was shown.  The
             # counters on a bullet are the only thing that lets a later
@@ -2085,11 +2214,18 @@ class OnIt(BaseModel):
             if not items:
                 return
             from .learn.config import ADAPT, autonomy
+
             if autonomy(self.config_data) < ADAPT:
                 return
-            from .learn.playbook import (attribute, decay, global_path,
-                                         owner_path, read_playbook,
-                                         write_playbook)
+            from .learn.playbook import (
+                attribute,
+                decay,
+                global_path,
+                owner_path,
+                read_playbook,
+                write_playbook,
+            )
+
             signals = run_state.__dict__.get("signals") or {}
             helped = hurt = 0
             # The run's own outcome, read the same way the corpus
@@ -2108,12 +2244,13 @@ class OnIt(BaseModel):
             owner = None
             try:
                 from .sessions import get_session_owner
-                owner = get_session_owner(getattr(self, "session_id", None) or "",
-                                         os.path.dirname(self.session_path))
+
+                owner = get_session_owner(
+                    getattr(self, "session_id", None) or "", os.path.dirname(self.session_path)
+                )
             except Exception:
                 owner = None
-            path = (owner_path(owner, self.config_data) if owner
-                    else global_path(self.config_data))
+            path = owner_path(owner, self.config_data) if owner else global_path(self.config_data)
             playbook = read_playbook(path)
             if not playbook["items"]:
                 return
@@ -2159,22 +2296,24 @@ class OnIt(BaseModel):
                     session_history=self.load_session_history(),
                     stream=False,
                     with_prompt_intro=False,
-                    task=self.task)
+                    task=self.task,
+                )
                 endpoint = self.load_balancer.acquire(key=self.session_id)
                 last_response = None
                 try:
-                    last_response = await chat(host=endpoint.host,
-                                                host_key=endpoint.host_key,
-                                                model=endpoint.model,
-                                                instruction=instruction,
-                                                tool_registry=self.tool_registry,
-                                                safety_queue=self.safety_queue,
-                                                think=self.model_serving.get("think", DEFAULT_THINK),
-                                                timeout=self.timeout,
-                                                **kwargs)
+                    last_response = await chat(
+                        host=endpoint.host,
+                        host_key=endpoint.host_key,
+                        model=endpoint.model,
+                        instruction=instruction,
+                        tool_registry=self.tool_registry,
+                        safety_queue=self.safety_queue,
+                        think=self.model_serving.get("think", DEFAULT_THINK),
+                        timeout=self.timeout,
+                        **kwargs,
+                    )
                 finally:
-                    self.load_balancer.release(
-                        endpoint, success=last_response is not None)
+                    self.load_balancer.release(endpoint, success=last_response is not None)
 
                 if last_response is not None:
                     elapsed_time = asyncio.get_event_loop().time() - start_time
@@ -2187,7 +2326,7 @@ class OnIt(BaseModel):
                             session_data = {
                                 "task": self.task,
                                 "response": response,
-                                "timestamp": asyncio.get_event_loop().time()
+                                "timestamp": asyncio.get_event_loop().time(),
                             }
                             f.write(json.dumps(session_data) + "\n")
                     except Exception:
@@ -2195,9 +2334,15 @@ class OnIt(BaseModel):
                     # Loop mode runs one task over and over, which is the
                     # workload where comparing run to run says the most.
                     self._persist_run_state(_run_state, self.session_path)
-                    self._record_trajectory(self.task, response, _metrics,
-                                            self.session_path, self.session_id, None,
-                                            run_state=_run_state)
+                    self._record_trajectory(
+                        self.task,
+                        response,
+                        _metrics,
+                        self.session_path,
+                        self.session_id,
+                        None,
+                        run_state=_run_state,
+                    )
 
                 # countdown timer before next iteration
                 remaining = int(self.period)
@@ -2224,9 +2369,9 @@ class OnIt(BaseModel):
             return await self.chat_ui.get_user_input_async()
         return await loop.run_in_executor(None, self.chat_ui.get_user_input)
 
-    async def _assistant_instruction(self, task: str,
-                                     data_path: str | None = None,
-                                     session_path: str | None = None) -> str:
+    async def _assistant_instruction(
+        self, task: str, data_path: str | None = None, session_path: str | None = None
+    ) -> str:
         """The agent instruction for ``task``.
 
         PromptsMCPServer hosts a single prompt, and that prompt is a pure
@@ -2253,17 +2398,22 @@ class OnIt(BaseModel):
             # Only claimed when chat() will actually offer them: the note tools
             # need a data_path to write under, and the toolset as a whole is
             # switched off by `serving.harness_tools: false`.
-            "harness_tools_available": (bool(data_path or self.data_path)
-                                        and self.model_serving.get('harness_tools', True)),
+            "harness_tools_available": (
+                bool(data_path or self.data_path) and self.model_serving.get("harness_tools", True)
+            ),
             # Same rule again, and one more switch: the store can be turned off
             # without withdrawing the note tools.
-            "result_store_available": (bool(data_path or self.data_path)
-                                       and self.model_serving.get('harness_tools', True)
-                                       and self.model_serving.get('result_store', True)),
+            "result_store_available": (
+                bool(data_path or self.data_path)
+                and self.model_serving.get("harness_tools", True)
+                and self.model_serving.get("result_store", True)
+            ),
             # Needs no data_path: an interpreter needs somewhere to run, not
             # somewhere to write.
-            "code_execution_available": (self.model_serving.get('harness_tools', True)
-                                         and self.model_serving.get('code_execution', False)),
+            "code_execution_available": (
+                self.model_serving.get("harness_tools", True)
+                and self.model_serving.get("code_execution", False)
+            ),
             "agent_name": self.agent_name,
             "developer": self.developer,
             "max_documents": self.max_documents,
@@ -2275,8 +2425,7 @@ class OnIt(BaseModel):
             # pinned per session rather than rebuilt per task -- see
             # _pin_playbook.  Empty at autonomy 0 and 1, and empty when
             # there is no playbook to inject.
-            "playbook": self._pin_playbook(
-                getattr(self, "session_id", None) or ""),
+            "playbook": self._pin_playbook(getattr(self, "session_id", None) or ""),
         }
         if self.prompt_in_process:
             return await build_assistant_instruction(**args)
@@ -2297,10 +2446,12 @@ class OnIt(BaseModel):
         if self.web:
             return None
         import sys
-        safety_warning = self.messages.get('safety_warning', "Press 'Enter' key to stop all tasks.")
+
+        safety_warning = self.messages.get("safety_warning", "Press 'Enter' key to stop all tasks.")
         self.chat_ui.console.print(safety_warning, style="dim")
         self.chat_ui.start_thinking()
         fd = sys.stdin.fileno()
+
         def _on_enter():
             # Drain the available bytes with a raw, non-buffered read. Two reasons:
             #   1. ``sys.stdin.readline()`` *blocks* until a full line is available;
@@ -2318,6 +2469,7 @@ class OnIt(BaseModel):
                 return
             if b"\n" in data or b"\r" in data:
                 self.safety_queue.put_nowait(STOP_TAG)
+
         try:
             loop.add_reader(fd, _on_enter)
         except NotImplementedError:
@@ -2329,23 +2481,24 @@ class OnIt(BaseModel):
         if self.web:
             return
         import sys
-        if hasattr(self, 'chat_ui') and self.chat_ui and hasattr(self.chat_ui, 'stop_thinking'):
+
+        if hasattr(self, "chat_ui") and self.chat_ui and hasattr(self.chat_ui, "stop_thinking"):
             self.chat_ui.stop_thinking()
         try:
             loop.remove_reader(sys.stdin.fileno())
         except Exception:
             pass
 
-    def _handle_successful_response(self, response: str, task: str,
-                                    elapsed_time: str,
-                                    loop: asyncio.AbstractEventLoop) -> None:
+    def _handle_successful_response(
+        self, response: str, task: str, elapsed_time: str, loop: asyncio.AbstractEventLoop
+    ) -> None:
         """Process a successful agent response: display it and save to session."""
         response = remove_tags(response).strip()
         # Skip empty responses — model returned nothing useful.
         if not response:
             # Surface any error from logs so user knows what went wrong
             error_detail = ""
-            if hasattr(self.chat_ui, 'execution_logs') and self.chat_ui.execution_logs:
+            if hasattr(self.chat_ui, "execution_logs") and self.chat_ui.execution_logs:
                 last_log = self.chat_ui.execution_logs[-1]
                 if last_log.get("level") in ("error", "warning"):
                     error_detail = f": {last_log['message']}"
@@ -2365,14 +2518,21 @@ class OnIt(BaseModel):
         # the panel a second time — the shortened copy landing under the full
         # one, which reads as an answer that was cut off.
         _last = self.chat_ui.messages[-1] if self.chat_ui.messages else None
-        if (_last and hasattr(_last, 'role') and _last.role == "assistant"
-                and _last.content and (response.startswith(_last.content)
-                                       or _last.content.startswith(response))):
+        if (
+            _last
+            and hasattr(_last, "role")
+            and _last.role == "assistant"
+            and _last.content
+            and (response.startswith(_last.content) or _last.content.startswith(response))
+        ):
             from src.ui.text import Message
+
             self.chat_ui.messages[-1] = Message(
-                role=_last.role, content=response,
-                timestamp=_last.timestamp, elapsed=elapsed_time,
-                name=getattr(_last, 'name', ''),
+                role=_last.role,
+                content=response,
+                timestamp=_last.timestamp,
+                elapsed=elapsed_time,
+                name=getattr(_last, "name", ""),
             )
         else:
             self.chat_ui.add_message("assistant", response, elapsed=elapsed_time)
@@ -2387,33 +2547,35 @@ class OnIt(BaseModel):
         # elapsed and rate on this path, so they are left off rather than
         # quoted twice.
         if hasattr(self.chat_ui, "record_run_stats"):
-            self.chat_ui.record_run_stats(
-                self.last_metrics, elapsed=0.0, token_rate=False)
+            self.chat_ui.record_run_stats(self.last_metrics, elapsed=0.0, token_rate=False)
         try:
             with open(self.session_path, "a", encoding="utf-8") as f:
-                session_data = {
-                    "task": task,
-                    "response": response,
-                    "timestamp": loop.time()
-                }
+                session_data = {"task": task, "response": response, "timestamp": loop.time()}
                 f.write(json.dumps(session_data) + "\n")
         except Exception:
             pass
         try:
             from .sessions import update_session
+
             _dir = os.path.dirname(self.session_path)
             update_session(self.session_id, task=task, sessions_dir=_dir)
             self._refresh_session_label(self.session_id, _dir)
         except Exception:
             pass
         self._persist_run_state(self.last_run_state, self.session_path)
-        self._record_trajectory(task, response, self.last_metrics,
-                                self.session_path, self.session_id, self.chat_ui,
-                                run_state=self.last_run_state)
+        self._record_trajectory(
+            task,
+            response,
+            self.last_metrics,
+            self.session_path,
+            self.session_id,
+            self.chat_ui,
+            run_state=self.last_run_state,
+        )
         if self.pending_deep_checks:
             self._schedule_background_check(
-                self.session_id, self.pending_deep_checks.pop(),
-                self.session_path)
+                self.session_id, self.pending_deep_checks.pop(), self.session_path
+            )
             for _stale in self.pending_deep_checks:
                 _stale.close()
             self.pending_deep_checks.clear()
@@ -2424,7 +2586,7 @@ class OnIt(BaseModel):
         # from history does not quote a different rate than the run did.
         _tok_s = decode_rate(self.last_metrics)
         # Same shape as the web UI's per-answer meta line.
-        if hasattr(self.chat_ui, 'format_meta'):
+        if hasattr(self.chat_ui, "format_meta"):
             return self.chat_ui.format_meta(elapsed_secs, _tok_s)
         return f"{elapsed_secs:.2f}s"
 
@@ -2490,8 +2652,9 @@ class OnIt(BaseModel):
                 await self.input_queue.put(instruction)
 
                 final_answer_task = asyncio.create_task(self.output_queue.get())
-                done, pending = await asyncio.wait([final_answer_task],
-                                                   return_when=asyncio.FIRST_COMPLETED)
+                done, pending = await asyncio.wait(
+                    [final_answer_task], return_when=asyncio.FIRST_COMPLETED
+                )
 
                 for t in pending:
                     t.cancel()
@@ -2513,7 +2676,7 @@ class OnIt(BaseModel):
                 if response is None:
                     # API error — auto-retry with backoff before giving up
                     error_detail = ""
-                    if hasattr(self.chat_ui, 'execution_logs') and self.chat_ui.execution_logs:
+                    if hasattr(self.chat_ui, "execution_logs") and self.chat_ui.execution_logs:
                         last_log = self.chat_ui.execution_logs[-1]
                         if last_log.get("level") in ("error", "warning"):
                             error_detail = f" ({last_log['message']})"
@@ -2521,7 +2684,10 @@ class OnIt(BaseModel):
                     retry_delays = [30, 60, 120]
                     retry_succeeded = False
                     for attempt, delay in enumerate(retry_delays, 1):
-                        self.chat_ui.add_message("system", f"Unable to get a response from the model{error_detail}. Retrying in {delay}s (attempt {attempt}/{len(retry_delays)})...")
+                        self.chat_ui.add_message(
+                            "system",
+                            f"Unable to get a response from the model{error_detail}. Retrying in {delay}s (attempt {attempt}/{len(retry_delays)})...",
+                        )
                         await asyncio.sleep(delay)
 
                         # Clear queues before retry
@@ -2532,8 +2698,9 @@ class OnIt(BaseModel):
                         await self.input_queue.put(instruction)
 
                         final_answer_task = asyncio.create_task(self.output_queue.get())
-                        done, pending = await asyncio.wait([final_answer_task],
-                                                           return_when=asyncio.FIRST_COMPLETED)
+                        done, pending = await asyncio.wait(
+                            [final_answer_task], return_when=asyncio.FIRST_COMPLETED
+                        )
                         for t in pending:
                             t.cancel()
 
@@ -2558,7 +2725,10 @@ class OnIt(BaseModel):
 
                     # All retries exhausted — give up
                     self._cleanup_enter_key_listener(loop)
-                    self.chat_ui.add_message("system", f"Unable to get a response from the model{error_detail} after {len(retry_delays)} retries. Giving up.")
+                    self.chat_ui.add_message(
+                        "system",
+                        f"Unable to get a response from the model{error_detail} after {len(retry_delays)} retries. Giving up.",
+                    )
                     break
 
                 # success
@@ -2567,7 +2737,7 @@ class OnIt(BaseModel):
                 break
 
             self._cleanup_enter_key_listener(loop)
-            
+
     async def agent_session(self) -> None:
         """Start the agent session with automatic failover on empty responses."""
         while True:
@@ -2594,12 +2764,16 @@ class OnIt(BaseModel):
                     session_id=self.session_id,
                     session_history=self.load_session_history(),
                     background_verify=self.pending_deep_checks.append,
-                    task=_task_from_instruction(instruction))
+                    task=_task_from_instruction(instruction),
+                )
 
                 last_response = await _chat_with_failover(
-                    self, instruction=instruction, kwargs=kwargs,
+                    self,
+                    instruction=instruction,
+                    kwargs=kwargs,
                     safety_queue=self.safety_queue,
-                    session_key=self.session_id)
+                    session_key=self.session_id,
+                )
 
                 # Normalize: if final response is empty/whitespace, treat as None
                 if not last_response or not remove_tags(last_response).strip():
@@ -2621,7 +2795,7 @@ class OnIt(BaseModel):
                 return
             except Exception as e:
                 logger.error("Error in agent session: %s", e)
-                if self.chat_ui and hasattr(self.chat_ui, 'add_log'):
+                if self.chat_ui and hasattr(self.chat_ui, "add_log"):
                     self.chat_ui.add_log(f"Agent error: {e}", level="error")
                 await self.output_queue.put(None)
                 return

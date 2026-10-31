@@ -17,15 +17,12 @@ from src.ui import commands
 def agent():
     """A stand-in for OnIt carrying only what the commands actually read."""
     endpoints = [
-        ServerEndpoint(host="http://localhost:8000/v1", model="Qwen3-30B",
-                       name="vllm-a"),
-        ServerEndpoint(host="http://localhost:8001/v1", name="vllm-b",
-                       priority=1),
+        ServerEndpoint(host="http://localhost:8000/v1", model="Qwen3-30B", name="vllm-a"),
+        ServerEndpoint(host="http://localhost:8001/v1", name="vllm-b", priority=1),
     ]
     return SimpleNamespace(
         load_balancer=LoadBalancer(endpoints, "sticky"),
-        model_serving={"host": "http://localhost:8000/v1",
-                       "model": "Qwen3-30B"},
+        model_serving={"host": "http://localhost:8000/v1", "model": "Qwen3-30B"},
         session_id="sess-1",
         session_path="/tmp/sess.jsonl",
         data_path="/tmp/data",
@@ -35,14 +32,17 @@ def agent():
 
 def _models(names, error=None):
     """Patch the endpoint model listing with a fixed answer."""
+
     async def fake(host, host_key="EMPTY", timeout=15.0):
         if error:
             raise error
         return list(names)
+
     return patch("src.model.serving.chat.list_models", fake)
 
 
 # ── parsing ─────────────────────────────────────────────────────────────────
+
 
 class TestParse:
     def test_bare_command(self):
@@ -95,6 +95,7 @@ class TestSuggest:
 
 # ── \help ───────────────────────────────────────────────────────────────────
 
+
 class TestHelp:
     def test_every_command_is_listed(self):
         text = commands.render_help()
@@ -107,6 +108,7 @@ class TestHelp:
 
 
 # ── \model ──────────────────────────────────────────────────────────────────
+
 
 class TestModel:
     @pytest.mark.asyncio
@@ -159,6 +161,7 @@ class TestModel:
     @pytest.mark.asyncio
     async def test_dash_restores_auto_detect(self, agent):
         from src.model.serving import chat as chat_mod
+
         chat_mod._MODEL_ID_CACHE["http://localhost:8000/v1"] = "stale"
         out = await commands.cmd_model(agent, "-")
         assert agent.load_balancer.preferred.model is None
@@ -189,6 +192,7 @@ class TestModel:
 
 
 # ── \host ───────────────────────────────────────────────────────────────────
+
 
 class TestHost:
     @pytest.mark.asyncio
@@ -233,8 +237,7 @@ class TestHost:
     async def test_a_bare_hostname_is_rejected_with_an_example(self, agent):
         out = await commands.cmd_host(agent, "gpu-2:8000")
         assert "http://" in out
-        assert agent.load_balancer.hosts == ["http://localhost:8000/v1",
-                                             "http://localhost:8001/v1"]
+        assert agent.load_balancer.hosts == ["http://localhost:8000/v1", "http://localhost:8001/v1"]
 
     @pytest.mark.asyncio
     async def test_the_algorithm_survives_the_switch(self, agent):
@@ -258,9 +261,11 @@ class TestHostAdd:
     @pytest.mark.asyncio
     async def test_add_widens_the_rotation(self, agent):
         await commands.cmd_host(agent, "add http://gpu-3:8000/v1")
-        assert agent.load_balancer.hosts == ["http://localhost:8000/v1",
-                                             "http://localhost:8001/v1",
-                                             "http://gpu-3:8000/v1"]
+        assert agent.load_balancer.hosts == [
+            "http://localhost:8000/v1",
+            "http://localhost:8001/v1",
+            "http://gpu-3:8000/v1",
+        ]
 
     @pytest.mark.asyncio
     async def test_add_keeps_the_endpoints_that_were_there(self, agent):
@@ -301,8 +306,7 @@ class TestHostAdd:
     async def test_a_second_model_on_one_host_is_added(self, agent):
         """One Ollama cloud host serves many models. A second model on a URL
         already in the rotation is a new endpoint, not a duplicate."""
-        out = await commands.cmd_host(
-            agent, "add http://localhost:8000/v1 Qwen3-8B")
+        out = await commands.cmd_host(agent, "add http://localhost:8000/v1 Qwen3-8B")
         assert "already in the rotation" not in out
         assert len(agent.load_balancer.endpoints) == 3
         assert agent.load_balancer.endpoints[-1].model == "Qwen3-8B"
@@ -418,6 +422,7 @@ class TestHostRemove:
 
 # ── ollama endpoints ────────────────────────────────────────────────────────
 
+
 class TestOllamaEndpoints:
     """An Ollama host added to a rotation is held back by the implicit
     fallback rule. The routing is right; saying nothing about it was not."""
@@ -425,15 +430,14 @@ class TestOllamaEndpoints:
     @pytest.fixture
     def mixed(self, agent):
         agent.load_balancer = LoadBalancer(
-            [ServerEndpoint(host="http://gpu-1:8000/v1", name="vllm-a")],
-            "round_robin")
+            [ServerEndpoint(host="http://gpu-1:8000/v1", name="vllm-a")], "round_robin"
+        )
         return agent
 
     @pytest.mark.asyncio
     async def test_an_added_ollama_host_is_marked_in_the_table(self, mixed):
         out = await commands.cmd_host(mixed, "add https://ollama.com")
-        row = [ln for ln in out.splitlines()
-               if "ollama.com" in ln and ln.strip()[0].isdigit()][0]
+        row = [ln for ln in out.splitlines() if "ollama.com" in ln and ln.strip()[0].isdigit()][0]
         assert "fallback only" in row
 
     @pytest.mark.asyncio
@@ -502,8 +506,8 @@ class TestOllamaEndpoints:
         """With nothing else to prefer, the rule must not strand the session
         with no endpoint at all."""
         agent.load_balancer = LoadBalancer(
-            [ServerEndpoint(host="https://ollama.com", name="cloud")],
-            "round_robin")
+            [ServerEndpoint(host="https://ollama.com", name="cloud")], "round_robin"
+        )
         out = await commands.cmd_host(agent, "")
         assert "fallback only" not in out
 
@@ -511,9 +515,14 @@ class TestOllamaEndpoints:
         """The label tracks the live rule: once the vLLM host fails, the
         Ollama one is what serves."""
         import time
-        lb = LoadBalancer([ServerEndpoint(host="http://gpu-1:8000/v1"),
-                           ServerEndpoint(host="https://ollama.com")],
-                          "round_robin")
+
+        lb = LoadBalancer(
+            [
+                ServerEndpoint(host="http://gpu-1:8000/v1"),
+                ServerEndpoint(host="https://ollama.com"),
+            ],
+            "round_robin",
+        )
         ollama = lb.endpoints[1]
         assert lb.is_fallback_only(ollama) is True
         lb.endpoints[0].failed_at = time.monotonic()
@@ -522,16 +531,16 @@ class TestOllamaEndpoints:
 
 # ── \key ────────────────────────────────────────────────────────────────────
 
+
 class TestKey:
     @pytest.fixture(autouse=True)
     def _fake_keystore(self, monkeypatch):
         from src import setup as setup_mod
+
         self.store = {}
         monkeypatch.setattr(setup_mod, "get_secret", lambda k: self.store.get(k))
-        monkeypatch.setattr(setup_mod, "store_secret",
-                            lambda k, v: self.store.__setitem__(k, v))
-        monkeypatch.setattr(setup_mod, "delete_secret",
-                            lambda k: self.store.pop(k, None))
+        monkeypatch.setattr(setup_mod, "store_secret", lambda k, v: self.store.__setitem__(k, v))
+        monkeypatch.setattr(setup_mod, "delete_secret", lambda k: self.store.pop(k, None))
         # The saved-endpoint note reads the config file; without this the
         # suite would answer from whatever ~/.onit/config.yaml happens to say
         # on the machine running it.
@@ -551,8 +560,8 @@ class TestKey:
         self._typed(agent, "sk-typed-1234")
         out = await commands.cmd_key(agent, "")
         from src import setup as setup_mod
-        assert (setup_mod.get_endpoint_key("http://localhost:8000/v1")
-                == "sk-typed-1234")
+
+        assert setup_mod.get_endpoint_key("http://localhost:8000/v1") == "sk-typed-1234"
         assert "sk-typed-1234" not in out
 
     @pytest.mark.asyncio
@@ -573,6 +582,7 @@ class TestKey:
         self._typed(agent, "sk-b")
         await commands.cmd_key(agent, "")
         from src import setup as setup_mod
+
         assert setup_mod.get_endpoint_key("http://localhost:8001/v1") == "sk-b"
 
     @pytest.mark.asyncio
@@ -580,6 +590,7 @@ class TestKey:
         self._typed(agent, "sk-b")
         await commands.cmd_key(agent, "2")
         from src import setup as setup_mod
+
         assert setup_mod.get_endpoint_key("http://localhost:8001/v1") == "sk-b"
 
     @pytest.mark.asyncio
@@ -599,6 +610,7 @@ class TestKey:
     @pytest.mark.asyncio
     async def test_rm_forgets_the_stored_key(self, agent):
         from src import setup as setup_mod
+
         setup_mod.store_endpoint_key("http://localhost:8000/v1", "sk-a")
         out = await commands.cmd_key(agent, "rm 1")
         assert setup_mod.get_endpoint_key("http://localhost:8000/v1") is None
@@ -651,6 +663,7 @@ class TestKey:
 
 # ── \save ──────────────────────────────────────────────────────────────────
 
+
 class TestSave:
     """\\save is the one command that writes the config file, so what it puts
     there — and what it refuses to put there — is the whole of its contract."""
@@ -658,6 +671,7 @@ class TestSave:
     @pytest.fixture(autouse=True)
     def _config_file(self, tmp_path, monkeypatch):
         from src import setup as setup_mod
+
         self.path = tmp_path / "config.yaml"
         monkeypatch.setattr(setup_mod, "CONFIG_DIR", str(tmp_path))
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(self.path))
@@ -667,17 +681,19 @@ class TestSave:
 
     def _write(self, config):
         import yaml
+
         self.path.write_text(yaml.dump(config))
 
     def _read(self):
         import yaml
+
         return yaml.safe_load(self.path.read_text()) or {}
 
     def _saved_hosts(self):
         from src import setup as setup_mod
+
         config = self._read()
-        entries = (setup_mod._endpoint_list(config)
-                   or setup_mod._entries_from_host_pair(config))
+        entries = setup_mod._endpoint_list(config) or setup_mod._entries_from_host_pair(config)
         return [e["host"] for e in entries]
 
     @pytest.mark.asyncio
@@ -689,9 +705,16 @@ class TestSave:
 
     @pytest.mark.asyncio
     async def test_a_removed_endpoint_leaves_the_file(self, agent):
-        self._write({"serving": {"endpoints": [
-            {"host": "http://localhost:8000/v1"},
-            {"host": "http://localhost:8001/v1"}]}})
+        self._write(
+            {
+                "serving": {
+                    "endpoints": [
+                        {"host": "http://localhost:8000/v1"},
+                        {"host": "http://localhost:8001/v1"},
+                    ]
+                }
+            }
+        )
         await commands.cmd_host(agent, "rm 2")
         commands.cmd_save(agent)
         assert self._saved_hosts() == ["http://localhost:8000/v1"]
@@ -701,17 +724,17 @@ class TestSave:
         """The point of the command: what it writes has to come back through
         the reader that actually builds a session's load balancer."""
         from src.onit import OnIt
+
         self._write({"serving": {"host": "http://localhost:8000/v1"}})
         await commands.cmd_host(agent, "add http://gpu-2:8000/v1 Qwen3-32B")
         commands.cmd_save(agent)
 
         config = self._read()
-        rebuilt = (OnIt._parse_endpoint_list(config["serving"].get("endpoints"))
-                   or OnIt._legacy_endpoints(config["serving"]))
-        assert [ep.host for ep in rebuilt] == [ep.host for ep
-                                               in agent.load_balancer.endpoints]
-        assert [ep.model for ep in rebuilt] == [ep.model for ep
-                                                in agent.load_balancer.endpoints]
+        rebuilt = OnIt._parse_endpoint_list(
+            config["serving"].get("endpoints")
+        ) or OnIt._legacy_endpoints(config["serving"])
+        assert [ep.host for ep in rebuilt] == [ep.host for ep in agent.load_balancer.endpoints]
+        assert [ep.model for ep in rebuilt] == [ep.model for ep in agent.load_balancer.endpoints]
 
     def test_a_key_the_launcher_resolved_is_never_written(self, agent):
         """host_key can hold a secret read out of the OS keychain. Writing it
@@ -725,16 +748,27 @@ class TestSave:
     def test_a_key_written_into_the_yaml_by_hand_survives(self, agent):
         """It is not a secret this command put there, and dropping it would
         silently unauthenticate the endpoint."""
-        self._write({"serving": {"endpoints": [
-            {"host": "http://localhost:8000/v1", "api_key": "sk-in-yaml"},
-            {"host": "http://localhost:8001/v1"}]}})
+        self._write(
+            {
+                "serving": {
+                    "endpoints": [
+                        {"host": "http://localhost:8000/v1", "api_key": "sk-in-yaml"},
+                        {"host": "http://localhost:8001/v1"},
+                    ]
+                }
+            }
+        )
         commands.cmd_save(agent)
         assert "sk-in-yaml" in self.path.read_text()
 
     def test_settings_it_does_not_own_are_left_alone(self, agent):
-        self._write({"theme": "white", "web_port": 9100,
-                     "serving": {"host": "http://localhost:8000/v1",
-                                 "load_balancer": "round_robin"}})
+        self._write(
+            {
+                "theme": "white",
+                "web_port": 9100,
+                "serving": {"host": "http://localhost:8000/v1", "load_balancer": "round_robin"},
+            }
+        )
         commands.cmd_save(agent)
         config = self._read()
         assert config["theme"] == "white"
@@ -757,10 +791,12 @@ class TestSave:
         endpoint list on a save that changed nothing."""
         plain = SimpleNamespace(
             load_balancer=LoadBalancer(
-                [ServerEndpoint(host="http://localhost:8000/v1", name="server1")],
-                "sticky"),
-            model_serving={}, session_id="sess-1",
-            chat_ui=SimpleNamespace(model_name=""))
+                [ServerEndpoint(host="http://localhost:8000/v1", name="server1")], "sticky"
+            ),
+            model_serving={},
+            session_id="sess-1",
+            chat_ui=SimpleNamespace(model_name=""),
+        )
         self._write({"serving": {"host": "http://localhost:8000/v1"}})
         commands.cmd_save(plain)
         serving = self._read()["serving"]
@@ -777,9 +813,16 @@ class TestSave:
 
     @pytest.mark.asyncio
     async def test_it_reports_what_changed(self, agent):
-        self._write({"serving": {"endpoints": [
-            {"host": "http://localhost:8000/v1"},
-            {"host": "http://localhost:8001/v1"}]}})
+        self._write(
+            {
+                "serving": {
+                    "endpoints": [
+                        {"host": "http://localhost:8000/v1"},
+                        {"host": "http://localhost:8001/v1"},
+                    ]
+                }
+            }
+        )
         await commands.cmd_host(agent, "add http://gpu-2:8000/v1")
         await commands.cmd_host(agent, "rm 2")
         out = commands.cmd_save(agent)
@@ -790,20 +833,31 @@ class TestSave:
         """The file already records what the session is running, models
         included — a model is part of an endpoint's identity, so a file that
         names the host but not the model is not the same list."""
-        self._write({"serving": {"endpoints": [
-            {"host": "http://localhost:8000/v1", "model": "Qwen3-30B"},
-            {"host": "http://localhost:8001/v1"}]}})
+        self._write(
+            {
+                "serving": {
+                    "endpoints": [
+                        {"host": "http://localhost:8000/v1", "model": "Qwen3-30B"},
+                        {"host": "http://localhost:8001/v1"},
+                    ]
+                }
+            }
+        )
         assert "already saved" in commands.cmd_save(agent)
 
     def test_a_second_model_on_one_host_is_saved_and_reported(self, agent):
         """One Ollama cloud host serves many models. The second one is a new
         endpoint, not a repeat of the first, and \\save has to record it."""
-        self._write({"serving": {"endpoints": [
-            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}})
-        agent.load_balancer = LoadBalancer([
-            ServerEndpoint(host="https://ollama.com", model="glm-5.3:cloud"),
-            ServerEndpoint(host="https://ollama.com", model="qwen3:cloud"),
-        ], "sticky")
+        self._write(
+            {"serving": {"endpoints": [{"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        )
+        agent.load_balancer = LoadBalancer(
+            [
+                ServerEndpoint(host="https://ollama.com", model="glm-5.3:cloud"),
+                ServerEndpoint(host="https://ollama.com", model="qwen3:cloud"),
+            ],
+            "sticky",
+        )
         out = commands.cmd_save(agent)
         assert "qwen3:cloud" in out and "added" in out
         saved = self._read()["serving"]["endpoints"]
@@ -812,15 +866,31 @@ class TestSave:
     def test_two_models_on_one_host_keep_their_own_keys(self, agent):
         """A URL-keyed lookup would let the last entry read win and hand its
         api_key to the other model on the same host."""
-        self._write({"serving": {"endpoints": [
-            {"host": "https://ollama.com", "model": "glm-5.3:cloud",
-             "api_key": "sk-first"},
-            {"host": "https://ollama.com", "model": "qwen3:cloud",
-             "api_key": "sk-second"}]}})
-        agent.load_balancer = LoadBalancer([
-            ServerEndpoint(host="https://ollama.com", model="glm-5.3:cloud"),
-            ServerEndpoint(host="https://ollama.com", model="qwen3:cloud"),
-        ], "sticky")
+        self._write(
+            {
+                "serving": {
+                    "endpoints": [
+                        {
+                            "host": "https://ollama.com",
+                            "model": "glm-5.3:cloud",
+                            "api_key": "sk-first",
+                        },
+                        {
+                            "host": "https://ollama.com",
+                            "model": "qwen3:cloud",
+                            "api_key": "sk-second",
+                        },
+                    ]
+                }
+            }
+        )
+        agent.load_balancer = LoadBalancer(
+            [
+                ServerEndpoint(host="https://ollama.com", model="glm-5.3:cloud"),
+                ServerEndpoint(host="https://ollama.com", model="qwen3:cloud"),
+            ],
+            "sticky",
+        )
         commands.cmd_save(agent)
         saved = self._read()["serving"]["endpoints"]
         assert [e.get("api_key") for e in saved] == ["sk-first", "sk-second"]
@@ -828,8 +898,10 @@ class TestSave:
     def test_it_writes_a_config_that_did_not_exist(self, agent):
         assert not self.path.exists()
         commands.cmd_save(agent)
-        assert sorted(self._saved_hosts()) == ["http://localhost:8000/v1",
-                                               "http://localhost:8001/v1"]
+        assert sorted(self._saved_hosts()) == [
+            "http://localhost:8000/v1",
+            "http://localhost:8001/v1",
+        ]
 
     @pytest.mark.asyncio
     async def test_it_is_reachable_through_dispatch(self, agent):
@@ -840,6 +912,7 @@ class TestSave:
 
 
 # ── \setup ──────────────────────────────────────────────────────────────────
+
 
 class TestSetup:
     def test_lists_endpoints_and_session_paths(self, agent, monkeypatch):
@@ -854,13 +927,13 @@ class TestSetup:
         monkeypatch.setattr("src.setup.get_secret", lambda key: None)
         monkeypatch.setattr("src.ui.commands._config_notes", lambda: [])
         agent.load_balancer._sticky_map["sess-1"] = 1
-        rows = [ln for ln in commands.render_setup(agent).splitlines()
-                if "*" in ln and "8001" in ln]
+        rows = [
+            ln for ln in commands.render_setup(agent).splitlines() if "*" in ln and "8001" in ln
+        ]
         assert rows, "the sticky endpoint should carry the marker"
 
     def test_a_key_is_never_printed_in_full(self, agent, monkeypatch):
-        monkeypatch.setattr("src.setup.get_secret",
-                            lambda key: "sk-secret-value-1234")
+        monkeypatch.setattr("src.setup.get_secret", lambda key: "sk-secret-value-1234")
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.setattr("src.ui.commands._config_notes", lambda: [])
         out = commands.render_setup(agent)
@@ -869,8 +942,7 @@ class TestSetup:
 
     def test_an_unauthenticated_endpoint_says_none(self, agent, monkeypatch):
         monkeypatch.setattr("src.setup.get_secret", lambda key: None)
-        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY",
-                    "ONIT_HOST2_KEY"):
+        for var in ("OPENROUTER_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY", "ONIT_HOST2_KEY"):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr("src.ui.commands._config_notes", lambda: [])
         out = commands.render_setup(agent)
@@ -883,8 +955,8 @@ class TestSetup:
         """'set' and 'none' are both wrong for an endpoint running on a
         provider-named secret — the user needs to know which one."""
         monkeypatch.setattr(
-            "src.setup.get_secret",
-            lambda key: "sk-old" if key == "vllm_api_key" else None)
+            "src.setup.get_secret", lambda key: "sk-old" if key == "vllm_api_key" else None
+        )
         monkeypatch.delenv("VLLM_API_KEY", raising=False)
         monkeypatch.setattr("src.ui.commands._config_notes", lambda: [])
         out = commands.render_setup(agent)
@@ -892,8 +964,7 @@ class TestSetup:
         assert "vllm_api_key" in row
         assert "Legacy fallback keys" in out
 
-    def test_a_key_written_into_the_config_is_labelled_as_such(self, agent,
-                                                               monkeypatch):
+    def test_a_key_written_into_the_config_is_labelled_as_such(self, agent, monkeypatch):
         monkeypatch.setattr("src.setup.get_secret", lambda key: None)
         monkeypatch.setattr("src.ui.commands._config_notes", lambda: [])
         agent.load_balancer.endpoints[0].host_key = "sk-in-yaml"
@@ -904,17 +975,20 @@ class TestSetup:
 
     def test_config_notes_are_included(self, agent, monkeypatch):
         monkeypatch.setattr("src.setup.get_secret", lambda key: None)
-        monkeypatch.setattr("src.ui.commands._config_notes",
-                            lambda: ["Note: no key for OpenRouter."])
+        monkeypatch.setattr(
+            "src.ui.commands._config_notes", lambda: ["Note: no key for OpenRouter."]
+        )
         assert "no key for OpenRouter" in commands.render_setup(agent)
 
     def test_a_broken_config_file_does_not_break_the_listing(self, monkeypatch):
-        monkeypatch.setattr("src.setup._load_config",
-                            lambda: (_ for _ in ()).throw(OSError("nope")))
+        monkeypatch.setattr(
+            "src.setup._load_config", lambda: (_ for _ in ()).throw(OSError("nope"))
+        )
         assert commands._config_notes() == []
 
 
 # ── dispatch ────────────────────────────────────────────────────────────────
+
 
 class TestDispatch:
     @pytest.mark.asyncio
@@ -939,13 +1013,13 @@ class TestDispatch:
 
     @pytest.mark.asyncio
     async def test_a_failing_handler_costs_a_message_not_the_session(self, agent):
-        with patch.object(commands, "cmd_host",
-                          side_effect=RuntimeError("boom")):
+        with patch.object(commands, "cmd_host", side_effect=RuntimeError("boom")):
             out = await commands.dispatch(agent, "\\host http://x/v1")
         assert "\\host failed" in out and "boom" in out
 
 
 # ── the chat loop ───────────────────────────────────────────────────────────
+
 
 class _Forwarded(Exception):
     """Raised from the first step of the forward-to-the-model path, so a test
@@ -973,21 +1047,22 @@ class TestLoopInterception:
             web=web,
             stop_commands=["\\bye", "\\exit"],
             load_balancer=LoadBalancer(
-                [ServerEndpoint(host="http://localhost:8000/v1",
-                                model="Qwen3-30B", name="vllm-a")], "sticky"),
+                [ServerEndpoint(host="http://localhost:8000/v1", model="Qwen3-30B", name="vllm-a")],
+                "sticky",
+            ),
             model_serving={"host": "http://localhost:8000/v1"},
-            session_id="sess-1", session_path="/tmp/s.jsonl", data_path="",
+            session_id="sess-1",
+            session_path="/tmp/s.jsonl",
+            data_path="",
             chat_ui=SimpleNamespace(
                 console=SimpleNamespace(print=lambda *a, **k: None),
                 model_name="Qwen3-30B",
-                add_message=lambda role, response, **kw: posted.append(
-                    (role, response)),
+                add_message=lambda role, response, **kw: posted.append((role, response)),
             ),
             _get_user_task=get_task,
             cancel_background_checks=lambda: None,
             # First call on the path that forwards a message to the model.
-            _cancel_background_check=lambda _sid: (_ for _ in ()).throw(
-                _Forwarded()),
+            _cancel_background_check=lambda _sid: (_ for _ in ()).throw(_Forwarded()),
         )
         fake.run = OnIt.client_to_agent.__get__(fake, type(fake))
         return fake, posted
@@ -1027,23 +1102,25 @@ class TestLoopInterception:
 # to leave it and run 'onit sessions --tag', which is backwards: you name a
 # session so that you can find it later, not after you have found it.
 
-class TestRenameCommand:
 
+class TestRenameCommand:
     @pytest.fixture
     def named(self, tmp_path, monkeypatch):
         """A sessions dir with one live session and one other."""
         from src import sessions
+
         d = str(tmp_path / "sessions")
         os.makedirs(d, exist_ok=True)
         sessions.register_session("sess-1", d)
-        sessions.update_session("sess-1", task="fix the login bug",
-                                sessions_dir=d)
+        sessions.update_session("sess-1", task="fix the login bug", sessions_dir=d)
         sessions.register_session("sess-2", d)
-        sessions.update_session("sess-2", task="debug the cuda kernel",
-                                sessions_dir=d)
-        a = SimpleNamespace(session_id="sess-1",
-                            config_data={"session_path": d},
-                            session_path="/tmp/s.jsonl", data_path="/tmp/d")
+        sessions.update_session("sess-2", task="debug the cuda kernel", sessions_dir=d)
+        a = SimpleNamespace(
+            session_id="sess-1",
+            config_data={"session_path": d},
+            session_path="/tmp/s.jsonl",
+            data_path="/tmp/d",
+        )
         return a, d
 
     def test_bare_shows_the_current_name(self, named):
@@ -1056,12 +1133,14 @@ class TestRenameCommand:
         out = commands.cmd_rename(a, "Auth Work")
         assert "Auth Work" in out
         from src.sessions import _load_index
+
         assert _load_index(d)["sess-1"]["tag"] == "Auth Work"
 
     def test_the_new_name_is_what_resume_finds(self, named):
         a, d = named
         commands.cmd_rename(a, "Auth Work")
         from src.sessions import resolve_session
+
         assert resolve_session("Auth Work", d) == "sess-1"
 
     def test_the_reply_says_how_to_come_back(self, named):
@@ -1095,6 +1174,7 @@ class TestRenameCommand:
         out = commands.cmd_rename(a, "debug-cuda-kernel")
         assert "already" in out
         from src.sessions import _load_index
+
         assert _load_index(d)["sess-1"]["tag"] == "fix-login-bug"
 
     def test_an_empty_name_leaves_the_name_alone(self, named):
@@ -1102,6 +1182,7 @@ class TestRenameCommand:
         out = commands.cmd_rename(a, "   ")
         assert "fix-login-bug" in out  # shown, not set
         from src.sessions import _load_index
+
         assert _load_index(d)["sess-1"]["tag"] == "fix-login-bug"
 
     def test_a_session_with_no_id_is_told_so(self):
@@ -1123,6 +1204,7 @@ class TestRenameCommand:
 
 # ── the footer follows \host and \model ──────────────────────────────────────
 
+
 class TestTheFooterFollowsTheSwitch:
     """The stats line is on screen before the next answer, so it has to name
     the endpoint that will answer next -- not the one the session was moved
@@ -1133,6 +1215,7 @@ class TestTheFooterFollowsTheSwitch:
         from src.model.serving.balancer import LoadBalancer, ServerEndpoint
         from src.ui.text import ChatUI
         from unittest.mock import patch
+
         with patch.object(ChatUI, "initialize"):
             ui = ChatUI(theme="white")
         ui.provider_name = "ollama"
@@ -1141,24 +1224,30 @@ class TestTheFooterFollowsTheSwitch:
             chat_ui=ui,
             model_serving={"host": "http://localhost:11434/v1"},
             load_balancer=LoadBalancer(
-                [ServerEndpoint(host="http://localhost:11434/v1",
-                                model="qwen3-coder")], "sticky"),
-            config_data={}, data_path=str(tmp_path),
+                [ServerEndpoint(host="http://localhost:11434/v1", model="qwen3-coder")], "sticky"
+            ),
+            config_data={},
+            data_path=str(tmp_path),
         )
 
     def test_host_switch_relabels_the_endpoint(self, tmp_path):
         from src.model.serving.balancer import ServerEndpoint
+
         a = self._agent(tmp_path)
-        commands._rebuild(a, [ServerEndpoint(
-            host="https://api.anthropic.com/v1", model="claude-sonnet-4")])
+        commands._rebuild(
+            a, [ServerEndpoint(host="https://api.anthropic.com/v1", model="claude-sonnet-4")]
+        )
         assert a.chat_ui.provider_name == "claude"
 
     def test_an_agent_with_no_ui_is_not_a_crash(self, tmp_path):
         from src.model.serving.balancer import LoadBalancer, ServerEndpoint
+
         a = SimpleNamespace(
             chat_ui=None,
             model_serving={"host": "http://localhost:11434/v1"},
             load_balancer=LoadBalancer(
-                [ServerEndpoint(host="http://localhost:11434/v1")], "sticky"))
+                [ServerEndpoint(host="http://localhost:11434/v1")], "sticky"
+            ),
+        )
         commands._rebuild(a, [ServerEndpoint(host="http://localhost:11434/v1")])
         assert a.model_serving["host"] == "http://localhost:11434/v1"

@@ -38,16 +38,19 @@ from src.learn import trajectory as traj
 @pytest.fixture
 def learned(tmp_path):
     """A learned store with recording on."""
-    return {"learn": {"autonomy": "observe",
-                      "path": str(tmp_path / "learned")}}
+    return {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
 
 
 @pytest.fixture
 def adaptive(tmp_path):
     """A learned store at the autonomy level the actuator needs."""
-    return {"learn": {"autonomy": "adapt",
-                      "path": str(tmp_path / "learned"),
-                      "lifecycle": {"enabled": True}}}
+    return {
+        "learn": {
+            "autonomy": "adapt",
+            "path": str(tmp_path / "learned"),
+            "lifecycle": {"enabled": True},
+        }
+    }
 
 
 def _record(store, session, task, tools, ok=True):
@@ -58,37 +61,42 @@ def _record(store, session, task, tools, ok=True):
     ``tools``.  Passing ``tools`` here would store a nested
     ``{"name": {"name": ...}}`` that no reader expects.
     """
-    traj.record_task(session_id=session, turn=1, task=task, response="r",
-                     config_data=store,
-                     metrics={"turns": [{"n": 1, "tool_runs": [
-                         {"name": name, "ok": ok} for name in tools]}]})
+    traj.record_task(
+        session_id=session,
+        turn=1,
+        task=task,
+        response="r",
+        config_data=store,
+        metrics={"turns": [{"n": 1, "tool_runs": [{"name": name, "ok": ok} for name in tools]}]},
+    )
 
 
 # ── the gates ─────────────────────────────────────────────────────────────
 
-class TestGates:
 
+class TestGates:
     def test_the_actuator_is_off_by_default(self, learned):
         assert actuator.lifecycle_enabled(learned) is False
 
     def test_the_actuator_needs_the_adapt_level(self, tmp_path):
-        config = {"learn": {"autonomy": "observe",
-                            "path": str(tmp_path / "l"),
-                            "lifecycle": {"enabled": True}}}
+        config = {
+            "learn": {
+                "autonomy": "observe",
+                "path": str(tmp_path / "l"),
+                "lifecycle": {"enabled": True},
+            }
+        }
         assert actuator.lifecycle_enabled(config) is False
 
     def test_the_actuator_needs_to_be_enabled(self, tmp_path):
-        config = {"learn": {"autonomy": "adapt",
-                            "path": str(tmp_path / "l")}}
+        config = {"learn": {"autonomy": "adapt", "path": str(tmp_path / "l")}}
         assert actuator.lifecycle_enabled(config) is False
 
     def test_the_actuator_is_on_when_both_gates_open(self, adaptive):
         assert actuator.lifecycle_enabled(adaptive) is True
 
     def test_a_malformed_lifecycle_block_does_not_enable_it(self, tmp_path):
-        config = {"learn": {"autonomy": "adapt",
-                            "path": str(tmp_path / "l"),
-                            "lifecycle": "yes"}}
+        config = {"learn": {"autonomy": "adapt", "path": str(tmp_path / "l"), "lifecycle": "yes"}}
         assert actuator.lifecycle_enabled(config) is False
 
     def test_nothing_is_applied_when_the_actuator_is_off(self, learned):
@@ -107,8 +115,8 @@ class TestGates:
 
 # ── the archive ───────────────────────────────────────────────────────────
 
-class TestArchive:
 
+class TestArchive:
     def test_a_missing_archive_reads_as_empty(self, learned):
         assert actuator.read_archive(learned) == {}
         assert actuator.withheld_tools(learned) == set()
@@ -137,8 +145,8 @@ class TestArchive:
 
 # ── the decisions ─────────────────────────────────────────────────────────
 
-class TestDecisions:
 
+class TestDecisions:
     def test_nothing_is_due_for_an_empty_store(self, learned):
         assert actuator.evaluate(learned) == []
 
@@ -166,8 +174,7 @@ class TestDecisions:
         # Withholding the ability to write a note would make the agent
         # unable to record why it was wrong.
         for index in range(30):
-            _record(learned, "s%d" % index, "t", ["write_file", "bash"],
-                    ok=False)
+            _record(learned, "s%d" % index, "t", ["write_file", "bash"], ok=False)
         tools = {d["tool"] for d in actuator.evaluate(learned)}
         assert "write_file" not in tools
         assert "bash" not in tools
@@ -182,8 +189,8 @@ class TestDecisions:
 
 # ── applying ──────────────────────────────────────────────────────────────
 
-class TestApply:
 
+class TestApply:
     def _due(self, store):
         for index in range(12):
             _record(store, "s%d" % index, "t", ["flaky_tool"], ok=False)
@@ -214,8 +221,7 @@ class TestApply:
     def test_the_archive_records_why(self, adaptive):
         self._due(adaptive)
         actuator.apply(adaptive)
-        entry = (actuator.read_archive(adaptive).get("tools")
-                 or {}).get("flaky_tool") or {}
+        entry = (actuator.read_archive(adaptive).get("tools") or {}).get("flaky_tool") or {}
         assert entry.get("reasons")
 
     def test_applying_nothing_writes_nothing(self, adaptive):
@@ -226,20 +232,18 @@ class TestApply:
 
 # ── the filter ────────────────────────────────────────────────────────────
 
-class TestFilter:
 
+class TestFilter:
     def test_nothing_is_filtered_when_nothing_is_withheld(self, learned):
         tools = ["bash", "read_file"]
         assert actuator.filter_tools(tools, learned) == tools
 
     def test_a_withheld_tool_is_filtered_out(self, learned):
-        actuator.write_archive({"tools": {"flaky": {"withheld": True}}},
-                                learned)
+        actuator.write_archive({"tools": {"flaky": {"withheld": True}}}, learned)
         assert actuator.filter_tools(["bash", "flaky"], learned) == ["bash"]
 
     def test_the_filter_does_not_mutate_its_argument(self, learned):
-        actuator.write_archive({"tools": {"flaky": {"withheld": True}}},
-                                learned)
+        actuator.write_archive({"tools": {"flaky": {"withheld": True}}}, learned)
         tools = ["bash", "flaky"]
         actuator.filter_tools(tools, learned)
         assert tools == ["bash", "flaky"]
@@ -247,17 +251,24 @@ class TestFilter:
 
 # ── the registry ──────────────────────────────────────────────────────────
 
-class TestRegistryWithholding:
 
+class TestRegistryWithholding:
     def _registry(self, names):
         from src.type.tools import ToolRegistry, ToolHandler
+
         registry = ToolRegistry()
         for name in names:
             handler = ToolHandler(
                 url="stdio://test",
-                tool_item={"type": "function", "function": {
-                    "name": name, "description": "d",
-                    "parameters": {"type": "object", "properties": {}}}})
+                tool_item={
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": "d",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            )
             registry.register(handler)
         return registry
 
@@ -289,10 +300,11 @@ class TestRegistryWithholding:
 
 # ── the CLI surface ───────────────────────────────────────────────────────
 
-class TestLearnCLI:
 
+class TestLearnCLI:
     def test_the_flags_exist(self):
         from src.cli import _build_parser
+
         parser = _build_parser()
         args = parser.parse_args(["learn", "--lifecycle"])
         assert args.lifecycle is True
@@ -304,8 +316,8 @@ class TestLearnCLI:
     def test_the_report_says_when_nothing_is_due(self, capsys, tmp_path):
         import src.cli as cli
         import argparse
-        config = {"learn": {"autonomy": "observe",
-                             "path": str(tmp_path / "learned")}}
+
+        config = {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
         args = argparse.Namespace(lifecycle=True, apply=False, restore=None)
         cli._learn_lifecycle(args, config)
         out = capsys.readouterr().out
@@ -314,8 +326,8 @@ class TestLearnCLI:
     def test_the_report_says_the_actuator_is_off(self, capsys, tmp_path):
         import src.cli as cli
         import argparse
-        config = {"learn": {"autonomy": "observe",
-                             "path": str(tmp_path / "learned")}}
+
+        config = {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
         for index in range(12):
             _record(config, "s%d" % index, "t", ["flaky_tool"], ok=False)
         args = argparse.Namespace(lifecycle=True, apply=False, restore=None)
@@ -326,8 +338,8 @@ class TestLearnCLI:
     def test_applying_with_the_actuator_off_says_so(self, capsys, tmp_path):
         import src.cli as cli
         import argparse
-        config = {"learn": {"autonomy": "observe",
-                             "path": str(tmp_path / "learned")}}
+
+        config = {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
         for index in range(12):
             _record(config, "s%d" % index, "t", ["flaky_tool"], ok=False)
         args = argparse.Namespace(lifecycle=True, apply=True, restore=None)
@@ -335,13 +347,11 @@ class TestLearnCLI:
         out = capsys.readouterr().out
         assert "off" in out
 
-    def test_restoring_a_tool_that_is_not_withheld_fails(self, capsys,
-                                                         tmp_path):
+    def test_restoring_a_tool_that_is_not_withheld_fails(self, capsys, tmp_path):
         import src.cli as cli
         import argparse
-        config = {"learn": {"autonomy": "observe",
-                             "path": str(tmp_path / "learned")}}
-        args = argparse.Namespace(lifecycle=True, apply=False,
-                                  restore="nope")
+
+        config = {"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
+        args = argparse.Namespace(lifecycle=True, apply=False, restore="nope")
         with pytest.raises(SystemExit):
             cli._learn_lifecycle(args, config)

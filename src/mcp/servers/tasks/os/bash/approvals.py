@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,7 +43,7 @@ Three properties do the security work here, and none of them may be relaxed:
 Grants and denials live in this process only. Nothing is persisted: an
 approval that outlived the session that asked for it would be a capability
 nobody remembers granting.
-'''
+"""
 
 import hashlib
 import os
@@ -95,9 +95,10 @@ class _Pending:
 @dataclass
 class _Session:
     """What one session's human has already agreed to."""
-    commands: set = field(default_factory=set)   # executables, "install:pip"
-    roots: set = field(default_factory=set)      # extra filesystem roots
-    denied: set = field(default_factory=set)     # digests of refused commands
+
+    commands: set = field(default_factory=set)  # executables, "install:pip"
+    roots: set = field(default_factory=set)  # extra filesystem roots
+    denied: set = field(default_factory=set)  # digests of refused commands
     touched: float = field(default_factory=time.monotonic)
 
 
@@ -109,8 +110,7 @@ class ApprovalBroker:
         self._sessions: dict[str, _Session] = {}
 
     # ── requests ────────────────────────────────────────────────────────
-    def request(self, command: str, base: str, subjects: tuple,
-                reason: str) -> dict:
+    def request(self, command: str, base: str, subjects: tuple, reason: str) -> dict:
         """Mint a ticket for ``command`` and return the payload for the agent.
 
         The payload is what the model will read, so it names the command and
@@ -126,8 +126,12 @@ class ApprovalBroker:
             self._pending.pop(oldest.token, None)
         token = secrets.token_urlsafe(16)
         self._pending[token] = _Pending(
-            token=token, digest=command_digest(command), base=base,
-            subjects=tuple(subjects), reason=reason, created=time.monotonic(),
+            token=token,
+            digest=command_digest(command),
+            base=base,
+            subjects=tuple(subjects),
+            reason=reason,
+            created=time.monotonic(),
         )
         return {
             "status": "needs_approval",
@@ -137,14 +141,15 @@ class ApprovalBroker:
             "subjects": list(subjects),
             "scopes": [ONCE, SESSION],
             "expires_in": int(PENDING_TTL),
-            "note": ("The command was not run. It needs a person's approval. "
-                     "Wait for the result of this call rather than retrying, "
-                     "and do not attempt another route around the policy."),
+            "note": (
+                "The command was not run. It needs a person's approval. "
+                "Wait for the result of this call rather than retrying, "
+                "and do not attempt another route around the policy."
+            ),
         }
 
     # ── redemption ──────────────────────────────────────────────────────
-    def redeem(self, token: str, command: str, base: str,
-               scope: str = ONCE) -> bool:
+    def redeem(self, token: str, command: str, base: str, scope: str = ONCE) -> bool:
         """Consume a ticket. True when it really was issued for this command.
 
         Single use in every outcome: a ticket that fails validation is still
@@ -207,8 +212,7 @@ class ApprovalBroker:
 
     def installs_allowed(self, base: str) -> bool:
         session = self._sessions.get(base)
-        return bool(session and any(c.startswith("install:")
-                                    for c in session.commands))
+        return bool(session and any(c.startswith("install:") for c in session.commands))
 
     def roots_for(self, base: str) -> frozenset:
         session = self._sessions.get(base)
@@ -226,8 +230,10 @@ class ApprovalBroker:
             return False
         if subject.startswith("path:"):
             target = subject[5:]
-            return any(target == root or target.startswith(root.rstrip("/") + "/")
-                       for root in session.roots)
+            return any(
+                target == root or target.startswith(root.rstrip("/") + "/")
+                for root in session.roots
+            )
         return subject in session.commands
 
     @contextmanager

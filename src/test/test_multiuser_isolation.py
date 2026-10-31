@@ -34,6 +34,7 @@ from type.tools import _transport_for  # noqa: E402
 
 # ── defaults ─────────────────────────────────────────────────────────────────
 
+
 class TestDefaultsExistBeforeTheClientNeedsThem:
     """A config naming no MCP servers still gets the default ones.
 
@@ -48,8 +49,7 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
         _ensure_mcp_servers(config)
 
         names = {s["name"] for s in config["mcp"]["servers"]}
-        assert names == {"PromptsMCPServer", "ToolsLocalMCPServer",
-                         "ToolsNetMCPServer"}
+        assert names == {"PromptsMCPServer", "ToolsLocalMCPServer", "ToolsNetMCPServer"}
 
     def test_every_default_is_stdio(self):
         """No socket-served default remains: each server is a subprocess of
@@ -62,6 +62,7 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
 
     def test_the_stdio_default_is_registered_from_an_empty_config(self):
         from type.tools import _STDIO_SPECS
+
         config = {}
         _ensure_mcp_servers(config)
         assert "stdio://ToolsLocalMCPServer" in _STDIO_SPECS
@@ -70,15 +71,16 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
 
     def test_the_data_path_is_pinned_in_every_launch_spec(self):
         from type.tools import _STDIO_SPECS
+
         config = {}
         _ensure_mcp_servers(config)
-        for name in ("ToolsLocalMCPServer", "ToolsNetMCPServer",
-                     "PromptsMCPServer"):
+        for name in ("ToolsLocalMCPServer", "ToolsNetMCPServer", "PromptsMCPServer"):
             spec = _STDIO_SPECS[f"stdio://{name}"]
             assert spec["env"]["ONIT_DATA_PATH"] == os.environ["ONIT_DATA_PATH"]
 
     def test_the_net_profile_is_in_the_net_server_spec(self):
         from type.tools import _STDIO_SPECS
+
         config = {}
         _ensure_mcp_servers(config)
         spec = _STDIO_SPECS["stdio://ToolsNetMCPServer"]
@@ -87,10 +89,18 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
 
 # ── stdio ────────────────────────────────────────────────────────────────────
 
+
 def _spawn_spec(name, data_path, profile="local"):
     """Register a per-user stdio tools server and return its pseudo-URL."""
-    servers = [{"name": name, "transport": "stdio", "module": "tasks.tools",
-                "profile": profile, "enabled": True}]
+    servers = [
+        {
+            "name": name,
+            "transport": "stdio",
+            "module": "tasks.tools",
+            "profile": profile,
+            "enabled": True,
+        }
+    ]
     register_stdio_servers(servers, str(data_path))
     return servers[0]["url"]
 
@@ -107,7 +117,8 @@ class TestStdioToolsAreNotShared:
         async def cwd_of(url, data_path):
             async with Client(_transport_for(url, shared=False)) as client:
                 result = await client.call_tool(
-                    "bash", {"command": "pwd", "data_path": str(data_path)})
+                    "bash", {"command": "pwd", "data_path": str(data_path)}
+                )
                 return json.loads(str(result.content[0].text))["cwd"]
 
         # Concurrently, the way two logged-in users would be.
@@ -126,15 +137,20 @@ class TestStdioToolsAreNotShared:
         secret = alice / "secret.txt"
         secret.write_text("alice's notes")
 
-        async with Client(_transport_for(_spawn_spec("ToolsLocal_bob2", bob), shared=False)) as client:
+        async with Client(
+            _transport_for(_spawn_spec("ToolsLocal_bob2", bob), shared=False)
+        ) as client:
             result = await client.call_tool(
-                "read_file", {"path": str(secret), "data_path": str(bob)})
+                "read_file", {"path": str(secret), "data_path": str(bob)}
+            )
 
         assert "Read access denied" in str(result.content[0].text)
 
     async def test_the_local_server_serves_only_the_local_tools(self, tmp_path):
         """The stateless tools stay on the net server; none reach this pipe."""
-        async with Client(_transport_for(_spawn_spec("ToolsLocal_p", tmp_path), shared=False)) as client:
+        async with Client(
+            _transport_for(_spawn_spec("ToolsLocal_p", tmp_path), shared=False)
+        ) as client:
             names = {t.name for t in await client.list_tools()}
 
         assert "bash" in names
@@ -144,9 +160,9 @@ class TestStdioToolsAreNotShared:
 
     async def test_the_net_server_serves_only_the_stateless_tools(self, tmp_path):
         """The net profile is spawnable over stdio too, and stays stateless."""
-        async with Client(_transport_for(
-                _spawn_spec("ToolsNet_p", tmp_path, profile="net"),
-                shared=False)) as client:
+        async with Client(
+            _transport_for(_spawn_spec("ToolsNet_p", tmp_path, profile="net"), shared=False)
+        ) as client:
             names = {t.name for t in await client.list_tools()}
 
         assert names == {"search", "get_weather"}

@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,7 +28,7 @@ servers actually emit, and the dependency is unavailable here.  Deliberately
 not pydantic either — pydantic validates *Python types*, and what arrives is a
 JSON Schema dict, so every tool would need a model built for it at discovery
 time.  That is more machinery than the keywords below justify.
-'''
+"""
 
 from typing import Any
 
@@ -36,13 +36,13 @@ from typing import Any
 # from the numeric types on purpose: Python says True is an int, JSON Schema
 # does not, and a model that passes true for a count has made a real mistake.
 _TYPE_CHECKS: dict[str, Any] = {
-    'string': lambda v: isinstance(v, str),
-    'integer': lambda v: isinstance(v, int) and not isinstance(v, bool),
-    'number': lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
-    'boolean': lambda v: isinstance(v, bool),
-    'array': lambda v: isinstance(v, list),
-    'object': lambda v: isinstance(v, dict),
-    'null': lambda v: v is None,
+    "string": lambda v: isinstance(v, str),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "boolean": lambda v: isinstance(v, bool),
+    "array": lambda v: isinstance(v, list),
+    "object": lambda v: isinstance(v, dict),
+    "null": lambda v: v is None,
 }
 
 
@@ -50,12 +50,12 @@ def _type_names(prop: dict) -> list[str]:
     """The types a property accepts, flattening the ``anyOf`` MCP servers emit
     for optional parameters (``anyOf: [{type: string}, {type: null}]``)."""
     names: list[str] = []
-    declared = prop.get('type')
+    declared = prop.get("type")
     if isinstance(declared, str):
         names.append(declared)
     elif isinstance(declared, list):
         names.extend(t for t in declared if isinstance(t, str))
-    for branch in prop.get('anyOf') or []:
+    for branch in prop.get("anyOf") or []:
         if isinstance(branch, dict):
             names.extend(_type_names(branch))
     return names
@@ -65,13 +65,13 @@ def _describe(value: Any) -> str:
     """What the model actually sent, in JSON's vocabulary rather than Python's —
     it wrote JSON, so `true` and `null` are what it will recognize."""
     if value is None:
-        return 'null'
+        return "null"
     if isinstance(value, bool):
-        return 'true' if value else 'false'
+        return "true" if value else "false"
     if isinstance(value, str):
-        return repr(value) if len(value) <= 40 else repr(value[:37] + '...')
+        return repr(value) if len(value) <= 40 else repr(value[:37] + "...")
     if isinstance(value, (list, dict)):
-        return {list: 'an array', dict: 'an object'}[type(value)]
+        return {list: "an array", dict: "an object"}[type(value)]
     return repr(value)
 
 
@@ -90,7 +90,7 @@ def coerce_arguments(schema: dict, arguments: dict) -> tuple[dict, list[str]]:
     """
     if not isinstance(schema, dict) or not isinstance(arguments, dict):
         return arguments, []
-    props = schema.get('properties')
+    props = schema.get("properties")
     if not isinstance(props, dict):
         return arguments, []
 
@@ -119,23 +119,23 @@ _NO_COERCION = object()
 def _coerce_scalar(text: str, types: list[str]) -> Any:
     """A string onto the first declared type that unambiguously accepts it."""
     for type_name in types:
-        if type_name == 'integer':
+        if type_name == "integer":
             try:
                 return int(text)
             except ValueError:
                 continue
-        elif type_name == 'number':
+        elif type_name == "number":
             try:
                 return float(text)
             except ValueError:
                 continue
-        elif type_name == 'boolean':
+        elif type_name == "boolean":
             low = text.lower()
             # Only JSON's own spellings.  "yes"/"1" are guesses, and a harness
             # that guesses an argument is worse than one that asks again.
-            if low in ('true', 'false'):
-                return low == 'true'
-        elif type_name == 'array':
+            if low in ("true", "false"):
+                return low == "true"
+        elif type_name == "array":
             # A single value where a list was asked for is the common shape of
             # this mistake, but it is only safe when the item type agrees;
             # leave it to the tool otherwise.
@@ -167,13 +167,13 @@ def validate_arguments(schema: dict, arguments: dict) -> list[str]:
         return []
     problems: list[str] = []
 
-    required = schema.get('required')
+    required = schema.get("required")
     if isinstance(required, list):
         for name in required:
             if isinstance(name, str) and name not in arguments:
                 problems.append(f"{name}: required, but was not supplied")
 
-    props = schema.get('properties')
+    props = schema.get("properties")
     if not isinstance(props, dict):
         return problems
 
@@ -187,14 +187,12 @@ def validate_arguments(schema: dict, arguments: dict) -> list[str]:
     # tool it saw in training, on a tool whose parameters are ``path`` and
     # ``max_chars``.  Naming the real ones is what turns a guess into a fix, so
     # the message carries them.
-    if schema.get('additionalProperties') is False:
+    if schema.get("additionalProperties") is False:
         unknown = [n for n in arguments if n not in props]
         if unknown:
-            accepted = ', '.join(props) or '(none)'
+            accepted = ", ".join(props) or "(none)"
             for name in unknown:
-                problems.append(
-                    f"{name}: not a parameter of this tool; "
-                    f"it accepts: {accepted}")
+                problems.append(f"{name}: not a parameter of this tool; it accepts: {accepted}")
 
     for name, value in arguments.items():
         prop = props.get(name)
@@ -205,24 +203,22 @@ def validate_arguments(schema: dict, arguments: dict) -> list[str]:
 
         types = _type_names(prop)
         if types and not _satisfies(types, value):
-            expected = ' or '.join(dict.fromkeys(t for t in types if t in _TYPE_CHECKS))
-            problems.append(
-                f"{name}: expected {expected}, got {_describe(value)}")
+            expected = " or ".join(dict.fromkeys(t for t in types if t in _TYPE_CHECKS))
+            problems.append(f"{name}: expected {expected}, got {_describe(value)}")
             # Range and enum are meaningless once the type is wrong, and a
             # second complaint about the same argument reads as two problems.
             continue
 
-        choices = prop.get('enum')
+        choices = prop.get("enum")
         if isinstance(choices, list) and choices and value not in choices:
-            shown = ', '.join(_describe(c) for c in choices[:8])
+            shown = ", ".join(_describe(c) for c in choices[:8])
             if len(choices) > 8:
-                shown += ', …'
-            problems.append(
-                f"{name}: expected one of [{shown}], got {_describe(value)}")
+                shown += ", …"
+            problems.append(f"{name}: expected one of [{shown}], got {_describe(value)}")
             continue
 
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            low, high = prop.get('minimum'), prop.get('maximum')
+            low, high = prop.get("minimum"), prop.get("maximum")
             if isinstance(low, (int, float)) and value < low:
                 problems.append(f"{name}: must be >= {low}, got {_describe(value)}")
             elif isinstance(high, (int, float)) and value > high:

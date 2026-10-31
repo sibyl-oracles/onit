@@ -21,16 +21,18 @@ def _two_endpoints():
 def _vllm_and_ollama():
     return [
         ServerEndpoint(host="http://vllm:8000/v1", name="server1"),
-        ServerEndpoint(host="https://ollama.com", host_key="key2",
-                       model="qwen3", name="server2"),
+        ServerEndpoint(host="https://ollama.com", host_key="key2", model="qwen3", name="server2"),
     ]
+
 
 def _two_ollama():
     return [
-        ServerEndpoint(host="https://ollama.com", host_key="key1",
-                       model="glm-5.3:cloud", name="cloud"),
-        ServerEndpoint(host="http://localhost:11434/v1", host_key="key2",
-                       model="llama3", name="local"),
+        ServerEndpoint(
+            host="https://ollama.com", host_key="key1", model="glm-5.3:cloud", name="cloud"
+        ),
+        ServerEndpoint(
+            host="http://localhost:11434/v1", host_key="key2", model="llama3", name="local"
+        ),
     ]
 
 
@@ -191,11 +193,11 @@ class TestLeastBusy:
     def test_picks_endpoint_with_fewest_in_flight(self):
         eps = _two_endpoints()
         lb = LoadBalancer(eps, algorithm="least_busy")
-        first = lb.acquire()   # both idle → picks one
+        first = lb.acquire()  # both idle → picks one
         second = lb.acquire()  # first is busy → must pick the other
         assert {first.name, second.name} == {"server1", "server2"}
         lb.release(first, success=True)
-        third = lb.acquire()   # first is now idle again
+        third = lb.acquire()  # first is now idle again
         assert third is first
 
     def test_in_flight_never_goes_negative(self):
@@ -332,8 +334,7 @@ class TestOllamaFallbackDisabled:
 
     def test_round_robin_includes_ollama(self):
         eps = _vllm_and_ollama()
-        lb = LoadBalancer(eps, algorithm="round_robin",
-                          ollama_fallback_only=False)
+        lb = LoadBalancer(eps, algorithm="round_robin", ollama_fallback_only=False)
         seen = set()
         for _ in range(4):
             ep = lb.acquire()
@@ -366,8 +367,7 @@ class TestOllamaFallbackDisabled:
 
     def test_cooldown_failover_still_works(self):
         eps = _vllm_and_ollama()
-        lb = LoadBalancer(eps, algorithm="round_robin",
-                          ollama_fallback_only=False)
+        lb = LoadBalancer(eps, algorithm="round_robin", ollama_fallback_only=False)
         lb.release(lb.acquire(), success=False)  # whichever was picked fails
         failed = [ep for ep in eps if ep.failed_at][0]
         other = eps[0] if failed is eps[1] else eps[1]
@@ -454,13 +454,10 @@ class TestPriority:
     def test_priority_overrides_ollama_fallback_only(self):
         """An explicit ranking beats the implicit "Ollama last" default."""
         eps = [
-            ServerEndpoint(host="https://ollama.com", name="ollama",
-                           priority=1),
-            ServerEndpoint(host="http://vllm:8000/v1", name="vllm",
-                           priority=2),
+            ServerEndpoint(host="https://ollama.com", name="ollama", priority=1),
+            ServerEndpoint(host="http://vllm:8000/v1", name="vllm", priority=2),
         ]
-        lb = LoadBalancer(eps, algorithm="round_robin",
-                          ollama_fallback_only=True)
+        lb = LoadBalancer(eps, algorithm="round_robin", ollama_fallback_only=True)
         for _ in range(4):
             ep = lb.acquire()
             assert ep.name == "ollama"
@@ -484,4 +481,5 @@ class TestPriority:
     def test_describe_groups_by_tier(self):
         assert LoadBalancer(_tiered()).describe() == "1: a, b | 2: c"
         assert LoadBalancer(_two_endpoints()).describe() == (
-            "http://vllm:8000/v1, http://vllm2:8000/v1")
+            "http://vllm:8000/v1, http://vllm2:8000/v1"
+        )

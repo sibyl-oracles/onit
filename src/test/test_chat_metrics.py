@@ -45,8 +45,7 @@ def _clear_caches():
     reset_endpoint_caches()
 
 
-def _mock_completion(content="done", tool_calls=None, prompt_tokens=100,
-                     completion_tokens=20):
+def _mock_completion(content="done", tool_calls=None, prompt_tokens=100, completion_tokens=20):
     message = MagicMock()
     message.content = content
     message.tool_calls = tool_calls
@@ -69,6 +68,7 @@ def _mock_tool_call(name="local_search", arguments='{"query": "x"}', call_id="c1
 
 
 # ── TurnMetrics ─────────────────────────────────────────────────────────────
+
 
 class TestTurnMetrics:
     def test_records_turn_and_totals(self):
@@ -138,8 +138,10 @@ class TestTurnMetrics:
         m = TurnMetrics(sink)
         m.start_api()
         m.end_api(prompt_tokens=10)
-        runs = [{"name": "local_search", "ok": True, "ms": 40},
-                {"name": "read_file", "ok": False, "ms": 3}]
+        runs = [
+            {"name": "local_search", "ok": True, "ms": 40},
+            {"name": "read_file", "ok": False, "ms": 3},
+        ]
         m.add_tools(["local_search", "read_file"], 1.5, runs=runs)
 
         assert sink["turns"][0]["tools"] == ["local_search", "read_file"]
@@ -164,11 +166,9 @@ class TestTurnMetrics:
 
         async def stream():
             yield chunk("Two ")
-            yield chunk("scholarships.", done_reason="stop",
-                        prompt_eval_count=5441, eval_count=128)
+            yield chunk("scholarships.", done_reason="stop", prompt_eval_count=5441, eval_count=128)
 
-        result = await _ollama_process_streaming_response(
-            stream(), asyncio.Queue(), None, False)
+        result = await _ollama_process_streaming_response(stream(), asyncio.Queue(), None, False)
         content, _, _, _, prompt_tokens, done_reason, eval_count = result
         assert content == "Two scholarships."
         assert (prompt_tokens, eval_count, done_reason) == (5441, 128, "stop")
@@ -246,6 +246,7 @@ class TestTurnMetrics:
 
 # ── per-call tool records ───────────────────────────────────────────────────
 
+
 def _registry_with(name="local_search", handler=None):
     """Minimal stand-in for ToolRegistry: what _execute_tool actually touches."""
     registry = MagicMock()
@@ -257,10 +258,19 @@ def _registry_with(name="local_search", handler=None):
 
 async def _run_tool(registry, name="local_search", args=None, tool_log=None):
     await _execute_tool(
-        name, args if args is not None else {"query": "scholarships"},
-        "call_1", registry, timeout=5, data_path="", chat_ui=None,
-        verbose=False, messages=[], tool_call_history=[], max_repeated=99,
-        session_id="", tool_log=tool_log,
+        name,
+        args if args is not None else {"query": "scholarships"},
+        "call_1",
+        registry,
+        timeout=5,
+        data_path="",
+        chat_ui=None,
+        verbose=False,
+        messages=[],
+        tool_call_history=[],
+        max_repeated=99,
+        session_id="",
+        tool_log=tool_log,
     )
 
 
@@ -296,12 +306,23 @@ class TestToolCallRecords:
     async def test_a_timeout_is_not_a_call_that_went_well(self):
         async def _hang(**kwargs):
             await asyncio.sleep(10)
+
         registry = _registry_with(handler=_hang)
         log = []
         await _execute_tool(
-            "local_search", {"query": "x"}, "call_1", registry, timeout=0.01,
-            data_path="", chat_ui=None, verbose=False, messages=[],
-            tool_call_history=[], max_repeated=99, session_id="", tool_log=log,
+            "local_search",
+            {"query": "x"},
+            "call_1",
+            registry,
+            timeout=0.01,
+            data_path="",
+            chat_ui=None,
+            verbose=False,
+            messages=[],
+            tool_call_history=[],
+            max_repeated=99,
+            session_id="",
+            tool_log=log,
         )
         assert log[0]["ok"] is False
 
@@ -309,8 +330,9 @@ class TestToolCallRecords:
     async def test_argument_values_are_not_recorded_by_default(self):
         handler = AsyncMock(return_value="ok")
         log = []
-        await _run_tool(_registry_with(handler=handler),
-                        args={"path": "/home/me/salary.pdf"}, tool_log=log)
+        await _run_tool(
+            _registry_with(handler=handler), args={"path": "/home/me/salary.pdf"}, tool_log=log
+        )
         assert log[0]["arg_keys"] == ["path"]
         assert "salary" not in str(log[0])
 
@@ -325,27 +347,38 @@ class TestToolCallRecords:
 
 # ── chat() wiring ───────────────────────────────────────────────────────────
 
+
 class TestChatMetrics:
     @pytest.mark.asyncio
     async def test_counts_turns_and_tool_calls(self):
         """One tool call then a final answer: two model turns, one tool."""
         tc = _mock_tool_call()
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion(content=None, tool_calls=[tc], prompt_tokens=1000),
-            _mock_completion("The answer.", prompt_tokens=4000),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(content=None, tool_calls=[tc], prompt_tokens=1000),
+                _mock_completion("The answer.", prompt_tokens=4000),
+            ]
+        )
         registry = MagicMock()
         registry.tools = {"local_search"}
         registry.get_tool_items.return_value = [{"type": "function"}]
         registry.call_tool = AsyncMock(return_value="search results")
 
         metrics: dict = {}
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"), \
-             patch("model.serving.chat._handle_structured_tool_calls",
-                   new_callable=AsyncMock, return_value=None):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch(
+                "model.serving.chat._handle_structured_tool_calls",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="what do the docs say?",
@@ -366,11 +399,17 @@ class TestChatMetrics:
         """No sink, no accounting — chat() behaves exactly as before."""
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("plain answer"))
+            return_value=_mock_completion("plain answer")
+        )
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="hi",
@@ -385,14 +424,18 @@ class TestChatMetrics:
         from openai import OpenAIError
 
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=OpenAIError("boom"))
+        mock_client.chat.completions.create = AsyncMock(side_effect=OpenAIError("boom"))
 
         metrics: dict = {}
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="test-model"), \
-             patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch("model.serving.chat.asyncio.sleep", new_callable=AsyncMock),
+        ):
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="hi",
@@ -407,8 +450,10 @@ class TestChatMetrics:
 
 # ── first-token hook (the prefill/decode split) ─────────────────────────────
 
-def _chunk(content=None, reasoning=None, tool_calls=None, finish_reason=None,
-           usage=None, no_choices=False):
+
+def _chunk(
+    content=None, reasoning=None, tool_calls=None, finish_reason=None, usage=None, no_choices=False
+):
     c = MagicMock()
     c.usage = usage
     if no_choices:
@@ -437,13 +482,16 @@ class TestFirstTokenHook:
 
         calls = []
         chunks = [
-            _chunk(no_choices=True),        # usage-only preamble
-            _chunk(),                       # role-only delta: nothing generated yet
+            _chunk(no_choices=True),  # usage-only preamble
+            _chunk(),  # role-only delta: nothing generated yet
             _chunk(content="Hel"),
             _chunk(content="lo", finish_reason="stop"),
         ]
         result = await _process_streaming_response(
-            _aiter(chunks), asyncio.Queue(), None, think=False,
+            _aiter(chunks),
+            asyncio.Queue(),
+            None,
+            think=False,
             on_first_token=lambda: calls.append(1),
         )
 
@@ -464,7 +512,9 @@ class TestFirstTokenHook:
         calls = []
         await _process_streaming_response(
             _aiter([_chunk(), _chunk(tool_calls=[tc], finish_reason="tool_calls")]),
-            asyncio.Queue(), None, think=False,
+            asyncio.Queue(),
+            None,
+            think=False,
             on_first_token=lambda: calls.append(1),
         )
         assert len(calls) == 1
@@ -476,7 +526,9 @@ class TestFirstTokenHook:
         calls = []
         await _process_streaming_response(
             _aiter([_chunk(no_choices=True), _chunk(finish_reason="stop")]),
-            asyncio.Queue(), None, think=False,
+            asyncio.Queue(),
+            None,
+            think=False,
             on_first_token=lambda: calls.append(1),
         )
         assert calls == []
@@ -484,32 +536,48 @@ class TestFirstTokenHook:
 
 # ── reasoning budget across turns ───────────────────────────────────────────
 
+
 class TestThinkToolTurns:
     async def _run(self, think_tool_turns):
         """Two turns: a tool call, then the answer.  Returns the per-request
         chat_template_kwargs the model was sent."""
         tc = _mock_tool_call()
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            _mock_completion(content=None, tool_calls=[tc]),
-            _mock_completion("The answer."),
-        ])
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(content=None, tool_calls=[tc]),
+                _mock_completion("The answer."),
+            ]
+        )
         registry = MagicMock()
         registry.tools = {"local_search"}
         registry.get_tool_items.return_value = [{"type": "function"}]
 
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="qwen3-30b"), \
-             patch("model.serving.chat._handle_structured_tool_calls",
-                   new_callable=AsyncMock, return_value=None):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="qwen3-30b",
+            ),
+            patch(
+                "model.serving.chat._handle_structured_tool_calls",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             await chat(
-                host="http://localhost:8000/v1", instruction="q",
-                tool_registry=registry, safety_queue=asyncio.Queue(),
-                think=True, think_tool_turns=think_tool_turns,
+                host="http://localhost:8000/v1",
+                instruction="q",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                think=True,
+                think_tool_turns=think_tool_turns,
             )
-        return [call.kwargs["extra_body"].get("chat_template_kwargs")
-                for call in mock_client.chat.completions.create.call_args_list]
+        return [
+            call.kwargs["extra_body"].get("chat_template_kwargs")
+            for call in mock_client.chat.completions.create.call_args_list
+        ]
 
     @pytest.mark.asyncio
     async def test_thinking_on_every_turn_by_default(self):
@@ -542,26 +610,35 @@ class TestThinkToolTurns:
 
         reset_endpoint_caches()
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            OpenAIError("unknown chat_template_kwargs"),
-            _mock_completion("The answer."),
-        ])
-        with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="qwen3-30b"):
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                OpenAIError("unknown chat_template_kwargs"),
+                _mock_completion("The answer."),
+            ]
+        )
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="qwen3-30b",
+            ),
+        ):
             result = await chat(
-                host="http://localhost:8000/v1", instruction="q",
-                safety_queue=asyncio.Queue(), think=False,
+                host="http://localhost:8000/v1",
+                instruction="q",
+                safety_queue=asyncio.Queue(),
+                think=False,
                 verify_answers=False,
             )
         assert result == "The answer."
         calls = mock_client.chat.completions.create.call_args_list
-        assert calls[0].kwargs["extra_body"]["chat_template_kwargs"] == {
-            "enable_thinking": False}
+        assert calls[0].kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
         assert "chat_template_kwargs" not in calls[1].kwargs["extra_body"]
 
 
 # ── endpoint metadata caching ───────────────────────────────────────────────
+
 
 class TestEndpointCaches:
     @pytest.mark.asyncio
@@ -601,8 +678,7 @@ class TestEndpointCaches:
         client.models.list = AsyncMock(side_effect=[first, second])
 
         assert await _resolve_model_id(client, "http://h/v1") == "old-model"
-        detected = await _autodetect_fallback_model(
-            client, None, False, "http://h/v1", "old-model")
+        detected = await _autodetect_fallback_model(client, None, False, "http://h/v1", "old-model")
 
         assert detected == "new-model"
         assert client.models.list.await_count == 2
@@ -640,6 +716,7 @@ class TestEndpointCaches:
             assert http.get.await_count == 1  # cached for now
 
             import model.serving.chat as chat_mod
+
             key = ("http://h/v1", "m")
             value, _expiry = chat_mod._MAX_CONTEXT_CACHE[key]
             chat_mod._MAX_CONTEXT_CACHE[key] = (value, 0.0)  # expire it
@@ -649,6 +726,7 @@ class TestEndpointCaches:
 
 
 # ── parallel tool batches ───────────────────────────────────────────────────
+
 
 class TestParallelToolCalls:
     """A batch of reads is only as slow as its slowest call, but the results
@@ -662,6 +740,7 @@ class TestParallelToolCalls:
                 if order is not None:
                     order.append(name)
                 return f"result of {name}"
+
             return _handler
 
         reg = MagicMock()
@@ -672,16 +751,28 @@ class TestParallelToolCalls:
 
     @pytest.mark.asyncio
     async def test_read_only_batch_runs_concurrently(self):
-        calls = [_mock_tool_call("read_file", '{"path": "/a"}', "c1"),
-                 _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
-                 _mock_tool_call("search_document", '{"query": "x"}', "c3")]
+        calls = [
+            _mock_tool_call("read_file", '{"path": "/a"}', "c1"),
+            _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
+            _mock_tool_call("search_document", '{"query": "x"}', "c3"),
+        ]
         registry = self._registry({"read_file", "search_document"}, delay=0.05)
         messages: list = []
 
         started = time.monotonic()
         bail = await _handle_structured_tool_calls(
-            calls, {"role": "assistant"}, registry, None, "", None, False,
-            messages, [], 30, asyncio.Queue(), session_id="s",
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         elapsed = time.monotonic() - started
 
@@ -695,8 +786,10 @@ class TestParallelToolCalls:
     async def test_results_keep_call_order_not_completion_order(self):
         """The API pairs tool messages to tool_call ids by position, so a fast
         second call must not overtake a slow first one."""
-        slow_first = [_mock_tool_call("read_file", '{"path": "/slow"}', "c1"),
-                      _mock_tool_call("read_file", '{"path": "/fast"}', "c2")]
+        slow_first = [
+            _mock_tool_call("read_file", '{"path": "/slow"}', "c1"),
+            _mock_tool_call("read_file", '{"path": "/fast"}', "c2"),
+        ]
 
         async def _handler(log_handler=None, path=None, **kwargs):
             await asyncio.sleep(0.05 if path == "/slow" else 0.0)
@@ -709,8 +802,18 @@ class TestParallelToolCalls:
 
         messages: list = []
         await _handle_structured_tool_calls(
-            slow_first, {"role": "assistant"}, registry, None, "", None, False,
-            messages, [], 30, asyncio.Queue(), session_id="s",
+            slow_first,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
         assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"]
@@ -732,11 +835,23 @@ class TestParallelToolCalls:
         registry.tool_accepts_param.return_value = False
         registry.__getitem__ = lambda _self, key: _handler
 
-        calls = [_mock_tool_call("write_file", '{"path": "/first"}', "c1"),
-                 _mock_tool_call("write_file", '{"path": "/second"}', "c2")]
+        calls = [
+            _mock_tool_call("write_file", '{"path": "/first"}', "c1"),
+            _mock_tool_call("write_file", '{"path": "/second"}', "c2"),
+        ]
         await _handle_structured_tool_calls(
-            calls, {"role": "assistant"}, registry, None, "", None, False,
-            [], [], 30, asyncio.Queue(), session_id="s",
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            [],
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         assert order == ["/first", "/second"]
 
@@ -748,19 +863,30 @@ class TestParallelToolCalls:
 
         async def _handler(log_handler=None, **kwargs):
             return "one result"
+
         registry.__getitem__ = lambda _self, key: _handler
 
         messages: list = []
         await _handle_structured_tool_calls(
-            [_mock_tool_call("read_file", '{"path": "/a"}', "c1")], {"role": "assistant"},
-            registry, None, "", None, False, messages, [], 30,
-            asyncio.Queue(), session_id="s",
+            [_mock_tool_call("read_file", '{"path": "/a"}', "c1")],
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         assert [m["tool_call_id"] for m in messages if m.get("role") == "tool"] == ["c1"]
 
     @pytest.mark.asyncio
     async def test_every_call_is_answered_even_when_one_fails(self):
         """A tool_call id with no tool message gets the next request rejected."""
+
         async def _handler(log_handler=None, path=None, **kwargs):
             if path == "/bad":
                 raise RuntimeError("exploded")
@@ -773,10 +899,21 @@ class TestParallelToolCalls:
 
         messages: list = []
         await _handle_structured_tool_calls(
-            [_mock_tool_call("read_file", '{"path": "/bad"}', "c1"),
-             _mock_tool_call("read_file", '{"path": "/ok"}', "c2")],
-            {"role": "assistant"}, registry, None, "", None, False,
-            messages, [], 30, asyncio.Queue(), session_id="s",
+            [
+                _mock_tool_call("read_file", '{"path": "/bad"}', "c1"),
+                _mock_tool_call("read_file", '{"path": "/ok"}', "c2"),
+            ],
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
         assert ids == ["c1", "c2"]
@@ -784,15 +921,14 @@ class TestParallelToolCalls:
 
 # ── tool-result decay ───────────────────────────────────────────────────────
 
+
 class TestToolResultDecay:
     def _tool_msg(self, text):
-        return {"role": "tool", "content": text, "name": "read_file",
-                "tool_call_id": "c"}
+        return {"role": "tool", "content": text, "name": "read_file", "tool_call_id": "c"}
 
     def test_recent_results_are_untouched(self):
         big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
-        messages = [{"role": "user", "content": "hi"}] + \
-                   [self._tool_msg(big) for _ in range(3)]
+        messages = [{"role": "user", "content": "hi"}] + [self._tool_msg(big) for _ in range(3)]
         _decay_old_tool_results(messages, keep_full=3)
         assert all(m["content"] == big for m in messages[1:])
 
@@ -804,8 +940,7 @@ class TestToolResultDecay:
         assert all(m["content"] == big for m in messages[3:])
 
     def test_short_results_are_left_alone(self):
-        messages = [self._tool_msg("brief"), self._tool_msg("also brief"),
-                    self._tool_msg("third")]
+        messages = [self._tool_msg("brief"), self._tool_msg("also brief"), self._tool_msg("third")]
         _decay_old_tool_results(messages, keep_full=1)
         assert [m["content"] for m in messages] == ["brief", "also brief", "third"]
 
@@ -819,15 +954,21 @@ class TestToolResultDecay:
 
     def test_image_results_are_left_to_the_image_stripper(self):
         """Their content is a list of parts, not text to slice."""
-        parts = [{"type": "text", "text": "y" * 9000},
-                 {"type": "image_url", "image_url": {"url": "data:..."}}]
-        messages = [{"role": "tool", "content": parts, "tool_call_id": "c"},
-                    self._tool_msg("z" * 9000), self._tool_msg("recent")]
+        parts = [
+            {"type": "text", "text": "y" * 9000},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        messages = [
+            {"role": "tool", "content": parts, "tool_call_id": "c"},
+            self._tool_msg("z" * 9000),
+            self._tool_msg("recent"),
+        ]
         _decay_old_tool_results(messages, keep_full=1)
         assert messages[0]["content"] is parts
 
 
 # ── decay, once results are addressable ─────────────────────────────────────
+
 
 class TestDecayWithAResultStore:
     """Phase 4's step 3. A trimmed result used to be told to run the tool
@@ -836,11 +977,11 @@ class TestDecayWithAResultStore:
     @pytest.fixture
     def store(self, tmp_path):
         from model.serving.results import ResultStore
+
         return ResultStore(str(tmp_path))
 
     def _tool_msg(self, text):
-        return {"role": "tool", "content": text, "name": "local_search",
-                "tool_call_id": "c"}
+        return {"role": "tool", "content": text, "name": "local_search", "tool_call_id": "c"}
 
     def _stored_msg(self, store, size=60000):
         return self._tool_msg(store.put("local_search", "x" * size))
@@ -914,6 +1055,7 @@ class TestDecayWithAResultStore:
 
 # ── prefix-cache probe ──────────────────────────────────────────────────────
 
+
 class TestPrefixCacheProbe:
     def test_metrics_url_drops_the_api_prefix(self):
         assert _metrics_url("http://h:8000/v1") == "http://h:8000/metrics"
@@ -929,8 +1071,10 @@ class TestPrefixCacheProbe:
         assert parse_prometheus(text, ("vllm:prefix_cache_hits_total",)) == 42.0
 
     def test_parse_returns_none_when_absent(self):
-        assert parse_prometheus("vllm:num_requests_running 1.0\n",
-                                ("vllm:prefix_cache_hits_total",)) is None
+        assert (
+            parse_prometheus("vllm:num_requests_running 1.0\n", ("vllm:prefix_cache_hits_total",))
+            is None
+        )
 
     def test_parse_ignores_a_longer_metric_with_the_same_head(self):
         text = "vllm:prefix_cache_hits_total_extra 5.0\n"
@@ -938,8 +1082,7 @@ class TestPrefixCacheProbe:
 
     @pytest.mark.asyncio
     async def test_report_computes_hit_rate(self):
-        text = ("vllm:prefix_cache_queries_total 1000.0\n"
-                "vllm:prefix_cache_hits_total 900.0\n")
+        text = "vllm:prefix_cache_queries_total 1000.0\nvllm:prefix_cache_hits_total 900.0\n"
         resp = MagicMock(status_code=200, text=text)
         http = AsyncMock()
         http.get = AsyncMock(return_value=resp)
@@ -970,8 +1113,9 @@ class TestPrefixCacheProbe:
 
     @pytest.mark.asyncio
     async def test_unreachable_host_reports_cleanly(self):
-        with patch("model.serving.diagnostics.httpx.AsyncClient",
-                   side_effect=OSError("connection refused")):
+        with patch(
+            "model.serving.diagnostics.httpx.AsyncClient", side_effect=OSError("connection refused")
+        ):
             report = await prefix_cache_report("http://nope:8000/v1")
 
         assert report["reachable"] is False
@@ -979,8 +1123,7 @@ class TestPrefixCacheProbe:
 
     @pytest.mark.asyncio
     async def test_low_hit_rate_is_called_out(self):
-        text = ("vllm:prefix_cache_queries_total 1000.0\n"
-                "vllm:prefix_cache_hits_total 100.0\n")
+        text = "vllm:prefix_cache_queries_total 1000.0\nvllm:prefix_cache_hits_total 100.0\n"
         resp = MagicMock(status_code=200, text=text)
         http = AsyncMock()
         http.get = AsyncMock(return_value=resp)
@@ -1039,11 +1182,15 @@ class TestFoldOnToolTurn:
 
         ui = _FoldSpyUI()
         await _process_streaming_response(
-            _aiter([
-                _chunk(content="The ninja PATH issue again. Adding the venv to PATH:"),
-                _chunk(tool_calls=[tc], finish_reason="tool_calls"),
-            ]),
-            asyncio.Queue(), ui, think=False,
+            _aiter(
+                [
+                    _chunk(content="The ninja PATH issue again. Adding the venv to PATH:"),
+                    _chunk(tool_calls=[tc], finish_reason="tool_calls"),
+                ]
+            ),
+            asyncio.Queue(),
+            ui,
+            think=False,
         )
         assert len(ui.folds) == 1
         assert "ninja PATH issue" in ui.folds[0]
@@ -1054,11 +1201,15 @@ class TestFoldOnToolTurn:
 
         ui = _FoldSpyUI()
         await _process_streaming_response(
-            _aiter([
-                _chunk(content="## The final answer, with no tool calls."),
-                _chunk(finish_reason="stop"),
-            ]),
-            asyncio.Queue(), ui, think=False,
+            _aiter(
+                [
+                    _chunk(content="## The final answer, with no tool calls."),
+                    _chunk(finish_reason="stop"),
+                ]
+            ),
+            asyncio.Queue(),
+            ui,
+            think=False,
         )
         assert ui.folds == []
 
@@ -1073,8 +1224,7 @@ class TestFoldOnToolTurn:
         # The chat() call site folds exactly when this predicate fires and no
         # structured tool calls arrived; pin both sides of that decision.
         assert _looks_like_raw_tool_call(raw)
-        assert not _looks_like_raw_tool_call(
-            'The tool schema {"name": "x"} needs "arguments" too.')
+        assert not _looks_like_raw_tool_call('The tool schema {"name": "x"} needs "arguments" too.')
 
     @pytest.mark.asyncio
     async def test_prose_mentioning_a_tool_schema_is_not_folded(self):
@@ -1083,11 +1233,15 @@ class TestFoldOnToolTurn:
 
         ui = _FoldSpyUI()
         await _process_streaming_response(
-            _aiter([
-                _chunk(content='The tool schema {"name": "x"} needs "arguments" too.'),
-                _chunk(finish_reason="stop"),
-            ]),
-            asyncio.Queue(), ui, think=False,
+            _aiter(
+                [
+                    _chunk(content='The tool schema {"name": "x"} needs "arguments" too.'),
+                    _chunk(finish_reason="stop"),
+                ]
+            ),
+            asyncio.Queue(),
+            ui,
+            think=False,
         )
         assert ui.folds == []
 
@@ -1098,18 +1252,21 @@ class TestFoldOnToolTurn:
         from model.serving.chat import _ollama_process_streaming_response
 
         prose = MagicMock()
-        prose.message = MagicMock(content="Checking the audio pipeline.",
-                                  tool_calls=None, thinking=None)
+        prose.message = MagicMock(
+            content="Checking the audio pipeline.", tool_calls=None, thinking=None
+        )
         prose.done_reason = None
 
         calls = MagicMock()
-        calls.message = MagicMock(content="", tool_calls=[MagicMock()],
-                                  thinking=None)
+        calls.message = MagicMock(content="", tool_calls=[MagicMock()], thinking=None)
         calls.done_reason = "tool_calls"
 
         ui = _FoldSpyUI()
         await _ollama_process_streaming_response(
-            _aiter([prose, calls]), asyncio.Queue(), ui, think=False,
+            _aiter([prose, calls]),
+            asyncio.Queue(),
+            ui,
+            think=False,
         )
         assert len(ui.folds) == 1
         assert "Checking the audio pipeline" in ui.folds[0]
@@ -1119,13 +1276,15 @@ class TestFoldOnToolTurn:
         from model.serving.chat import _ollama_process_streaming_response
 
         chunk = MagicMock()
-        chunk.message = MagicMock(content="## Answer", tool_calls=None,
-                                  thinking=None)
+        chunk.message = MagicMock(content="## Answer", tool_calls=None, thinking=None)
         chunk.done_reason = "stop"
 
         ui = _FoldSpyUI()
         await _ollama_process_streaming_response(
-            _aiter([chunk]), asyncio.Queue(), ui, think=False,
+            _aiter([chunk]),
+            asyncio.Queue(),
+            ui,
+            think=False,
         )
         assert ui.folds == []
 
@@ -1149,6 +1308,7 @@ class TestFoldOnToolTurn:
 
 # ─── A3: mixed batches partition ─────────────────────────────────────────────
 
+
 class TestMixedBatchPartition:
     def _registry(self, names, delay=0.05):
         import asyncio as _aio
@@ -1157,6 +1317,7 @@ class TestMixedBatchPartition:
             async def _handler(log_handler=None, **kwargs):
                 await _aio.sleep(delay)
                 return f"result of {name}"
+
             return _handler
 
         reg = MagicMock()
@@ -1169,16 +1330,28 @@ class TestMixedBatchPartition:
     async def test_mixed_batch_runs_reads_concurrently(self):
         """search (read-only) + write_file in one turn: the read subset
         overlaps instead of serializing behind the write."""
-        calls = [_mock_tool_call("read_file", '{"path": "/a"}', "c1"),
-                 _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
-                 _mock_tool_call("write_file", '{"path": "/w"}', "c3")]
+        calls = [
+            _mock_tool_call("read_file", '{"path": "/a"}', "c1"),
+            _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
+            _mock_tool_call("write_file", '{"path": "/w"}', "c3"),
+        ]
         registry = self._registry({"read_file", "write_file"}, delay=0.05)
         messages: list = []
 
         started = time.monotonic()
         bail = await _handle_structured_tool_calls(
-            calls, {"role": "assistant"}, registry, None, "", None, False,
-            messages, [], 30, asyncio.Queue(), session_id="s",
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         elapsed = time.monotonic() - started
 
@@ -1202,19 +1375,32 @@ class TestMixedBatchPartition:
         registry.tool_accepts_param.return_value = False
         registry.__getitem__ = lambda _self, key: _handler
 
-        calls = [_mock_tool_call("read_file", '{"path": "/r"}', "c1"),
-                 _mock_tool_call("write_file", '{"path": "/w1"}', "c2"),
-                 _mock_tool_call("write_file", '{"path": "/w2"}', "c3")]
+        calls = [
+            _mock_tool_call("read_file", '{"path": "/r"}', "c1"),
+            _mock_tool_call("write_file", '{"path": "/w1"}', "c2"),
+            _mock_tool_call("write_file", '{"path": "/w2"}', "c3"),
+        ]
         messages: list = []
         await _handle_structured_tool_calls(
-            calls, {"role": "assistant"}, registry, None, "", None, False,
-            messages, [], 30, asyncio.Queue(), session_id="s",
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
         )
         # Both writes ran, in the order the model asked for them.
         assert order == ["/r", "/w1", "/w2"]
 
 
 # ── per-run token stats line ─────────────────────────────────────────────
+
 
 class TestTokenFooter:
     """The one line under a finished answer: what ran, where, at what cost.
@@ -1258,13 +1444,17 @@ class TestTokenFooter:
     def test_line_names_the_model_the_endpoint_the_directory_and_the_version(self):
         line = format_token_footer(
             {"prompt_tokens_total": 4_665_239, "completion_tokens": 33_580},
-            model="stealth/space-bunny-alpha", provider="ollama",
-            data_path="/Users/rowel/sandbox", version="0.1.5a",
-            elapsed=316.6)
+            model="stealth/space-bunny-alpha",
+            provider="ollama",
+            data_path="/Users/rowel/sandbox",
+            version="0.1.5a",
+            elapsed=316.6,
+        )
         assert line == (
             "model stealth/space-bunny-alpha · provider ollama · "
             "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
-            "(4,665,239 in / 33,580 out) · 316.6s")
+            "(4,665,239 in / 33,580 out) · 316.6s"
+        )
 
     def test_the_session_leads_the_line(self):
         """Which conversation the numbers belong to comes before which model
@@ -1272,8 +1462,13 @@ class TestTokenFooter:
         to name the model without ever saying which session it was."""
         line = format_token_footer(
             {"prompt_tokens_total": 100, "completion_tokens": 5},
-            session="thesis ch3", model="qwen3-coder", provider="ollama",
-            data_path="/Users/rowel/sandbox", version="0.1.5a", elapsed=2.0)
+            session="thesis ch3",
+            model="qwen3-coder",
+            provider="ollama",
+            data_path="/Users/rowel/sandbox",
+            version="0.1.5a",
+            elapsed=2.0,
+        )
         assert line.startswith("session thesis ch3 · model qwen3-coder")
         assert line.count("session ") == 1
 
@@ -1285,24 +1480,26 @@ class TestTokenFooter:
         """A caller with no session (a bare format test, a web run) is
         unchanged: the field drops out rather than printing an empty label."""
         line = format_token_footer(
-            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0)
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0
+        )
         assert "session" not in line
 
     def test_version_drops_out_when_unknown(self):
         """A build without readable package metadata still gets a line."""
         line = format_token_footer(
-            {"prompt_tokens_total": 100, "completion_tokens": 5},
-            version="", elapsed=2.0)
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, version="", elapsed=2.0
+        )
         assert line == "105 tok (100 in / 5 out) · 2.0s"
         assert "v" not in line.split(" · ")[0]
 
     def test_unknown_fields_drop_out_rather_than_print_empty_labels(self):
         line = format_token_footer(
-            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0)
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0
+        )
         assert line == "105 tok (100 in / 5 out) · 2.0s"
 
     def test_a_run_with_turns_but_no_usage_says_so(self):
-        """"0 tok" reads as a free run; the provider simply did not report."""
+        """ "0 tok" reads as a free run; the provider simply did not report."""
         assert "tok not reported" in format_token_footer({"turn_count": 4})
 
     def test_nothing_known_prints_no_line_at_all(self):
@@ -1310,8 +1507,7 @@ class TestTokenFooter:
         assert format_token_footer(None) == ""
 
     def test_tok_s_is_only_shown_when_it_was_measured(self):
-        sink = {"completion_tokens": 900, "decode_s": 30.0,
-                "prompt_tokens_total": 0}
+        sink = {"completion_tokens": 900, "decode_s": 30.0, "prompt_tokens_total": 0}
         assert "30.0 tok/s" in format_token_footer(sink, tok_s=30.0)
         assert "tok/s" not in format_token_footer(sink, tok_s=0.0)
 
@@ -1321,17 +1517,20 @@ class TestProviderLabel:
     for a one-line footer.  This collapses the common endpoints to a word and
     leaves anything else identifiable rather than guessing."""
 
-    @pytest.mark.parametrize("host,expected", [
-        ("http://localhost:11434", "ollama"),
-        ("http://localhost:11434/v1", "ollama"),
-        ("http://127.0.0.1:11434/v1", "ollama"),
-        ("http://127.0.0.1:8000", "ollama"),
-        ("http://localhost:8000/v1", "openai-compat"),
-        ("https://api.openai.com/v1", "openai"),
-        ("https://openrouter.ai/api/v1", "openrouter"),
-        ("https://api.anthropic.com/v1", "claude"),
-        ("https://ollama.com/v1", "ollama-cloud"),
-    ])
+    @pytest.mark.parametrize(
+        "host,expected",
+        [
+            ("http://localhost:11434", "ollama"),
+            ("http://localhost:11434/v1", "ollama"),
+            ("http://127.0.0.1:11434/v1", "ollama"),
+            ("http://127.0.0.1:8000", "ollama"),
+            ("http://localhost:8000/v1", "openai-compat"),
+            ("https://api.openai.com/v1", "openai"),
+            ("https://openrouter.ai/api/v1", "openrouter"),
+            ("https://api.anthropic.com/v1", "claude"),
+            ("https://ollama.com/v1", "ollama-cloud"),
+        ],
+    )
     def test_known_endpoints_get_a_word(self, host, expected):
         assert provider_label(host) == expected
 
@@ -1352,10 +1551,17 @@ class TestSummarizeReportsTheTotal:
     """The log line and the on-screen line must not disagree about cost."""
 
     def test_says_what_the_run_cost_not_only_its_peak_prompt(self):
-        sink = {"turn_count": 2, "tool_calls": 1, "model_s": 10.0,
-                "tool_s": 1.0, "prefill_s": 4.0, "decode_s": 6.0,
-                "prompt_tokens_max": 10_000, "prompt_tokens_total": 20_000,
-                "completion_tokens": 2_000}
+        sink = {
+            "turn_count": 2,
+            "tool_calls": 1,
+            "model_s": 10.0,
+            "tool_s": 1.0,
+            "prefill_s": 4.0,
+            "decode_s": 6.0,
+            "prompt_tokens_max": 10_000,
+            "prompt_tokens_total": 20_000,
+            "completion_tokens": 2_000,
+        }
         text = summarize_metrics(sink)
         assert "22,000 tok (20,000 in / 2,000 out)" in text
         assert "peak prompt 10,000 tok" in text

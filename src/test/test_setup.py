@@ -13,16 +13,13 @@ from src.setup import SETTINGS, _provider_notes
 
 def _patch_secrets(monkeypatch, present: set[str]):
     """Make get_secret return a value only for the given keyring keys."""
-    monkeypatch.setattr(
-        setup_mod, "get_secret",
-        lambda key: "dummy" if key in present else None)
+    monkeypatch.setattr(setup_mod, "get_secret", lambda key: "dummy" if key in present else None)
 
 
 class TestSettingsSchema:
     def test_model_settings_present(self):
         paths = [dotpath for dotpath, _, _ in SETTINGS]
-        for expected in ("serving.host", "serving.model",
-                         "serving.load_balancer"):
+        for expected in ("serving.host", "serving.model", "serving.load_balancer"):
             assert expected in paths
 
     def test_model_settings_are_optional(self):
@@ -45,8 +42,7 @@ class TestProviderNotes:
 
     def test_ollama_host_with_key_and_model_is_clean(self, monkeypatch):
         _patch_secrets(monkeypatch, {"ollama_api_key"})
-        config = {"serving": {"host": "https://ollama.com",
-                              "model": "glm-5.1:cloud"}}
+        config = {"serving": {"host": "https://ollama.com", "model": "glm-5.1:cloud"}}
         assert _provider_notes(config) == []
 
     def test_openrouter_missing_key_and_model(self, monkeypatch):
@@ -68,8 +64,9 @@ class TestProviderNotes:
         """A legacy host_key still satisfies an OpenRouter endpoint in the
         plain serving.host shape."""
         _patch_secrets(monkeypatch, {"host_key"})
-        config = {"serving": {"host": "https://openrouter.ai/api/v1",
-                              "model": "google/gemini-2.5-pro"}}
+        config = {
+            "serving": {"host": "https://openrouter.ai/api/v1", "model": "google/gemini-2.5-pro"}
+        }
         assert _provider_notes(config) == []
 
     def test_ollama_host_without_model_checked(self, monkeypatch):
@@ -85,20 +82,27 @@ class TestProviderNotes:
 
     def test_endpoints_list_entries_checked(self, monkeypatch):
         _patch_secrets(monkeypatch, set())
-        config = {"serving": {"endpoints": [
-            {"name": "gpu-a", "host": "http://gpu-a:8000/v1", "priority": 1},
-            {"name": "cloud", "host": "https://ollama.com", "priority": 2},
-        ]}}
+        config = {
+            "serving": {
+                "endpoints": [
+                    {"name": "gpu-a", "host": "http://gpu-a:8000/v1", "priority": 1},
+                    {"name": "cloud", "host": "https://ollama.com", "priority": 2},
+                ]
+            }
+        }
         notes = _provider_notes(config)
-        assert any("Ollama cloud endpoint but no API key" in n
-                   and "cloud" in n for n in notes)
+        assert any("Ollama cloud endpoint but no API key" in n and "cloud" in n for n in notes)
         assert not any("gpu-a" in n for n in notes)
 
     def test_endpoints_list_supersedes_host_pair(self, monkeypatch):
         """A stale serving.host is ignored once an endpoints list exists."""
         _patch_secrets(monkeypatch, set())
-        config = {"serving": {"host": "https://openrouter.ai/api/v1",
-                              "endpoints": [{"host": "http://gpu:8000/v1"}]}}
+        config = {
+            "serving": {
+                "host": "https://openrouter.ai/api/v1",
+                "endpoints": [{"host": "http://gpu:8000/v1"}],
+            }
+        }
         assert _provider_notes(config) == []
 
 
@@ -108,14 +112,13 @@ class TestEndpointList:
         assert setup_mod._endpoint_list({"serving": {"endpoints": "nope"}}) == []
 
     def test_url_strings_normalized_to_dicts(self):
-        got = setup_mod._endpoint_list(
-            {"serving": {"endpoints": ["http://gpu:8000/v1"]}})
+        got = setup_mod._endpoint_list({"serving": {"endpoints": ["http://gpu:8000/v1"]}})
         assert got == [{"host": "http://gpu:8000/v1"}]
 
     def test_entries_without_host_dropped(self):
         got = setup_mod._endpoint_list(
-            {"serving": {"endpoints": [{"model": "x"}, 42,
-                                       {"host": "http://gpu:8000/v1"}]}})
+            {"serving": {"endpoints": [{"model": "x"}, 42, {"host": "http://gpu:8000/v1"}]}}
+        )
         assert [e["host"] for e in got] == ["http://gpu:8000/v1"]
 
     def test_priority_defaults_to_zero(self):
@@ -131,8 +134,7 @@ class TestSectionGrouping:
     """Model-serving config is asked for together, apart from integrations."""
 
     def test_sections_partition_the_secrets(self):
-        assert (setup_mod.LEGACY_SERVING_SECRETS + setup_mod.INTEGRATION_SECRETS
-                == setup_mod.SECRETS)
+        assert setup_mod.LEGACY_SERVING_SECRETS + setup_mod.INTEGRATION_SECRETS == setup_mod.SECRETS
 
     def test_only_superseded_keys_remain_in_the_serving_section(self):
         """An endpoint's key is stored per endpoint now; what is left here is
@@ -148,18 +150,23 @@ class TestSectionGrouping:
 
     def test_unrelated_keys_are_not_in_the_serving_section(self):
         keys = {k for k, _, _ in setup_mod.LEGACY_SERVING_SECRETS}
-        for unrelated in ("openweathermap_api_key", "web_google_client_id",
-                          "github_token", "huggingface_token"):
+        for unrelated in (
+            "openweathermap_api_key",
+            "web_google_client_id",
+            "github_token",
+            "huggingface_token",
+        ):
             assert unrelated not in keys
 
     def test_sections_partition_the_settings(self):
-        assert (setup_mod.HOST_SETTINGS + setup_mod.SERVING_SETTINGS
-                + setup_mod.GENERAL_SETTINGS == SETTINGS)
+        assert (
+            setup_mod.HOST_SETTINGS + setup_mod.SERVING_SETTINGS + setup_mod.GENERAL_SETTINGS
+            == SETTINGS
+        )
 
     def test_host_settings_are_not_prompted_individually(self):
         """The endpoint editor owns them, so no section prompts for them."""
-        prompted = {p for p, _, _ in
-                    setup_mod.SERVING_SETTINGS + setup_mod.GENERAL_SETTINGS}
+        prompted = {p for p, _, _ in setup_mod.SERVING_SETTINGS + setup_mod.GENERAL_SETTINGS}
         assert prompted.isdisjoint(setup_mod._HOST_SETTINGS)
 
 
@@ -172,10 +179,8 @@ def _fake_keystore(monkeypatch, initial=None):
     """
     store = dict(initial or {})
     monkeypatch.setattr(setup_mod, "get_secret", lambda k: store.get(k))
-    monkeypatch.setattr(setup_mod, "store_secret",
-                        lambda k, v: store.__setitem__(k, v))
-    monkeypatch.setattr(setup_mod, "delete_secret",
-                        lambda k: store.pop(k, None))
+    monkeypatch.setattr(setup_mod, "store_secret", lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(setup_mod, "delete_secret", lambda k: store.pop(k, None))
     return store
 
 
@@ -187,6 +192,7 @@ def _drive_editor(config, script, keys=()):
     prompt answers blank, which keeps whatever is stored.
     """
     import builtins
+
     it, key_it = iter(script), iter(keys)
     original_input, original_getpass = builtins.input, setup_mod.getpass.getpass
     builtins.input = lambda prompt="": next(it, "")
@@ -206,8 +212,13 @@ class TestEndpointKeys:
     @pytest.fixture(autouse=True)
     def _no_keychain(self, monkeypatch):
         self.store = _fake_keystore(monkeypatch)
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY",
-                    "VLLM_API_KEY", "ONIT_HOST2_KEY"):
+        for var in (
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "OLLAMA_API_KEY",
+            "VLLM_API_KEY",
+            "ONIT_HOST2_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
 
     def test_a_key_is_addressed_by_its_url(self):
@@ -229,13 +240,14 @@ class TestEndpointKeys:
 
     def test_an_env_var_overrides_the_keychain(self, monkeypatch):
         setup_mod.store_endpoint_key("http://a:8000/v1", "sk-stored")
-        monkeypatch.setenv(setup_mod.endpoint_env_var("http://a:8000/v1"),
-                           "sk-env")
+        monkeypatch.setenv(setup_mod.endpoint_env_var("http://a:8000/v1"), "sk-env")
         assert setup_mod.get_endpoint_key("http://a:8000/v1") == "sk-env"
 
     def test_the_env_var_name_is_derived_from_the_url(self):
-        assert (setup_mod.endpoint_env_var("http://gpu-2:8000/v1")
-                == "ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1")
+        assert (
+            setup_mod.endpoint_env_var("http://gpu-2:8000/v1")
+            == "ONIT_ENDPOINT_KEY_HTTP_GPU_2_8000_V1"
+        )
 
     def test_a_key_follows_its_endpoint_to_a_new_url(self):
         """Editing the host would otherwise strand the key at the old address
@@ -262,29 +274,33 @@ class TestLegacyKeyFallback:
     @pytest.fixture(autouse=True)
     def _no_keychain(self, monkeypatch):
         self.store = _fake_keystore(monkeypatch)
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY",
-                    "VLLM_API_KEY"):
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY", "VLLM_API_KEY"):
             monkeypatch.delenv(var, raising=False)
 
-    @pytest.mark.parametrize("host,expected", [
-        ("https://openrouter.ai/api/v1", "host_key"),
-        ("https://api.openai.com/v1", "openai_api_key"),
-        ("https://ollama.com", "ollama_api_key"),
-        ("https://ollama.ai", "ollama_api_key"),
-        ("http://localhost:8000/v1", "vllm_api_key"),
-        ("http://localhost:11434/v1", "vllm_api_key"),
-    ])
+    @pytest.mark.parametrize(
+        "host,expected",
+        [
+            ("https://openrouter.ai/api/v1", "host_key"),
+            ("https://api.openai.com/v1", "openai_api_key"),
+            ("https://ollama.com", "ollama_api_key"),
+            ("https://ollama.ai", "ollama_api_key"),
+            ("http://localhost:8000/v1", "vllm_api_key"),
+            ("http://localhost:11434/v1", "vllm_api_key"),
+        ],
+    )
     def test_url_selects_the_legacy_secret(self, host, expected):
         assert setup_mod.legacy_key_for(host)[0] == expected
 
-    @pytest.mark.parametrize("host,required", [
-        ("https://openrouter.ai/api/v1", True),
-        ("https://api.openai.com/v1", True),
-        ("https://ollama.com", True),
-        ("http://localhost:8000/v1", False),
-    ])
-    def test_only_some_providers_cannot_answer_without_a_key(self, host,
-                                                             required):
+    @pytest.mark.parametrize(
+        "host,required",
+        [
+            ("https://openrouter.ai/api/v1", True),
+            ("https://api.openai.com/v1", True),
+            ("https://ollama.com", True),
+            ("http://localhost:8000/v1", False),
+        ],
+    )
+    def test_only_some_providers_cannot_answer_without_a_key(self, host, required):
         assert setup_mod.legacy_key_for(host)[3] is required
 
     def test_an_endpoints_own_key_wins_over_the_fallback(self):
@@ -294,8 +310,7 @@ class TestLegacyKeyFallback:
 
     def test_the_fallback_is_named_when_it_is_what_applies(self):
         self.store["vllm_api_key"] = "sk-old"
-        assert (setup_mod.endpoint_key_source("http://a:8000/v1")
-                == "vllm_api_key")
+        assert setup_mod.endpoint_key_source("http://a:8000/v1") == "vllm_api_key"
 
     def test_nothing_anywhere_is_reported_as_nothing(self):
         assert setup_mod.endpoint_key_source("http://a:8000/v1") is None
@@ -303,8 +318,10 @@ class TestLegacyKeyFallback:
     def test_a_positional_key_counts_when_named(self):
         """An extra key name is checked even when no URL selects it."""
         self.store["vllm_api_key"] = "sk-2"
-        assert setup_mod.endpoint_key_source(
-            "https://openrouter.ai/api/v1", ("vllm_api_key",)) == "vllm_api_key"
+        assert (
+            setup_mod.endpoint_key_source("https://openrouter.ai/api/v1", ("vllm_api_key",))
+            == "vllm_api_key"
+        )
 
 
 class TestEndpointEditor:
@@ -316,12 +333,15 @@ class TestEndpointEditor:
 
     def test_adds_an_endpoint_with_priority(self, capsys):
         cfg = {"serving": {"host": "http://a:8000/v1"}}
-        _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.1:cloud",
-                            "ollama", "2", ""])
+        _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.1:cloud", "ollama", "2", ""])
         assert cfg["serving"]["endpoints"] == [
             {"host": "http://a:8000/v1", "priority": 0},
-            {"name": "ollama", "host": "https://ollama.com",
-             "model": "glm-5.1:cloud", "priority": 2},
+            {
+                "name": "ollama",
+                "host": "https://ollama.com",
+                "model": "glm-5.1:cloud",
+                "priority": 2,
+            },
         ]
         # Promoting to a list must retire the settings it supersedes.
         assert "host" not in cfg["serving"]
@@ -354,21 +374,32 @@ class TestEndpointEditor:
         assert cfg["serving"]["host"] == "http://a:8000/v1"
 
     def test_edit_changes_the_addressed_row(self):
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://a:8000/v1", "priority": 1},
-            {"host": "http://b:8000/v1", "priority": 2}]}}
+        cfg = {
+            "serving": {
+                "endpoints": [
+                    {"host": "http://a:8000/v1", "priority": 1},
+                    {"host": "http://b:8000/v1", "priority": 2},
+                ]
+            }
+        }
         _drive_editor(cfg, ["e 2", "http://c:8000/v1", "", "", "", ""])
         assert [e["host"] for e in cfg["serving"]["endpoints"]] == [
-            "http://a:8000/v1", "http://c:8000/v1"]
+            "http://a:8000/v1",
+            "http://c:8000/v1",
+        ]
 
     def test_row_numbers_are_stable_across_reordering(self, capsys):
         """Row N addresses the same endpoint before and after a re-rank."""
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://a:8000/v1", "priority": 0},
-            {"host": "http://b:8000/v1", "priority": 0}]}}
+        cfg = {
+            "serving": {
+                "endpoints": [
+                    {"host": "http://a:8000/v1", "priority": 0},
+                    {"host": "http://b:8000/v1", "priority": 0},
+                ]
+            }
+        }
         # Rank row 1 behind row 2, then edit row 1 — it must still be host a.
-        _drive_editor(cfg, ["p 1", "5", "e 1", "http://a2:8000/v1",
-                            "", "", "", ""])
+        _drive_editor(cfg, ["p 1", "5", "e 1", "http://a2:8000/v1", "", "", "", ""])
         by_host = {e["host"]: e for e in cfg["serving"]["endpoints"]}
         assert by_host["http://a2:8000/v1"]["priority"] == 5
 
@@ -383,23 +414,17 @@ class TestEndpointEditor:
         """Ollama cloud is one host serving many models. Adding a second
         model on the same URL used to be refused as a duplicate and silently
         dropped, so only the first model was ever saved."""
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
-        _drive_editor(cfg, ["a", "https://ollama.com", "qwen3:cloud",
-                            "cloud2", "", ""])
+        cfg = {"serving": {"endpoints": [{"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        _drive_editor(cfg, ["a", "https://ollama.com", "qwen3:cloud", "cloud2", "", ""])
         assert "already configured" not in capsys.readouterr().out
         assert cfg["serving"]["endpoints"] == [
-            {"host": "https://ollama.com", "model": "glm-5.3:cloud",
-             "priority": 0},
-            {"name": "cloud2", "host": "https://ollama.com",
-             "model": "qwen3:cloud", "priority": 0},
+            {"host": "https://ollama.com", "model": "glm-5.3:cloud", "priority": 0},
+            {"name": "cloud2", "host": "https://ollama.com", "model": "qwen3:cloud", "priority": 0},
         ]
 
     def test_the_same_model_twice_is_still_refused(self, capsys):
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
-        _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.3:cloud",
-                            "", "", ""])
+        cfg = {"serving": {"endpoints": [{"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.3:cloud", "", "", ""])
         assert "already configured" in capsys.readouterr().out
         # Still one endpoint, written back in the short single-host shape.
         assert cfg["serving"]["host"] == "https://ollama.com"
@@ -409,9 +434,14 @@ class TestEndpointEditor:
     def test_the_fallback_note_names_the_ollama_rule(self, capsys):
         """The table says requests are spread across all endpoints, which is
         not true of the Ollama rows while the implicit rule is on."""
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://a:8000/v1"},
-            {"host": "https://ollama.com", "model": "glm-5.3:cloud"}]}}
+        cfg = {
+            "serving": {
+                "endpoints": [
+                    {"host": "http://a:8000/v1"},
+                    {"host": "https://ollama.com", "model": "glm-5.3:cloud"},
+                ]
+            }
+        }
         _drive_editor(cfg, [""])
         out = capsys.readouterr().out
         assert "fallback-only" in out
@@ -430,17 +460,16 @@ class TestEndpointEditor:
 
     def test_an_added_endpoints_key_goes_to_the_keychain(self):
         cfg = {"serving": {"host": "http://a:8000/v1"}}
-        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "0", ""],
-                      keys=["sk-b"])
+        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "0", ""], keys=["sk-b"])
         assert setup_mod.get_endpoint_key("http://b:8000/v1") == "sk-b"
 
     def test_a_key_never_reaches_the_config_file(self):
         """config.yaml gets copied around and pasted into issues; the
         keychain does not."""
         cfg = {"serving": {"host": "http://a:8000/v1"}}
-        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "0", ""],
-                      keys=["sk-b"])
+        _drive_editor(cfg, ["a", "http://b:8000/v1", "", "", "0", ""], keys=["sk-b"])
         import yaml
+
         assert "sk-b" not in yaml.safe_dump(cfg)
 
     def test_blank_keeps_the_stored_key(self):
@@ -458,8 +487,7 @@ class TestEndpointEditor:
     def test_editing_the_url_carries_the_key_across(self):
         setup_mod.store_endpoint_key("http://a:8000/v1", "sk-a")
         cfg = {"serving": {"host": "http://a:8000/v1"}}
-        _drive_editor(cfg, ["e 1", "http://c:8000/v1", "", "", "", ""],
-                      keys=[""])
+        _drive_editor(cfg, ["e 1", "http://c:8000/v1", "", "", "", ""], keys=[""])
         assert setup_mod.get_endpoint_key("http://c:8000/v1") == "sk-a"
         assert setup_mod.get_endpoint_key("http://a:8000/v1") is None
 
@@ -469,8 +497,11 @@ class TestEndpointEditor:
         _drive_editor(cfg, [""])
         out = capsys.readouterr().out
         assert "KEY" in out
-        rows = {ln.split()[2]: ln for ln in out.splitlines()
-                if "http://" in ln and ln.strip()[0].isdigit()}
+        rows = {
+            ln.split()[2]: ln
+            for ln in out.splitlines()
+            if "http://" in ln and ln.strip()[0].isdigit()
+        }
         assert "set" in rows["http://a:8000/v1"]
 
     def test_bad_row_number_is_reported_not_raised(self, capsys):
@@ -486,19 +517,27 @@ class TestEndpointEditor:
         assert "Unknown command" in capsys.readouterr().out
 
     def test_non_numeric_priority_keeps_current(self, capsys):
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://a:8000/v1", "priority": 3}]}}
+        cfg = {"serving": {"endpoints": [{"host": "http://a:8000/v1", "priority": 3}]}}
         _drive_editor(cfg, ["p 1", "high", ""])
         assert cfg["serving"]["endpoints"][0]["priority"] == 3
 
 
 # ── Presets and known endpoints ────────────────────────────────────────────────
 
+
 class TestEndpointPresets:
     def test_the_eight_providers_are_preset(self):
         names = [name for name, _ in setup_mod.ENDPOINT_PRESETS]
-        for expected in ("ollama", "vllm", "sglang", "openrouter",
-                         "vercel", "openai", "claude", "ollama-cloud"):
+        for expected in (
+            "ollama",
+            "vllm",
+            "sglang",
+            "openrouter",
+            "vercel",
+            "openai",
+            "claude",
+            "ollama-cloud",
+        ):
             assert expected in names
 
     def test_preset_urls_are_canonical(self):
@@ -514,8 +553,7 @@ class TestEndpointPresets:
 
     def test_a_number_resolves_to_its_preset(self):
         assert setup_mod._resolve_host_input("1", "") == "http://localhost:11434/v1"
-        assert setup_mod._resolve_host_input("4", "") == \
-            "https://openrouter.ai/api/v1"
+        assert setup_mod._resolve_host_input("4", "") == "https://openrouter.ai/api/v1"
 
     def test_the_ollama_cloud_preset_is_the_documented_spelling(self):
         """api.ollama.com is an undocumented alias that 301s everything
@@ -532,8 +570,7 @@ class TestEndpointPresets:
         assert "names none of them" in capsys.readouterr().out
 
     def test_a_url_is_taken_as_written(self):
-        assert setup_mod._resolve_host_input("http://gpu:8000/v1", "") == \
-            "http://gpu:8000/v1"
+        assert setup_mod._resolve_host_input("http://gpu:8000/v1", "") == "http://gpu:8000/v1"
 
     def test_blank_keeps_the_default(self):
         assert setup_mod._resolve_host_input("", "http://d:1") == "http://d:1"
@@ -548,30 +585,30 @@ class TestEndpointPresets:
 
 class TestKnownEndpoints:
     def test_configured_rows_come_first_and_are_marked(self):
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://a:8000/v1", "priority": 2},
-            {"host": "http://b:8000/v1", "priority": 1}]}}
+        cfg = {
+            "serving": {
+                "endpoints": [
+                    {"host": "http://a:8000/v1", "priority": 2},
+                    {"host": "http://b:8000/v1", "priority": 1},
+                ]
+            }
+        }
         eps = setup_mod.known_endpoints(cfg)
         assert eps[0]["host"] == "http://a:8000/v1"
         assert eps[0]["configured"] and eps[1]["configured"]
         assert not any(e["configured"] for e in eps[2:])
 
     def test_presets_appear_even_when_unconfigured(self):
-        eps = setup_mod.known_endpoints({"serving":
-                                         {"host": "http://a:8000/v1"}})
+        eps = setup_mod.known_endpoints({"serving": {"host": "http://a:8000/v1"}})
         hosts = {e["host"]: e for e in eps}
         assert hosts["https://openrouter.ai/api/v1"]["preset"] == "openrouter"
         assert not hosts["https://openrouter.ai/api/v1"]["configured"]
 
     def test_a_stored_key_makes_its_host_known(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(setup_mod, "_SECRETS_PATH",
-                            str(tmp_path / "secrets.yaml"))
-        setup_mod._file_store_secret(
-            "endpoint_key:http://stored:9999/v1", "sk-test")
-        eps = setup_mod.known_endpoints({"serving":
-                                         {"host": "http://a:8000/v1"}})
-        stored = [e for e in eps
-                  if e["host"] == "http://stored:9999/v1"]
+        monkeypatch.setattr(setup_mod, "_SECRETS_PATH", str(tmp_path / "secrets.yaml"))
+        setup_mod._file_store_secret("endpoint_key:http://stored:9999/v1", "sk-test")
+        eps = setup_mod.known_endpoints({"serving": {"host": "http://a:8000/v1"}})
+        stored = [e for e in eps if e["host"] == "http://stored:9999/v1"]
         assert len(stored) == 1
         assert stored[0]["key"] == "endpoint"
         assert not stored[0]["configured"]
@@ -585,14 +622,14 @@ class TestKnownEndpoints:
         assert eps[hosts.index("http://localhost:8000/v1")]["configured"]
 
     def test_the_key_is_where_it_comes_from(self, monkeypatch):
-        monkeypatch.setattr(setup_mod, "get_endpoint_key",
-                            lambda host: "sk-x"
-                            if host == "https://api.openai.com/v1" else None)
+        monkeypatch.setattr(
+            setup_mod,
+            "get_endpoint_key",
+            lambda host: "sk-x" if host == "https://api.openai.com/v1" else None,
+        )
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
-        monkeypatch.setattr("os.environ.get",
-                            lambda k, d=None: None)
-        eps = {e["host"]: e for e in
-               setup_mod.known_endpoints({})}
+        monkeypatch.setattr("os.environ.get", lambda k, d=None: None)
+        eps = {e["host"]: e for e in setup_mod.known_endpoints({})}
         assert eps["https://api.openai.com/v1"]["key"] == "endpoint"
         assert eps["https://openrouter.ai/api/v1"]["key"] is None
 
@@ -603,18 +640,26 @@ class TestKnownEndpoints:
         assert "openrouter" in out
         assert "http://localhost:8000/v1" not in out
 
-    def test_nothing_prints_when_everything_is_configured(self, capsys,
-                                                          monkeypatch):
-        monkeypatch.setattr(setup_mod, "known_endpoints",
-                            lambda cfg: [
-                                {"host": "http://a:8000/v1", "model": "",
-                                 "key": "endpoint", "configured": True,
-                                 "preset": None}])
+    def test_nothing_prints_when_everything_is_configured(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            setup_mod,
+            "known_endpoints",
+            lambda cfg: [
+                {
+                    "host": "http://a:8000/v1",
+                    "model": "",
+                    "key": "endpoint",
+                    "configured": True,
+                    "preset": None,
+                }
+            ],
+        )
         setup_mod._print_known_endpoints({})
         assert capsys.readouterr().out == ""
 
 
 # ── Shared Ollama key and secret deletion ──────────────────────────────────
+
 
 class TestOllamaSharedKey:
     """One Ollama key serves model access and web search: asked for once,
@@ -624,14 +669,11 @@ class TestOllamaSharedKey:
     def _no_keychain(self, monkeypatch):
         self.store = _fake_keystore(monkeypatch)
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
-        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTPS_API_OLLAMA_COM",
-                           raising=False)
-        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTPS_OLLAMA_COM",
-                           raising=False)
+        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTPS_API_OLLAMA_COM", raising=False)
+        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTPS_OLLAMA_COM", raising=False)
 
     def _answer(self, monkeypatch, answer):
-        monkeypatch.setattr(setup_mod.getpass, "getpass",
-                            lambda prompt="": answer)
+        monkeypatch.setattr(setup_mod.getpass, "getpass", lambda prompt="": answer)
 
     def test_the_key_is_stored_under_the_shared_name(self, monkeypatch):
         self._answer(monkeypatch, "sk-ollama")
@@ -671,8 +713,7 @@ class TestOllamaSharedKey:
         """chat.py resolves an Ollama endpoint's key through the legacy map;
         the shared name is what that map selects."""
         setup_mod.store_secret("ollama_api_key", "sk-ollama")
-        assert setup_mod.endpoint_key_source("https://api.ollama.com") \
-            == "ollama_api_key"
+        assert setup_mod.endpoint_key_source("https://api.ollama.com") == "ollama_api_key"
 
 
 class TestIntegrationsSkip:
@@ -684,26 +725,24 @@ class TestIntegrationsSkip:
         self.store = _fake_keystore(monkeypatch)
 
     def test_the_ollama_key_is_skipped_when_an_ollama_endpoint_uses_it(self):
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://api.ollama.com", "model": "glm-5.3:cloud"}]}}
+        cfg = {
+            "serving": {"endpoints": [{"host": "https://api.ollama.com", "model": "glm-5.3:cloud"}]}
+        }
         setup_mod.store_secret("ollama_api_key", "sk-ollama")
         assert setup_mod._ollama_skip_set(cfg) == {"ollama_api_key"}
 
     def test_an_unset_key_is_left_to_integrations(self):
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://api.ollama.com"}]}}
+        cfg = {"serving": {"endpoints": [{"host": "https://api.ollama.com"}]}}
         assert setup_mod._ollama_skip_set(cfg) == set()
 
     def test_no_ollama_endpoint_no_skip(self):
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://localhost:8000/v1"}]}}
+        cfg = {"serving": {"endpoints": [{"host": "http://localhost:8000/v1"}]}}
         setup_mod.store_secret("ollama_api_key", "sk-ollama")
         assert setup_mod._ollama_skip_set(cfg) == set()
 
     def test_skipped_secrets_are_shown_not_prompted(self, monkeypatch, capsys):
         setup_mod.store_secret("ollama_api_key", "sk-ollama")
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://api.ollama.com"}]}}
+        cfg = {"serving": {"endpoints": [{"host": "https://api.ollama.com"}]}}
         prompts = []
 
         def _record(prompt=""):
@@ -711,20 +750,16 @@ class TestIntegrationsSkip:
             return ""
 
         monkeypatch.setattr(setup_mod.getpass, "getpass", _record)
-        secrets = [s for s in setup_mod.INTEGRATION_SECRETS
-                   if s[0] == "ollama_api_key"]
+        secrets = [s for s in setup_mod.INTEGRATION_SECRETS if s[0] == "ollama_api_key"]
         setup_mod._prompt_secrets(secrets, skip=setup_mod._ollama_skip_set(cfg))
         assert prompts == []
         out = capsys.readouterr().out
         assert "shared with model access" in out
 
     def test_unskipped_secrets_still_prompt(self, monkeypatch):
-        cfg = {"serving": {"endpoints": [
-            {"host": "http://localhost:8000/v1"}]}}
-        monkeypatch.setattr(setup_mod.getpass, "getpass",
-                            lambda prompt="": "tvly-new")
-        secrets = [s for s in setup_mod.INTEGRATION_SECRETS
-                   if s[0] == "tavily_api_key"]
+        cfg = {"serving": {"endpoints": [{"host": "http://localhost:8000/v1"}]}}
+        monkeypatch.setattr(setup_mod.getpass, "getpass", lambda prompt="": "tvly-new")
+        secrets = [s for s in setup_mod.INTEGRATION_SECRETS if s[0] == "tavily_api_key"]
         setup_mod._prompt_secrets(secrets, skip=setup_mod._ollama_skip_set(cfg))
         assert setup_mod.get_secret("tavily_api_key") == "tvly-new"
 

@@ -20,28 +20,32 @@ from sessions import (
 
 # ── Auto-tag wording ────────────────────────────────────────────────────────
 
-class TestAutoTag:
 
-    @pytest.mark.parametrize("task,expected", [
-        ("can you please help me fix the login bug in the auth module",
-         "fix-login-bug-auth"),
-        ("How do I add a new user to the database?", "add-new-user-database"),
-        ("why does the voice bridge drop the first word",
-         "voice-bridge-drop-first"),
-    ])
+class TestAutoTag:
+    @pytest.mark.parametrize(
+        "task,expected",
+        [
+            ("can you please help me fix the login bug in the auth module", "fix-login-bug-auth"),
+            ("How do I add a new user to the database?", "add-new-user-database"),
+            ("why does the voice bridge drop the first word", "voice-bridge-drop-first"),
+        ],
+    )
     def test_filler_is_dropped_so_the_topic_leads(self, task, expected):
         assert _make_auto_tag(task) == expected
 
     def test_names_stay_short_enough_for_the_sidebar(self):
         tag = _make_auto_tag(
             "investigate the intermittent websocket disconnection happening "
-            "whenever the model server restarts under load")
+            "whenever the model server restarts under load"
+        )
         assert len(tag) <= _TAG_MAX_CHARS
         assert len(tag.split("-")) <= _TAG_MAX_WORDS
 
     def test_only_the_first_sentence_is_used(self):
-        task = ("Explain the token limit error.\n\nIt happens when the "
-                "context grows past 8k and everything breaks.")
+        task = (
+            "Explain the token limit error.\n\nIt happens when the "
+            "context grows past 8k and everything breaks."
+        )
         assert _make_auto_tag(task) == "explain-token-limit-error"
 
     def test_urls_are_reduced_to_readable_parts(self):
@@ -49,8 +53,7 @@ class TestAutoTag:
         assert tag == "summarize-example-blog-2026"
 
     def test_repeated_words_are_not_repeated_in_the_name(self):
-        assert _make_auto_tag("cache the cache warmup cache results") == \
-            "cache-warmup-results"
+        assert _make_auto_tag("cache the cache warmup cache results") == "cache-warmup-results"
 
     def test_an_all_filler_task_still_gets_a_name(self):
         assert _make_auto_tag("what is this?") == "what-is-this"
@@ -64,8 +67,7 @@ class TestAutoTag:
         assert tag == "fix-parser-chokes-nested"
 
     def test_candidates_slide_the_window_forward(self):
-        options = _auto_tag_candidates(
-            "fix the login bug in the auth module")
+        options = _auto_tag_candidates("fix the login bug in the auth module")
         assert options[0] == "fix-login-bug-auth"
         # Later options are differently worded, not numbered variants.
         assert len(set(options)) == len(options)
@@ -74,8 +76,8 @@ class TestAutoTag:
 
 # ── Uniqueness in the index ─────────────────────────────────────────────────
 
-class TestSessionNaming:
 
+class TestSessionNaming:
     def test_a_second_session_on_the_same_topic_gets_a_distinct_name(self, tmp_path):
         d = str(tmp_path)
         task = "fix the login bug in the auth module"
@@ -119,6 +121,7 @@ class TestRunStateSidecar:
 
     def _session(self, tmp_path, sid="sid-1"):
         from model.serving.state import RunState, state_path_for
+
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir(exist_ok=True)
         jsonl = sessions_dir / f"{sid}.jsonl"
@@ -158,8 +161,8 @@ class TestRunStateSidecar:
 # be something a person chose or a message that says what the session was
 # about.  The cases below are the ones that made sessions unfindable.
 
-class TestExplicitNaming:
 
+class TestExplicitNaming:
     def test_a_session_can_be_named_as_it_is_created(self, tmp_path):
         d = str(tmp_path)
         register_session("s1", sessions_dir=d, tag="Quarterly Review")
@@ -211,6 +214,7 @@ class TestExplicitNaming:
         """A caller that says "call it X" must be able to print the name the
         session will actually have, before creating it."""
         from src.sessions import name_for_new_session
+
         d = str(tmp_path)
         assert name_for_new_session("chapter 3", d) == "chapter 3"
         register_session("s1", sessions_dir=d, tag="chapter 3")
@@ -221,6 +225,7 @@ class TestExplicitNaming:
         to it with" name must resolve to this session, not the one that
         already held the name."""
         from src.sessions import resolve_session_choice, name_for_new_session
+
         d = str(tmp_path)
         register_session("older", sessions_dir=d, tag="chapter 3")
         announced = name_for_new_session("chapter 3", d)
@@ -244,6 +249,7 @@ class TestExplicitNaming:
 
     def test_a_rename_to_a_placeholder_word_also_sticks(self, tmp_path):
         from src.sessions import tag_session
+
         d = str(tmp_path)
         register_session("s1", sessions_dir=d)
         assert tag_session("s1", "untitled", d) is True
@@ -258,10 +264,12 @@ class TestExplicitNaming:
         register_session("s1", sessions_dir=d)
         index = {"s1": {"tag": "unnamed", "named_by_user": False}}
         from src.sessions import _needs_name
-        assert _needs_name("unnamed", "fix the login bug",
-                           named_by_user=index["s1"]["named_by_user"]) is True
-        assert _needs_name("untitled", "fix the login bug",
-                           named_by_user=True) is False
+
+        assert (
+            _needs_name("unnamed", "fix the login bug", named_by_user=index["s1"]["named_by_user"])
+            is True
+        )
+        assert _needs_name("untitled", "fix the login bug", named_by_user=True) is False
 
     def test_an_unnamed_session_returns_no_name(self, tmp_path):
         d = str(tmp_path)
@@ -270,7 +278,6 @@ class TestExplicitNaming:
 
 
 class TestAutoNameWaitsForATopic:
-
     def test_a_greeting_does_not_become_the_session_name(self, tmp_path):
         d = str(tmp_path)
         register_session("s1", sessions_dir=d)
@@ -297,8 +304,7 @@ class TestAutoNameWaitsForATopic:
         register_session("s1", sessions_dir=d)
         update_session("s1", task="hi", sessions_dir=d)
         update_session("s1", task="analyze the sales data", sessions_dir=d)
-        assert list_sessions(sessions_dir=d)[0]["preview"] == \
-            "analyze the sales data"
+        assert list_sessions(sessions_dir=d)[0]["preview"] == "analyze the sales data"
 
     def test_a_typed_name_keeps_its_preview_current(self, tmp_path):
         """Naming a session by hand says what to call it, not what it was
@@ -320,7 +326,6 @@ class TestAutoNameWaitsForATopic:
 
 
 class TestRename:
-
     def test_renaming_changes_the_name_it_is_found_by(self, tmp_path):
         from sessions import tag_session, find_session_by_tag
 
@@ -393,7 +398,6 @@ class TestRename:
 
 
 class TestRowNumbers:
-
     """`onit sessions` prints a # column, so that number must address the row
     it was printed next to -- including when empty sessions are hidden."""
 
@@ -401,7 +405,7 @@ class TestRowNumbers:
         from sessions import resolve_session_choice
 
         d = str(tmp_path)
-        register_session("empty", sessions_dir=d)          # no turns, hidden
+        register_session("empty", sessions_dir=d)  # no turns, hidden
         for sid, task in (("a", "write the report"), ("b", "debug cuda")):
             register_session(sid, sessions_dir=d)
             update_session(sid, task=task, sessions_dir=d)
@@ -429,7 +433,6 @@ class TestRowNumbers:
 
 
 class TestEmptySessionsAreListed:
-
     """A session that was opened and never used is still a row.
 
     It used to be filtered out of the listing unless asked for, which left
@@ -464,8 +467,7 @@ class TestEmptySessionsAreListed:
         register_session("used", sessions_dir=d)
         update_session("used", task="real work", sessions_dir=d)
 
-        shown = [s["session_id"] for s in list_sessions(sessions_dir=d,
-                                                        include_empty=False)]
+        shown = [s["session_id"] for s in list_sessions(sessions_dir=d, include_empty=False)]
         assert shown == ["used"]
 
     def test_the_count_ignores_the_limit(self, tmp_path):
@@ -480,6 +482,7 @@ class TestEmptySessionsAreListed:
 
 
 # ── an empty session is not "where I left off" ───────────────────────────────
+
 
 class TestTheLastSessionHasSomethingInIt:
     """A bare ``onit`` resumes the last session.  An empty one is not it.
@@ -525,6 +528,7 @@ class TestTheLastSessionHasSomethingInIt:
         index["unnamed-but-used"]["tag"] = None
         index["unnamed-but-used"]["preview"] = None
         from sessions import _save_index
+
         _save_index(index, d)
 
         assert get_last_session(d) == "unnamed-but-used"
@@ -561,8 +565,10 @@ class TestNoTestWritesTheRealStore:
     @staticmethod
     def _real_home() -> str:
         import os
+
         try:
             import pwd
+
             return pwd.getpwuid(os.getuid()).pw_dir
         except (ImportError, KeyError):  # Windows
             return os.path.expanduser("~")
@@ -574,7 +580,8 @@ class TestNoTestWritesTheRealStore:
         real = os.path.join(self._real_home(), ".onit", "sessions")
         assert sessions.DEFAULT_SESSIONS_DIR != real, (
             "the fixture did not move DEFAULT_SESSIONS_DIR: a call that names "
-            f"no directory would write to {real}")
+            f"no directory would write to {real}"
+        )
 
     def test_a_call_naming_no_directory_lands_under_the_moved_home(self):
         import os
@@ -584,11 +591,13 @@ class TestNoTestWritesTheRealStore:
         written = os.path.join(sessions.DEFAULT_SESSIONS_DIR, "index.json")
         assert os.path.exists(written)
         assert written.startswith(os.environ["HOME"])
-        assert not os.path.exists(os.path.join(
-            self._real_home(), ".onit", "sessions", "no-dir-probe.jsonl"))
+        assert not os.path.exists(
+            os.path.join(self._real_home(), ".onit", "sessions", "no-dir-probe.jsonl")
+        )
 
 
 # ── session_label ────────────────────────────────────────────────────────────
+
 
 class TestNamingASessionInOneLine:
     """What the footer prints in the ``session`` field.
@@ -613,8 +622,7 @@ class TestNamingASessionInOneLine:
 
         d = str(tmp_path)
         register_session("5ea03e3c-1111-2222-3333-444455556666", sessions_dir=d)
-        assert session_label("5ea03e3c-1111-2222-3333-444455556666", d) == \
-            "(unnamed) 5ea03e3c"
+        assert session_label("5ea03e3c-1111-2222-3333-444455556666", d) == "(unnamed) 5ea03e3c"
 
     def test_the_auto_name_is_what_gets_shown(self, tmp_path):
         """A session named from its first message is named, not unnamed."""
@@ -622,8 +630,7 @@ class TestNamingASessionInOneLine:
 
         d = str(tmp_path)
         register_session("sid-2", sessions_dir=d)
-        update_session("sid-2", task="review the onit codebase for bugs",
-                       sessions_dir=d)
+        update_session("sid-2", task="review the onit codebase for bugs", sessions_dir=d)
         assert session_label("sid-2", d) == "review-onit-codebase-bugs"
 
     def test_no_id_names_nothing(self, tmp_path):
@@ -637,5 +644,4 @@ class TestNamingASessionInOneLine:
         """The index can be rebuilt from the JSONL files; the id survives it."""
         from sessions import session_label
 
-        assert session_label("deadbeef-0000", str(tmp_path)) == \
-            "(unnamed) deadbeef"
+        assert session_label("deadbeef-0000", str(tmp_path)) == "(unnamed) deadbeef"

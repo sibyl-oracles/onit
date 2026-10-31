@@ -34,6 +34,7 @@ from src.learn import playbook, recall, trajectory
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def learned(tmp_path):
     """An empty learned store and an isolated ruler."""
@@ -41,13 +42,22 @@ def learned(tmp_path):
     ruler_root = str(tmp_path / "ruler")
     os.makedirs(root, exist_ok=True)
     os.makedirs(ruler_root, exist_ok=True)
-    return {"learn": {"path": root, "eval": {"path": ruler_root}},
-            "data_path": str(tmp_path / "data")}
+    return {
+        "learn": {"path": root, "eval": {"path": ruler_root}},
+        "data_path": str(tmp_path / "data"),
+    }
 
 
-def _record(session="s1", turn=1, task="a question worth recording",
-            response="a long enough answer", model="m1", owner=None,
-            verdict=None, tools=None):
+def _record(
+    session="s1",
+    turn=1,
+    task="a question worth recording",
+    response="a long enough answer",
+    model="m1",
+    owner=None,
+    verdict=None,
+    tools=None,
+):
     """One trajectory record, shaped like the real ones."""
     return {
         "kind": "task",
@@ -64,8 +74,7 @@ def _record(session="s1", turn=1, task="a question worth recording",
 
 
 def _write(learned, record):
-    path = os.path.join(trajectory.trajectory_dir(learned),
-                        "%s.jsonl" % record["session_id"])
+    path = os.path.join(trajectory.trajectory_dir(learned), "%s.jsonl" % record["session_id"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
@@ -82,6 +91,7 @@ def _holdout(learned, items):
 
 
 # ── task_key: the identity of a question ────────────────────────────────────
+
 
 class TestTaskKey:
     """The question key is what makes the exclusion work at all."""
@@ -104,6 +114,7 @@ class TestTaskKey:
 
 
 # ── the exclusion set ───────────────────────────────────────────────────────
+
 
 class TestExclusions:
     """The exclusion set holds both ids and questions."""
@@ -134,6 +145,7 @@ class TestExclusions:
 
 
 # ── the predicate ───────────────────────────────────────────────────────────
+
 
 class TestIsExcluded:
     """One predicate, so the boundary is in one place."""
@@ -166,6 +178,7 @@ class TestIsExcluded:
 
 # ── the filter ──────────────────────────────────────────────────────────────
 
+
 class TestFilterExcluded:
     def test_the_filter_drops_the_holdout_and_its_siblings(self, learned):
         _holdout(learned, [{"id": "s1#1", "task": "a question"}])
@@ -184,40 +197,43 @@ class TestFilterExcluded:
 
 # ── recall: the real path ───────────────────────────────────────────────────
 
+
 class TestRecallExcludesTheHoldout:
     """The measurement path, not the predicate."""
 
     def test_recall_does_not_return_the_holdout_question(self, learned):
-        _write(learned, _record(session="s1", turn=1, task="weather today",
-                                response="the answer"))
+        _write(learned, _record(session="s1", turn=1, task="weather today", response="the answer"))
         _holdout(learned, [{"id": "s1#1", "task": "weather today"}])
         episodes = recall.recall("weather today", config_data=learned)
         assert all(e["id"] != "s1#1" for e in episodes)
 
-    def test_recall_does_not_return_a_sibling_of_the_holdout_question(self,
-                                                                      learned):
+    def test_recall_does_not_return_a_sibling_of_the_holdout_question(self, learned):
         """The twenty siblings.
 
         This is the test that would have caught the original bug.  The
         holdout names one record; the store holds another run of the
         same question; the agent must not be shown the second one.
         """
-        _write(learned, _record(session="s1", turn=1, task="weather today",
-                                response="the answer"))
-        _write(learned, _record(session="s2", turn=1, task="weather today",
-                                response="the answer"))
+        _write(learned, _record(session="s1", turn=1, task="weather today", response="the answer"))
+        _write(learned, _record(session="s2", turn=1, task="weather today", response="the answer"))
         _holdout(learned, [{"id": "s1#1", "task": "weather today"}])
         episodes = recall.recall("weather today", config_data=learned)
         assert all(e["id"] != "s2#1" for e in episodes), (
-            "recall returned a sibling run of the holdout's question")
+            "recall returned a sibling run of the holdout's question"
+        )
 
     def test_recall_still_works_for_questions_it_may_learn_from(self, learned):
-        _write(learned, _record(session="s1", turn=1,
-                                task="check the weather in manila",
-                                response="a long enough answer"))
+        _write(
+            learned,
+            _record(
+                session="s1",
+                turn=1,
+                task="check the weather in manila",
+                response="a long enough answer",
+            ),
+        )
         _holdout(learned, [{"id": "h1", "task": "something else entirely"}])
-        episodes = recall.recall("check the weather in manila",
-                                 config_data=learned)
+        episodes = recall.recall("check the weather in manila", config_data=learned)
         assert episodes, "the exclusion swallowed the corpus"
 
     def test_the_exclusion_can_be_turned_off_for_inspection(self, learned):
@@ -226,50 +242,69 @@ class TestRecallExcludesTheHoldout:
         The exclusion is on by default, but the diagnostic that proved
         the leak existed needs to be able to reproduce it.
         """
-        _write(learned, _record(session="s1", turn=1, task="weather today",
-                                response="the answer"))
+        _write(learned, _record(session="s1", turn=1, task="weather today", response="the answer"))
         _holdout(learned, [{"id": "s1#1", "task": "weather today"}])
-        episodes = recall.recall("weather today", config_data=learned,
-                                 exclude_holdout=False)
+        episodes = recall.recall("weather today", config_data=learned, exclude_holdout=False)
         assert any(e["id"] == "s1#1" for e in episodes), (
-            "the leak could not be reproduced, so the diagnostic is broken")
+            "the leak could not be reproduced, so the diagnostic is broken"
+        )
 
 
 # ── reflect: the other path ─────────────────────────────────────────────────
+
 
 class TestReflectExcludesTheHoldout:
     """A bullet written from the exam is a bullet written from the exam."""
 
     def test_reflect_does_not_use_a_holdout_run(self, learned):
-        good = _record(session="s1", turn=1, task="the held out question",
-                       response="a long enough answer", verdict="clean",
-                       tools=[{"name": "search", "ok": True}])
-        bad = _record(session="s2", turn=1, task="the held out question",
-                      response="a long enough answer", verdict="issues",
-                      tools=[{"name": "search", "ok": False}])
+        good = _record(
+            session="s1",
+            turn=1,
+            task="the held out question",
+            response="a long enough answer",
+            verdict="clean",
+            tools=[{"name": "search", "ok": True}],
+        )
+        bad = _record(
+            session="s2",
+            turn=1,
+            task="the held out question",
+            response="a long enough answer",
+            verdict="issues",
+            tools=[{"name": "search", "ok": False}],
+        )
         _write(learned, good)
         _write(learned, bad)
         _holdout(learned, [{"id": "s1#1", "task": "the held out question"}])
-        deltas = playbook.reflect([good, bad], scope=playbook.SCOPE_GLOBAL,
-                                  config_data=learned)
+        deltas = playbook.reflect([good, bad], scope=playbook.SCOPE_GLOBAL, config_data=learned)
         assert not deltas, "reflect produced a bullet from a holdout run"
 
     def test_reflect_still_works_outside_the_holdout(self, learned):
-        good = _record(session="s1", turn=1, task="an ordinary question",
-                       response="a long enough answer", verdict="clean",
-                       tools=[{"name": "search", "ok": True}])
-        bad = _record(session="s2", turn=1, task="an ordinary question",
-                      response="a long enough answer", verdict="issues",
-                      tools=[{"name": "search", "ok": False}])
+        good = _record(
+            session="s1",
+            turn=1,
+            task="an ordinary question",
+            response="a long enough answer",
+            verdict="clean",
+            tools=[{"name": "search", "ok": True}],
+        )
+        bad = _record(
+            session="s2",
+            turn=1,
+            task="an ordinary question",
+            response="a long enough answer",
+            verdict="issues",
+            tools=[{"name": "search", "ok": False}],
+        )
         _write(learned, good)
         _write(learned, bad)
         _holdout(learned, [{"id": "h1", "task": "something else entirely"}])
-        deltas = playbook.reflect([good, bad], scope=playbook.SCOPE_GLOBAL,
-                                  config_data=learned)
+        deltas = playbook.reflect([good, bad], scope=playbook.SCOPE_GLOBAL, config_data=learned)
         assert deltas, "reflect found no contrast it should have found"
 
 
 # ── the provenance ──────────────────────────────────────────────────────────
+
 
 class TestProvenance:
     """A bullet must point at a run, not at a session.
@@ -292,22 +327,32 @@ class TestProvenance:
         that is the identity the holdout's exclusion set is keyed on.
         A session id cannot be checked at all.
         """
-        good = _record(session="s1", turn=1, task="an ordinary question",
-                       response="a long enough answer", verdict="clean",
-                       tools=[{"name": "search", "ok": True}])
-        bad = _record(session="s2", turn=1, task="an ordinary question",
-                      response="a long enough answer", verdict="issues",
-                      tools=[{"name": "search", "ok": False}])
+        good = _record(
+            session="s1",
+            turn=1,
+            task="an ordinary question",
+            response="a long enough answer",
+            verdict="clean",
+            tools=[{"name": "search", "ok": True}],
+        )
+        bad = _record(
+            session="s2",
+            turn=1,
+            task="an ordinary question",
+            response="a long enough answer",
+            verdict="issues",
+            tools=[{"name": "search", "ok": False}],
+        )
         _write(learned, good)
         _write(learned, bad)
-        deltas = playbook.reflect([good, bad], scope=playbook.SCOPE_GLOBAL,
-                                  config_data=learned)
+        deltas = playbook.reflect([good, bad], scope=playbook.SCOPE_GLOBAL, config_data=learned)
         assert deltas
         for delta in deltas:
             for ref in delta.get("provenance") or []:
                 assert "#" in ref, (
                     "the provenance names a session (%r), which cannot be "
-                    "checked against the exclusion set" % ref)
+                    "checked against the exclusion set" % ref
+                )
 
     def test_a_bullet_never_points_at_a_holdout_run(self, learned):
         """The whole point, as a test.
@@ -316,67 +361,96 @@ class TestProvenance:
         bullet is distilled from the surviving one; the provenance must
         not name the holdout turn.
         """
-        holdout_turn = _record(session="s1", turn=2,
-                               task="the held out question",
-                               response="a long enough answer", verdict="clean",
-                               tools=[{"name": "search", "ok": True}])
-        kept_turn = _record(session="s1", turn=1,
-                             task="a different question here",
-                             response="a long enough answer", verdict="clean",
-                             tools=[{"name": "search", "ok": True}])
-        bad = _record(session="s2", turn=1, task="a different question here",
-                      response="a long enough answer", verdict="issues",
-                      tools=[{"name": "search", "ok": False}])
+        holdout_turn = _record(
+            session="s1",
+            turn=2,
+            task="the held out question",
+            response="a long enough answer",
+            verdict="clean",
+            tools=[{"name": "search", "ok": True}],
+        )
+        kept_turn = _record(
+            session="s1",
+            turn=1,
+            task="a different question here",
+            response="a long enough answer",
+            verdict="clean",
+            tools=[{"name": "search", "ok": True}],
+        )
+        bad = _record(
+            session="s2",
+            turn=1,
+            task="a different question here",
+            response="a long enough answer",
+            verdict="issues",
+            tools=[{"name": "search", "ok": False}],
+        )
         for record in (holdout_turn, kept_turn, bad):
             _write(learned, record)
         _holdout(learned, [{"id": "s1#2", "task": "the held out question"}])
 
-        deltas = playbook.reflect([holdout_turn, kept_turn, bad],
-                                  scope=playbook.SCOPE_GLOBAL,
-                                  config_data=learned)
+        deltas = playbook.reflect(
+            [holdout_turn, kept_turn, bad], scope=playbook.SCOPE_GLOBAL, config_data=learned
+        )
         excluded = ruler.holdout_exclusions(learned)
         for delta in deltas:
             for ref in delta.get("provenance") or []:
-                assert ref not in excluded["ids"], (
-                    "a bullet points at the holdout run %r" % ref)
+                assert ref not in excluded["ids"], "a bullet points at the holdout run %r" % ref
 
 
 # ── the split filter ────────────────────────────────────────────────────────
+
 
 class TestSplitFilter:
     """``iter_records`` can be asked for one split."""
 
     def test_the_holdout_split_yields_only_holdout_records(self, learned):
         for i in range(6):
-            _write(learned, _record(session="s%d" % i, turn=1,
-                                    task="a question number %d here" % i,
-                                    response="a long enough answer"))
+            _write(
+                learned,
+                _record(
+                    session="s%d" % i,
+                    turn=1,
+                    task="a question number %d here" % i,
+                    response="a long enough answer",
+                ),
+            )
         split = ruler.build_split(config_data=learned, holdout_ratio=0.5)
         ruler.write_split(split, learned)
         holdout_ids = {i["id"] for i in split["holdout"]}
         records = list(trajectory.iter_records(learned, split="holdout"))
         assert records
-        assert all("%s#%s" % (r["session_id"], r["turn"]) in holdout_ids
-                   for r in records)
+        assert all("%s#%s" % (r["session_id"], r["turn"]) in holdout_ids for r in records)
 
     def test_the_dev_split_yields_only_dev_records(self, learned):
         for i in range(6):
-            _write(learned, _record(session="s%d" % i, turn=1,
-                                    task="a question number %d here" % i,
-                                    response="a long enough answer"))
+            _write(
+                learned,
+                _record(
+                    session="s%d" % i,
+                    turn=1,
+                    task="a question number %d here" % i,
+                    response="a long enough answer",
+                ),
+            )
         split = ruler.build_split(config_data=learned, holdout_ratio=0.5)
         ruler.write_split(split, learned)
         dev_ids = {i["id"] for i in split["dev"]}
         records = list(trajectory.iter_records(learned, split="dev"))
         assert records
-        assert all("%s#%s" % (r["session_id"], r["turn"]) in dev_ids
-                   for r in records)
+        assert all("%s#%s" % (r["session_id"], r["turn"]) in dev_ids for r in records)
 
     def test_exclude_holdout_removes_the_holdout(self, learned):
         for i in range(6):
-            _write(learned, _record(session="s%d" % i, turn=1,
-                                    task="a question number %d here" % i,
-                                    response="a long enough answer"))
+            _write(
+                learned,
+                _record(
+                    session="s%d" % i,
+                    turn=1,
+                    task="a question number %d here" % i,
+                    response="a long enough answer",
+                ),
+            )
         split = ruler.build_split(config_data=learned, holdout_ratio=0.5)
         ruler.write_split(split, learned)
         everything = list(trajectory.iter_records(learned))
@@ -386,9 +460,15 @@ class TestSplitFilter:
 
     def test_the_two_splits_partition_the_corpus(self, learned):
         for i in range(6):
-            _write(learned, _record(session="s%d" % i, turn=1,
-                                    task="a question number %d here" % i,
-                                    response="a long enough answer"))
+            _write(
+                learned,
+                _record(
+                    session="s%d" % i,
+                    turn=1,
+                    task="a question number %d here" % i,
+                    response="a long enough answer",
+                ),
+            )
         split = ruler.build_split(config_data=learned, holdout_ratio=0.5)
         ruler.write_split(split, learned)
         holdout = list(trajectory.iter_records(learned, split="holdout"))

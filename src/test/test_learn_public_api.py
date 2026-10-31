@@ -21,14 +21,30 @@ import src.learn as learn
 
 REMOVED = [
     # .playbook -- all reachable as src.learn.playbook.<name>
-    "contrast", "curate", "decay", "global_path", "load", "make_bullet",
-    "owner_path", "playbook_dir", "read_playbook", "reflect", "render",
-    "select", "tool_signature",
+    "contrast",
+    "curate",
+    "decay",
+    "global_path",
+    "load",
+    "make_bullet",
+    "owner_path",
+    "playbook_dir",
+    "read_playbook",
+    "reflect",
+    "render",
+    "select",
+    "tool_signature",
     # .skills
-    "pinned_path", "pinned_skills",
+    "pinned_path",
+    "pinned_skills",
     # .skills_gate
-    "ALL_CHECKS", "CHECK_DEPS", "CHECK_MANIFEST", "CHECK_REGRESSION",
-    "CHECK_SOURCE", "CHECK_TESTS", "GateResult",
+    "ALL_CHECKS",
+    "CHECK_DEPS",
+    "CHECK_MANIFEST",
+    "CHECK_REGRESSION",
+    "CHECK_SOURCE",
+    "CHECK_TESTS",
+    "GateResult",
     # .skills_mining
     "MIN_SESSIONS",
 ]
@@ -37,19 +53,22 @@ REMOVED = [
 class TestRemovedNames:
     def test_none_of_them_is_on_the_package(self):
         still_there = [n for n in REMOVED if hasattr(learn, n)]
-        assert not still_there, (
-            "re-exported again without a reader: %s" % still_there)
+        assert not still_there, "re-exported again without a reader: %s" % still_there
 
-    @pytest.mark.parametrize("name,module", [
-        ("load", "playbook"),
-        ("reflect", "playbook"),
-        ("GateResult", "skills_gate"),
-        ("MIN_SESSIONS", "skills_mining"),
-    ])
+    @pytest.mark.parametrize(
+        "name,module",
+        [
+            ("load", "playbook"),
+            ("reflect", "playbook"),
+            ("GateResult", "skills_gate"),
+            ("MIN_SESSIONS", "skills_mining"),
+        ],
+    )
     def test_the_owning_module_still_has_them(self, name, module):
         """Removed from the facade, not from the codebase: callers that need
         one import it from the module that defines it."""
         import importlib
+
         mod = importlib.import_module(f"src.learn.{module}")
         assert hasattr(mod, name)
 
@@ -69,9 +88,11 @@ class TestTheFacadeIsConsistent:
         imports or defines count.
         """
         import types
-        public = {n for n in dir(learn)
-                  if not n.startswith("_")
-                  and not isinstance(getattr(learn, n), types.ModuleType)}
+
+        public = {
+            n
+            for n in dir(learn)
+            if not n.startswith("_") and not isinstance(getattr(learn, n), types.ModuleType)
+        }
         extra = sorted(public - set(learn.__all__))
-        assert not extra, (
-            "public but unadvertised (add to __all__ or drop): %s" % extra)
+        assert not extra, "public but unadvertised (add to __all__ or drop): %s" % extra

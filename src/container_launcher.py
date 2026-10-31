@@ -120,7 +120,8 @@ def _ensure_data_volume_writable(docker: str) -> None:
     """
     inspect = subprocess.run(
         [docker, "volume", "inspect", DATA_VOLUME],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     if inspect.returncode != 0:
         return  # volume will be created with 0777 from the image
@@ -128,9 +129,23 @@ def _ensure_data_volume_writable(docker: str) -> None:
     # .huggingface created (on first use) as onit:onit 0755 — those would
     # still reject writes from other UIDs even after we fix the top level.
     subprocess.run(
-        [docker, "run", "--rm", "-u", "0:0", "--entrypoint", "chmod",
-         "-v", f"{DATA_VOLUME}:/v", IMAGE_TAG, "-R", "0777", "/v"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [
+            docker,
+            "run",
+            "--rm",
+            "-u",
+            "0:0",
+            "--entrypoint",
+            "chmod",
+            "-v",
+            f"{DATA_VOLUME}:/v",
+            IMAGE_TAG,
+            "-R",
+            "0777",
+            "/v",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -142,8 +157,7 @@ def _build_image(docker: str) -> None:
             "only works from a source checkout of onit.\n"
         )
         sys.exit(1)
-    print(f"Building {IMAGE_TAG} (first run, may take a few minutes)...",
-          file=sys.stderr)
+    print(f"Building {IMAGE_TAG} (first run, may take a few minutes)...", file=sys.stderr)
     subprocess.run(
         [docker, "build", "-t", IMAGE_TAG, str(root)],
         check=True,
@@ -173,6 +187,7 @@ def _configured_hosts() -> list[str]:
         return []
     try:
         import yaml
+
         with open(cfg_path) as f:
             serving = (yaml.safe_load(f) or {}).get("serving") or {}
     except Exception:
@@ -181,8 +196,11 @@ def _configured_hosts() -> list[str]:
         return []
     hosts = []
     for entry in serving.get("endpoints") or []:
-        host = entry if isinstance(entry, str) else (
-            entry.get("host") if isinstance(entry, dict) else None)
+        host = (
+            entry
+            if isinstance(entry, str)
+            else (entry.get("host") if isinstance(entry, dict) else None)
+        )
         if host:
             hosts.append(str(host))
     if serving.get("host"):
@@ -254,7 +272,9 @@ def _host_user_args(bind_mount_count: int) -> list[str]:
 
 
 def _runtime_args(
-    *, memory: str | None = None, shm_size: str | None = None,
+    *,
+    memory: str | None = None,
+    shm_size: str | None = None,
     tmp_size: str | None = None,
 ) -> list[str]:
     """Runtime flags for the container.
@@ -299,8 +319,11 @@ def _detect_gpu_support(docker: str) -> tuple[bool, str | None]:
     try:
         smi = subprocess.run(
             ["nvidia-smi"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=5, text=True, check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            text=True,
+            check=True,
         ).stdout
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         return (False, None)
@@ -309,8 +332,11 @@ def _detect_gpu_support(docker: str) -> tuple[bool, str | None]:
     try:
         info = subprocess.run(
             [docker, "info"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=5, text=True, check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            text=True,
+            check=True,
         ).stdout
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         return (False, None)
@@ -539,18 +565,27 @@ def run(
         _build_image(docker)
     _ensure_data_volume_writable(docker)
     return _run_docker(
-        docker, forwarded_args,
-        gpus=gpus, mounts=mounts,
-        memory=memory, shm_size=shm_size, tmp_size=tmp_size,
+        docker,
+        forwarded_args,
+        gpus=gpus,
+        mounts=mounts,
+        memory=memory,
+        shm_size=shm_size,
+        tmp_size=tmp_size,
         allow_installs=allow_installs,
     )
 
 
 # Launcher-only flags consumed by the launcher, NOT forwarded into the container.
-_LAUNCHER_VALUE_FLAGS = frozenset({
-    "--container-gpus", "--container-mount",
-    "--container-memory", "--container-shm-size", "--container-tmp-size",
-})
+_LAUNCHER_VALUE_FLAGS = frozenset(
+    {
+        "--container-gpus",
+        "--container-mount",
+        "--container-memory",
+        "--container-shm-size",
+        "--container-tmp-size",
+    }
+)
 _LAUNCHER_BOOL_FLAGS = frozenset({"--container", "--container-allow-installs"})
 
 
@@ -572,4 +607,3 @@ def strip_launcher_args(argv: list[str]) -> list[str]:
         out.append(tok)
         i += 1
     return out
-

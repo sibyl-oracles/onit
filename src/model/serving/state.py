@@ -226,10 +226,10 @@ class RunState:
             lines.append(f"- The last attempt ended early: {phrase}.")
         if not lines:
             return ""
-        return ("\n## Earlier in this session\n"
-                + REFERENCE_ONLY + "\n"
-                + "\n".join(lines) + "\n"
-                "Build on what already worked. Do not repeat it.\n")
+        return (
+            "\n## Earlier in this session\n" + REFERENCE_ONLY + "\n" + "\n".join(lines) + "\n"
+            "Build on what already worked. Do not repeat it.\n"
+        )
 
     # ── accumulation across the tasks of a session ──────────────────────────
 
@@ -293,11 +293,18 @@ class RunState:
         state = cls()
         if not isinstance(data, dict):
             return state
-        for name in ("iteration_count", "planning_continuation_count",
-                     "ack_continuation_count", "final_continuation_count",
-                     "repetition_continuation_count", "repeat_recovery_count",
-                     "nudge_decline_count", "final_stall_count",
-                     "task_count", "total_turns"):
+        for name in (
+            "iteration_count",
+            "planning_continuation_count",
+            "ack_continuation_count",
+            "final_continuation_count",
+            "repetition_continuation_count",
+            "repeat_recovery_count",
+            "nudge_decline_count",
+            "final_stall_count",
+            "task_count",
+            "total_turns",
+        ):
             try:
                 setattr(state, name, int(data.get(name, 0) or 0))
             except (TypeError, ValueError):

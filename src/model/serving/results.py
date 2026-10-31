@@ -150,10 +150,13 @@ class ResultStore:
     that never resolve.
     """
 
-    def __init__(self, data_path: str = "",
-                 preview_chars: int = RESULT_PREVIEW_CHARS,
-                 threshold: int = RESULT_STORE_THRESHOLD,
-                 enabled: bool = True):
+    def __init__(
+        self,
+        data_path: str = "",
+        preview_chars: int = RESULT_PREVIEW_CHARS,
+        threshold: int = RESULT_STORE_THRESHOLD,
+        enabled: bool = True,
+    ):
         self.data_path = data_path or ""
         self.preview_chars = max(500, int(preview_chars))
         self.threshold = max(self.preview_chars, int(threshold))
@@ -175,8 +178,11 @@ class ResultStore:
         if not self.enabled:
             return []
         try:
-            return sorted(p for p in self.results_dir.glob(f"*{RESULT_SUFFIX}")
-                          if p.is_file() and _HANDLE_RE.match(p.name.split("-")[0]))
+            return sorted(
+                p
+                for p in self.results_dir.glob(f"*{RESULT_SUFFIX}")
+                if p.is_file() and _HANDLE_RE.match(p.name.split("-")[0])
+            )
         except OSError:
             return []
 
@@ -252,9 +258,11 @@ class ResultStore:
                 size = path.stat().st_size
             except OSError:
                 continue
-            rec = {"handle": handle,
-                   "tool": rest[:-len(RESULT_SUFFIX)] or "unknown",
-                   "chars": size}
+            rec = {
+                "handle": handle,
+                "tool": rest[: -len(RESULT_SUFFIX)] or "unknown",
+                "chars": size,
+            }
             # The URL line, when there is one, sits in the first kilobyte —
             # fetch_content's header carries it.  One regex, one small read;
             # worth it only for fetch-shaped results.
@@ -269,9 +277,13 @@ class ResultStore:
                     pass
             out.append(rec)
         if _omitted:
-            out.append({"omitted": _omitted,
-                        "note": "older stored results not listed; handles are on disk "
-                                f"under {RESULTS_SUBDIR}"})
+            out.append(
+                {
+                    "omitted": _omitted,
+                    "note": "older stored results not listed; handles are on disk "
+                    f"under {RESULTS_SUBDIR}",
+                }
+            )
         return out
 
     def put(self, tool: str, text: str) -> str | None:
@@ -316,14 +328,15 @@ class ResultStore:
         to run the tool again, which is a network round trip to recover bytes
         this directory is already holding.
         """
-        return (f'{CONTINUATION_PREFIX}{DECAY_MARK} — '
-                f'result_read("{handle}", offset={offset}) for the rest, or '
-                f'result_grep("{handle}", "pattern")]')
+        return (
+            f"{CONTINUATION_PREFIX}{DECAY_MARK} — "
+            f'result_read("{handle}", offset={offset}) for the rest, or '
+            f'result_grep("{handle}", "pattern")]'
+        )
 
     # ── the tools ───────────────────────────────────────────────────────────
 
-    def read(self, handle: str, offset: int = 0,
-             limit: int = DEFAULT_READ_CHARS) -> str:
+    def read(self, handle: str, offset: int = 0, limit: int = DEFAULT_READ_CHARS) -> str:
         """A window of a stored result."""
         text = self._text(handle)
         if isinstance(text, str) and text.startswith("Error:"):
@@ -334,19 +347,23 @@ class ResultStore:
         if offset >= total:
             return _error(
                 f"offset {offset:,} is past the end of result {handle} "
-                f"({total:,} chars). Read from an offset below that.")
-        window = text[offset:offset + limit]
+                f"({total:,} chars). Read from an offset below that."
+            )
+        window = text[offset : offset + limit]
         end = offset + len(window)
         # The origin tool rides in the header: a result recovered through a
         # handle arrived with name="result_read" — untrusted by the verifier —
         # even when the bytes came from a trusted read. Surfacing the origin
         # lets trusted_evidence credit the figures it already saw.
         origin = self._origin_tool(handle)
-        header = (f"[result:{handle} · origin={origin} · {total:,} chars · "
-                  f"showing {offset:,}–{end:,}]")
+        header = (
+            f"[result:{handle} · origin={origin} · {total:,} chars · showing {offset:,}–{end:,}]"
+        )
         if end < total:
-            return (f"{header}\n{window}\n"
-                    f'{CONTINUATION_PREFIX}more: result_read("{handle}", offset={end})]')
+            return (
+                f"{header}\n{window}\n"
+                f'{CONTINUATION_PREFIX}more: result_read("{handle}", offset={end})]'
+            )
         return f"{header}\n{window}\n[end of result {handle}]"
 
     def grep(self, handle: str, pattern: str, context: int = 3) -> str:
@@ -372,9 +389,11 @@ class ResultStore:
         lines = text.splitlines()
         hits = [i for i, line in enumerate(lines) if regex.search(line)]
         if not hits:
-            return (f"[result:{handle} · origin={self._origin_tool(handle)} · "
-                    f"no line matches {pattern!r}. "
-                    f'Read it instead: result_read("{handle}")]')
+            return (
+                f"[result:{handle} · origin={self._origin_tool(handle)} · "
+                f"no line matches {pattern!r}. "
+                f'Read it instead: result_read("{handle}")]'
+            )
 
         # Overlapping context windows are merged, so a cluster of matches reads
         # as one passage rather than the same lines repeated per hit.
@@ -386,15 +405,18 @@ class ResultStore:
             else:
                 spans.append([lo, hi])
 
-        out = [f"[result:{handle} · {len(hits)} matching line(s) for {pattern!r}"
-               + (f", showing the first {MAX_GREP_MATCHES}]"
-                  if len(hits) > MAX_GREP_MATCHES else "]")]
+        out = [
+            f"[result:{handle} · {len(hits)} matching line(s) for {pattern!r}"
+            + (f", showing the first {MAX_GREP_MATCHES}]" if len(hits) > MAX_GREP_MATCHES else "]")
+        ]
         chars = len(out[0])
         for lo, hi in spans:
             block = "\n".join(f"{n + 1}: {lines[n]}" for n in range(lo, hi))
             if chars + len(block) > MAX_GREP_CHARS:
-                out.append(f'{CONTINUATION_PREFIX}output truncated — narrow the '
-                           f'pattern, or read around a line with result_read("{handle}")]')
+                out.append(
+                    f"{CONTINUATION_PREFIX}output truncated — narrow the "
+                    f'pattern, or read around a line with result_read("{handle}")]'
+                )
                 break
             out.append(block)
             chars += len(block)
@@ -410,7 +432,7 @@ class ResultStore:
         if path is None:
             return "unknown"
         _, _, rest = path.name.partition("-")
-        return rest[:-len(RESULT_SUFFIX)] or "unknown"
+        return rest[: -len(RESULT_SUFFIX)] or "unknown"
 
     def _text(self, handle: str):
         """The stored text, or an error string naming what does exist."""
@@ -420,8 +442,7 @@ class ResultStore:
         if path is None:
             saved = [r["handle"] for r in self.stored()]
             available = ", ".join(saved) if saved else "none stored yet"
-            return _error(f"no stored result under handle '{handle}'. "
-                          f"Stored handles: {available}.")
+            return _error(f"no stored result under handle '{handle}'. Stored handles: {available}.")
         try:
             return path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:

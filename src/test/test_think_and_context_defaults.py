@@ -25,8 +25,7 @@ import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from model.serving.chat import (DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_TOKENS,
-                                DEFAULT_THINK)
+from model.serving.chat import DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_TOKENS, DEFAULT_THINK
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +34,7 @@ REPO = os.path.dirname(SRC)
 
 
 # ── what the model server is actually told ───────────────────────────────────
+
 
 def _completion(text="Done."):
     message = MagicMock()
@@ -54,32 +54,57 @@ async def _vllm_request(**chat_kwargs):
     """The body a vLLM request carries, with nothing said about thinking."""
     client = AsyncMock()
     client.chat.completions.create = AsyncMock(return_value=_completion())
-    with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-         patch("model.serving.chat._resolve_model_id",
-               new_callable=AsyncMock, return_value="qwen3-30b"), \
-         patch("model.serving.chat._get_model_max_context",
-               new_callable=AsyncMock, return_value=None):
+    with (
+        patch("model.serving.chat.AsyncOpenAI", return_value=client),
+        patch(
+            "model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="qwen3-30b"
+        ),
+        patch(
+            "model.serving.chat._get_model_max_context", new_callable=AsyncMock, return_value=None
+        ),
+    ):
         from model.serving.chat import chat
-        await chat(host="http://localhost:8000/v1", instruction="hi",
-                   safety_queue=asyncio.Queue(), **chat_kwargs)
+
+        await chat(
+            host="http://localhost:8000/v1",
+            instruction="hi",
+            safety_queue=asyncio.Queue(),
+            **chat_kwargs,
+        )
     return client.chat.completions.create.call_args.kwargs
 
 
 async def _ollama_request(**chat_kwargs):
     """The kwargs an Ollama chat() carries, with nothing said about thinking."""
     client = AsyncMock()
-    client.chat = AsyncMock(return_value=MagicMock(
-        message=MagicMock(content="Done.", tool_calls=None, thinking=None),
-        done=True, done_reason="stop"))
-    with patch("model.serving.chat._create_ollama_client", return_value=client), \
-         patch("model.serving.chat._ollama_resolve_model_id",
-               new_callable=AsyncMock, return_value="glm-5.3:cloud"), \
-         patch("model.serving.chat._get_ollama_max_context",
-               new_callable=AsyncMock, return_value=None):
+    client.chat = AsyncMock(
+        return_value=MagicMock(
+            message=MagicMock(content="Done.", tool_calls=None, thinking=None),
+            done=True,
+            done_reason="stop",
+        )
+    )
+    with (
+        patch("model.serving.chat._create_ollama_client", return_value=client),
+        patch(
+            "model.serving.chat._ollama_resolve_model_id",
+            new_callable=AsyncMock,
+            return_value="glm-5.3:cloud",
+        ),
+        patch(
+            "model.serving.chat._get_ollama_max_context", new_callable=AsyncMock, return_value=None
+        ),
+    ):
         from model.serving.chat import chat
-        await chat(host="https://ollama.com", host_key="k", instruction="hi",
-                   model="glm-5.3:cloud",
-                   safety_queue=asyncio.Queue(), **chat_kwargs)
+
+        await chat(
+            host="https://ollama.com",
+            host_key="k",
+            instruction="hi",
+            model="glm-5.3:cloud",
+            safety_queue=asyncio.Queue(),
+            **chat_kwargs,
+        )
     return client.chat.call_args.kwargs
 
 
@@ -98,6 +123,7 @@ class TestTheThinkConstant:
     def test_chat_defaults_to_it(self):
         import inspect
         from model.serving.chat import chat
+
         default = inspect.signature(chat).parameters["think"].default
         assert default is DEFAULT_THINK
 
@@ -113,8 +139,7 @@ class TestReasoningReachesTheServer:
     @pytest.mark.asyncio
     async def test_vllm_is_told_to_think(self):
         body = await _vllm_request()
-        assert body["extra_body"]["chat_template_kwargs"] == {
-            "enable_thinking": True}
+        assert body["extra_body"]["chat_template_kwargs"] == {"enable_thinking": True}
 
     @pytest.mark.asyncio
     async def test_ollama_is_told_to_think(self):
@@ -125,8 +150,7 @@ class TestReasoningReachesTheServer:
     async def test_vllm_can_still_be_told_not_to(self):
         """The off switch is what makes the on default usable."""
         body = await _vllm_request(think=False)
-        assert body["extra_body"]["chat_template_kwargs"] == {
-            "enable_thinking": False}
+        assert body["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
 
     @pytest.mark.asyncio
     async def test_ollama_can_still_be_told_not_to(self):
@@ -145,6 +169,7 @@ class TestTheContextWindowDefault:
         the flag have to name the same number or a user who sets it explicitly
         gets a different run from one who does not."""
         from src.cli import _token_count
+
         assert _token_count("1M") == DEFAULT_MAX_CONTEXT_TOKENS
 
     def test_it_leaves_the_compaction_threshold_off_the_floor(self):
@@ -169,14 +194,20 @@ class TestTheContextWindowDefault:
         """The default is a fallback, not an override."""
         client = AsyncMock()
         client.chat.completions.create = AsyncMock(return_value=_completion())
-        with patch("model.serving.chat.AsyncOpenAI", return_value=client), \
-             patch("model.serving.chat._resolve_model_id",
-                   new_callable=AsyncMock, return_value="m"), \
-             patch("model.serving.chat._get_model_max_context",
-                   new_callable=AsyncMock, return_value=131072):
+        with (
+            patch("model.serving.chat.AsyncOpenAI", return_value=client),
+            patch("model.serving.chat._resolve_model_id", new_callable=AsyncMock, return_value="m"),
+            patch(
+                "model.serving.chat._get_model_max_context",
+                new_callable=AsyncMock,
+                return_value=131072,
+            ),
+        ):
             from model.serving.chat import chat
-            await chat(host="http://localhost:8000/v1", instruction="hi",
-                       safety_queue=asyncio.Queue())
+
+            await chat(
+                host="http://localhost:8000/v1", instruction="hi", safety_queue=asyncio.Queue()
+            )
         body = client.chat.completions.create.call_args.kwargs
         # A 128k window cannot take a 1M output budget; the clamp proves the
         # reported window is what the run was measured against.
@@ -190,6 +221,7 @@ class TestTheContextWindowDefault:
 
 # ── the CLI and the shipped config ───────────────────────────────────────────
 
+
 def _shipped_config() -> dict:
     with open(os.path.join(SRC, "configs", "default.yaml")) as f:
         return yaml.safe_load(f) or {}
@@ -197,6 +229,7 @@ def _shipped_config() -> dict:
 
 def _flag(flag: str):
     from src.cli import _build_parser
+
     action = _build_parser()._option_string_actions.get(flag)
     assert action is not None, f"{flag} is not an option of the parser"
     return action
@@ -237,6 +270,7 @@ class TestTheCli:
 
 # ── the whole chain, from the command line to chat()'s kwargs ────────────────
 
+
 class TestTheChainFromTheFlagToChat:
     """Each link is tested above; this is the chain.
 
@@ -260,15 +294,18 @@ class TestTheChainFromTheFlagToChat:
 
         serving = {"host": "http://x/v1"}
         serving.update(config_extra or {})
-        cfg = {"serving": serving, "data_path": str(tmp_path),
-               "session_path": str(tmp_path / "sessions")}
+        cfg = {
+            "serving": serving,
+            "data_path": str(tmp_path),
+            "session_path": str(tmp_path / "sessions"),
+        }
         path = tmp_path / "config.yaml"
         path.write_text(yaml.safe_dump(cfg))
-        with patch.object(setup_mod, "get_secret", lambda k: None), \
-             patch.object(setup_mod, "CONFIG_PATH",
-                          str(tmp_path / "no-setup.yaml")):
-            args = _build_parser().parse_args(
-                ["--config", str(path)] + extra_flags)
+        with (
+            patch.object(setup_mod, "get_secret", lambda k: None),
+            patch.object(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml")),
+        ):
+            args = _build_parser().parse_args(["--config", str(path)] + extra_flags)
             resolved = _parse_and_resolve_config(args)
         with patch("src.onit.discover_tools", return_value=ToolRegistry()):
             agent = OnIt(config=resolved)
@@ -280,14 +317,26 @@ class TestTheChainFromTheFlagToChat:
             return "OK."
 
         kwargs = agent._chat_kwargs(
-            metrics={}, run_state=RunState(), chat_ui=None, verbose=False,
-            data_path=str(tmp_path), session_id="s", session_history=[])
+            metrics={},
+            run_state=RunState(),
+            chat_ui=None,
+            verbose=False,
+            data_path=str(tmp_path),
+            session_id="s",
+            session_history=[],
+        )
         import asyncio as _asyncio
-        with patch("src.onit.chat", _fake_chat), \
-             patch("src.onit._call_sandbox_stop", AsyncMock()):
-            _asyncio.run(_chat_with_failover(
-                agent, instruction="hi", kwargs=kwargs,
-                safety_queue=_asyncio.Queue(), session_key="s"))
+
+        with patch("src.onit.chat", _fake_chat), patch("src.onit._call_sandbox_stop", AsyncMock()):
+            _asyncio.run(
+                _chat_with_failover(
+                    agent,
+                    instruction="hi",
+                    kwargs=kwargs,
+                    safety_queue=_asyncio.Queue(),
+                    session_key="s",
+                )
+            )
         return resolved, seen
 
     def test_a_run_with_no_flag_reasons(self, tmp_path):
@@ -309,8 +358,7 @@ class TestTheChainFromTheFlagToChat:
     def test_a_config_that_says_false_is_obeyed(self, tmp_path):
         """An explicit ``serving.think: false`` is a preference, not a
         default, so nothing on the way through may override it."""
-        resolved, seen = self._think_passed_to_chat(
-            tmp_path, [], config_extra={"think": False})
+        resolved, seen = self._think_passed_to_chat(tmp_path, [], config_extra={"think": False})
         assert resolved["serving"]["think"] is False
         assert seen["think"] is False
 
@@ -318,12 +366,14 @@ class TestTheChainFromTheFlagToChat:
         """``--think`` over a config that says false: the flag is the more
         recent statement of intent."""
         resolved, seen = self._think_passed_to_chat(
-            tmp_path, ["--think"], config_extra={"think": False})
+            tmp_path, ["--think"], config_extra={"think": False}
+        )
         assert resolved["serving"]["think"] is True
         assert seen["think"] is True
 
 
 # ── the docs ─────────────────────────────────────────────────────────────────
+
 
 class TestDocs:
     """The docs are what a user reads instead of the code, and 262144 was
@@ -333,10 +383,15 @@ class TestDocs:
         with open(os.path.join(REPO, *parts)) as f:
             return f.read()
 
-    @pytest.mark.parametrize("name", [
-        "CLI.md", "CONFIGURATION.md", "MODEL_SERVING.md",
-        "RUN_A_MODEL_SERVER.md",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "CLI.md",
+            "CONFIGURATION.md",
+            "MODEL_SERVING.md",
+            "RUN_A_MODEL_SERVER.md",
+        ],
+    )
     def test_no_doc_claims_the_old_fallback(self, name):
         """262144 is still a fine number to *illustrate* with — it is a real
         server flag (``--max-model-len 262144``) and a real window for a real
@@ -346,22 +401,24 @@ class TestDocs:
         text = self._read("docs", name)
         lowered = text.lower()
         for old in ("262144", "262,144"):
-            for phrase in (f"falls back to an assumed {old}",
-                           f"falls back to an assumed {old[:3]},{old[3:]}",
-                           f"fallback of {old}",
-                           f"fallback of {old[:3]},{old[3:]}",
-                           f"assumed {old}",
-                           f"else `{old}`"):
-                assert phrase not in lowered, (
-                    f"docs/{name} still claims {old} is the fallback")
+            for phrase in (
+                f"falls back to an assumed {old}",
+                f"falls back to an assumed {old[:3]},{old[3:]}",
+                f"fallback of {old}",
+                f"fallback of {old[:3]},{old[3:]}",
+                f"assumed {old}",
+                f"else `{old}`",
+            ):
+                assert phrase not in lowered, f"docs/{name} still claims {old} is the fallback"
         # And no line may offer it as the "else" arm of the resolution.
         for line in text.splitlines():
             if "262144" in line or "262,144" in line:
                 assert "fallback" not in line.lower(), (
-                    f"docs/{name} still calls 262144 a fallback: {line}")
+                    f"docs/{name} still calls 262144 a fallback: {line}"
+                )
                 assert "unreported" not in line.lower(), (
-                    f"docs/{name} still calls 262144 the unreported default: "
-                    f"{line}")
+                    f"docs/{name} still calls 262144 the unreported default: {line}"
+                )
 
     def test_the_cli_doc_states_the_new_fallback(self):
         text = self._read("docs", "CLI.md")

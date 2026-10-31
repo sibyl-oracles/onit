@@ -58,29 +58,45 @@ class Command:
 
 COMMANDS = (
     Command("help", "", "Show this list."),
-    Command("doctor", "[deep]",
-            "Run the live self-check: servers, tools, prompts, endpoint. "
-            "'deep' adds a real model reply and a tool-calling turn "
-            "(costs tokens)."),
+    Command(
+        "doctor",
+        "[deep]",
+        "Run the live self-check: servers, tools, prompts, endpoint. "
+        "'deep' adds a real model reply and a tool-calling turn "
+        "(costs tokens).",
+    ),
     Command("setup", "", "Show the endpoints, keys and paths this session is using."),
-    Command("rate", "[up|down|clear] [n]",
-            "Rate an answer: the newest one, or number n. The strongest "
-            "outcome signal there is."),
-    Command("rename", "<name>",
-            "Name this session, so 'onit --resume-session <name>' finds it; "
-            "bare, show what it is called."),
-    Command("model", "[name | -]",
-            "Switch model; bare, list what the endpoint serves; '-' for "
-            "auto-detect."),
-    Command("host", "[<url> | add <url> | rm <n>]",
-            "Use one endpoint, add one to the rotation, or drop one; bare, "
-            "list them."),
-    Command("key", "[<n | url> | rm <n | url>]",
-            "Set an endpoint's API key, typed without echo; bare, the one "
-            "serving this session."),
-    Command("save", "",
-            "Write the session's endpoints to the config file so the next "
-            "one starts with them."),
+    Command(
+        "rate",
+        "[up|down|clear] [n]",
+        "Rate an answer: the newest one, or number n. The strongest outcome signal there is.",
+    ),
+    Command(
+        "rename",
+        "<name>",
+        "Name this session, so 'onit --resume-session <name>' finds it; "
+        "bare, show what it is called.",
+    ),
+    Command(
+        "model",
+        "[name | -]",
+        "Switch model; bare, list what the endpoint serves; '-' for auto-detect.",
+    ),
+    Command(
+        "host",
+        "[<url> | add <url> | rm <n>]",
+        "Use one endpoint, add one to the rotation, or drop one; bare, list them.",
+    ),
+    Command(
+        "key",
+        "[<n | url> | rm <n | url>]",
+        "Set an endpoint's API key, typed without echo; bare, the one serving this session.",
+    ),
+    Command(
+        "save",
+        "",
+        "Write the session's endpoints to the config file so the next one starts with them.",
+    ),
     Command("bye", "", "End the session (also \\exit, \\quit, \\goodbye)."),
 )
 
@@ -89,6 +105,7 @@ _KNOWN = set(_BY_NAME) | set(STOP_ALIASES)
 
 
 # ── parsing ─────────────────────────────────────────────────────────────────
+
 
 def parse(text: str) -> tuple[str, str] | None:
     """Split a line into (command, argument), or None when it is not one.
@@ -125,6 +142,7 @@ def unknown(name: str) -> str:
 
 # ── rendering helpers ───────────────────────────────────────────────────────
 
+
 def render_help() -> str:
     # The usage column is sized to the longest usage string, but capped:
     # one command with a long argument list would otherwise push every
@@ -141,8 +159,9 @@ def render_help() -> str:
             lines.append(f"  {command.usage}")
             lines.append(f"  {'':<{width}}  {command.summary}")
     lines.append("")
-    lines.append("Anything else is sent to the model, so a message may still "
-                 "start with a backslash.")
+    lines.append(
+        "Anything else is sent to the model, so a message may still start with a backslash."
+    )
     return "\n".join(lines)
 
 
@@ -157,6 +176,7 @@ def _key_label(endpoint) -> str:
     in_config = bool(endpoint.host_key and endpoint.host_key != "EMPTY")
     try:
         from .. import setup as onit_setup
+
         return onit_setup.endpoint_key_label(endpoint.host, in_config)
     except Exception:
         return "in config" if in_config else "?"
@@ -166,16 +186,14 @@ def _endpoint_rows(agent) -> list[str]:
     """The endpoint table: preference order, with the active one marked."""
     lb = agent.load_balancer
     active = lb.assigned(getattr(agent, "session_id", None))
-    order = sorted(range(len(lb.endpoints)),
-                   key=lambda i: (lb.endpoints[i].priority, i))
+    order = sorted(range(len(lb.endpoints)), key=lambda i: (lb.endpoints[i].priority, i))
     hosts = [ep.host for ep in lb.endpoints]
     hw = max(len("HOST"), max(len(h) for h in hosts))
     models = [ep.model or "auto-detect" for ep in lb.endpoints]
     mw = max(len("MODEL"), max(len(m) for m in models))
     keys = [_key_label(ep) for ep in lb.endpoints]
     kw = max(len("KEY"), max(len(k) for k in keys))
-    rows = [f"  {'#':>2}  {'PRIO':<4}  {'HOST':<{hw}}  {'MODEL':<{mw}}  "
-            f"{'KEY':<{kw}}  NAME"]
+    rows = [f"  {'#':>2}  {'PRIO':<4}  {'HOST':<{hw}}  {'MODEL':<{mw}}  {'KEY':<{kw}}  NAME"]
     held_back = False
     for i in order:
         ep = lb.endpoints[i]
@@ -187,13 +205,17 @@ def _endpoint_rows(agent) -> list[str]:
             held_back = True
         else:
             state = ""
-        rows.append(f"  {i + 1:>2}  {ep.priority:<4}  {ep.host:<{hw}}  "
-                    f"{models[i]:<{mw}}  {keys[i]:<{kw}}  "
-                    f"{ep.name}{mark}{state}")
+        rows.append(
+            f"  {i + 1:>2}  {ep.priority:<4}  {ep.host:<{hw}}  "
+            f"{models[i]:<{mw}}  {keys[i]:<{kw}}  "
+            f"{ep.name}{mark}{state}"
+        )
     rows.append(f"  * serves this session ({lb.algorithm})")
     if held_back:
-        rows.append("  (fallback only) Ollama endpoints stay out of rotation "
-                    "while any other endpoint is healthy.")
+        rows.append(
+            "  (fallback only) Ollama endpoints stay out of rotation "
+            "while any other endpoint is healthy."
+        )
     return rows
 
 
@@ -209,14 +231,16 @@ def render_setup(agent) -> str:
     # Each endpoint's own key is already in the KEY column above; these are
     # only worth naming while one of them is still standing in for a missing
     # one, which the column reports by name when it happens.
-    legacy = [(k, label, env) for k, label, env
-              in onit_setup.LEGACY_SERVING_SECRETS if onit_setup.get_secret(k)]
+    legacy = [
+        (k, label, env)
+        for k, label, env in onit_setup.LEGACY_SERVING_SECRETS
+        if onit_setup.get_secret(k)
+    ]
     if legacy:
         lines += ["", "Legacy fallback keys"]
         width = max(len(label) for _, label, _ in legacy)
         for key, label, env_var in legacy:
-            lines.append(f"  {label:.<{width + 2}} "
-                         f"{onit_setup.secret_status(key, env_var)}")
+            lines.append(f"  {label:.<{width + 2}} {onit_setup.secret_status(key, env_var)}")
 
     lines += ["", "Session"]
     ui = getattr(agent, "chat_ui", None)
@@ -224,10 +248,11 @@ def render_setup(agent) -> str:
         ("session id", getattr(agent, "session_id", "") or "-"),
         ("session log", getattr(agent, "session_path", "") or "-"),
         ("data path", getattr(agent, "data_path", "") or "-"),
-        ("config file", onit_setup.CONFIG_PATH
-         if os.path.isfile(onit_setup.CONFIG_PATH) else "not written yet"),
-        ("token budgets", ui._fmt_ctx_label()
-         if hasattr(ui, "_fmt_ctx_label") else "-"),
+        (
+            "config file",
+            onit_setup.CONFIG_PATH if os.path.isfile(onit_setup.CONFIG_PATH) else "not written yet",
+        ),
+        ("token budgets", ui._fmt_ctx_label() if hasattr(ui, "_fmt_ctx_label") else "-"),
     ):
         lines.append(f"  {label:.<16} {value}")
 
@@ -241,6 +266,7 @@ def _config_notes() -> list[str]:
     """Endpoint/key mismatches worth naming, from the saved config."""
     try:
         from .. import setup as onit_setup
+
         return onit_setup._provider_notes(onit_setup._load_config())
     except Exception:
         return []
@@ -248,9 +274,11 @@ def _config_notes() -> list[str]:
 
 # ── \model ──────────────────────────────────────────────────────────────────
 
+
 async def _list_models(endpoint) -> tuple[list[str], str]:
     """Model ids the endpoint serves, or ([], reason) when it cannot say."""
     from ..model.serving.chat import list_models
+
     try:
         return await list_models(endpoint.host, endpoint.host_key), ""
     except Exception as e:
@@ -285,8 +313,9 @@ async def cmd_model(agent, arg: str) -> str:
         ep.model = None
         _forget_detected_model(ep.host)
         _mirror_model(agent, ep, None)
-        return (f"Model on {where} is back to auto-detect; the next task uses "
-                f"whatever it lists first.")
+        return (
+            f"Model on {where} is back to auto-detect; the next task uses whatever it lists first."
+        )
 
     name = arg.split()[0]
     names, error = await _list_models(ep)
@@ -294,8 +323,10 @@ async def cmd_model(agent, arg: str) -> str:
     _mirror_model(agent, ep, name)
     msg = f"Model on {where} is now {name}. It takes effect on the next task."
     if names and name not in names:
-        msg += (f"\n\nWarning: {ep.host} did not list that model. If it 404s, "
-                f"run \\model to see what it serves.")
+        msg += (
+            f"\n\nWarning: {ep.host} did not list that model. If it 404s, "
+            f"run \\model to see what it serves."
+        )
     elif error:
         msg += f"\n\nCould not verify it against the endpoint: {error}"
     return msg
@@ -305,6 +336,7 @@ def _forget_detected_model(host: str) -> None:
     """Drop a cached auto-detection so '-' really re-asks the endpoint."""
     try:
         from ..model.serving import chat as chat_mod
+
         chat_mod._MODEL_ID_CACHE.pop(host, None)
     except Exception:
         pass
@@ -334,16 +366,20 @@ _REMOVE_VERBS = ("rm", "remove", "delete", "del")
 # Closing note on every change: the config file is not written, and it is
 # worth saying so every time rather than leaving a user to find out at the
 # next launch that the endpoint they added is gone.
-_NOT_PERSISTED = ("The change lasts until you quit — the config file is "
-                  "untouched. Run \\save to keep it, or 'onit setup' to edit "
-                  "the file directly.")
+_NOT_PERSISTED = (
+    "The change lasts until you quit — the config file is "
+    "untouched. Run \\save to keep it, or 'onit setup' to edit "
+    "the file directly."
+)
 
 
 def _valid_url(url: str) -> str | None:
     if url.startswith(("http://", "https://")):
         return None
-    return (f"{url} is not an endpoint URL — it needs an http:// or "
-            f"https:// scheme, e.g. \\host http://localhost:8000/v1.")
+    return (
+        f"{url} is not an endpoint URL — it needs an http:// or "
+        f"https:// scheme, e.g. \\host http://localhost:8000/v1."
+    )
 
 
 def _unique_name(lb, base: str = "manual") -> str:
@@ -357,8 +393,7 @@ def _unique_name(lb, base: str = "manual") -> str:
     return f"{base}{n}"
 
 
-def _rebuild(agent, endpoints: list,
-             ollama_fallback_only: bool | None = None) -> None:
+def _rebuild(agent, endpoints: list, ollama_fallback_only: bool | None = None) -> None:
     """Put a new endpoint list behind the session and resync the mirrors.
 
     A fresh LoadBalancer rather than a mutated one: sticky assignments are
@@ -371,10 +406,12 @@ def _rebuild(agent, endpoints: list,
     """
     lb = agent.load_balancer
     agent.load_balancer = LoadBalancer(
-        endpoints, lb.algorithm,
-        ollama_fallback_only=(lb.ollama_fallback_only
-                              if ollama_fallback_only is None
-                              else ollama_fallback_only))
+        endpoints,
+        lb.algorithm,
+        ollama_fallback_only=(
+            lb.ollama_fallback_only if ollama_fallback_only is None else ollama_fallback_only
+        ),
+    )
     preferred = agent.load_balancer.preferred
     agent.model_serving["host"] = preferred.host
     if preferred.model:
@@ -387,6 +424,7 @@ def _rebuild(agent, endpoints: list,
     ui = getattr(agent, "chat_ui", None)
     if ui is not None and hasattr(ui, "provider_name"):
         from ..model.serving.chat import provider_label
+
         ui.provider_name = provider_label(preferred.host)
 
 
@@ -403,17 +441,16 @@ def _resolve_endpoint(lb, token: str):
         row = int(token)
         if 1 <= row <= len(lb.endpoints):
             return lb.endpoints[row - 1], None
-        return None, (f"No endpoint matches row {row} — run \\host for the "
-                      f"row numbers and URLs.")
-    matches = [ep for ep in lb.endpoints
-               if ep.host == token or ep.name == token]
+        return None, (f"No endpoint matches row {row} — run \\host for the row numbers and URLs.")
+    matches = [ep for ep in lb.endpoints if ep.host == token or ep.name == token]
     if len(matches) == 1:
         return matches[0], None
     if len(matches) > 1:
-        return None, (f"{token} is in the rotation {len(matches)} times — "
-                      f"name the row instead, e.g. '\\host rm 2'.")
-    return None, (f"No endpoint matches {token!r} — run \\host for the row "
-                  f"numbers and URLs.")
+        return None, (
+            f"{token} is in the rotation {len(matches)} times — "
+            f"name the row instead, e.g. '\\host rm 2'."
+        )
+    return None, (f"No endpoint matches {token!r} — run \\host for the row numbers and URLs.")
 
 
 def _host_add(agent, args: list[str]) -> str:
@@ -429,72 +466,87 @@ def _host_add(agent, args: list[str]) -> str:
     bad = _valid_url(url)
     if bad:
         return bad
-    existing = next((ep for ep in lb.endpoints
-                     if ep.host == url and ep.model == model), None)
+    existing = next((ep for ep in lb.endpoints if ep.host == url and ep.model == model), None)
     if existing is not None:
         if not share:
-            return (f"{url} is already in the rotation with model "
-                    f"{model or 'auto-detect'}. Change its model with "
-                    f"\\model, or drop it with \\host rm {url}.")
+            return (
+                f"{url} is already in the rotation with model "
+                f"{model or 'auto-detect'}. Change its model with "
+                f"\\model, or drop it with \\host rm {url}."
+            )
         # The message on a held-back add tells the user to type this exact
         # line; refusing it because the endpoint is already there would send
         # them back to remove-and-re-add for what is only a routing change.
         if not lb.is_fallback_only(existing):
-            return (f"{url} is already in the rotation and already taking an "
-                    f"equal share — nothing to change.")
+            return (
+                f"{url} is already in the rotation and already taking an "
+                f"equal share — nothing to change."
+            )
         _rebuild(agent, list(lb.endpoints), ollama_fallback_only=False)
         lines = [f"{url} now takes an equal share of the rotation."]
         lines += [""] + _endpoint_rows(agent)
-        lines += ["",
-                  "--share turned off the Ollama fallback rule for this whole "
-                  "session, so every Ollama endpoint in the list is affected.",
-                  "", _NOT_PERSISTED]
+        lines += [
+            "",
+            "--share turned off the Ollama fallback rule for this whole "
+            "session, so every Ollama endpoint in the list is affected.",
+            "",
+            _NOT_PERSISTED,
+        ]
         return "\n".join(lines)
 
     # A second model on a host already in the rotation is a new endpoint, not
     # a duplicate: Ollama cloud is one host serving many models. Only the
     # exact same (host, model) pair is refused above.
     if any(ep.host == url for ep in lb.endpoints) and not model:
-        return (f"{url} is already in the rotation. Name the model to add "
-                f"another one on the same host, e.g. \\host add {url} "
-                f"qwen3:cloud.")
+        return (
+            f"{url} is already in the rotation. Name the model to add "
+            f"another one on the same host, e.g. \\host add {url} "
+            f"qwen3:cloud."
+        )
 
     # Joins the endpoint that is currently preferred rather than starting a
     # tier of its own: "also use this one" means share the traffic, not sit
     # in reserve behind everything.
-    endpoint = ServerEndpoint(host=url, model=model,
-                              name=_unique_name(lb),
-                              priority=lb.preferred.priority)
-    _rebuild(agent, list(lb.endpoints) + [endpoint],
-             ollama_fallback_only=False if share else None)
+    endpoint = ServerEndpoint(
+        host=url, model=model, name=_unique_name(lb), priority=lb.preferred.priority
+    )
+    _rebuild(agent, list(lb.endpoints) + [endpoint], ollama_fallback_only=False if share else None)
 
     others = len(lb.endpoints)
-    lines = [f"Added {url} (model: {model or 'auto-detect'}) at priority "
-             f"{endpoint.priority}, alongside "
-             f"{others} other endpoint{'' if others == 1 else 's'}."]
+    lines = [
+        f"Added {url} (model: {model or 'auto-detect'}) at priority "
+        f"{endpoint.priority}, alongside "
+        f"{others} other endpoint{'' if others == 1 else 's'}."
+    ]
     lines += [""] + _endpoint_rows(agent)
 
     new_lb = agent.load_balancer
     if new_lb.is_fallback_only(endpoint):
         # The priority in the message above is true and still not the whole
         # story: this endpoint will serve nothing until the others fail.
-        lines += ["",
-                  f"It will not serve traffic yet. Ollama endpoints are held "
-                  f"back while any other endpoint is healthy, so this one is "
-                  f"a standby. Add it with '\\host add {url} --share' to put "
-                  f"it in rotation on equal terms for this session, or set "
-                  f"serving.ollama_fallback_only: false to make that the "
-                  f"default."]
+        lines += [
+            "",
+            f"It will not serve traffic yet. Ollama endpoints are held "
+            f"back while any other endpoint is healthy, so this one is "
+            f"a standby. Add it with '\\host add {url} --share' to put "
+            f"it in rotation on equal terms for this session, or set "
+            f"serving.ollama_fallback_only: false to make that the "
+            f"default.",
+        ]
     elif share:
-        lines += ["",
-                  "--share turned off the Ollama fallback rule for this "
-                  "whole session, so every Ollama endpoint in the list now "
-                  "takes an equal share."]
+        lines += [
+            "",
+            "--share turned off the Ollama fallback rule for this "
+            "whole session, so every Ollama endpoint in the list now "
+            "takes an equal share.",
+        ]
     elif new_lb.algorithm == "sticky":
         lines.append("")
-        lines.append("Sticky routing pins a session to one endpoint, so this "
-                     "session re-picks across the tier on the next task "
-                     "rather than staying where it was.")
+        lines.append(
+            "Sticky routing pins a session to one endpoint, so this "
+            "session re-picks across the tier on the next task "
+            "rather than staying where it was."
+        )
     lines += ["", _NOT_PERSISTED]
     return "\n".join(lines)
 
@@ -502,12 +554,13 @@ def _host_add(agent, args: list[str]) -> str:
 def _host_remove(agent, args: list[str]) -> str:
     lb = agent.load_balancer
     if not args:
-        return ("\\host rm needs a row number or URL from the table — "
-                "run \\host to see it.")
+        return "\\host rm needs a row number or URL from the table — run \\host to see it."
     if len(lb.endpoints) == 1:
-        return ("That is the only endpoint left; there would be nothing to "
-                "send the next task to. Point the session elsewhere with "
-                "\\host <url> instead.")
+        return (
+            "That is the only endpoint left; there would be nothing to "
+            "send the next task to. Point the session elsewhere with "
+            "\\host <url> instead."
+        )
     endpoint, why = _resolve_endpoint(lb, args[0])
     if endpoint is None:
         return why
@@ -532,16 +585,20 @@ def _host_switch(agent, args: list[str]) -> str:
     if ui is not None:
         ui.model_name = model or ""
 
-    lines = [f"Endpoint is now {url} "
-             f"(model: {model or 'auto-detect'}). It takes effect on the "
-             f"next task."]
+    lines = [
+        f"Endpoint is now {url} "
+        f"(model: {model or 'auto-detect'}). It takes effect on the "
+        f"next task."
+    ]
     if len(replaced) > 1:
         lines.append("")
-        lines.append(f"This replaces the {len(replaced)} endpoints that were "
-                     f"in rotation ({', '.join(replaced)}), so nothing is "
-                     f"load-balanced for the rest of the session. Use "
-                     f"'\\host add <url>' to widen the rotation instead of "
-                     f"replacing it.")
+        lines.append(
+            f"This replaces the {len(replaced)} endpoints that were "
+            f"in rotation ({', '.join(replaced)}), so nothing is "
+            f"load-balanced for the rest of the session. Use "
+            f"'\\host add <url>' to widen the rotation instead of "
+            f"replacing it."
+        )
     lines += ["", _NOT_PERSISTED]
     return "\n".join(lines)
 
@@ -556,12 +613,13 @@ async def cmd_host(agent, arg: str) -> str:
     parts = arg.split()
     if not parts:
         lines = ["Endpoints"] + _endpoint_rows(agent)
-        lines += ["",
-                  "\\host <url> [model]      use this endpoint alone",
-                  "\\host add <url> [model]  add it to the rotation",
-                  "                         (--share overrides the Ollama "
-                  "fallback rule)",
-                  "\\host rm <n | url>       drop one"]
+        lines += [
+            "",
+            "\\host <url> [model]      use this endpoint alone",
+            "\\host add <url> [model]  add it to the rotation",
+            "                         (--share overrides the Ollama fallback rule)",
+            "\\host rm <n | url>       drop one",
+        ]
         return "\n".join(lines)
 
     verb = parts[0].lower()
@@ -573,6 +631,7 @@ async def cmd_host(agent, arg: str) -> str:
 
 
 # ── \key ────────────────────────────────────────────────────────────────────
+
 
 async def cmd_key(agent, arg: str) -> str:
     """Store an API key for one endpoint, read without echo.
@@ -591,9 +650,11 @@ async def cmd_key(agent, arg: str) -> str:
         parts = parts[1:]
 
     if len(parts) > 1:
-        return ("\\key takes only the endpoint — the key itself is asked for "
-                "separately so it is never echoed or kept in the input "
-                "history. Run \\key " + parts[0] + " on its own.")
+        return (
+            "\\key takes only the endpoint — the key itself is asked for "
+            "separately so it is never echoed or kept in the input "
+            "history. Run \\key " + parts[0] + " on its own."
+        )
 
     if parts:
         endpoint, why = _resolve_endpoint(lb, parts[0])
@@ -607,40 +668,49 @@ async def cmd_key(agent, arg: str) -> str:
         if not onit_setup.get_endpoint_key(endpoint.host):
             return f"{where} has no stored key of its own to forget."
         onit_setup.delete_endpoint_key(endpoint.host)
-        return (f"Forgot the stored key for {where}. It now falls back to "
-                f"{onit_setup.endpoint_key_label(endpoint.host)}.")
+        return (
+            f"Forgot the stored key for {where}. It now falls back to "
+            f"{onit_setup.endpoint_key_label(endpoint.host)}."
+        )
 
     ui = getattr(agent, "chat_ui", None)
     if ui is None or not hasattr(ui, "read_secret"):
-        return ("This interface cannot read a key without echoing it. Use "
-                "'onit setup', which asks for it the same way.")
+        return (
+            "This interface cannot read a key without echoing it. Use "
+            "'onit setup', which asks for it the same way."
+        )
 
     loop = asyncio.get_running_loop()
-    value = await loop.run_in_executor(
-        None, ui.read_secret, f"    API key for {endpoint.host}: ")
+    value = await loop.run_in_executor(None, ui.read_secret, f"    API key for {endpoint.host}: ")
     if not value:
         return f"No key entered — {where} is unchanged."
 
     onit_setup.store_endpoint_key(endpoint.host, value)
-    lines = [f"Stored ••••{value[-4:]} for {where}. It takes effect on the "
-             f"next task."]
+    lines = [f"Stored ••••{value[-4:]} for {where}. It takes effect on the next task."]
     if endpoint.host_key and endpoint.host_key != "EMPTY":
         # Otherwise the key is stored, reported, and silently never used.
-        lines += ["",
-                  "Note: this endpoint also has a key written into the config "
-                  "file, which is read first — remove it there for the stored "
-                  "one to take effect."]
-    lines += ["", "The key is in the OS keychain, not the config file, and "
-                  "unlike the rest of this session it does persist."]
+        lines += [
+            "",
+            "Note: this endpoint also has a key written into the config "
+            "file, which is read first — remove it there for the stored "
+            "one to take effect.",
+        ]
+    lines += [
+        "",
+        "The key is in the OS keychain, not the config file, and "
+        "unlike the rest of this session it does persist.",
+    ]
     if not _is_saved(endpoint.host, endpoint.model):
         # The key outlives the session; the endpoint it belongs to does not.
         # Left there it is a keychain entry for a URL nothing mentions, which
         # 'onit setup --show' has no row to report it on.
-        lines += ["",
-                  f"Note: {endpoint.host} is not in the config file, so the "
-                  f"next session will not know about it and 'onit setup "
-                  f"--show' will not list this key. Run \\save to keep the "
-                  f"endpoint too."]
+        lines += [
+            "",
+            f"Note: {endpoint.host} is not in the config file, so the "
+            f"next session will not know about it and 'onit setup "
+            f"--show' will not list this key. Run \\save to keep the "
+            f"endpoint too.",
+        ]
     return "\n".join(lines)
 
 
@@ -663,8 +733,8 @@ def _identity_label(identity: tuple[str, str]) -> str:
 def _saved_entries(config: dict) -> list[dict]:
     """The endpoints the config file currently holds, in whichever shape."""
     from .. import setup as onit_setup
-    return (onit_setup._endpoint_list(config)
-            or onit_setup._entries_from_host(config))
+
+    return onit_setup._endpoint_list(config) or onit_setup._entries_from_host(config)
 
 
 def _saved_by_identity(config: dict) -> dict:
@@ -675,12 +745,14 @@ def _saved_by_identity(config: dict) -> dict:
     and hand its label and key to the others.
     """
     from .. import setup as onit_setup
+
     return {onit_setup.entry_identity(e): e for e in _saved_entries(config)}
 
 
 def _saved_by_host(config: dict) -> dict:
     """Saved entries grouped by normalized URL, for a fallback lookup."""
     from .. import setup as onit_setup
+
     grouped: dict[str, list[dict]] = {}
     for e in _saved_entries(config):
         grouped.setdefault(onit_setup.normalize_host(e["host"]), []).append(e)
@@ -695,12 +767,12 @@ def _is_saved(host: str, model: str | None = None) -> bool:
     and ``\\save`` would update it rather than add anything.
     """
     from .. import setup as onit_setup
+
     try:
         config = onit_setup._load_config()
         if onit_setup.endpoint_identity(host, model) in _saved_by_identity(config):
             return True
-        same_host = _saved_by_host(config).get(
-            onit_setup.normalize_host(host), [])
+        same_host = _saved_by_host(config).get(onit_setup.normalize_host(host), [])
         return len(same_host) == 1
     except Exception:
         return False
@@ -758,41 +830,43 @@ def cmd_save(agent) -> str:
     onit_setup._write_endpoints(config, entries)
 
     serving = config.setdefault("serving", {})
-    fallback_changed = (lb.ollama_fallback_only
-                        != serving.get("ollama_fallback_only", True))
+    fallback_changed = lb.ollama_fallback_only != serving.get("ollama_fallback_only", True)
     if fallback_changed:
         serving["ollama_fallback_only"] = lb.ollama_fallback_only
     onit_setup._save_config(config)
 
     # Identity is the (URL, model) pair, so a second model added on a host
     # already saved reports as added rather than as "the same endpoints".
-    after = {onit_setup.endpoint_identity(ep.host, ep.model)
-             for ep in lb.endpoints}
+    after = {onit_setup.endpoint_identity(ep.host, ep.model) for ep in lb.endpoints}
     added = sorted(_identity_label(i) for i in after - before)
     removed = sorted(_identity_label(i) for i in before - after)
 
     n = len(entries)
-    lines = [f"Saved {n} endpoint{'' if n == 1 else 's'} to "
-             f"{onit_setup.CONFIG_PATH}."]
+    lines = [f"Saved {n} endpoint{'' if n == 1 else 's'} to {onit_setup.CONFIG_PATH}."]
     if added:
         lines.append(f"  added    {', '.join(added)}")
     if removed:
         lines.append(f"  removed  {', '.join(removed)}")
     if not added and not removed:
-        lines.append("  The same endpoints were already saved; their models, "
-                     "priorities and labels now match this session.")
+        lines.append(
+            "  The same endpoints were already saved; their models, "
+            "priorities and labels now match this session."
+        )
     if fallback_changed:
-        lines.append(f"  serving.ollama_fallback_only is now "
-                     f"{str(lb.ollama_fallback_only).lower()}")
+        lines.append(
+            f"  serving.ollama_fallback_only is now {str(lb.ollama_fallback_only).lower()}"
+        )
 
     lines += [""] + _endpoint_rows(agent)
-    lines += ["",
-              "API keys are not written here — they stay in the OS keychain, "
-              "where \\key puts them."]
+    lines += [
+        "",
+        "API keys are not written here — they stay in the OS keychain, where \\key puts them.",
+    ]
     return "\n".join(lines)
 
 
 # ── \doctor ─────────────────────────────────────────────────────────────────────────────
+
 
 async def cmd_doctor(agent, arg: str) -> str:
     """Run the live self-check battery and return the report.
@@ -807,8 +881,10 @@ async def cmd_doctor(agent, arg: str) -> str:
 
     deep = arg.strip().lower() == "deep"
     if arg.strip() and not deep:
-        return ("\\doctor takes no argument, or 'deep'. "
-                "'deep' adds a live model reply and a tool-calling turn.")
+        return (
+            "\\doctor takes no argument, or 'deep'. "
+            "'deep' adds a live model reply and a tool-calling turn."
+        )
 
     # Progress goes through the UI's log panel rather than a spinner: the
     # checks are individually quick, and a spinner that flashes one name per
@@ -825,10 +901,10 @@ async def cmd_doctor(agent, arg: str) -> str:
 
 # ── dispatch ────────────────────────────────────────────────────────────────
 
+
 def _sessions_dir(agent) -> str:
     """Where this session's index lives, honouring the config override."""
-    configured = (getattr(agent, "config_data", None) or {}).get(
-        "session_path", "~/.onit/sessions")
+    configured = (getattr(agent, "config_data", None) or {}).get("session_path", "~/.onit/sessions")
     return os.path.expanduser(configured)
 
 
@@ -839,8 +915,7 @@ def cmd_rename(agent, arg: str) -> str:
     the session is open -- afterwards they have to find it first, which is the
     problem the name was meant to solve.
     """
-    from ..sessions import (_load_index, normalize_tag, tag_session,
-                            find_session_by_tag)
+    from ..sessions import _load_index, normalize_tag, tag_session, find_session_by_tag
 
     sid = getattr(agent, "session_id", None)
     if not sid:
@@ -850,12 +925,13 @@ def cmd_rename(agent, arg: str) -> str:
     if not arg.strip():
         current = _load_index(sessions_dir).get(sid, {}).get("tag")
         if current:
-            return f"This session is called '{current}'.\n" \
-                   f"Rename it with \\rename <new-name>."
-        return ("This session has no name yet.\n"
-                "Give it one with \\rename <name>, and it will show up in "
-                "'onit sessions' and continue with "
-                "'onit --resume-session <name>'.")
+            return f"This session is called '{current}'.\nRename it with \\rename <new-name>."
+        return (
+            "This session has no name yet.\n"
+            "Give it one with \\rename <name>, and it will show up in "
+            "'onit sessions' and continue with "
+            "'onit --resume-session <name>'."
+        )
 
     new_name = normalize_tag(arg)
     if not new_name:
@@ -867,8 +943,7 @@ def cmd_rename(agent, arg: str) -> str:
     if holder and holder != sid:
         meta = _load_index(sessions_dir).get(holder, {})
         if (meta.get("tag") or "").lower() == new_name.lower():
-            return (f"'{new_name}' is already the name of session "
-                    f"{holder[:8]}.... Pick another.")
+            return f"'{new_name}' is already the name of session {holder[:8]}.... Pick another."
 
     result = tag_session(sid, new_name, sessions_dir)
     if result is True:
@@ -878,8 +953,10 @@ def cmd_rename(agent, arg: str) -> str:
         ui = getattr(agent, "chat_ui", None)
         if ui is not None and hasattr(ui, "session_name"):
             ui.session_name = stored
-        return (f"Renamed this session to '{stored}'.\n"
-                f"Come back to it with: onit --resume-session '{stored}'")
+        return (
+            f"Renamed this session to '{stored}'.\n"
+            f"Come back to it with: onit --resume-session '{stored}'"
+        )
     return f"Could not rename: {result}"
 
 
@@ -915,6 +992,7 @@ async def dispatch(agent, text: str) -> str | None:
             return cmd_rename(agent, arg)
         if name == "rate":
             from .rating import cmd_rate
+
             return cmd_rate(agent, arg)
         if name == "doctor":
             return await cmd_doctor(agent, arg)

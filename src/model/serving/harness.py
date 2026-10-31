@@ -44,8 +44,13 @@ import time
 from pathlib import Path
 
 from .results import DEFAULT_READ_CHARS, MAX_READ_CHARS, ResultStore
-from .interpreter import (DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT,
-                          INJECTED_PARAMS, evict_stale, get_interpreter)
+from .interpreter import (
+    DEFAULT_CODE_TIMEOUT,
+    DEFAULT_TOOL_TIMEOUT,
+    INJECTED_PARAMS,
+    evict_stale,
+    get_interpreter,
+)
 
 try:
     from ...lib.schema import coerce_arguments, validate_arguments
@@ -76,13 +81,11 @@ MAX_NOTES = 64
 # realpath check in ``_note_path`` is the second line rather than the first.
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-_EMPTY_OBJECT = {"type": "object", "properties": {}, "required": [],
-                 "additionalProperties": False}
+_EMPTY_OBJECT = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
 
 _NOTE_KEY_SCHEMA = {
     "type": "string",
-    "description": "Short identifier, letters/digits/._- only (e.g. 'findings', "
-                   "'remaining_work').",
+    "description": "Short identifier, letters/digits/._- only (e.g. 'findings', 'remaining_work').",
 }
 
 # Schemas are written the way an MCP server's would be discovered — ``required``
@@ -112,8 +115,10 @@ HARNESS_TOOL_ITEMS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "key": _NOTE_KEY_SCHEMA,
-                    "text": {"type": "string",
-                             "description": f"The note, up to {MAX_NOTE_CHARS} characters."},
+                    "text": {
+                        "type": "string",
+                        "description": f"The note, up to {MAX_NOTE_CHARS} characters.",
+                    },
                 },
                 "required": ["key", "text"],
                 "additionalProperties": False,
@@ -156,11 +161,18 @@ HARNESS_TOOL_ITEMS += [
                 "type": "object",
                 "properties": {
                     "handle": _RESULT_HANDLE_SCHEMA,
-                    "offset": {"type": "integer", "minimum": 0,
-                               "description": "Character to start from. Default 0."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_READ_CHARS,
-                              "description": f"Characters to return, up to "
-                                             f"{MAX_READ_CHARS}. Default {DEFAULT_READ_CHARS}."},
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Character to start from. Default 0.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_READ_CHARS,
+                        "description": f"Characters to return, up to "
+                        f"{MAX_READ_CHARS}. Default {DEFAULT_READ_CHARS}.",
+                    },
                 },
                 "required": ["handle"],
                 "additionalProperties": False,
@@ -180,10 +192,16 @@ HARNESS_TOOL_ITEMS += [
                 "type": "object",
                 "properties": {
                     "handle": _RESULT_HANDLE_SCHEMA,
-                    "pattern": {"type": "string",
-                                "description": "Regular expression, or a plain string."},
-                    "context": {"type": "integer", "minimum": 0, "maximum": 10,
-                                "description": "Lines to show around each match. Default 3."},
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regular expression, or a plain string.",
+                    },
+                    "context": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10,
+                        "description": "Lines to show around each match. Default 3.",
+                    },
                 },
                 "required": ["handle", "pattern"],
                 "additionalProperties": False,
@@ -207,8 +225,10 @@ HARNESS_TOOL_ITEMS += [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string",
-                             "description": "Python source. print() what you need to see."},
+                    "code": {
+                        "type": "string",
+                        "description": "Python source. print() what you need to see.",
+                    },
                 },
                 "required": ["code"],
                 "additionalProperties": False,
@@ -259,12 +279,19 @@ class HarnessTools:
     growing into a parallel copy of it.
     """
 
-    def __init__(self, data_path: str = "", max_context_tokens: int | None = None,
-                 enabled: bool = True, result_store: bool = True,
-                 code_execution: bool = False, session_id: str = "",
-                 tool_registry=None, tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
-                 code_timeout: float = DEFAULT_CODE_TIMEOUT,
-                 approval_resolver=None):
+    def __init__(
+        self,
+        data_path: str = "",
+        max_context_tokens: int | None = None,
+        enabled: bool = True,
+        result_store: bool = True,
+        code_execution: bool = False,
+        session_id: str = "",
+        tool_registry=None,
+        tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
+        code_timeout: float = DEFAULT_CODE_TIMEOUT,
+        approval_resolver=None,
+    ):
         self.enabled = bool(enabled)
         self.data_path = data_path or ""
         self.max_context_tokens = max_context_tokens
@@ -286,8 +313,7 @@ class HarnessTools:
         # Owned here rather than beside here so the loop threads one object:
         # ``_execute_tool`` already receives this one, and it is the function
         # that has a result to store.
-        self.results = ResultStore(self.data_path,
-                                   enabled=self.enabled and bool(result_store))
+        self.results = ResultStore(self.data_path, enabled=self.enabled and bool(result_store))
         # Run state, kept current by the loop.
         self.prompt_tokens = 0
         self.turns = 0
@@ -334,11 +360,15 @@ class HarnessTools:
 
     # ── run state ───────────────────────────────────────────────────────────
 
-    def observe(self, *, prompt_tokens: int | None = None,
-                max_context_tokens: int | None = None,
-                turns: int | None = None,
-                tools_called: int | None = None,
-                compactions: int | None = None) -> None:
+    def observe(
+        self,
+        *,
+        prompt_tokens: int | None = None,
+        max_context_tokens: int | None = None,
+        turns: int | None = None,
+        tools_called: int | None = None,
+        compactions: int | None = None,
+    ) -> None:
         """Update the counters ``context_status`` reports.
 
         Every argument is optional and None means "unchanged", so a caller
@@ -384,8 +414,7 @@ class HarnessTools:
         if not self.data_path:
             return []
         try:
-            return sorted(p.stem for p in self.notes_dir.glob(f"*{NOTE_SUFFIX}")
-                          if p.is_file())
+            return sorted(p.stem for p in self.notes_dir.glob(f"*{NOTE_SUFFIX}") if p.is_file())
         except OSError:
             return []
 
@@ -412,28 +441,36 @@ class HarnessTools:
         # compaction.  Say so: a model handed ``used_tokens: null`` with no
         # explanation reads it as an error and calls the tool again.
         if status["used_tokens"] is None:
-            status["detail"] = ("No token count yet — it is measured from the last "
-                                "API response, and appears from the next turn onward.")
+            status["detail"] = (
+                "No token count yet — it is measured from the last "
+                "API response, and appears from the next turn onward."
+            )
         elif status["max_tokens"] is None:
-            status["detail"] = ("This provider does not report a context window size, "
-                                "so only the used count is known.")
+            status["detail"] = (
+                "This provider does not report a context window size, "
+                "so only the used count is known."
+            )
         elif status["pct_used"] >= 70:
-            status["detail"] = ("Context is filling. Save anything you still need with "
-                                "note_write now — a summarization will drop the detail.")
+            status["detail"] = (
+                "Context is filling. Save anything you still need with "
+                "note_write now — a summarization will drop the detail."
+            )
         return json.dumps(status)
 
     def note_write(self, key: str, text: str) -> str:
         if not isinstance(key, str) or not _KEY_RE.match(key):
             return _error(
                 f"'{key}' is not a usable note key. Use 1-64 characters, letters "
-                "or digits to start, then letters, digits, '.', '_' or '-'.")
+                "or digits to start, then letters, digits, '.', '_' or '-'."
+            )
         if not isinstance(text, str):
             return _error(f"note '{key}' must be given as text.")
         if len(text) > MAX_NOTE_CHARS:
             return _error(
                 f"note '{key}' is {len(text):,} characters, over the {MAX_NOTE_CHARS:,} "
                 "limit. It was not saved. A note is for your own conclusions, not a "
-                "copy of a tool result — write the summary, or split it across keys.")
+                "copy of a tool result — write the summary, or split it across keys."
+            )
         path = self._note_path(key)
         if path is None:
             return _error(f"'{key}' does not resolve to a path inside this session.")
@@ -441,20 +478,23 @@ class HarnessTools:
         if key not in existing and len(existing) >= MAX_NOTES:
             return _error(
                 f"this session already holds {MAX_NOTES} notes, the limit. Overwrite "
-                f"one of the existing keys instead: {', '.join(existing)}.")
+                f"one of the existing keys instead: {', '.join(existing)}."
+            )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
         except OSError as e:
             logger.warning("note_write(%s) failed: %s", key, e)
             return _error(f"could not save note '{key}': {e}")
-        return json.dumps({
-            "status": "saved",
-            "key": key,
-            "chars": len(text),
-            "replaced": key in existing,
-            "notes_saved": self.note_keys(),
-        })
+        return json.dumps(
+            {
+                "status": "saved",
+                "key": key,
+                "chars": len(text),
+                "replaced": key in existing,
+                "notes_saved": self.note_keys(),
+            }
+        )
 
     def note_read(self, key: str) -> str:
         if not isinstance(key, str) or not _KEY_RE.match(key):
@@ -491,8 +531,9 @@ class HarnessTools:
         """
         registry = self.tool_registry
         if not registry or name not in getattr(registry, "tools", ()):
-            raise LookupError(f"no tool named {name!r} — call context_status to see "
-                              "what this run has")
+            raise LookupError(
+                f"no tool named {name!r} — call context_status to see what this run has"
+            )
         kwargs = {k: v for k, v in (kwargs or {}).items() if k not in INJECTED_PARAMS}
         if self.session_id and registry.tool_accepts_param(name, "session_id"):
             kwargs["session_id"] = self.session_id
@@ -517,8 +558,7 @@ class HarnessTools:
         return get_interpreter(
             self.session_id,
             data_path=self.data_path,
-            tool_items=(self.tool_registry.get_tool_items()
-                        if self.tool_registry else []),
+            tool_items=(self.tool_registry.get_tool_items() if self.tool_registry else []),
             dispatch=self._run_tool,
             tool_timeout=self.tool_timeout,
         )
@@ -539,17 +579,20 @@ class HarnessTools:
         elapsed = time.monotonic() - started
 
         stdout = outcome.get("stdout") or ""
-        status = "ok" if outcome.get("ok") else (
-            "timed out" if outcome.get("timed_out") else "raised")
+        status = (
+            "ok" if outcome.get("ok") else ("timed out" if outcome.get("timed_out") else "raised")
+        )
         body = f"[run_code · {status} · {elapsed:.1f}s]"
         if stdout:
             body += "\n" + stdout.rstrip()
         elif outcome.get("ok"):
             # An empty result reads as a failure, and the model re-runs the
             # same block to find out what happened.  Say what actually did.
-            body += ("\nThe code ran and printed nothing. Only what you print comes "
-                     "back — add print() for the values you need to see. Variables "
-                     "you set are still there for the next call.")
+            body += (
+                "\nThe code ran and printed nothing. Only what you print comes "
+                "back — add print() for the values you need to see. Variables "
+                "you set are still there for the next call."
+            )
         if outcome.get("error"):
             body += "\n" + str(outcome["error"]).rstrip()
         stored = self.results.put("run_code", body)
@@ -572,8 +615,10 @@ class HarnessTools:
         arguments.update(coerced)
         problems = validate_arguments(schema, arguments)
         if problems:
-            return _error(f"{name} was called with arguments that do not match its "
-                          f"schema: {'; '.join(problems)}. The call was not run.")
+            return _error(
+                f"{name} was called with arguments that do not match its "
+                f"schema: {'; '.join(problems)}. The call was not run."
+            )
         return arguments
 
     async def adispatch(self, name: str, arguments: dict) -> str | None:
@@ -610,10 +655,13 @@ class HarnessTools:
         if name == "note_write":
             return self.note_write(arguments["key"], arguments["text"])
         if name == "result_read":
-            return self.results.read(arguments["handle"],
-                                     arguments.get("offset", 0),
-                                     arguments.get("limit", DEFAULT_READ_CHARS))
+            return self.results.read(
+                arguments["handle"],
+                arguments.get("offset", 0),
+                arguments.get("limit", DEFAULT_READ_CHARS),
+            )
         if name == "result_grep":
-            return self.results.grep(arguments["handle"], arguments["pattern"],
-                                     arguments.get("context", 3))
+            return self.results.grep(
+                arguments["handle"], arguments["pattern"], arguments.get("context", 3)
+            )
         return self.note_read(arguments["key"])

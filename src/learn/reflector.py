@@ -91,7 +91,8 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 # ── the prompt ───────────────────────────────────────────────────────────────
 
-_SYSTEM = """\
+_SYSTEM = (
+    """\
 You are reading two runs of the same kind of task by an AI agent: one \
 that went well and one that went badly. Your job is to name the \
 difference that would have helped the bad run, as advice.
@@ -113,7 +114,9 @@ Reply with JSON only, no prose:
 {"bullets": [{"text": "...", "trigger": "..."}]}
 Return at most %d bullets. Return an empty list if the two runs differ \
 in nothing that would help a future run.
-""" % MAX_BULLETS_PER_CONTRAST
+"""
+    % MAX_BULLETS_PER_CONTRAST
+)
 
 
 def _run_excerpt(record: dict, limit: int = MAX_RUN_CHARS) -> str:
@@ -127,8 +130,8 @@ def _run_excerpt(record: dict, limit: int = MAX_RUN_CHARS) -> str:
     if not record:
         return ""
     lines = []
-    for turn in (record.get("trajectory") or []):
-        for call in (turn.get("tools") or []):
+    for turn in record.get("trajectory") or []:
+        for call in turn.get("tools") or []:
             name = call.get("name") or "?"
             ok = call.get("ok", True)
             lines.append("tool %s%s" % (name, "" if ok else "  (FAILED)"))
@@ -148,13 +151,16 @@ def _user_prompt(good: dict, bad: dict) -> str:
         "RUN THAT WENT WELL\n%s\n\n"
         "RUN THAT WENT BADLY\n%s\n\n"
         "What would have helped the bad run?"
-        % ((good.get("task") or "").strip(),
-           _run_excerpt(good) or "(no tools ran)",
-           _run_excerpt(bad) or "(no tools ran)")
+        % (
+            (good.get("task") or "").strip(),
+            _run_excerpt(good) or "(no tools ran)",
+            _run_excerpt(bad) or "(no tools ran)",
+        )
     )
 
 
 # ── the parse ───────────────────────────────────────────────────────────────
+
 
 def _extract_json(text: str) -> list:
     """The bullet list from a model response, or an empty list.
@@ -175,7 +181,7 @@ def _extract_json(text: str) -> list:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start >= 0 and end > start:
-            cleaned = cleaned[start:end + 1]
+            cleaned = cleaned[start : end + 1]
     try:
         data = json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
@@ -245,8 +251,14 @@ def _clean_bullet(bullet: dict) -> dict | None:
     if len(text) > MAX_BULLET_CHARS:
         text = text[:MAX_BULLET_CHARS].rstrip()
     lowered = text.lower()
-    for phrase in ("in the bad run", "in the failing run", "the bad run",
-                   "the failing run", "this run", "the run that"):
+    for phrase in (
+        "in the bad run",
+        "in the failing run",
+        "the bad run",
+        "the failing run",
+        "this run",
+        "the run that",
+    ):
         if lowered.startswith(phrase):
             return None
     trigger = _one_line(bullet.get("trigger"))
@@ -256,6 +268,7 @@ def _clean_bullet(bullet: dict) -> dict | None:
 
 
 # ── the reflector ───────────────────────────────────────────────────────────
+
 
 async def reflect_contrast(ask, good: dict, bad: dict) -> list:
     """Ask a model what the difference between two runs was.
@@ -287,15 +300,14 @@ async def reflect_contrast(ask, good: dict, bad: dict) -> list:
     for bullet in bullets[:MAX_BULLETS_PER_CONTRAST]:
         cleaned = _clean_bullet(bullet)
         if cleaned:
-            cleaned["provenance"] = [
-                good.get("session_id", "?"), bad.get("session_id", "?")
-            ]
+            cleaned["provenance"] = [good.get("session_id", "?"), bad.get("session_id", "?")]
             deltas.append(cleaned)
     return deltas
 
 
-async def reflect_corpus(ask, records: list, *, max_contrasts: int = 8,
-                         config_data: dict | None = None) -> list:
+async def reflect_corpus(
+    ask, records: list, *, max_contrasts: int = 8, config_data: dict | None = None
+) -> list:
     """Reflect over a corpus, one contrasting pair at a time.
 
     The pairs come from the same clustering the mechanical reflector
@@ -313,6 +325,7 @@ async def reflect_corpus(ask, records: list, *, max_contrasts: int = 8,
 
     if config_data is not None:
         from .eval import filter_excluded
+
         records = filter_excluded(records, config_data)
 
     deltas = []
@@ -326,8 +339,12 @@ async def reflect_corpus(ask, records: list, *, max_contrasts: int = 8,
         # reflected on is not reflected on again: the same two runs
         # produce the same bullet, and a playbook of near-duplicates is a
         # playbook nobody reads.
-        pair = (good[0].get("session_id"), good[0].get("turn"),
-                bad[0].get("session_id"), bad[0].get("turn"))
+        pair = (
+            good[0].get("session_id"),
+            good[0].get("turn"),
+            bad[0].get("session_id"),
+            bad[0].get("turn"),
+        )
         if pair in seen:
             continue
         seen.add(pair)

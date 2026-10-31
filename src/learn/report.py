@@ -24,8 +24,7 @@ worth having even if none of the later loops are ever built.
 
 from collections import Counter, defaultdict
 
-from .config import (autonomy, capped, level_name, recording_enabled,
-                     requested_level, trajectory_dir)
+from .config import autonomy, capped, level_name, recording_enabled, requested_level, trajectory_dir
 from .trajectory import iter_records
 
 
@@ -90,9 +89,14 @@ def summarize(config_data: dict | None = None) -> dict:
         "verifier": verifier,
         "totals": totals,
         "avg_turns": (sum(turn_counts) / len(turn_counts)) if turn_counts else 0.0,
-        "tools": {name: {"calls": c["calls"], "errors": c["errors"],
-                         "avg_ms": tool_ms[name] // max(c["calls"], 1)}
-                  for name, c in tools.items()},
+        "tools": {
+            name: {
+                "calls": c["calls"],
+                "errors": c["errors"],
+                "avg_ms": tool_ms[name] // max(c["calls"], 1),
+            }
+            for name, c in tools.items()
+        },
     }
 
 
@@ -113,19 +117,27 @@ def format_status(config_data: dict | None = None) -> str:
     # than a run that is honestly only adapting.
     if capped(config_data):
         asked = requested_level(config_data)
-        lines.append(f"  requested  {level_name(asked)} ({asked}) -- "
-                     f"capped to {level_name(level)}; that rung is not "
-                     f"implemented yet")
+        lines.append(
+            f"  requested  {level_name(asked)} ({asked}) -- "
+            f"capped to {level_name(level)}; that rung is not "
+            f"implemented yet"
+        )
 
     if not recording_enabled(config_data):
-        lines += ["", "Recording is off, so nothing is being written.",
-                  "Set learn.autonomy: observe in your config, or ONIT_LEARN=observe."]
+        lines += [
+            "",
+            "Recording is off, so nothing is being written.",
+            "Set learn.autonomy: observe in your config, or ONIT_LEARN=observe.",
+        ]
         return "\n".join(lines)
 
     s = summarize(config_data)
     if not s["tasks"]:
-        lines += ["", "No trajectories recorded yet.",
-                  "Run a task — one file per session appears under the path above."]
+        lines += [
+            "",
+            "No trajectories recorded yet.",
+            "Run a task — one file per session appears under the path above.",
+        ]
         return "\n".join(lines)
 
     totals = s["totals"]
@@ -140,13 +152,16 @@ def format_status(config_data: dict | None = None) -> str:
         f"{totals['compactions']} compaction(s)",
     ]
     if s["ratings"]:
-        lines.append(f"Ratings      {s['ratings'].get('up', 0)} up, "
-                     f"{s['ratings'].get('down', 0)} down")
+        lines.append(
+            f"Ratings      {s['ratings'].get('up', 0)} up, {s['ratings'].get('down', 0)} down"
+        )
     v = s["verifier"]
     if s["tasks"]:
-        lines.append(f"Verifier     {v.get('clean', 0)} clean, "
-                     f"{v.get('issues', 0)} with issue(s), "
-                     f"{v.get('unchecked', 0)} unchecked")
+        lines.append(
+            f"Verifier     {v.get('clean', 0)} clean, "
+            f"{v.get('issues', 0)} with issue(s), "
+            f"{v.get('unchecked', 0)} unchecked"
+        )
     if s["models"]:
         served = ", ".join(f"{name} ({n})" for name, n in s["models"].most_common(3))
         lines.append(f"Models       {served}")
@@ -156,6 +171,7 @@ def format_status(config_data: dict | None = None) -> str:
     # event from the harness is usually the first.
     try:
         from .events import summarize_events
+
         ev = summarize_events(config_data)
         if ev["total"]:
             top = ", ".join(f"{name}×{n}" for name, n in ev["by_event"].items())
@@ -164,16 +180,22 @@ def format_status(config_data: dict | None = None) -> str:
         pass
 
     if s["tools"]:
-        lines += ["", "Tools (worst failure rate first)",
-                  f"  {'tool':<24} {'calls':>6} {'errors':>7} {'fail':>6} {'avg ms':>8}"]
+        lines += [
+            "",
+            "Tools (worst failure rate first)",
+            f"  {'tool':<24} {'calls':>6} {'errors':>7} {'fail':>6} {'avg ms':>8}",
+        ]
         # The question this whole layer exists to answer, so it leads: sort by
         # failure rate, then by how often the tool is reached for at all.
-        ranked = sorted(s["tools"].items(),
-                        key=lambda kv: (-(kv[1]["errors"] / max(kv[1]["calls"], 1)),
-                                        -kv[1]["calls"]))
+        ranked = sorted(
+            s["tools"].items(),
+            key=lambda kv: (-(kv[1]["errors"] / max(kv[1]["calls"], 1)), -kv[1]["calls"]),
+        )
         for name, stat in ranked:
             rate = stat["errors"] / max(stat["calls"], 1)
-            lines.append(f"  {name[:24]:<24} {stat['calls']:>6} {stat['errors']:>7} "
-                         f"{rate:>5.0%} {stat['avg_ms']:>8,}")
+            lines.append(
+                f"  {name[:24]:<24} {stat['calls']:>6} {stat['errors']:>7} "
+                f"{rate:>5.0%} {stat['avg_ms']:>8,}"
+            )
 
     return "\n".join(lines)

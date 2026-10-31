@@ -20,6 +20,7 @@ import yaml
 
 try:
     import keyring
+
     KEYRING_AVAILABLE = True
 except ImportError:
     KEYRING_AVAILABLE = False
@@ -44,12 +45,9 @@ _SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.yaml")
 # no key of its own falls back to whichever of them its URL selects — but the
 # wizard no longer offers them, and nothing writes them any more.
 LEGACY_SERVING_SECRETS = [
-    ("host_key",               "OpenRouter API key (legacy fallback)",
-     "OPENROUTER_API_KEY"),
-    ("openai_api_key",         "OpenAI API key (legacy fallback)",
-     "OPENAI_API_KEY"),
-    ("vllm_api_key",           "vLLM API key (legacy fallback)",
-     "VLLM_API_KEY"),
+    ("host_key", "OpenRouter API key (legacy fallback)", "OPENROUTER_API_KEY"),
+    ("openai_api_key", "OpenAI API key (legacy fallback)", "OPENAI_API_KEY"),
+    ("vllm_api_key", "vLLM API key (legacy fallback)", "VLLM_API_KEY"),
 ]
 
 OLLAMA_SECRET_KEY = "ollama_api_key"
@@ -58,22 +56,19 @@ INTEGRATION_SECRETS = [
     # Still prompted, and not only a serving credential: without it the web
     # search tool is switched off (see cli.py), which is why it did not move
     # into the per-endpoint keys with the rest.
-    ("ollama_api_key",         "Ollama API key (web search + Ollama hosts)",
-     "OLLAMA_API_KEY"),
+    ("ollama_api_key", "Ollama API key (web search + Ollama hosts)", "OLLAMA_API_KEY"),
     # Optional first tier for web search: when set, the search tool tries
     # Tavily before Ollama and before the DuckDuckGo fallback.
-    ("tavily_api_key",         "Tavily API key (web search, optional first tier)",
-     "TAVILY_API_KEY"),
-    ("openweathermap_api_key", "OpenWeatherMap API key (enables weather tool)",
-     "OPENWEATHERMAP_API_KEY"),
-    ("web_google_client_id",   "Google OAuth2 client ID (for web UI auth)",
-     None),
-    ("web_google_client_secret", "Google OAuth2 client secret (for web UI auth)",
-     None),
-    ("github_token",           "GitHub personal access token (for git operations)",
-     "GITHUB_TOKEN"),
-    ("huggingface_token",      "HuggingFace access token (for model hub access)",
-     "HF_TOKEN"),
+    ("tavily_api_key", "Tavily API key (web search, optional first tier)", "TAVILY_API_KEY"),
+    (
+        "openweathermap_api_key",
+        "OpenWeatherMap API key (enables weather tool)",
+        "OPENWEATHERMAP_API_KEY",
+    ),
+    ("web_google_client_id", "Google OAuth2 client ID (for web UI auth)", None),
+    ("web_google_client_secret", "Google OAuth2 client secret (for web UI auth)", None),
+    ("github_token", "GitHub personal access token (for git operations)", "GITHUB_TOKEN"),
+    ("huggingface_token", "HuggingFace access token (for model hub access)", "HF_TOKEN"),
 ]
 
 SECRETS = LEGACY_SERVING_SECRETS + INTEGRATION_SECRETS
@@ -82,9 +77,7 @@ SECRETS = LEGACY_SERVING_SECRETS + INTEGRATION_SECRETS
 # Used by get_secret() to check env vars before keyring/file — critical in
 # container mode where the OS keychain is unreachable but the container
 # launcher injects secrets as env vars (e.g. GITHUB_TOKEN).
-_SECRET_ENV_MAP: dict[str, str] = {
-    key: env for key, _, env in SECRETS if env
-}
+_SECRET_ENV_MAP: dict[str, str] = {key: env for key, _, env in SECRETS if env}
 
 # ── Non-secret settings ────────────────────────────────────────────
 # (dot_path, prompt_label, default_value)
@@ -95,21 +88,22 @@ _SECRET_ENV_MAP: dict[str, str] = {
 # collects them as a ranked list and writes back whichever shape fits. They
 # stay here so show_config and any config reader still knows their labels.
 HOST_SETTINGS = [
-    ("serving.host",  "LLM endpoint URL (vLLM / OpenRouter / Ollama)",
-     "http://localhost:8000/v1"),
+    ("serving.host", "LLM endpoint URL (vLLM / OpenRouter / Ollama)", "http://localhost:8000/v1"),
     ("serving.model", "Model name (blank = auto-detect from endpoint)", ""),
 ]
 
 SERVING_SETTINGS = [
-    ("serving.load_balancer",
-     "Load balancing algorithm (sticky / round_robin / random / least_busy)",
-     "sticky"),
+    (
+        "serving.load_balancer",
+        "Load balancing algorithm (sticky / round_robin / random / least_busy)",
+        "sticky",
+    ),
 ]
 
 GENERAL_SETTINGS = [
-    ("theme",        "UI theme (dark / white)",  "dark"),
-    ("web_port",     "Web UI port",              "9000"),
-    ("timeout",      "Request timeout in seconds (-1 = none)", "-1"),
+    ("theme", "UI theme (dark / white)", "dark"),
+    ("web_port", "Web UI port", "9000"),
+    ("timeout", "Request timeout in seconds (-1 = none)", "-1"),
 ]
 
 SETTINGS = HOST_SETTINGS + SERVING_SETTINGS + GENERAL_SETTINGS
@@ -125,14 +119,14 @@ DEFAULT_HOST = "http://localhost:8000/v1"
 # OpenRouter.  The URLs are the canonical spellings — the same ones the
 # key-addressing and the provider rules key off.
 ENDPOINT_PRESETS = (
-    ("ollama",      "http://localhost:11434/v1"),
-    ("vllm",        "http://localhost:8000/v1"),
-    ("sglang",      "http://localhost:30000/v1"),
-    ("openrouter",  "https://openrouter.ai/api/v1"),
-    ("vercel",      "https://ai-gateway.vercel.sh/v1"),
-    ("openai",      "https://api.openai.com/v1"),
-    ("claude",      "https://api.anthropic.com/v1"),
-    ("ollama-cloud","https://ollama.com"),
+    ("ollama", "http://localhost:11434/v1"),
+    ("vllm", "http://localhost:8000/v1"),
+    ("sglang", "http://localhost:30000/v1"),
+    ("openrouter", "https://openrouter.ai/api/v1"),
+    ("vercel", "https://ai-gateway.vercel.sh/v1"),
+    ("openai", "https://api.openai.com/v1"),
+    ("claude", "https://api.anthropic.com/v1"),
+    ("ollama-cloud", "https://ollama.com"),
 )
 
 # Example endpoints shown at the top of the wizard, one per provider.
@@ -146,6 +140,7 @@ ENDPOINT_EXAMPLES = (
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
 
 def _get_nested(data: dict, dotpath: str):
     """Get a value from a nested dict using 'a.b.c' notation."""
@@ -275,8 +270,7 @@ _ENDPOINT_SECRET_PREFIX = "endpoint_key:"
 LEGACY_ENDPOINT_KEYS = (
     (("openrouter.ai",), "host_key", "OPENROUTER_API_KEY", "OpenRouter", True),
     (("api.openai.com",), "openai_api_key", "OPENAI_API_KEY", "OpenAI", True),
-    (("ollama.com", "ollama.ai"), "ollama_api_key", "OLLAMA_API_KEY",
-     "Ollama cloud", True),
+    (("ollama.com", "ollama.ai"), "ollama_api_key", "OLLAMA_API_KEY", "Ollama cloud", True),
     ((), "vllm_api_key", "VLLM_API_KEY", "vLLM", False),
 )
 
@@ -406,8 +400,7 @@ def legacy_key_for(host: str) -> tuple[str, str, str, bool]:
     return LEGACY_ENDPOINT_KEYS[-1][1:]
 
 
-def endpoint_key_label(host: str, in_config: bool = False,
-                       extra_keys: tuple = ()) -> str:
+def endpoint_key_label(host: str, in_config: bool = False, extra_keys: tuple = ()) -> str:
     """One cell's account of what authenticates ``host``.
 
     Names the legacy secret rather than saying "fallback", because that case
@@ -438,9 +431,7 @@ def endpoint_key_source(host: str, extra_keys: tuple = ()) -> str | None:
     return env_var if os.environ.get(env_var) else None
 
 
-def resolve_credential(cli_value: str | None,
-                       env_var: str | None,
-                       keyring_key: str) -> str | None:
+def resolve_credential(cli_value: str | None, env_var: str | None, keyring_key: str) -> str | None:
     """Resolve a credential: CLI arg > env var > keyring > None."""
     if cli_value:
         return cli_value
@@ -452,6 +443,7 @@ def resolve_credential(cli_value: str | None,
 
 
 # ── Provider-specific sanity checks ─────────────────────────────────
+
 
 def _endpoint_list(config: dict) -> list[dict]:
     """Return ``serving.endpoints`` normalized to dicts, or [] if unset.
@@ -510,8 +502,7 @@ def _write_endpoints(config: dict, entries: list[dict]) -> None:
     wizard's own keys live in the keychain and appear here as nothing.
     """
     serving = config.setdefault("serving", {})
-    if len(entries) == 1 and _entry_priority(entries[0]) == 0 \
-            and not entries[0].get("name"):
+    if len(entries) == 1 and _entry_priority(entries[0]) == 0 and not entries[0].get("name"):
         serving.pop("endpoints", None)
         serving["host"] = entries[0]["host"]
         serving["model"] = entries[0].get("model") or ""
@@ -522,12 +513,17 @@ def _write_endpoints(config: dict, entries: list[dict]) -> None:
             serving.pop("host_key", None)
         return
     serving["endpoints"] = [
-        {k: v for k, v in (("name", e.get("name")),
-                           ("host", e["host"]),
-                           ("model", e.get("model")),
-                           ("api_key", e.get("api_key") or e.get("host_key")),
-                           ("priority", _entry_priority(e)))
-         if v not in (None, "")}
+        {
+            k: v
+            for k, v in (
+                ("name", e.get("name")),
+                ("host", e["host"]),
+                ("model", e.get("model")),
+                ("api_key", e.get("api_key") or e.get("host_key")),
+                ("priority", _entry_priority(e)),
+            )
+            if v not in (None, "")
+        }
         for e in entries
     ]
     for k in ("host", "model", "host_key", "host2", "model2", "host2_key"):
@@ -547,19 +543,33 @@ def _configured_endpoints(config: dict) -> list[tuple]:
         # Label by the entry's name (or host) rather than a list index — it
         # survives reordering and is what the user recognizes. Two models on
         # one host share a URL, so the model is named alongside it.
-        return [(f"endpoint '{entry_label(e)}'",
-                 "its 'model' key", str(e["host"]), e.get("model"),
-                 ("api_key" in e or "host_key" in e), ())
-                for e in entries]
+        return [
+            (
+                f"endpoint '{entry_label(e)}'",
+                "its 'model' key",
+                str(e["host"]),
+                e.get("model"),
+                ("api_key" in e or "host_key" in e),
+                (),
+            )
+            for e in entries
+        ]
     found = []
     for host_path, model_path, key_path, extra_keys in (
-        ("serving.host",  "serving.model",  "serving.host_key", ()),
+        ("serving.host", "serving.model", "serving.host_key", ()),
     ):
         host = str(_get_nested(config, host_path) or "")
         if host:
-            found.append((host_path, model_path, host,
-                          _get_nested(config, model_path),
-                          bool(_get_nested(config, key_path)), extra_keys))
+            found.append(
+                (
+                    host_path,
+                    model_path,
+                    host,
+                    _get_nested(config, model_path),
+                    bool(_get_nested(config, key_path)),
+                    extra_keys,
+                )
+            )
     return found
 
 
@@ -576,28 +586,33 @@ def _provider_notes(config: dict) -> list[str]:
     would actually fail, not when one particular place is empty.
     """
     notes = []
-    for host_path, model_path, host, model, in_config, extra_keys in \
-            _configured_endpoints(config):
+    for host_path, model_path, host, model, in_config, extra_keys in _configured_endpoints(config):
         _, env_var, label, required = legacy_key_for(host)
         if not required:
             continue
         if not in_config and not endpoint_key_source(host, extra_keys):
-            notes.append(f"Note: {host_path} is a{'n' if label[0] in 'AEIOU' else ''} "
-                         f"{label} endpoint but no API key is set (rerun "
-                         f"'onit setup' or export {env_var}).")
+            notes.append(
+                f"Note: {host_path} is a{'n' if label[0] in 'AEIOU' else ''} "
+                f"{label} endpoint but no API key is set (rerun "
+                f"'onit setup' or export {env_var})."
+            )
         if not model:
             if label in ("OpenRouter", "OpenAI"):
-                _example = ("google/gemini-2.5-pro" if label == "OpenRouter"
-                            else "gpt-4o")
-                notes.append(f"Note: {label} requires an explicit model name — set "
-                             f"{model_path} (e.g. {_example}).")
+                _example = "google/gemini-2.5-pro" if label == "OpenRouter" else "gpt-4o"
+                notes.append(
+                    f"Note: {label} requires an explicit model name — set "
+                    f"{model_path} (e.g. {_example})."
+                )
             else:
-                notes.append(f"Note: {model_path} is not set — the first model available at "
-                             f"{host} will be used. Set it to choose (e.g. glm-5.3:cloud).")
+                notes.append(
+                    f"Note: {model_path} is not set — the first model available at "
+                    f"{host} will be used. Set it to choose (e.g. glm-5.3:cloud)."
+                )
     return notes
 
 
 # ── Endpoint editor ─────────────────────────────────────────────────
+
 
 def known_endpoints(config: dict) -> list[dict]:
     """Every endpoint this machine knows about, configured or not.
@@ -614,14 +629,14 @@ def known_endpoints(config: dict) -> list[dict]:
     """
     out: dict[str, dict] = {}
 
-    def _add(host: str, model: str | None, configured: bool,
-             preset: str | None = None) -> None:
+    def _add(host: str, model: str | None, configured: bool, preset: str | None = None) -> None:
         host = normalize_host(host)
         if not host:
             return
-        ep = out.setdefault(host, {"host": host, "model": model or "",
-                                   "key": None, "configured": False,
-                                   "preset": None})
+        ep = out.setdefault(
+            host,
+            {"host": host, "model": model or "", "key": None, "configured": False, "preset": None},
+        )
         if configured:
             ep["configured"] = True
             if model:
@@ -635,7 +650,7 @@ def known_endpoints(config: dict) -> list[dict]:
         _add(url, "", False, name)
     for name in _file_secrets_names():
         if name.startswith(_ENDPOINT_SECRET_PREFIX):
-            _add(name[len(_ENDPOINT_SECRET_PREFIX):], "", False)
+            _add(name[len(_ENDPOINT_SECRET_PREFIX) :], "", False)
 
     for ep in out.values():
         ep["key"] = endpoint_key_source(ep["host"])
@@ -660,8 +675,7 @@ def _file_secrets_names() -> list[str]:
     return []
 
 
-_ENDPOINT_HELP = (
-    "  Commands: [a]dd  [e]dit N  [d]elete N  [p]riority N  [Enter] done")
+_ENDPOINT_HELP = "  Commands: [a]dd  [e]dit N  [d]elete N  [p]riority N  [Enter] done"
 
 
 def _print_endpoint_table(entries: list[dict], indent: str = "  ") -> None:
@@ -681,34 +695,40 @@ def _print_endpoint_table(entries: list[dict], indent: str = "  ") -> None:
     width = max(len("HOST"), max(len(e.get("host", "")) for e in entries))
     mw = max(len("MODEL"), max(len(m) for m in models))
     kw = max(len("KEY"), max(len(k) for k in keys))
-    print(f"{indent}{'#':>2}  {'PRIO':<4}  {'HOST':<{width}}  "
-          f"{'MODEL':<{mw}}  {'KEY':<{kw}}  NAME")
+    print(f"{indent}{'#':>2}  {'PRIO':<4}  {'HOST':<{width}}  {'MODEL':<{mw}}  {'KEY':<{kw}}  NAME")
     for i in order:
         e = entries[i]
-        print(f"{indent}{i + 1:>2}  {_entry_priority(e):<4}  "
-              f"{e.get('host', ''):<{width}}  "
-              f"{models[i]:<{mw}}  {keys[i]:<{kw}}  "
-              f"{e.get('name') or ''}")
+        print(
+            f"{indent}{i + 1:>2}  {_entry_priority(e):<4}  "
+            f"{e.get('host', ''):<{width}}  "
+            f"{models[i]:<{mw}}  {keys[i]:<{kw}}  "
+            f"{e.get('name') or ''}"
+        )
     if len(entries) > 1 and all(_entry_priority(e) == 0 for e in entries):
-        print(f"{indent}All endpoints share one tier — requests are spread "
-              f"across them. Use 'p N' to rank one ahead.")
-        if (any(is_ollama_host(e.get("host", "")) for e in entries)
-                and any(not is_ollama_host(e.get("host", ""))
-                        for e in entries)):
+        print(
+            f"{indent}All endpoints share one tier — requests are spread "
+            f"across them. Use 'p N' to rank one ahead."
+        )
+        if any(is_ollama_host(e.get("host", "")) for e in entries) and any(
+            not is_ollama_host(e.get("host", "")) for e in entries
+        ):
             # The line above is not true for the Ollama rows while this rule
             # is on, and saying nothing is how a configured endpoint ends up
             # serving nothing.
-            print(f"{indent}Ollama endpoints are fallback-only while a "
-                  f"non-Ollama endpoint is healthy")
-            print(f"{indent}(set serving.ollama_fallback_only: false, or give "
-                  f"one a priority, to change that).")
+            print(
+                f"{indent}Ollama endpoints are fallback-only while a non-Ollama endpoint is healthy"
+            )
+            print(
+                f"{indent}(set serving.ollama_fallback_only: false, or give "
+                f"one a priority, to change that)."
+            )
 
 
 def entry_key_label(entry: dict) -> str:
     """How a config entry's endpoint is authenticated, for the table."""
     return endpoint_key_label(
-        entry.get("host", ""),
-        in_config=bool(entry.get("api_key") or entry.get("host_key")))
+        entry.get("host", ""), in_config=bool(entry.get("api_key") or entry.get("host_key"))
+    )
 
 
 def _print_known_endpoints(config: dict, indent: str = "    ") -> None:
@@ -723,11 +743,10 @@ def _print_known_endpoints(config: dict, indent: str = "    ") -> None:
     rows = [ep for ep in known_endpoints(config) if not ep["configured"]]
     if not rows:
         return
-    print(f"{indent}Known but not configured (a number at the endpoint "
-          f"prompt adds a preset):")
+    print(f"{indent}Known but not configured (a number at the endpoint prompt adds a preset):")
     for ep in rows:
         label = ep["preset"] or ("stored key" if ep["key"] else "")
-        key = (f"key: {ep['key']}" if ep["key"] else "no key")
+        key = f"key: {ep['key']}" if ep["key"] else "no key"
         print(f"{indent}  {ep['host']:<38} {key:<24} {label}")
 
 
@@ -760,8 +779,7 @@ def _prompt_endpoint_key(host: str, previous_host: str | None) -> None:
         store_endpoint_key(host, value)
 
 
-_OLLAMA_CLOUD_HOSTS = ("https://api.ollama.com", "https://ollama.com",
-                       "https://ollama.ai")
+_OLLAMA_CLOUD_HOSTS = ("https://api.ollama.com", "https://ollama.com", "https://ollama.ai")
 
 
 def migrate_ollama_key() -> None:
@@ -782,7 +800,7 @@ def migrate_ollama_key() -> None:
     for name in _file_secrets_names():
         if not name.startswith(_ENDPOINT_SECRET_PREFIX) or "ollama" not in name:
             continue
-        host = name[len(_ENDPOINT_SECRET_PREFIX):]
+        host = name[len(_ENDPOINT_SECRET_PREFIX) :]
         value = get_secret(endpoint_secret_name(host))
         if value:
             store_secret(OLLAMA_SECRET_KEY, value)
@@ -804,8 +822,8 @@ def _prompt_ollama_key() -> None:
     else:
         hint = "not set"
     value = getpass.getpass(
-        "    Ollama API key (shared by model access and web search) "
-        f"[{hint}]: ").strip()
+        f"    Ollama API key (shared by model access and web search) [{hint}]: "
+    ).strip()
     if value == "-":
         delete_secret(OLLAMA_SECRET_KEY)
     elif value:
@@ -824,8 +842,7 @@ def _resolve_host_input(text: str, default: str) -> str | None:
         index = int(text) - 1
         if 0 <= index < len(ENDPOINT_PRESETS):
             return ENDPOINT_PRESETS[index][1]
-        print(f"    Presets are 1-{len(ENDPOINT_PRESETS)} — that number "
-              f"names none of them.")
+        print(f"    Presets are 1-{len(ENDPOINT_PRESETS)} — that number names none of them.")
         return None
     return text or default or None
 
@@ -838,11 +855,13 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
     entry = dict(entry or {})
     previous_host = entry.get("host")
     host_default = entry.get("host") or (DEFAULT_HOST if is_first else "")
-    preset_hint = ", or a number: " + "  ".join(
-        f"{i}={name}" for i, (name, _) in enumerate(ENDPOINT_PRESETS, 1)
-    ) if not entry.get("host") else ""
-    host = input(f"    Endpoint URL [{host_default or 'required'}"
-                 f"{preset_hint}]: ").strip()
+    preset_hint = (
+        ", or a number: "
+        + "  ".join(f"{i}={name}" for i, (name, _) in enumerate(ENDPOINT_PRESETS, 1))
+        if not entry.get("host")
+        else ""
+    )
+    host = input(f"    Endpoint URL [{host_default or 'required'}{preset_hint}]: ").strip()
     host = _resolve_host_input(host, host_default)
     if not host:
         print("    No URL given — nothing added.")
@@ -869,8 +888,9 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
 def _prompt_priority(entry: dict) -> int:
     """Ask for an endpoint's rank, keeping the current value on blank input."""
     current = _entry_priority(entry)
-    raw = input(f"    Priority — lower is preferred, equal numbers "
-                f"load-balance [{current}]: ").strip()
+    raw = input(
+        f"    Priority — lower is preferred, equal numbers load-balance [{current}]: "
+    ).strip()
     if not raw:
         return current
     try:
@@ -885,8 +905,7 @@ def _resolve_index(arg: str, entries: list[dict]) -> int | None:
     try:
         row = int(arg)
     except (TypeError, ValueError):
-        print(f"  {arg or '(nothing)'!r} is not a row number — "
-              f"try e.g. 'p 2'.")
+        print(f"  {arg or '(nothing)'!r} is not a row number — try e.g. 'p 2'.")
         return None
     if not 1 <= row <= len(entries):
         print(f"  No row {row} — pick 1..{len(entries)}.")
@@ -938,8 +957,7 @@ def _edit_endpoints(config: dict) -> None:
             if idx is None:
                 continue
             if len(entries) == 1:
-                print("  At least one endpoint is required — "
-                      "edit this one instead.")
+                print("  At least one endpoint is required — edit this one instead.")
                 continue
             print(f"  Removed {entries.pop(idx)['host']}")
         elif cmd in ("p", "priority"):
@@ -954,6 +972,7 @@ def _edit_endpoints(config: dict) -> None:
 
 
 # ── Show current configuration ──────────────────────────────────────
+
 
 def _print_settings(config: dict, settings: list[tuple]) -> None:
     """Print each setting's effective value, falling back to its default."""
@@ -1013,11 +1032,9 @@ def show_config():
     _print_settings(config, SERVING_SETTINGS)
     # Only shown once one is actually holding something up: on a fresh install
     # every endpoint carries its own key and this section is noise.
-    legacy = [entry for entry in LEGACY_SERVING_SECRETS
-              if get_secret(entry[0])]
+    legacy = [entry for entry in LEGACY_SERVING_SECRETS if get_secret(entry[0])]
     if legacy:
-        print("\n  Legacy fallback keys — used only by an endpoint that has "
-              "none of its own")
+        print("\n  Legacy fallback keys — used only by an endpoint that has none of its own")
         _print_secrets(legacy)
 
     print("\n  Preferences")
@@ -1025,10 +1042,11 @@ def show_config():
 
     print("\n  Integrations")
     _print_secrets(INTEGRATION_SECRETS)
-    if any(is_ollama_cloud_host(e.get("host", "")) for e in
-           _endpoint_list(config) or _entries_from_host(config)):
-        print("  The Ollama key above is shared by web search and "
-              "Ollama cloud endpoints.")
+    if any(
+        is_ollama_cloud_host(e.get("host", ""))
+        for e in _endpoint_list(config) or _entries_from_host(config)
+    ):
+        print("  The Ollama key above is shared by web search and Ollama cloud endpoints.")
 
     print()
     for note in _provider_notes(config):
@@ -1036,6 +1054,7 @@ def show_config():
 
 
 # ── Interactive setup wizard ────────────────────────────────────────
+
 
 def _prompt_settings(config: dict, settings: list[tuple]) -> None:
     """Prompt for each setting, writing answers into config."""
@@ -1070,8 +1089,7 @@ def _prompt_secrets(secrets: list, skip: set = ()) -> None:
     for key, label, env_var in secrets:
         existing = get_secret(key)
         if key in skip:
-            status = (f"••••{existing[-4:]} (shared with model access)"
-                      if existing else "not set")
+            status = f"••••{existing[-4:]} (shared with model access)" if existing else "not set"
             print(f"  {label:.<52s} {status}")
             continue
         if existing:
@@ -1097,8 +1115,9 @@ def _ollama_skip_set(config: dict) -> set:
     place it is asked for.
     """
     entries = _endpoint_list(config) or _entries_from_host(config)
-    if (any(is_ollama_cloud_host(e.get("host", "")) for e in entries)
-            and get_secret(OLLAMA_SECRET_KEY)):
+    if any(is_ollama_cloud_host(e.get("host", "")) for e in entries) and get_secret(
+        OLLAMA_SECRET_KEY
+    ):
         return {OLLAMA_SECRET_KEY}
     return set()
 
@@ -1132,13 +1151,15 @@ def delete_named_secret(name: str) -> tuple:
         if key in {k for k, _, _ in SECRETS}:
             keys = (key,)
         elif "://" in key or key.startswith(_ENDPOINT_SECRET_PREFIX):
-            host = key[len(_ENDPOINT_SECRET_PREFIX):] if key.startswith(
-                _ENDPOINT_SECRET_PREFIX) else key
+            host = (
+                key[len(_ENDPOINT_SECRET_PREFIX) :]
+                if key.startswith(_ENDPOINT_SECRET_PREFIX)
+                else key
+            )
             delete_endpoint_key(normalize_host(host))
             return True, f"deleted endpoint key for {normalize_host(host)}"
         else:
-            known = ", ".join(sorted(set(_SECRET_ALIASES)
-                                     | {k for k, _, _ in SECRETS}))
+            known = ", ".join(sorted(set(_SECRET_ALIASES) | {k for k, _, _ in SECRETS}))
             return False, f"unknown secret {name!r} — known: {known}"
     outcomes = []
     for k in keys:
@@ -1157,9 +1178,11 @@ def run_setup(show_only: bool = False):
         return
 
     if not KEYRING_AVAILABLE:
-        print("Warning: 'keyring' package not installed. "
-              "Secrets will be stored in plaintext in the config file.",
-              file=sys.stderr)
+        print(
+            "Warning: 'keyring' package not installed. "
+            "Secrets will be stored in plaintext in the config file.",
+            file=sys.stderr,
+        )
         print("Install it with: pip install keyring\n", file=sys.stderr)
 
     print("\n  OnIt Setup")
@@ -1174,11 +1197,12 @@ def run_setup(show_only: bool = False):
     print("\n  Model serving")
     print("  " + "─" * 50)
     print(f"  Endpoint examples — {ENDPOINT_EXAMPLES}")
-    print("  Model examples — vLLM/local: auto-detect; "
-          "Ollama cloud: glm-5.3:cloud; OpenRouter: google/gemini-2.5-pro; "
-          "OpenAI: gpt-4o")
-    print("  Each endpoint takes its own API key; leave it blank where the "
-          "server wants none.")
+    print(
+        "  Model examples — vLLM/local: auto-detect; "
+        "Ollama cloud: glm-5.3:cloud; OpenRouter: google/gemini-2.5-pro; "
+        "OpenAI: gpt-4o"
+    )
+    print("  Each endpoint takes its own API key; leave it blank where the server wants none.")
     _edit_endpoints(config)
     print()
     _prompt_settings(config, SERVING_SETTINGS)

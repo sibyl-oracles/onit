@@ -51,7 +51,7 @@ import os
 import time
 
 from .config import recording_enabled, trajectory_dir
-from .lifecycle import (pending_proposals, should_archive, should_update)
+from .lifecycle import pending_proposals, should_archive, should_update
 from .events import record_tool_event
 
 # The archive file: what was withheld, when, and why.  It is a record,
@@ -70,17 +70,26 @@ MAX_WITHHOLDINGS = 3
 # the ones that read and write files, and the ones that report what
 # happened.  Withholding the ability to write a note would make the
 # agent unable to record why it was wrong.
-NEVER_WITHHOLD = frozenset({
-    "read_file", "edit_file", "write_file", "list_directory",
-    "grep", "bash", "result_read", "result_grep", "context_status",
-    "note_read", "note_write",
-})
+NEVER_WITHHOLD = frozenset(
+    {
+        "read_file",
+        "edit_file",
+        "write_file",
+        "list_directory",
+        "grep",
+        "bash",
+        "result_read",
+        "result_grep",
+        "context_status",
+        "note_read",
+        "note_write",
+    }
+)
 
 
 def archive_path(config_data: dict | None = None) -> str:
     """Where the archive of withheld tools lives."""
-    return os.path.join(os.path.dirname(trajectory_dir(config_data)),
-                        "archive.json")
+    return os.path.join(os.path.dirname(trajectory_dir(config_data)), "archive.json")
 
 
 def read_archive(config_data: dict | None = None) -> dict:
@@ -117,8 +126,11 @@ def write_archive(archive: dict, config_data: dict | None = None) -> bool:
 def withheld_tools(config_data: dict | None = None) -> set:
     """The tools currently withheld from sessions."""
     archive = read_archive(config_data)
-    return {name for name, entry in (archive.get("tools") or {}).items()
-            if isinstance(entry, dict) and entry.get("withheld")}
+    return {
+        name
+        for name, entry in (archive.get("tools") or {}).items()
+        if isinstance(entry, dict) and entry.get("withheld")
+    }
 
 
 def lifecycle_enabled(config_data: dict | None = None) -> bool:
@@ -129,6 +141,7 @@ def lifecycle_enabled(config_data: dict | None = None) -> bool:
     what it would do — but nothing is withheld.
     """
     from .config import ADAPT, autonomy
+
     learn = (config_data or {}).get("learn")
     if not isinstance(learn, dict):
         return False
@@ -141,6 +154,7 @@ def lifecycle_enabled(config_data: dict | None = None) -> bool:
 def tool_stats(config_data: dict | None = None) -> dict:
     """Per-tool call and error counts, from the recorded trajectories."""
     from .lifecycle import _tool_calls
+
     return dict(_tool_calls(config_data))
 
 
@@ -168,29 +182,37 @@ def evaluate(config_data: dict | None = None) -> list:
         archive = read_archive(config_data)
         entry = (archive.get("tools") or {}).get(tool) or {}
         last_used = entry.get("last_used")
-        verdict = should_archive(tool=tool, last_used_ts=last_used,
-                                 calls=stat["calls"], errors=stat["errors"],
-                                 config_data=config_data)
+        verdict = should_archive(
+            tool=tool,
+            last_used_ts=last_used,
+            calls=stat["calls"],
+            errors=stat["errors"],
+            config_data=config_data,
+        )
         if verdict.get("archive"):
-            decisions.append({
-                "tool": tool,
-                "action": "withhold",
-                "reasons": verdict.get("reasons") or [],
-            })
-        else:
-            update = should_update(calls=stat["calls"], errors=stat["errors"],
-                                   config_data=config_data)
-            if update.get("update"):
-                decisions.append({
+            decisions.append(
+                {
                     "tool": tool,
-                    "action": "update",
-                    "reasons": update.get("reasons") or [],
-                })
+                    "action": "withhold",
+                    "reasons": verdict.get("reasons") or [],
+                }
+            )
+        else:
+            update = should_update(
+                calls=stat["calls"], errors=stat["errors"], config_data=config_data
+            )
+            if update.get("update"):
+                decisions.append(
+                    {
+                        "tool": tool,
+                        "action": "update",
+                        "reasons": update.get("reasons") or [],
+                    }
+                )
     return decisions
 
 
-def apply(config_data: dict | None = None, *,
-          session_id: str | None = None) -> dict:
+def apply(config_data: dict | None = None, *, session_id: str | None = None) -> dict:
     """Run the actuator: withhold the tools the policy says to withhold.
 
     Returns ``{"withheld": [...], "decisions": [...], "applied": bool}``.
@@ -230,9 +252,9 @@ def apply(config_data: dict | None = None, *,
         }
         withheld.append(tool)
         try:
-            record_tool_event(event="tool.archived", tool=tool,
-                              session_id=session_id,
-                              config_data=config_data)
+            record_tool_event(
+                event="tool.archived", tool=tool, session_id=session_id, config_data=config_data
+            )
         except Exception:
             # The event is a record of the decision; failing to write it
             # must not fail the decision.
@@ -240,12 +262,10 @@ def apply(config_data: dict | None = None, *,
     if withheld:
         archive["tools"] = tools
         write_archive(archive, config_data)
-    return {"withheld": withheld, "decisions": decisions,
-            "applied": bool(withheld)}
+    return {"withheld": withheld, "decisions": decisions, "applied": bool(withheld)}
 
 
-def restore(tool: str, config_data: dict | None = None,
-            session_id: str | None = None) -> bool:
+def restore(tool: str, config_data: dict | None = None, session_id: str | None = None) -> bool:
     """Bring a withheld tool back.
 
     The reverse operation, and the reason the archive is not a deletion:
@@ -264,9 +284,9 @@ def restore(tool: str, config_data: dict | None = None,
     written = write_archive(archive, config_data)
     if written:
         try:
-            record_tool_event(event="tool.restored", tool=tool,
-                              session_id=session_id,
-                              config_data=config_data)
+            record_tool_event(
+                event="tool.restored", tool=tool, session_id=session_id, config_data=config_data
+            )
         except Exception:
             pass
     return written
@@ -290,8 +310,9 @@ def format_report(decisions: list, archive: dict | None = None) -> str:
     """The lifecycle report, as one screen of text."""
     archive = archive if archive is not None else {}
     tools = archive.get("tools") or {}
-    withheld = sorted(name for name, entry in tools.items()
-                      if isinstance(entry, dict) and entry.get("withheld"))
+    withheld = sorted(
+        name for name, entry in tools.items() if isinstance(entry, dict) and entry.get("withheld")
+    )
     lines = ["Tool lifecycle"]
     if not decisions and not withheld:
         lines.append("  Nothing is due. No tool has failed often enough to")
@@ -302,9 +323,10 @@ def format_report(decisions: list, archive: dict | None = None) -> str:
         lines.append("  %d decision(s) due:" % len(decisions))
         for decision in decisions:
             reasons = "; ".join(decision.get("reasons") or [])
-            lines.append("    %-8s %-20s %s"
-                         % (decision.get("action", ""),
-                            decision.get("tool", ""), reasons))
+            lines.append(
+                "    %-8s %-20s %s"
+                % (decision.get("action", ""), decision.get("tool", ""), reasons)
+            )
     if withheld:
         lines.append("  Withheld: %s" % ", ".join(withheld))
         lines.append("  (reversible — 'onit learn --lifecycle --restore TOOL')")

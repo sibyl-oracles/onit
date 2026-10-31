@@ -45,9 +45,15 @@ import time
 
 import yaml
 
-from .skills import (ACTIVE, apply_deltas, read_manifest,
-                     read_pin, skill_dir, write_manifest,
-                     write_pin)
+from .skills import (
+    ACTIVE,
+    apply_deltas,
+    read_manifest,
+    read_pin,
+    skill_dir,
+    write_manifest,
+    write_pin,
+)
 from .skills_gate import read_skill_sources, run_gate
 
 # The template a synthesised skill starts from.  It is a *starting
@@ -122,8 +128,8 @@ def default_manifest(candidate: dict, *, name: str | None = None) -> dict:
         "description": (
             "Runs the %s call the agent kept repeating (%d sessions, %d "
             "calls), with %s. Synthesised from the trajectory record."
-            % (tool, candidate.get("sessions", 0), candidate.get("calls", 0),
-               args)),
+            % (tool, candidate.get("sessions", 0), candidate.get("calls", 0), args)
+        ),
         "version": 1,
         "input_schema": {
             "type": "object",
@@ -155,11 +161,11 @@ def default_body(candidate: dict) -> str:
         "    raise NotImplementedError(\n"
         "        'This skill is a mined draft. It has not been written yet, '\n"
         "        'so it raises rather than pretending to do the ' + {tool!r}\n"
-        "        + ' call.')\n").format(tool=tool)
+        "        + ' call.')\n"
+    ).format(tool=tool)
 
 
-def write_skill(name: str, manifest: dict, body: str, *,
-                config_data: dict | None = None) -> str:
+def write_skill(name: str, manifest: dict, body: str, *, config_data: dict | None = None) -> str:
     """Write a skill's directory.  Returns the directory.
 
     The test file is written alongside, because a skill without tests
@@ -172,18 +178,17 @@ def write_skill(name: str, manifest: dict, body: str, *,
 
     title = _title_for(name)
     description = str(manifest.get("description") or "")
-    source = _fill(SKILL_TEMPLATE, title=title, description=description,
-                   manifest=repr(manifest), body=body)
-    with io.open(os.path.join(directory, "tool.py"), "w",
-                 encoding="utf-8") as f:
+    source = _fill(
+        SKILL_TEMPLATE, title=title, description=description, manifest=repr(manifest), body=body
+    )
+    with io.open(os.path.join(directory, "tool.py"), "w", encoding="utf-8") as f:
         f.write(source)
 
     write_manifest(os.path.join(directory, "manifest.yaml"), manifest)
 
     test_name = "test_%s.py" % name
     test_source = _fill(_TEST_TEMPLATE, name=name, title=title)
-    with io.open(os.path.join(directory, test_name), "w",
-                 encoding="utf-8") as f:
+    with io.open(os.path.join(directory, test_name), "w", encoding="utf-8") as f:
         f.write(test_source)
 
     return directory
@@ -232,9 +237,13 @@ if __name__ == "__main__":
 '''
 
 
-def synthesize(candidate: dict, *, name: str | None = None,
-               config_data: dict | None = None,
-               body: str | None = None) -> dict:
+def synthesize(
+    candidate: dict,
+    *,
+    name: str | None = None,
+    config_data: dict | None = None,
+    body: str | None = None,
+) -> dict:
     """Write a skill from a candidate.  Returns the skill's record.
 
     This is the *drafting* step.  It writes the skill; it does not pin
@@ -247,9 +256,14 @@ def synthesize(candidate: dict, *, name: str | None = None,
     return {"name": name, "dir": directory, "manifest": manifest}
 
 
-def gate_skill(name: str, *, config_data: dict | None = None,
-               delta: float | None = None, require_benchmark: bool = True,
-               sealed: bool | None = None) -> dict:
+def gate_skill(
+    name: str,
+    *,
+    config_data: dict | None = None,
+    delta: float | None = None,
+    require_benchmark: bool = True,
+    sealed: bool | None = None,
+) -> dict:
     """Run the gate on a written skill.
 
     ``sealed`` defaults to the deployment's own answer -- whether
@@ -271,14 +285,20 @@ def gate_skill(name: str, *, config_data: dict | None = None,
     # outside the agent's writable surface.
     try:
         from .skills_gate import ruler_paths
+
         forbidden = ruler_paths(config_data)
     except Exception:
         forbidden = []
 
-    result = run_gate(manifest=manifest, source=source,
-                      test_source=test_source, delta=delta,
-                      sealed=sealed, require_benchmark=require_benchmark,
-                      forbidden_paths=forbidden)
+    result = run_gate(
+        manifest=manifest,
+        source=source,
+        test_source=test_source,
+        delta=delta,
+        sealed=sealed,
+        require_benchmark=require_benchmark,
+        forbidden_paths=forbidden,
+    )
     return result.to_dict()
 
 
@@ -292,6 +312,7 @@ def _installs_sealed() -> bool:
     """
     try:
         from src.mcp.servers.tasks.os.bash.command_policy import installs_sealed
+
         return bool(installs_sealed())
     except Exception:
         return False
@@ -319,17 +340,20 @@ def _keep_previous_pin(config_data: dict | None = None) -> None:
             with io.open(path, "r", encoding="utf-8") as f:
                 data = f.read()
         else:
-            data = yaml.safe_dump({"version": 0, "skills": {}},
-                                  sort_keys=True)
+            data = yaml.safe_dump({"version": 0, "skills": {}}, sort_keys=True)
         with io.open(path + ".prev", "w", encoding="utf-8") as f:
             f.write(data)
     except OSError:
         pass
 
 
-def promote(name: str, *, config_data: dict | None = None,
-            delta: float | None = None,
-            require_benchmark: bool = True) -> dict:
+def promote(
+    name: str,
+    *,
+    config_data: dict | None = None,
+    delta: float | None = None,
+    require_benchmark: bool = True,
+) -> dict:
     """Pin a skill, if the gate says it may be pinned.
 
     Returns ``{"pinned": bool, "gate": {...}, "reason": str}``.
@@ -339,18 +363,24 @@ def promote(name: str, *, config_data: dict | None = None,
     for.  The operator's request is recorded in the reason so that the
     refusal is legible rather than mysterious.
     """
-    gate = gate_skill(name, config_data=config_data, delta=delta,
-                      require_benchmark=require_benchmark)
+    gate = gate_skill(
+        name, config_data=config_data, delta=delta, require_benchmark=require_benchmark
+    )
     if not gate["passed"]:
-        return {"pinned": False, "gate": gate,
-                "reason": "the gate said no: %s" % gate["reason"]}
+        return {"pinned": False, "gate": gate, "reason": "the gate said no: %s" % gate["reason"]}
 
     pin = read_pin(config_data)
     _keep_previous_pin(config_data)
-    new_pin = apply_deltas(pin, [{"op": "insert", "name": name,
-                                  "skill": {"name": name,
-                                            "status": ACTIVE,
-                                            "pinned_at": _today()}}])
+    new_pin = apply_deltas(
+        pin,
+        [
+            {
+                "op": "insert",
+                "name": name,
+                "skill": {"name": name, "status": ACTIVE, "pinned_at": _today()},
+            }
+        ],
+    )
     new_pin.pop("skipped", None)
     write_pin(new_pin, config_data)
     return {"pinned": True, "gate": gate, "reason": ""}
@@ -367,11 +397,9 @@ def rollback(config_data: dict | None = None) -> dict:
     path = pinned_path(config_data)
     previous = path + ".prev"
     if not os.path.isfile(previous):
-        return {"rolled_back": False,
-                "reason": "there is no previous pin to roll back to"}
+        return {"rolled_back": False, "reason": "there is no previous pin to roll back to"}
     try:
         shutil.copyfile(previous, path)
     except OSError as e:
         return {"rolled_back": False, "reason": "the rollback failed: %s" % e}
-    return {"rolled_back": True, "reason": "",
-            "pin": read_pin(config_data)}
+    return {"rolled_back": True, "reason": "", "pin": read_pin(config_data)}

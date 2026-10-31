@@ -77,7 +77,8 @@ def _turn_count_from_jsonl(jsonl_path: str) -> int:
 # Filler that carries no topic: politeness, pronouns, auxiliaries, articles,
 # prepositions and question words.  Dropping these turns "can you please help
 # me fix the login bug" into "fix-login-bug".
-_TAG_STOPWORDS = frozenset("""
+_TAG_STOPWORDS = frozenset(
+    """
 a an the and or but if then than so as of to in on at for with from by into
 about over under again between within without across after before during
 through out up down off onto upon per via
@@ -88,7 +89,8 @@ this that these those there here what which who whom whose when where why how
 please pls kindly hi hey hello thanks thank just some any all very really
 actually maybe let lets like want wants need needs help sure okay ok also
 http https www com org net io co html htm
-""".split())
+""".split()
+)
 
 # A sidebar entry is only a couple of inches wide — four words is the most that
 # stays readable, and the character cap keeps long identifiers from blowing it.
@@ -158,8 +160,7 @@ def _has_topic(task: str) -> bool:
     return any(w not in _TAG_STOPWORDS for w in _tag_words(task))
 
 
-def _needs_name(tag, task: str, allow_rename: bool = True,
-                named_by_user: bool = False) -> bool:
+def _needs_name(tag, task: str, allow_rename: bool = True, named_by_user: bool = False) -> bool:
     """Whether this turn should (re)name a session currently called *tag*.
 
     *allow_rename* is False for the preview, which -- unlike the name -- may be
@@ -179,8 +180,6 @@ def _needs_name(tag, task: str, allow_rename: bool = True,
     if not allow_rename:
         return str(tag).lower() in _PLACEHOLDER_TAGS or not _has_topic(str(tag))
     return str(tag).lower() in _PLACEHOLDER_TAGS
-
-
 
 
 def _auto_tag_candidates(task: str) -> list[str]:
@@ -212,8 +211,9 @@ def _existing_tags(index: dict, exclude_sid: str | None = None) -> set[str]:
     return tags
 
 
-def _ensure_unique_tag(tag: str, index: dict, exclude_sid: str | None = None,
-                       alternates: list[str] | None = None) -> str:
+def _ensure_unique_tag(
+    tag: str, index: dict, exclude_sid: str | None = None, alternates: list[str] | None = None
+) -> str:
     """Return the first free name for a session.
 
     *tag* is preferred; *alternates* are tried next so a collision produces a
@@ -272,8 +272,8 @@ def _tag_holder(tag: str, index: dict, exclude_sid: str | None = None) -> str | 
 
 # ---- Public API ----
 
-def name_for_new_session(tag: str | None,
-                         sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
+
+def name_for_new_session(tag: str | None, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
     """The name a session created right now with *tag* would be given.
 
     A caller that says "call it X" needs to print the name the session will
@@ -290,8 +290,9 @@ def name_for_new_session(tag: str | None,
     return _ensure_unique_tag(name, _load_index(sessions_dir))
 
 
-def register_session(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                     tag: str | None = None) -> str:
+def register_session(
+    session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR, tag: str | None = None
+) -> str:
     """Register a new session in the index, returning the name it got.
 
     A name given here is the name the session has: the caller prints it back
@@ -316,8 +317,9 @@ def register_session(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR,
     return name
 
 
-def update_session(session_id: str, task: str | None = None,
-                   sessions_dir: str = DEFAULT_SESSIONS_DIR) -> None:
+def update_session(
+    session_id: str, task: str | None = None, sessions_dir: str = DEFAULT_SESSIONS_DIR
+) -> None:
     """Update session metadata after a new turn.  Auto-tags if no tag set."""
     index = _load_index(sessions_dir)
     meta = index.get(session_id)
@@ -337,23 +339,23 @@ def update_session(session_id: str, task: str | None = None,
     # about, and the first message that says something replaces it.
     if task and _needs_name(meta.get("preview"), task, allow_rename=False):
         meta["preview"] = task[:120]
-    if task and _needs_name(meta.get("tag"), task,
-                            named_by_user=meta.get("named_by_user", False)):
+    if task and _needs_name(meta.get("tag"), task, named_by_user=meta.get("named_by_user", False)):
         options = _auto_tag_candidates(task)
-        meta["tag"] = _ensure_unique_tag(options[0], index, exclude_sid=session_id,
-                                         alternates=options[1:])
+        meta["tag"] = _ensure_unique_tag(
+            options[0], index, exclude_sid=session_id, alternates=options[1:]
+        )
     index[session_id] = meta
     _save_index(index, sessions_dir)
 
 
-def get_session_owner(session_id: str,
-                      sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+def get_session_owner(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Return the owner (authenticated email) recorded for a session, if any."""
     return _load_index(sessions_dir).get(session_id, {}).get("owner")
 
 
-def set_session_owner(session_id: str, owner: str,
-                      sessions_dir: str = DEFAULT_SESSIONS_DIR) -> None:
+def set_session_owner(
+    session_id: str, owner: str, sessions_dir: str = DEFAULT_SESSIONS_DIR
+) -> None:
     """Record the owner (authenticated email) of a session, bootstrapping
     an index entry if the session predates the index."""
     index = _load_index(sessions_dir)
@@ -371,8 +373,7 @@ def set_session_owner(session_id: str, owner: str,
     _save_index(index, sessions_dir)
 
 
-def tag_session(session_id: str, tag: str,
-                sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool | str:
+def tag_session(session_id: str, tag: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool | str:
     """Set or overwrite the tag for a session.
 
     Returns True on success, False if session not found, or an error string
@@ -395,8 +396,7 @@ def tag_session(session_id: str, tag: str,
     return True
 
 
-def delete_session(session_id: str,
-                   sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool:
+def delete_session(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool:
     """Delete a session's JSONL history file and its index entry.
 
     Returns True if either the file or the index entry existed.
@@ -427,8 +427,7 @@ def delete_session(session_id: str,
     return found
 
 
-def exact_session_name(name: str,
-                       sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+def exact_session_name(name: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """The session whose name is exactly *name*, or None.
 
     Case-sensitive first, then case-insensitive.  The order matters: names are
@@ -449,8 +448,9 @@ def exact_session_name(name: str,
     return folded
 
 
-def match_session_name(name: str,
-                       sessions_dir: str = DEFAULT_SESSIONS_DIR) -> tuple[str | None, list]:
+def match_session_name(
+    name: str, sessions_dir: str = DEFAULT_SESSIONS_DIR
+) -> tuple[str | None, list]:
     """Resolve a name the way a person typed it; return ``(session_id, candidates)``.
 
     Three tiers, most specific first:
@@ -490,8 +490,7 @@ def match_session_name(name: str,
     return None, []
 
 
-def find_session_by_tag(tag: str,
-                        sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+def find_session_by_tag(tag: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Find a session ID by its tag (case-insensitive prefix match).
 
     Returns the session_id or None.  An exact name wins over a longer name
@@ -504,8 +503,7 @@ def find_session_by_tag(tag: str,
     return sid
 
 
-def find_session_by_id_prefix(prefix: str,
-                              sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+def find_session_by_id_prefix(prefix: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Find a session by UUID prefix match."""
     index = _load_index(sessions_dir)
     prefix_lower = prefix.lower()
@@ -520,8 +518,7 @@ def find_session_by_id_prefix(prefix: str,
     return None
 
 
-def resolve_session(identifier: str,
-                    sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
+def resolve_session(identifier: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     """Resolve a tag, UUID, or UUID prefix to a session_id.
 
     Special value 'last' returns the most recently updated session.
@@ -539,8 +536,7 @@ def resolve_session(identifier: str,
     return None
 
 
-def is_session_range(text: str,
-                     sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool:
+def is_session_range(text: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> bool:
     """Whether *text* should be read as a row range rather than a name.
 
     The question the CLI asks before it prints an error, so that a range which
@@ -561,10 +557,12 @@ def is_session_range(text: str,
     return exact_session_name(text, sessions_dir) is None
 
 
-def resolve_session_range(text: str,
-                          sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                          limit: int | None = None,
-                          include_empty: bool = True) -> list | None:
+def resolve_session_range(
+    text: str,
+    sessions_dir: str = DEFAULT_SESSIONS_DIR,
+    limit: int | None = None,
+    include_empty: bool = True,
+) -> list | None:
     """Expand a row range like ``20-32`` into session ids, in row order.
 
     Returns None when *text* is not a range at all, so the caller can carry on
@@ -596,23 +594,25 @@ def resolve_session_range(text: str,
         return None
     match = _RANGE_RE.fullmatch((text or "").strip())
     first, last = match.group(1), match.group(2)
-    rows = list_sessions(sessions_dir,
-                         limit=1_000_000 if limit is None else limit,
-                         include_empty=include_empty)
+    rows = list_sessions(
+        sessions_dir, limit=1_000_000 if limit is None else limit, include_empty=include_empty
+    )
     start = int(first) if first else 1
     end = int(last) if last else len(rows)
     if end > len(rows):
         end = len(rows)
     if start < 1 or start > end:
         return []
-    return [row["session_id"] for row in rows[start - 1:end]]
+    return [row["session_id"] for row in rows[start - 1 : end]]
 
 
-def resolve_session_choice(identifier: str,
-                           sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                           limit: int | None = None,
-                           include_empty: bool = True,
-                           candidates: list | None = None) -> str | None:
+def resolve_session_choice(
+    identifier: str,
+    sessions_dir: str = DEFAULT_SESSIONS_DIR,
+    limit: int | None = None,
+    include_empty: bool = True,
+    candidates: list | None = None,
+) -> str | None:
     """Resolve what a person typed at a shell prompt to a session id.
 
     The order is deliberate, and it is what makes ``--delete <name>`` mean the
@@ -658,9 +658,9 @@ def resolve_session_choice(identifier: str,
     if text.isdigit():
         # The same view 'onit sessions' prints, or the number means a different
         # session than the row it was read off.
-        rows = list_sessions(sessions_dir,
-                             limit=1_000_000 if limit is None else limit,
-                             include_empty=include_empty)
+        rows = list_sessions(
+            sessions_dir, limit=1_000_000 if limit is None else limit, include_empty=include_empty
+        )
         n = int(text)
         if 1 <= n <= len(rows):
             return rows[n - 1]["session_id"]
@@ -713,8 +713,7 @@ def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     def _has_content(meta: dict) -> bool:
         return bool(meta.get("turns") or meta.get("preview") or meta.get("tag"))
 
-    ranked = sorted(index.items(), key=lambda x: _effective_ts(x[0], x[1]),
-                    reverse=True)
+    ranked = sorted(index.items(), key=lambda x: _effective_ts(x[0], x[1]), reverse=True)
     for sid, meta in ranked:
         if _has_content(meta):
             return sid
@@ -723,8 +722,7 @@ def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     return ranked[0][0] if ranked else None
 
 
-def session_label(session_id: str,
-                  sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
+def session_label(session_id: str, sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
     """How to name a session in one line of text: its name, else its short id.
 
     A name is the address a person recognises, so it is what the UI says when
@@ -743,9 +741,12 @@ def session_label(session_id: str,
     return tag or f"(unnamed) {sid[:8]}"
 
 
-def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                  limit: int | None = 20, owner: str | None = None,
-                  include_empty: bool = True) -> list:
+def list_sessions(
+    sessions_dir: str = DEFAULT_SESSIONS_DIR,
+    limit: int | None = 20,
+    owner: str | None = None,
+    include_empty: bool = True,
+) -> list:
     """Return a list of sessions sorted by most recently updated.
 
     Each entry has: session_id, tag, created, updated, preview, turns.
@@ -770,24 +771,25 @@ def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
             continue
         if not include_empty and not meta.get("turns"):
             continue
-        sessions.append({
-            "session_id": sid,
-            "tag": meta.get("tag"),
-            "created": meta.get("created"),
-            "updated": meta.get("updated"),
-            "preview": meta.get("preview"),
-            "turns": meta.get("turns", 0),
-        })
+        sessions.append(
+            {
+                "session_id": sid,
+                "tag": meta.get("tag"),
+                "created": meta.get("created"),
+                "updated": meta.get("updated"),
+                "preview": meta.get("preview"),
+                "turns": meta.get("turns", 0),
+            }
+        )
     sessions.sort(key=lambda x: x.get("updated") or 0, reverse=True)
     return sessions if limit is None else sessions[:limit]
 
 
-def count_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
-                   owner: str | None = None,
-                   include_empty: bool = True) -> int:
+def count_sessions(
+    sessions_dir: str = DEFAULT_SESSIONS_DIR, owner: str | None = None, include_empty: bool = True
+) -> int:
     """How many sessions there are, ignoring *limit*."""
-    return len(list_sessions(sessions_dir, limit=None, owner=owner,
-                             include_empty=include_empty))
+    return len(list_sessions(sessions_dir, limit=None, owner=owner, include_empty=include_empty))
 
 
 def rebuild_index(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> dict:
@@ -805,9 +807,10 @@ def rebuild_index(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> dict:
         stat = jsonl_file.stat()
         options = _auto_tag_candidates(first_task) if first_task else []
         index[sid] = {
-            "tag": _ensure_unique_tag(options[0], index, exclude_sid=sid,
-                                      alternates=options[1:]) if options else None,
-            "created": stat.st_birthtime if hasattr(stat, 'st_birthtime') else stat.st_mtime,
+            "tag": _ensure_unique_tag(options[0], index, exclude_sid=sid, alternates=options[1:])
+            if options
+            else None,
+            "created": stat.st_birthtime if hasattr(stat, "st_birthtime") else stat.st_mtime,
             "updated": stat.st_mtime,
             "preview": (first_task[:120] if first_task else None),
             "turns": turns,
@@ -829,9 +832,11 @@ def empty_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> list:
     They are interleaved with the real sessions by date, so a row range cannot
     name them and deleting them one at a time is not a chore anyone finishes.
     """
-    return [row for row in list_sessions(sessions_dir, limit=None)
-            if not row.get("tag") and not row.get("preview")
-            and not row.get("turns")]
+    return [
+        row
+        for row in list_sessions(sessions_dir, limit=None)
+        if not row.get("tag") and not row.get("preview") and not row.get("turns")
+    ]
 
 
 def clear_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> int:
@@ -844,8 +849,9 @@ def clear_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> int:
     # The sidecars go with the histories they belong to, or a recycled session
     # id inherits another session's run state.  Not counted: the count is of
     # conversations cleared, and a session with a state file is still one.
-    for sidecar in list(sessions_path.glob("*.state.json")) + \
-            list(sessions_path.glob("*.emails.json")):
+    for sidecar in list(sessions_path.glob("*.state.json")) + list(
+        sessions_path.glob("*.emails.json")
+    ):
         try:
             sidecar.unlink()
         except OSError:
@@ -875,11 +881,9 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
     was printed next to.
     """
     if not sessions:
-        return ("No sessions found.\n"
-                "Start one with: onit --new-session")
+        return "No sessions found.\nStart one with: onit --new-session"
 
-    width = max((len(s.get("tag") or "(unnamed)") for s in sessions),
-                default=len("Name"))
+    width = max((len(s.get("tag") or "(unnamed)") for s in sessions), default=len("Name"))
     width = max(width, len("Name"))
 
     lines = []
@@ -890,8 +894,9 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
         turns = s.get("turns", 0)
         updated = s.get("updated")
         if updated:
-            updated_str = datetime.fromtimestamp(
-                updated, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            updated_str = datetime.fromtimestamp(updated, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M"
+            )
         else:
             updated_str = "unknown"
         preview = (s.get("preview") or "").replace("\n", " ")[:38]
@@ -900,8 +905,7 @@ def format_sessions_table(sessions: list, total: int | None = None) -> str:
     lines.append("")
     if total is not None and total > len(sessions):
         lines.append(f"Showing {len(sessions)} of {total} sessions.")
-    lines.append("Continue: onit --resume-session <#>   "
-                 "Rename: onit sessions --rename <#> <name>")
+    lines.append("Continue: onit --resume-session <#>   Rename: onit sessions --rename <#> <name>")
     lines.append("Delete: onit sessions --delete <#> [<#> ...] or <a>-<b>")
     lines.append("Start a named session: onit --new-session <name>")
     return "\n".join(lines)

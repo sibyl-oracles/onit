@@ -37,12 +37,13 @@ from typing import Optional
 
 import requests
 
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Try to import ollama
 try:
     import ollama
+
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
@@ -51,6 +52,7 @@ except ImportError:
 # Try to import ddgs for fallback
 try:
     from ddgs import DDGS
+
     DDGS_AVAILABLE = True
 except ImportError:
     DDGS_AVAILABLE = False
@@ -71,7 +73,7 @@ class WebSearch:
         max_results: int = 5,
         max_content_length: int = 2000,
         timeout: float = 10.0,
-        use_fallback: bool = True
+        use_fallback: bool = True,
     ):
         """
         Initialize the web search tool.
@@ -96,22 +98,22 @@ class WebSearch:
             return ""
 
         # Remove mismatched/broken tags
-        content = re.sub(r'\[/.*?\]', '', content)
-        content = re.sub(r'\[.*?\]', '', content)
+        content = re.sub(r"\[/.*?\]", "", content)
+        content = re.sub(r"\[.*?\]", "", content)
 
         # Decode HTML entities
         content = html.unescape(content)
 
         # Remove HTML tags
-        content = re.sub(r'<[^>]+>', '', content)
+        content = re.sub(r"<[^>]+>", "", content)
 
         # Normalize whitespace
-        content = re.sub(r'\s+', ' ', content)
+        content = re.sub(r"\s+", " ", content)
         content = content.strip()
 
         # Truncate if needed
         if len(content) > self.max_content_length:
-            content = content[:self.max_content_length].rsplit(' ', 1)[0] + "..."
+            content = content[: self.max_content_length].rsplit(" ", 1)[0] + "..."
 
         return content
 
@@ -135,13 +137,15 @@ class WebSearch:
             data = response.json()
 
             results = []
-            for result in data.get("results", [])[:self.max_results]:
-                results.append({
-                    'title': result.get('title', 'No title'),
-                    'url': result.get('url', ''),
-                    'content': self._clean_content(result.get('content', '')),
-                    'source': 'tavily'
-                })
+            for result in data.get("results", [])[: self.max_results]:
+                results.append(
+                    {
+                        "title": result.get("title", "No title"),
+                        "url": result.get("url", ""),
+                        "content": self._clean_content(result.get("content", "")),
+                        "source": "tavily",
+                    }
+                )
 
             return results if results else None
 
@@ -157,18 +161,20 @@ class WebSearch:
         try:
             response = ollama.web_search(query, max_results=self.max_results)
 
-            if not response or 'results' not in response:
+            if not response or "results" not in response:
                 logger.warning("Ollama returned empty response")
                 return None
 
             results = []
-            for result in response['results'][:self.max_results]:
-                results.append({
-                    'title': result.get('title', 'No title'),
-                    'url': result.get('url', ''),
-                    'content': self._clean_content(result.get('content', '')),
-                    'source': 'ollama'
-                })
+            for result in response["results"][: self.max_results]:
+                results.append(
+                    {
+                        "title": result.get("title", "No title"),
+                        "url": result.get("url", ""),
+                        "content": self._clean_content(result.get("content", "")),
+                        "source": "ollama",
+                    }
+                )
 
             return results if results else None
 
@@ -187,12 +193,14 @@ class WebSearch:
 
             results = []
             for result in response:
-                results.append({
-                    'title': result.get('title', 'No title'),
-                    'url': result.get('href', result.get('link', '')),
-                    'content': self._clean_content(result.get('body', '')),
-                    'source': 'duckduckgo'
-                })
+                results.append(
+                    {
+                        "title": result.get("title", "No title"),
+                        "url": result.get("href", result.get("link", "")),
+                        "content": self._clean_content(result.get("body", "")),
+                        "source": "duckduckgo",
+                    }
+                )
 
             return results if results else None
 
@@ -234,13 +242,16 @@ class WebSearch:
         if results:
             return json.dumps(results, ensure_ascii=False)
         else:
-            tried = (["tavily"] if self.tavily_api_key else []) + \
-                    (["ollama", "duckduckgo"] if self.use_fallback else ["ollama"])
-            return json.dumps({
-                "error": "Search failed - no results from any provider",
-                "query": query,
-                "providers_tried": tried
-            })
+            tried = (["tavily"] if self.tavily_api_key else []) + (
+                ["ollama", "duckduckgo"] if self.use_fallback else ["ollama"]
+            )
+            return json.dumps(
+                {
+                    "error": "Search failed - no results from any provider",
+                    "query": query,
+                    "providers_tried": tried,
+                }
+            )
 
     def search_with_metadata(self, query: str) -> dict:
         """
@@ -280,7 +291,7 @@ class WebSearch:
             "results": results or [],
             "count": len(results) if results else 0,
             "source": source_used,
-            "success": results is not None
+            "success": results is not None,
         }
 
 
@@ -288,16 +299,12 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Web Search Tool")
-    parser.add_argument("--query", type=str, default="Python programming language history",
-                        help="Search query")
-    parser.add_argument("--max-results", type=int, default=5,
-                        help="Maximum number of results")
-    parser.add_argument("--no-fallback", action="store_true",
-                        help="Disable DuckDuckGo fallback")
+    parser.add_argument(
+        "--query", type=str, default="Python programming language history", help="Search query"
+    )
+    parser.add_argument("--max-results", type=int, default=5, help="Maximum number of results")
+    parser.add_argument("--no-fallback", action="store_true", help="Disable DuckDuckGo fallback")
     args = parser.parse_args()
 
-    search_tool = WebSearch(
-        max_results=args.max_results,
-        use_fallback=not args.no_fallback
-    )
+    search_tool = WebSearch(max_results=args.max_results, use_fallback=not args.no_fallback)
     print(search_tool.search(args.query))

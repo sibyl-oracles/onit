@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,7 +34,7 @@ Requires:
 10. find_files - Find files matching patterns
 11. transform_text - Transform text using sed/awk/tr operations
 12. get_document_context - Extract relevant context from a document
-'''
+"""
 
 import asyncio
 import base64
@@ -96,7 +96,8 @@ from src.mcp.servers.tasks.os.bash.approvals import (
 )
 
 import logging
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -137,19 +138,62 @@ _SANDBOX_ENV = None
 # Binary file extensions (return description only, not content)
 BINARY_EXTENSIONS = {
     # Images
-    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.ico', '.tiff', '.tif', '.svg',
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".ico",
+    ".tiff",
+    ".tif",
+    ".svg",
     # Audio
-    '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma',
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".flac",
+    ".aac",
+    ".m4a",
+    ".wma",
     # Video
-    '.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm',
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".wmv",
+    ".flv",
+    ".webm",
     # Archives
-    '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2',
+    ".zip",
+    ".tar",
+    ".gz",
+    ".rar",
+    ".7z",
+    ".bz2",
     # Executables/binaries
-    '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a',
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".bin",
+    ".o",
+    ".a",
     # Documents (binary)
-    '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
     # Other
-    '.pyc', '.class', '.wasm', '.ttf', '.otf', '.woff', '.woff2'
+    ".pyc",
+    ".class",
+    ".wasm",
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
 }
 
 
@@ -194,8 +238,7 @@ def _session_base(data_path: str | None = None) -> str:
         return base
     if base != abs_data and not base.startswith(abs_data + os.sep):
         raise ValueError(
-            f"data_path must be within the server data directory {abs_data}. "
-            f"Got: {base}"
+            f"data_path must be within the server data directory {abs_data}. Got: {base}"
         )
     return base
 
@@ -212,8 +255,7 @@ def _validate_write_path(file_path: str, base: str | None = None) -> str:
         return abs_path
     if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
         raise ValueError(
-            f"Write path must be within the designated data directory: {abs_data}. "
-            f"Got: {abs_path}"
+            f"Write path must be within the designated data directory: {abs_data}. Got: {abs_path}"
         )
     return abs_path
 
@@ -241,9 +283,7 @@ def _validate_read_path(file_path: str, base: str | None = None) -> str:
     allowed = abs_data
     if DOCUMENTS_PATH:
         allowed += f" or {os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))}"
-    raise ValueError(
-        f"Read access denied. Path must be within: {allowed}. Got: {abs_path}"
-    )
+    raise ValueError(f"Read access denied. Path must be within: {allowed}. Got: {abs_path}")
 
 
 def _validate_dir_path(dir_path: str, base: str | None = None) -> str:
@@ -269,9 +309,7 @@ def _validate_dir_path(dir_path: str, base: str | None = None) -> str:
     allowed = abs_data
     if DOCUMENTS_PATH:
         allowed += f" or {os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))}"
-    raise ValueError(
-        f"Directory access denied. Path must be within: {allowed}. Got: {abs_path}"
-    )
+    raise ValueError(f"Directory access denied. Path must be within: {allowed}. Got: {abs_path}")
 
 
 def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
@@ -289,6 +327,7 @@ def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
     if "GITHUB_TOKEN" not in env:
         try:
             from src.setup import get_secret
+
             token = get_secret("github_token")
             if token:
                 env["GITHUB_TOKEN"] = token
@@ -364,14 +403,16 @@ def _get_sandbox_env(base: str | None = None) -> dict:
 
     if _path_restrictions_relaxed():
         env = dict(os.environ)
-        env.update({
-            "TERM": "dumb",
-            "LANG": env.get("LANG", "en_US.UTF-8"),
-            "LC_ALL": env.get("LC_ALL", "en_US.UTF-8"),
-            "HOME": real_home,
-            "TMPDIR": tmp_dir,
-            "DATA_PATH": abs_data,
-        })
+        env.update(
+            {
+                "TERM": "dumb",
+                "LANG": env.get("LANG", "en_US.UTF-8"),
+                "LC_ALL": env.get("LC_ALL", "en_US.UTF-8"),
+                "HOME": real_home,
+                "TMPDIR": tmp_dir,
+                "DATA_PATH": abs_data,
+            }
+        )
         target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
         if target_env_bin and os.path.isdir(target_env_bin):
             env["PATH"] = target_env_bin + os.pathsep + env.get("PATH", "")
@@ -389,10 +430,16 @@ def _get_sandbox_env(base: str | None = None) -> dict:
     }
 
     # Pass through credential-related env vars if set in the parent environment.
-    for var in ("GITHUB_TOKEN", "GH_TOKEN", "GH_CONFIG_DIR",
-                "SSH_AUTH_SOCK", "SSH_AGENT_PID",
-                "GIT_ASKPASS", "GIT_CREDENTIAL_HELPER",
-                "ONIT_TARGET_ENV_BIN"):
+    for var in (
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GH_CONFIG_DIR",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GIT_ASKPASS",
+        "GIT_CREDENTIAL_HELPER",
+        "ONIT_TARGET_ENV_BIN",
+    ):
         val = os.environ.get(var)
         if val:
             env[var] = val
@@ -409,17 +456,21 @@ def _get_sandbox_env(base: str | None = None) -> dict:
                     path_parts.append(d)
         # Essential Windows system paths (for python, pip, etc.)
         sys_root = os.environ.get("SystemRoot", r"C:\Windows")
-        path_parts.extend([
-            os.path.join(sys_root, "System32"),
-            sys_root,
-        ])
-        env.update({
-            "TEMP": tmp_dir,
-            "TMP": tmp_dir,
-            "PATH": os.pathsep.join(path_parts),
-            "SystemRoot": sys_root,
-            "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
-        })
+        path_parts.extend(
+            [
+                os.path.join(sys_root, "System32"),
+                sys_root,
+            ]
+        )
+        env.update(
+            {
+                "TEMP": tmp_dir,
+                "TMP": tmp_dir,
+                "PATH": os.pathsep.join(path_parts),
+                "SystemRoot": sys_root,
+                "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
+            }
+        )
     else:
         # Include conda, container venv, and Homebrew paths so python/pip resolve
         # to the environment where onit installed torch et al. /opt/venv is the
@@ -479,29 +530,41 @@ _ALWAYS_BLOCKED_PATTERNS = [
     # The root token ("/" or "/*", optionally quoted, trailing slashes and //
     # included) may sit anywhere in the argument list, so `rm -rf /tmp /` and
     # `rm -rf /tmp /*` are caught too, not just a leading root argument.
-    (re.compile(r'\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?(?:[\x22\x27]?/\*?[\x22\x27]?|//)(?:\s|;|\||&|\Z)', re.IGNORECASE), "rm -rf on root"),
-    (re.compile(r'\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?[\x22\x27]?/(?:\.\./)*\.\.(?:/+)?(?:\s|;|\||&|\Z)', re.IGNORECASE), "rm -rf on root"),
-    (re.compile(r'>\s*/dev/(sd|hd|nvme|vd|xvd)', re.IGNORECASE), "write to block device"),
-    (re.compile(r'>\s*/dev/mem', re.IGNORECASE), "write to /dev/mem"),
-    (re.compile(r'\bdd\b.*\bof\s*=\s*/dev/', re.IGNORECASE), "dd to device"),
-    (re.compile(r'\bmkfs\b', re.IGNORECASE), "mkfs command"),
-    (re.compile(r'\bfdisk\b', re.IGNORECASE), "fdisk command"),
-    (re.compile(r'\bparted\b', re.IGNORECASE), "parted command"),
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?(?:[\x22\x27]?/\*?[\x22\x27]?|//)(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?[\x22\x27]?/(?:\.\./)*\.\.(?:/+)?(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (re.compile(r">\s*/dev/(sd|hd|nvme|vd|xvd)", re.IGNORECASE), "write to block device"),
+    (re.compile(r">\s*/dev/mem", re.IGNORECASE), "write to /dev/mem"),
+    (re.compile(r"\bdd\b.*\bof\s*=\s*/dev/", re.IGNORECASE), "dd to device"),
+    (re.compile(r"\bmkfs\b", re.IGNORECASE), "mkfs command"),
+    (re.compile(r"\bfdisk\b", re.IGNORECASE), "fdisk command"),
+    (re.compile(r"\bparted\b", re.IGNORECASE), "parted command"),
     # System shutdown / state
-    (re.compile(r'\bshutdown\b', re.IGNORECASE), "shutdown command"),
-    (re.compile(r'\breboot\b', re.IGNORECASE), "reboot command"),
-    (re.compile(r'\bpoweroff\b', re.IGNORECASE), "poweroff command"),
-    (re.compile(r'\bhalt\b', re.IGNORECASE), "halt command"),
-    (re.compile(r'\binit\s+[06]\b', re.IGNORECASE), "init runlevel change"),
+    (re.compile(r"\bshutdown\b", re.IGNORECASE), "shutdown command"),
+    (re.compile(r"\breboot\b", re.IGNORECASE), "reboot command"),
+    (re.compile(r"\bpoweroff\b", re.IGNORECASE), "poweroff command"),
+    (re.compile(r"\bhalt\b", re.IGNORECASE), "halt command"),
+    (re.compile(r"\binit\s+[06]\b", re.IGNORECASE), "init runlevel change"),
     # Kernel / boot
-    (re.compile(r'\binsmod\b', re.IGNORECASE), "insmod command"),
-    (re.compile(r'\brmmod\b', re.IGNORECASE), "rmmod command"),
-    (re.compile(r'\bmodprobe\b', re.IGNORECASE), "modprobe command"),
-    (re.compile(r'\bsysctl\s+-w\b', re.IGNORECASE), "sysctl write"),
+    (re.compile(r"\binsmod\b", re.IGNORECASE), "insmod command"),
+    (re.compile(r"\brmmod\b", re.IGNORECASE), "rmmod command"),
+    (re.compile(r"\bmodprobe\b", re.IGNORECASE), "modprobe command"),
+    (re.compile(r"\bsysctl\s+-w\b", re.IGNORECASE), "sysctl write"),
     # Windows-specific catastrophic ops
-    (re.compile(r'\bformat\b\s+[A-Za-z]:', re.IGNORECASE), "format drive"),
-    (re.compile(r'\bdiskpart\b', re.IGNORECASE), "diskpart command"),
-    (re.compile(r'\bbcdedit\b', re.IGNORECASE), "bcdedit command"),
+    (re.compile(r"\bformat\b\s+[A-Za-z]:", re.IGNORECASE), "format drive"),
+    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "diskpart command"),
+    (re.compile(r"\bbcdedit\b", re.IGNORECASE), "bcdedit command"),
 ]
 
 # Blocked command patterns for the bash tool.
@@ -523,50 +586,71 @@ _ALWAYS_BLOCKED_PATTERNS = [
 # deployment).
 _BLOCKED_PATTERNS = [
     # Sensitive system files that no answer makes safe to hand over
-    (re.compile(r'/etc/shadow', re.IGNORECASE), "/etc/shadow"),
-    (re.compile(r'/etc/sudoers', re.IGNORECASE), "/etc/sudoers"),
+    (re.compile(r"/etc/shadow", re.IGNORECASE), "/etc/shadow"),
+    (re.compile(r"/etc/sudoers", re.IGNORECASE), "/etc/sudoers"),
     # Destructive filesystem operations — anchored to the root directory
     # itself, same as _ALWAYS_BLOCKED_PATTERNS above (see the comment there).
-    (re.compile(r'\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?(?:[\x22\x27]?/\*?[\x22\x27]?|//)(?:\s|;|\||&|\Z)', re.IGNORECASE), "rm -rf on root"),
-    (re.compile(r'\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?[\x22\x27]?/(?:\.\./)*\.\.(?:/+)?(?:\s|;|\||&|\Z)', re.IGNORECASE), "rm -rf on root"),
-    (re.compile(r'>\s*/dev/(sd|hd|nvme|vd|xvd)', re.IGNORECASE), "write to block device"),
-    (re.compile(r'>\s*/dev/mem', re.IGNORECASE), "write to /dev/mem"),
-    (re.compile(r'\bdd\b.*\bof\s*=\s*/dev/', re.IGNORECASE), "dd to device"),
-    (re.compile(r'\bmkfs\b', re.IGNORECASE), "mkfs command"),
-    (re.compile(r'\bfdisk\b', re.IGNORECASE), "fdisk command"),
-    (re.compile(r'\bparted\b', re.IGNORECASE), "parted command"),
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?(?:[\x22\x27]?/\*?[\x22\x27]?|//)(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?[\x22\x27]?/(?:\.\./)*\.\.(?:/+)?(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (re.compile(r">\s*/dev/(sd|hd|nvme|vd|xvd)", re.IGNORECASE), "write to block device"),
+    (re.compile(r">\s*/dev/mem", re.IGNORECASE), "write to /dev/mem"),
+    (re.compile(r"\bdd\b.*\bof\s*=\s*/dev/", re.IGNORECASE), "dd to device"),
+    (re.compile(r"\bmkfs\b", re.IGNORECASE), "mkfs command"),
+    (re.compile(r"\bfdisk\b", re.IGNORECASE), "fdisk command"),
+    (re.compile(r"\bparted\b", re.IGNORECASE), "parted command"),
     # Privilege escalation
-    (re.compile(r'\bsudo\b', re.IGNORECASE), "sudo command"),
-    (re.compile(r'\bsu\b\s', re.IGNORECASE), "su command"),
-    (re.compile(r'\bdoas\b', re.IGNORECASE), "doas command"),
-    (re.compile(r'\bchmod\s+[0-7]*s', re.IGNORECASE), "setuid/setgid chmod"),
-    (re.compile(r'\bchown\b', re.IGNORECASE), "chown command"),
+    (re.compile(r"\bsudo\b", re.IGNORECASE), "sudo command"),
+    (re.compile(r"\bsu\b\s", re.IGNORECASE), "su command"),
+    (re.compile(r"\bdoas\b", re.IGNORECASE), "doas command"),
+    (re.compile(r"\bchmod\s+[0-7]*s", re.IGNORECASE), "setuid/setgid chmod"),
+    (re.compile(r"\bchown\b", re.IGNORECASE), "chown command"),
     # System state / shutdown
-    (re.compile(r'\bshutdown\b', re.IGNORECASE), "shutdown command"),
-    (re.compile(r'\breboot\b', re.IGNORECASE), "reboot command"),
-    (re.compile(r'\bpoweroff\b', re.IGNORECASE), "poweroff command"),
-    (re.compile(r'\bhalt\b', re.IGNORECASE), "halt command"),
-    (re.compile(r'\binit\s+[06]\b', re.IGNORECASE), "init runlevel change"),
-    (re.compile(r'\bsystemctl\s+(start|stop|restart|disable|enable|mask|reboot|poweroff|halt)', re.IGNORECASE), "systemctl service control"),
+    (re.compile(r"\bshutdown\b", re.IGNORECASE), "shutdown command"),
+    (re.compile(r"\breboot\b", re.IGNORECASE), "reboot command"),
+    (re.compile(r"\bpoweroff\b", re.IGNORECASE), "poweroff command"),
+    (re.compile(r"\bhalt\b", re.IGNORECASE), "halt command"),
+    (re.compile(r"\binit\s+[06]\b", re.IGNORECASE), "init runlevel change"),
+    (
+        re.compile(
+            r"\bsystemctl\s+(start|stop|restart|disable|enable|mask|reboot|poweroff|halt)",
+            re.IGNORECASE,
+        ),
+        "systemctl service control",
+    ),
     # Network / exfiltration
-    (re.compile(r'\bnc\b\s+-[el]', re.IGNORECASE), "netcat listener"),
-    (re.compile(r'\bncat\b', re.IGNORECASE), "ncat command"),
-    (re.compile(r'\bsocat\b', re.IGNORECASE), "socat command"),
-    (re.compile(r'\biptables\b', re.IGNORECASE), "iptables command"),
-    (re.compile(r'\bufw\b', re.IGNORECASE), "ufw command"),
+    (re.compile(r"\bnc\b\s+-[el]", re.IGNORECASE), "netcat listener"),
+    (re.compile(r"\bncat\b", re.IGNORECASE), "ncat command"),
+    (re.compile(r"\bsocat\b", re.IGNORECASE), "socat command"),
+    (re.compile(r"\biptables\b", re.IGNORECASE), "iptables command"),
+    (re.compile(r"\bufw\b", re.IGNORECASE), "ufw command"),
     # Kernel / boot
-    (re.compile(r'\binsmod\b', re.IGNORECASE), "insmod command"),
-    (re.compile(r'\brmmod\b', re.IGNORECASE), "rmmod command"),
-    (re.compile(r'\bmodprobe\b', re.IGNORECASE), "modprobe command"),
-    (re.compile(r'\bsysctl\s+-w\b', re.IGNORECASE), "sysctl write"),
+    (re.compile(r"\binsmod\b", re.IGNORECASE), "insmod command"),
+    (re.compile(r"\brmmod\b", re.IGNORECASE), "rmmod command"),
+    (re.compile(r"\bmodprobe\b", re.IGNORECASE), "modprobe command"),
+    (re.compile(r"\bsysctl\s+-w\b", re.IGNORECASE), "sysctl write"),
     # Windows-specific dangerous commands
-    (re.compile(r'\bformat\b\s+[A-Za-z]:', re.IGNORECASE), "format drive"),
-    (re.compile(r'\bdiskpart\b', re.IGNORECASE), "diskpart command"),
-    (re.compile(r'\breg\s+(add|delete|import)\b', re.IGNORECASE), "registry modification"),
-    (re.compile(r'\bnet\s+(user|localgroup|stop|start)\b', re.IGNORECASE), "net service/user command"),
-    (re.compile(r'\bsc\s+(delete|stop|config)\b', re.IGNORECASE), "sc service command"),
-    (re.compile(r'\bbcdedit\b', re.IGNORECASE), "bcdedit command"),
-    (re.compile(r'\bschtasks\s+/(create|delete)\b', re.IGNORECASE), "scheduled task modification"),
+    (re.compile(r"\bformat\b\s+[A-Za-z]:", re.IGNORECASE), "format drive"),
+    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "diskpart command"),
+    (re.compile(r"\breg\s+(add|delete|import)\b", re.IGNORECASE), "registry modification"),
+    (
+        re.compile(r"\bnet\s+(user|localgroup|stop|start)\b", re.IGNORECASE),
+        "net service/user command",
+    ),
+    (re.compile(r"\bsc\s+(delete|stop|config)\b", re.IGNORECASE), "sc service command"),
+    (re.compile(r"\bbcdedit\b", re.IGNORECASE), "bcdedit command"),
+    (re.compile(r"\bschtasks\s+/(create|delete)\b", re.IGNORECASE), "scheduled task modification"),
 ]
 
 # (pattern, description, scope key). Refused unless the scope key is in
@@ -583,33 +667,49 @@ _ASKABLE_PATTERNS = [
     # ate five turns before the repeated-call guard ended the task. A command
     # still has to run the env *binary* to be blocked: bare `env`, `env | grep`,
     # `FOO=1 env cmd`, /usr/bin/env.
-    (re.compile(r'(?<![\w.\-])env\b', re.IGNORECASE), "env command", "system"),
-    (re.compile(r'(?<![\w.\-])printenv\b', re.IGNORECASE), "printenv command", "system"),
-    (re.compile(r'(?<![\w.\-])export\s', re.IGNORECASE), "export command", "system"),
-    (re.compile(r'/proc/self/environ', re.IGNORECASE), "/proc/self/environ", "system"),
+    (re.compile(r"(?<![\w.\-])env\b", re.IGNORECASE), "env command", "system"),
+    (re.compile(r"(?<![\w.\-])printenv\b", re.IGNORECASE), "printenv command", "system"),
+    (re.compile(r"(?<![\w.\-])export\s", re.IGNORECASE), "export command", "system"),
+    (re.compile(r"/proc/self/environ", re.IGNORECASE), "/proc/self/environ", "system"),
     # Process listings: what the OS already shows this account, no more.
     # Same lookbehind as env: ".ps" and ".top" are file extensions, not
     # process inspection.
-    (re.compile(r'(?<![\w.\-])ps\b', re.IGNORECASE), "ps command", "system"),
-    (re.compile(r'(?<![\w.\-])top\b', re.IGNORECASE), "top command", "system"),
-    (re.compile(r'(?<![\w.\-])htop\b', re.IGNORECASE), "htop command", "system"),
-    (re.compile(r'/proc/\d+', re.IGNORECASE), "/proc access", "system"),
-    (re.compile(r'/proc/self\b', re.IGNORECASE), "/proc/self access", "system"),
+    (re.compile(r"(?<![\w.\-])ps\b", re.IGNORECASE), "ps command", "system"),
+    (re.compile(r"(?<![\w.\-])top\b", re.IGNORECASE), "top command", "system"),
+    (re.compile(r"(?<![\w.\-])htop\b", re.IGNORECASE), "htop command", "system"),
+    (re.compile(r"/proc/\d+", re.IGNORECASE), "/proc access", "system"),
+    (re.compile(r"/proc/self\b", re.IGNORECASE), "/proc/self access", "system"),
     # World-readable on every Unix; kept behind a prompt because asking for it
     # by name is worth a look, not because the contents are secret.
-    (re.compile(r'/etc/passwd', re.IGNORECASE), "/etc/passwd", "system"),
+    (re.compile(r"/etc/passwd", re.IGNORECASE), "/etc/passwd", "system"),
     # Piping a download into a shell. The canonical install one-liner and the
     # canonical way to run unreviewed code; on a personal machine that is the
     # user's own call to make, and it is exactly the call they came to make.
-    (re.compile(r'\bcurl\b.*\|\s*(ba)?sh', re.IGNORECASE), "curl piped to shell", "system"),
-    (re.compile(r'\bwget\b.*\|\s*(ba)?sh', re.IGNORECASE), "wget piped to shell", "system"),
+    (re.compile(r"\bcurl\b.*\|\s*(ba)?sh", re.IGNORECASE), "curl piped to shell", "system"),
+    (re.compile(r"\bwget\b.*\|\s*(ba)?sh", re.IGNORECASE), "wget piped to shell", "system"),
     # System package managers. The AST policy gates these too when the
     # allowlist is enforced; here they are caught in host mode as well.
-    (re.compile(r'\bapt(-get)?\s+(install|remove|purge|dist-upgrade)', re.IGNORECASE), "apt package modification", "install"),
-    (re.compile(r'\byum\s+(install|remove|erase|update)', re.IGNORECASE), "yum package modification", "install"),
-    (re.compile(r'\bdnf\s+(install|remove|erase|upgrade)', re.IGNORECASE), "dnf package modification", "install"),
-    (re.compile(r'\bpacman\s+-[SRU]', re.IGNORECASE), "pacman package modification", "install"),
-    (re.compile(r'\bbrew\s+(install|uninstall|remove)', re.IGNORECASE), "brew package modification", "install"),
+    (
+        re.compile(r"\bapt(-get)?\s+(install|remove|purge|dist-upgrade)", re.IGNORECASE),
+        "apt package modification",
+        "install",
+    ),
+    (
+        re.compile(r"\byum\s+(install|remove|erase|update)", re.IGNORECASE),
+        "yum package modification",
+        "install",
+    ),
+    (
+        re.compile(r"\bdnf\s+(install|remove|erase|upgrade)", re.IGNORECASE),
+        "dnf package modification",
+        "install",
+    ),
+    (re.compile(r"\bpacman\s+-[SRU]", re.IGNORECASE), "pacman package modification", "install"),
+    (
+        re.compile(r"\bbrew\s+(install|uninstall|remove)", re.IGNORECASE),
+        "brew package modification",
+        "install",
+    ),
 ]
 
 # Matches a heredoc construct and its body for stripping before security checks.
@@ -617,25 +717,33 @@ _ASKABLE_PATTERNS = [
 _HEREDOC_RE = re.compile(r"""<<-?\s*['"]?(\w+)['"]?\n(?:[^\n]*\n)*?\1\b""")
 
 
-def _exec_shell(command: str, cwd: str, timeout: int,
-                base: str | None = None) -> subprocess.CompletedProcess:
+def _exec_shell(
+    command: str, cwd: str, timeout: int, base: str | None = None
+) -> subprocess.CompletedProcess:
     """Run a command in a sandboxed shell, routing through Git Bash on Windows."""
     if IS_WINDOWS and _BASH_EXE:
         return subprocess.run(
             [_BASH_EXE, "-c", command],
-            capture_output=True, text=True,
-            cwd=cwd, timeout=timeout, env=_get_sandbox_env(base)
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=timeout,
+            env=_get_sandbox_env(base),
         )
     return subprocess.run(
-        command, shell=True,
-        capture_output=True, text=True,
-        cwd=cwd, timeout=timeout, env=_get_sandbox_env(base)
+        command,
+        shell=True,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        timeout=timeout,
+        env=_get_sandbox_env(base),
     )
 
 
-async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
-                                ctx: Context | None = None,
-                                base: str | None = None) -> dict:
+async def _exec_shell_streaming(
+    command: str, cwd: str, timeout: int, ctx: Context | None = None, base: str | None = None
+) -> dict:
     """Run a command asynchronously, streaming stdout/stderr lines via ctx.log().
 
     Returns a dict with stdout, stderr, and returncode.
@@ -652,17 +760,21 @@ async def _exec_shell_streaming(command: str, cwd: str, timeout: int,
     env = _get_sandbox_env(base)
     if IS_WINDOWS and _BASH_EXE:
         proc = await asyncio.create_subprocess_exec(
-            _BASH_EXE, "-c", command,
+            _BASH_EXE,
+            "-c",
+            command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd, env=env,
+            cwd=cwd,
+            env=env,
         )
     else:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd, env=env,
+            cwd=cwd,
+            env=env,
         )
 
     stdout_lines = []
@@ -746,13 +858,13 @@ FILE_SERVER_URL = os.environ.get("ONIT_FILE_SERVER_URL", "")
 # Cache: ((path, mtime), allow_patterns, deny_patterns, allowed_commands)
 _PERMISSIONS_CACHE = None
 
-_PERMISSION_RULE_RE = re.compile(r'^Bash\((.*)\)$', re.DOTALL)
+_PERMISSION_RULE_RE = re.compile(r"^Bash\((.*)\)$", re.DOTALL)
 
 # Splits compound commands on shell sequencing operators so a denied command
 # embedded in a chain (e.g. "ls && sudo rm") is still caught. Naive with
 # respect to quoting — a quoted "&&" splits too — which can only over-block,
 # never under-block a deny rule.
-_SHELL_SEQUENCE_RE = re.compile(r'\|\||&&|[;|\n]')
+_SHELL_SEQUENCE_RE = re.compile(r"\|\||&&|[;|\n]")
 
 
 def _settings_path() -> str:
@@ -824,7 +936,7 @@ def _load_permissions() -> tuple[list[str], list[str], list[str]]:
 # Leading environment-variable assignments (FOO=bar cmd) and transparent
 # wrappers that would otherwise defeat prefix-style rules
 # ("PIP_TIMEOUT=60 pip install x", "nohup pip install x").
-_ENV_ASSIGN_RE = re.compile(r'^(?:\w+=\S*\s+)+')
+_ENV_ASSIGN_RE = re.compile(r"^(?:\w+=\S*\s+)+")
 _WRAPPER_WORDS = ("command", "exec", "nohup", "time", "builtin")
 
 
@@ -853,9 +965,9 @@ def _split_shell_segments(command: str) -> list[str]:
     return segments
 
 
-def _evaluate_permission_rules(command: str,
-                               ask_scope: frozenset = frozenset(),
-                               base: str | None = None) -> Decision:
+def _evaluate_permission_rules(
+    command: str, ask_scope: frozenset = frozenset(), base: str | None = None
+) -> Decision:
     """Evaluate the command against user-configured allow/deny rules.
 
     A deny rule is an operator writing down, in a file, that this must not
@@ -881,7 +993,8 @@ def _evaluate_permission_rules(command: str,
                     DENY,
                     f"Command blocked by permissions deny rule "
                     f"'Bash({pattern})' in {_settings_path()}.",
-                    severity=CRITICAL)
+                    severity=CRITICAL,
+                )
 
     if allow:
         # Skip the full-command segment when it chains multiple commands;
@@ -893,7 +1006,10 @@ def _evaluate_permission_rules(command: str,
                     f"Command blocked: '{seg}' does not match any "
                     f"permissions allow rule in {_settings_path()}.",
                     (f"rule:{seg.split()[0] if seg.split() else seg}",),
-                    "system", ask_scope, base)
+                    "system",
+                    ask_scope,
+                    base,
+                )
 
     return Decision(ALLOW)
 
@@ -985,8 +1101,9 @@ def _installs_allowed_for(base: str | None) -> bool:
     return bool(base and _APPROVALS.installs_allowed(base))
 
 
-def _evaluate_command_allowlist(check_command: str, base: str | None = None,
-                                ask_scope: frozenset = frozenset()) -> Decision:
+def _evaluate_command_allowlist(
+    check_command: str, base: str | None = None, ask_scope: frozenset = frozenset()
+) -> Decision:
     if _installs_sealed():
         # Where the seal is in force there is no yes to give, so there is no
         # question to ask. Offering the prompt anyway would put a person in
@@ -995,11 +1112,12 @@ def _evaluate_command_allowlist(check_command: str, base: str | None = None,
         # declined, when what actually happened is that the environment did.
         ask_scope = ask_scope - {"install"}
     return _evaluate_command_policy(
-        check_command, _allowed_commands(base),
+        check_command,
+        _allowed_commands(base),
         allow_installs=_installs_allowed_for(base),
-        denied_msg=(INSTALL_SEALED_MSG if _installs_sealed()
-                    else INSTALL_DENIED_MSG),
-        ask_scope=ask_scope)
+        denied_msg=(INSTALL_SEALED_MSG if _installs_sealed() else INSTALL_DENIED_MSG),
+        ask_scope=ask_scope,
+    )
 
 
 def _check_command_allowlist(check_command: str) -> str | None:
@@ -1045,16 +1163,14 @@ _CONTAINED: set = set()
 
 def _contain_threshold() -> int:
     try:
-        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD",
-                                  _DEFAULT_CONTAIN_THRESHOLD))
+        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD", _DEFAULT_CONTAIN_THRESHOLD))
     except ValueError:
         return _DEFAULT_CONTAIN_THRESHOLD
 
 
 def _contain_window() -> float:
     try:
-        return float(os.environ.get("ONIT_CONTAIN_WINDOW",
-                                    _DEFAULT_CONTAIN_WINDOW))
+        return float(os.environ.get("ONIT_CONTAIN_WINDOW", _DEFAULT_CONTAIN_WINDOW))
     except ValueError:
         return float(_DEFAULT_CONTAIN_WINDOW)
 
@@ -1088,15 +1204,19 @@ def _is_contained(base: str | None = None) -> bool:
 
 
 def _containment_error(context: str = "", base: str | None = None) -> str:
-    return json.dumps({
-        "error": ("Server is contained after repeated policy violations. "
-                  "Command execution, file writes, and file transfers are "
-                  "disabled. To lift containment, remove "
-                  f"{_containment_marker_path(_contain_scope(base) or None)} "
-                  "and restart the MCP server."),
-        "status": "contained",
-        **({"command": context} if context else {}),
-    })
+    return json.dumps(
+        {
+            "error": (
+                "Server is contained after repeated policy violations. "
+                "Command execution, file writes, and file transfers are "
+                "disabled. To lift containment, remove "
+                f"{_containment_marker_path(_contain_scope(base) or None)} "
+                "and restart the MCP server."
+            ),
+            "status": "contained",
+            **({"command": context} if context else {}),
+        }
+    )
 
 
 def _enter_containment(base: str | None = None) -> None:
@@ -1109,11 +1229,15 @@ def _enter_containment(base: str | None = None) -> None:
         _secure_makedirs(os.path.dirname(marker))
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({
-                "contained_at": datetime.now().isoformat(),
-                "scope": scope or "server",
-                "violations": _VIOLATIONS.get(scope, [])[-20:],
-            }, f, indent=2)
+            json.dump(
+                {
+                    "contained_at": datetime.now().isoformat(),
+                    "scope": scope or "server",
+                    "violations": _VIOLATIONS.get(scope, [])[-20:],
+                },
+                f,
+                indent=2,
+            )
     except Exception as e:
         logger.error(f"Failed to persist containment marker: {e}")
     # Stop everything the serve tool has launched for this scope.
@@ -1132,11 +1256,11 @@ def _enter_containment(base: str | None = None) -> None:
         f"{len(_VIOLATIONS.get(scope, []))} critical policy violations reached "
         f"the threshold ({_contain_threshold()}) within "
         f"{_contain_window():.0f}s. Execution disabled; managed processes "
-        "stopped.")
+        "stopped."
+    )
 
 
-def _record_violation(decision: Decision, command: str,
-                      base: str | None = None) -> None:
+def _record_violation(decision: Decision, command: str, base: str | None = None) -> None:
     """Count a critical refusal; trip containment at the threshold.
 
     Refusals below CRITICAL are logged by the caller and forgotten here. They
@@ -1153,21 +1277,25 @@ def _record_violation(decision: Decision, command: str,
     now = time.monotonic()
     window = _contain_window()
     recent = [v for v in _VIOLATIONS.get(scope, []) if now - v["at"] <= window]
-    recent.append({
-        "at": now,
-        "time": datetime.now().isoformat(),
-        "reason": (decision.reason or "")[:500],
-        "command": (command or "")[:500],
-    })
+    recent.append(
+        {
+            "at": now,
+            "time": datetime.now().isoformat(),
+            "reason": (decision.reason or "")[:500],
+            "command": (command or "")[:500],
+        }
+    )
     _VIOLATIONS[scope] = recent
     logger.error(
         f"Policy violation {len(recent)}/{threshold} in {window:.0f}s "
-        f"({scope or 'server-wide'}): {decision.reason}")
+        f"({scope or 'server-wide'}): {decision.reason}"
+    )
     if len(recent) >= threshold and scope not in _CONTAINED:
         _enter_containment(base)
 
 
 # ── Refusals the model can act on ────────────────────────────────────────
+
 
 def _refusal(decision: Decision, command: str) -> str:
     """The tool result for a command that will not run.
@@ -1184,23 +1312,27 @@ def _refusal(decision: Decision, command: str) -> str:
         "command": command,
         "status": "blocked",
         "retryable": False,
-        "guidance": ("This command was refused by policy and was not run. "
-                     "Retrying it, rewriting it to evade the check, or "
-                     "reaching the same effect through another tool will be "
-                     "refused as well. Take a different approach, or tell the "
-                     "user what you need and why."),
+        "guidance": (
+            "This command was refused by policy and was not run. "
+            "Retrying it, rewriting it to evade the check, or "
+            "reaching the same effect through another tool will be "
+            "refused as well. Take a different approach, or tell the "
+            "user what you need and why."
+        ),
     }
     if decision.severity == CRITICAL:
         payload["guidance"] = (
             "This command was refused and was not run. It is in the class of "
             "operations this deployment never permits, from any tool, under "
             "any setting. Do not look for another route to it. Say plainly "
-            "what you were trying to do and let the user decide.")
+            "what you were trying to do and let the user decide."
+        )
     return json.dumps(payload)
 
 
-def _ask_unless_granted(reason: str, subjects: tuple, kind: str,
-                        ask_scope: frozenset, base: str | None) -> Decision:
+def _ask_unless_granted(
+    reason: str, subjects: tuple, kind: str, ask_scope: frozenset, base: str | None
+) -> Decision:
     """Ask about ``subjects``, unless this session's human already said yes.
 
     The grant lookup comes first so that re-checking an approved command is
@@ -1212,8 +1344,9 @@ def _ask_unless_granted(reason: str, subjects: tuple, kind: str,
     return _ask_or_deny(reason, subjects, kind, ask_scope)
 
 
-def _evaluate_bash_command(command: str, base: str | None = None,
-                           ask_scope: frozenset = frozenset()) -> Decision:
+def _evaluate_bash_command(
+    command: str, base: str | None = None, ask_scope: frozenset = frozenset()
+) -> Decision:
     """Decide what to do with a bash command: run it, ask a person, refuse it.
 
     The order is the order of authority. An operator's written rules come
@@ -1245,8 +1378,8 @@ def _evaluate_bash_command(command: str, base: str | None = None,
                 pending = Decision(
                     ASK,
                     pending.reason + " " + decision.reason,
-                    subjects=tuple(dict.fromkeys(pending.subjects
-                                                 + decision.subjects)))
+                    subjects=tuple(dict.fromkeys(pending.subjects + decision.subjects)),
+                )
         return None
 
     # User-configured settings rules: enforced for the web UI (and when the
@@ -1260,14 +1393,13 @@ def _evaluate_bash_command(command: str, base: str | None = None,
     # ONIT_COMMAND_ALLOWLIST=1 still enforces the allowlist.
     if _in_unrestricted():
         if os.environ.get("ONIT_COMMAND_ALLOWLIST") == "1":
-            if hit := note(_evaluate_command_allowlist(check_command, base,
-                                                       ask_scope)):
+            if hit := note(_evaluate_command_allowlist(check_command, base, ask_scope)):
                 return hit
         for pattern, description in _ALWAYS_BLOCKED_PATTERNS:
             if pattern.search(check_command):
-                return Decision(DENY,
-                                f"Command blocked: {description} is not allowed.",
-                                severity=CRITICAL)
+                return Decision(
+                    DENY, f"Command blocked: {description} is not allowed.", severity=CRITICAL
+                )
         return pending or Decision(ALLOW)
 
     # Patterns nobody may authorize. Checked ahead of the allowlist so that
@@ -1276,24 +1408,29 @@ def _evaluate_bash_command(command: str, base: str | None = None,
     # auto-containment is the true one too.
     for pattern, description in _BLOCKED_PATTERNS:
         if pattern.search(check_command):
-            return Decision(DENY,
-                            f"Command blocked: {description} is not allowed.",
-                            severity=CRITICAL)
+            return Decision(
+                DENY, f"Command blocked: {description} is not allowed.", severity=CRITICAL
+            )
 
     # AST-based allowlist: every executable in the command (including inside
     # $(...), pipelines, loops, and shell -c payloads) must be allowlisted;
     # package-manager installs are gated and must be version-pinned.
     if _allowlist_enforced():
-        if hit := note(_evaluate_command_allowlist(check_command, base,
-                                                   ask_scope)):
+        if hit := note(_evaluate_command_allowlist(check_command, base, ask_scope)):
             return hit
 
     # Patterns a person may authorize, where this deployment has one to ask.
     for pattern, description, kind in _ASKABLE_PATTERNS:
         if pattern.search(check_command):
-            if hit := note(_ask_unless_granted(
+            if hit := note(
+                _ask_unless_granted(
                     f"Command blocked: {description} is not allowed.",
-                    (f"pattern:{description}",), kind, ask_scope, base)):
+                    (f"pattern:{description}",),
+                    kind,
+                    ask_scope,
+                    base,
+                )
+            ):
                 return hit
 
     # In container mode the container itself is the filesystem boundary —
@@ -1307,8 +1444,7 @@ def _evaluate_bash_command(command: str, base: str | None = None,
     return pending or Decision(ALLOW)
 
 
-def _evaluate_command_paths(check_command: str, base: str | None,
-                            ask_scope: frozenset) -> Decision:
+def _evaluate_command_paths(check_command: str, base: str | None, ask_scope: frozenset) -> Decision:
     """Check absolute paths in the command against the session jail.
 
     On a single-tenant machine an absolute path outside the jail is the most
@@ -1331,7 +1467,9 @@ def _evaluate_command_paths(check_command: str, base: str | None,
     target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
     # Allow the entire env prefix (parent of bin/) so scripts can reference
     # env_B's lib/, include/, share/, etc. with absolute paths.
-    target_env_prefix = os.path.normpath(os.path.dirname(target_env_bin)) if target_env_bin else None
+    target_env_prefix = (
+        os.path.normpath(os.path.dirname(target_env_bin)) if target_env_bin else None
+    )
 
     def _is_allowed_path(p: str) -> bool:
         """Check if a path is within allowed directories or is a standard tool path."""
@@ -1356,9 +1494,18 @@ def _evaluate_command_paths(check_command: str, base: str | None,
             return True
         # Allow standard Unix tool/device paths (check against original path
         # since os.path.normpath on Windows converts /usr/bin to \usr\bin)
-        if p.startswith(('/usr/bin/', '/usr/local/bin/', '/bin/',
-                         '/dev/null', '/dev/stdout', '/dev/stderr',
-                         '/dev/stdin', '/dev/fd/')):
+        if p.startswith(
+            (
+                "/usr/bin/",
+                "/usr/local/bin/",
+                "/bin/",
+                "/dev/null",
+                "/dev/stdout",
+                "/dev/stderr",
+                "/dev/stdin",
+                "/dev/fd/",
+            )
+        ):
             return True
         return False
 
@@ -1380,7 +1527,9 @@ def _evaluate_command_paths(check_command: str, base: str | None,
 
     # Match Windows-style absolute paths (C:\... or C:/...)
     if IS_WINDOWS:
-        for match in re.finditer(r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', check_command):
+        for match in re.finditer(
+            r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', check_command
+        ):
             if not _is_allowed_path(match.group(1)):
                 _collect(match.group(1))
 
@@ -1391,17 +1540,19 @@ def _evaluate_command_paths(check_command: str, base: str | None,
     # `ls ~/project; cat ~/notes` — and approving them one at a time means the
     # user answers, watches the command fail, and answers again.
     names = ", ".join(f"'{p}'" for p, _ in offenders)
-    reason = (f"Command blocked: references path {names} outside allowed "
-              f"directories. Commands must operate within DATA_PATH ({abs_data})"
-              + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
-              + ".")
+    reason = (
+        f"Command blocked: references path {names} outside allowed "
+        f"directories. Commands must operate within DATA_PATH ({abs_data})"
+        + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
+        + "."
+    )
     subjects = tuple(dict.fromkeys(f"path:{root}" for _, root in offenders))
     return _ask_unless_granted(reason, subjects, "path", ask_scope, base)
 
 
-def _gate_command(command: str, base: str | None,
-                  approval_token: str = "",
-                  approval_scope: str = _SCOPE_ONCE) -> str | None:
+def _gate_command(
+    command: str, base: str | None, approval_token: str = "", approval_scope: str = _SCOPE_ONCE
+) -> str | None:
     """Run one command past the policy. Returns a tool result, or None to run.
 
     Three answers, and each is a different kind of turn for the model:
@@ -1424,27 +1575,28 @@ def _gate_command(command: str, base: str | None,
         # refusal rather than a second prompt — and so that coming back is
         # itself the signal auto-containment watches for.
         _APPROVALS.refuse(approval_token, command, base)
-        return _refusal(Decision(
-            DENY,
-            "Command blocked: the user was asked to approve this command "
-            "and declined it."), command)
+        return _refusal(
+            Decision(
+                DENY, "Command blocked: the user was asked to approve this command and declined it."
+            ),
+            command,
+        )
 
     if base and _APPROVALS.was_refused(command, base):
         decision = Decision(
             DENY,
             "Command blocked: a person was asked about this exact command "
             "earlier in this session and declined it.",
-            severity=CRITICAL)
+            severity=CRITICAL,
+        )
         _record_violation(decision, command, base)
         return _refusal(decision, command)
 
     scope = _ask_scope()
-    if approval_token and base and _APPROVALS.redeem(
-            approval_token, command, base, approval_scope):
+    if approval_token and base and _APPROVALS.redeem(approval_token, command, base, approval_scope):
         pending = _pending_subjects_of(command, base, scope)
         with _APPROVALS.transient(base, pending):
-            decision = _evaluate_bash_command(command, base=base,
-                                              ask_scope=scope)
+            decision = _evaluate_bash_command(command, base=base, ask_scope=scope)
         if decision.allowed:
             return None
         if decision.needs_human:
@@ -1453,11 +1605,8 @@ def _gate_command(command: str, base: str | None,
             # ask again rather than refuse — the user said yes, and answering
             # a second question is a better outcome than being told no right
             # after saying yes.
-            logger.warning("approved command still needs approval: %s",
-                           decision.reason)
-            return json.dumps(_APPROVALS.request(command, base,
-                                                 decision.subjects,
-                                                 decision.reason))
+            logger.warning("approved command still needs approval: %s", decision.reason)
+            return json.dumps(_APPROVALS.request(command, base, decision.subjects, decision.reason))
         # Approved for one thing, refused for another: the refusal wins, and
         # the model is told why rather than being asked a second question.
         _record_violation(decision, command, base)
@@ -1467,15 +1616,14 @@ def _gate_command(command: str, base: str | None,
     if decision.allowed:
         return None
     if decision.needs_human and base:
-        return json.dumps(_APPROVALS.request(command, base, decision.subjects,
-                                             decision.reason))
+        return json.dumps(_APPROVALS.request(command, base, decision.subjects, decision.reason))
     _record_violation(decision, command, base)
     return _refusal(decision, command)
 
 
-def _gate_serve_command(command: str, base: str | None,
-                        approval_token: str = "",
-                        approval_scope: str = _SCOPE_ONCE) -> str | None:
+def _gate_serve_command(
+    command: str, base: str | None, approval_token: str = "", approval_scope: str = _SCOPE_ONCE
+) -> str | None:
     """The gate for ``serve start``: rules and allowlist, but not the path jail.
 
     Background servers legitimately live outside DATA_PATH, which is why the
@@ -1488,17 +1636,20 @@ def _gate_serve_command(command: str, base: str | None,
         # refusal rather than a second prompt — and so that coming back is
         # itself the signal auto-containment watches for.
         _APPROVALS.refuse(approval_token, command, base)
-        return _refusal(Decision(
-            DENY,
-            "Command blocked: the user was asked to approve this command "
-            "and declined it."), command)
+        return _refusal(
+            Decision(
+                DENY, "Command blocked: the user was asked to approve this command and declined it."
+            ),
+            command,
+        )
 
     if base and _APPROVALS.was_refused(command, base):
         decision = Decision(
             DENY,
             "Command blocked: a person was asked about this exact command "
             "earlier in this session and declined it.",
-            severity=CRITICAL)
+            severity=CRITICAL,
+        )
         _record_violation(decision, command, base)
         return _refusal(decision, command)
 
@@ -1512,8 +1663,7 @@ def _gate_serve_command(command: str, base: str | None,
             return _evaluate_command_allowlist(check, base, ask_scope)
         return Decision(ALLOW)
 
-    if approval_token and base and _APPROVALS.redeem(
-            approval_token, command, base, approval_scope):
+    if approval_token and base and _APPROVALS.redeem(approval_token, command, base, approval_scope):
         first = evaluate()
         subjects = first.subjects if first.needs_human else ()
         with _APPROVALS.transient(base, subjects):
@@ -1527,14 +1677,12 @@ def _gate_serve_command(command: str, base: str | None,
     if decision.allowed:
         return None
     if decision.needs_human and base:
-        return json.dumps(_APPROVALS.request(command, base, decision.subjects,
-                                             decision.reason))
+        return json.dumps(_APPROVALS.request(command, base, decision.subjects, decision.reason))
     _record_violation(decision, command, base)
     return _refusal(decision, command)
 
 
-def _pending_subjects_of(command: str, base: str | None,
-                         ask_scope: frozenset) -> tuple:
+def _pending_subjects_of(command: str, base: str | None, ask_scope: frozenset) -> tuple:
     """What the ticket for ``command`` was about, recomputed at redemption.
 
     The subjects are not taken from the request the client echoes back: they
@@ -1557,10 +1705,10 @@ def _validate_bash_command(command: str, base: str | None = None) -> str | None:
     return None if decision.allowed else decision.reason
 
 
-
 # =============================================================================
 # TOOL 1: RUN COMMAND
 # =============================================================================
+
 
 @mcp.tool(
     title="Run Shell Command",
@@ -1584,7 +1732,7 @@ output or a refusal — do not re-issue the call yourself.
 
 For work that may take longer than 300 seconds — installs, builds, full test
 suites, training runs — use the serve tool instead. Servers and daemons
-likewise belong in serve."""
+likewise belong in serve.""",
 )
 async def bash(
     command: Optional[str] = None,
@@ -1605,14 +1753,12 @@ async def bash(
     try:
         base = _session_base(data_path)
     except ValueError as e:
-        return json.dumps({"error": str(e), "command": command,
-                           "status": "error"})
+        return json.dumps({"error": str(e), "command": command, "status": "error"})
     if _is_contained(base):
         return _containment_error(command, base)
     try:
         # Allow, ask a person, or refuse (see _gate_command).
-        if gated := _gate_command(command, base, approval_token,
-                                  approval_scope):
+        if gated := _gate_command(command, base, approval_token, approval_scope):
             return gated
 
         # Validate and normalize working directory
@@ -1624,16 +1770,11 @@ async def bash(
         try:
             work_dir = _validate_dir_path(work_dir, base=base)
         except ValueError as e:
-            return json.dumps({
-                "error": str(e),
-                "command": command,
-                "status": "error"
-            })
+            return json.dumps({"error": str(e), "command": command, "status": "error"})
         if not os.path.isdir(work_dir):
-            return json.dumps({
-                "error": f"Working directory does not exist: {work_dir}",
-                "command": command
-            })
+            return json.dumps(
+                {"error": f"Working directory does not exist: {work_dir}", "command": command}
+            )
 
         # Cap timeout at 5 minutes
         timeout = min(timeout, 300)
@@ -1646,14 +1787,16 @@ async def bash(
         returncode = result["returncode"]
 
         if result.get("timeout"):
-            return json.dumps({
-                "error": f"Command timed out after {timeout} seconds",
-                "stdout": stdout if stdout else None,
-                "stderr": stderr if stderr else None,
-                "command": command,
-                "cwd": work_dir,
-                "status": "timeout"
-            })
+            return json.dumps(
+                {
+                    "error": f"Command timed out after {timeout} seconds",
+                    "stdout": stdout if stdout else None,
+                    "stderr": stderr if stderr else None,
+                    "command": command,
+                    "cwd": work_dir,
+                    "status": "timeout",
+                }
+            )
 
         # Provide helpful message for empty output
         if not stdout and not stderr and returncode == 0:
@@ -1662,35 +1805,38 @@ async def bash(
         # Container-only hint, shown only when it can help: a missing ML
         # package inside ONIT_CONTAINER is fixed by onit-install-ml.  Kept out
         # of the tool description so it is not re-sent on every request.
-        if (os.environ.get("ONIT_CONTAINER") == "1" and returncode != 0
-                and re.search(r"ModuleNotFoundError|No module named|ImportError", stderr or "")):
+        if (
+            os.environ.get("ONIT_CONTAINER") == "1"
+            and returncode != 0
+            and re.search(r"ModuleNotFoundError|No module named|ImportError", stderr or "")
+        ):
             stdout = (stdout or "") + (
                 "\n[Hint] Container mode: heavy ML packages (torch, transformers, "
                 "accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, "
                 "phonemizer) are not preinstalled. Install with "
                 "`onit-install-ml [torch|hf|extras|all]` — picks CUDA vs CPU wheels "
-                "automatically and writes to the persistent data volume.")
+                "automatically and writes to the persistent data volume."
+            )
 
-        return json.dumps({
-            "stdout": stdout,
-            "stderr": stderr if stderr else None,
-            "returncode": returncode,
-            "cwd": work_dir,
-            "command": command,
-            "status": "success" if returncode == 0 else "failed"
-        })
+        return json.dumps(
+            {
+                "stdout": stdout,
+                "stderr": stderr if stderr else None,
+                "returncode": returncode,
+                "cwd": work_dir,
+                "command": command,
+                "status": "success" if returncode == 0 else "failed",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "command": command,
-            "status": "error"
-        })
+        return json.dumps({"error": str(e), "command": command, "status": "error"})
 
 
 # =============================================================================
 # TOOL 2: READ FILE
 # =============================================================================
+
 
 @mcp.tool(
     title="Read File",
@@ -1715,9 +1861,14 @@ def read_file(
     """
     base = _session_base(data_path)
     return read_file_impl(
-        path=path, mode=mode, encoding=encoding, max_chars=max_chars,
-        table_index=table_index, output_format=output_format,
-        output_dir=output_dir, min_size=min_size,
+        path=path,
+        mode=mode,
+        encoding=encoding,
+        max_chars=max_chars,
+        table_index=table_index,
+        output_format=output_format,
+        output_dir=output_dir,
+        min_size=min_size,
         read_text=lambda **kw: _read_file_text(data_path=data_path, **kw),
         extract_tables=lambda **kw: extract_tables(data_path=data_path, **kw),
         extract_images=lambda **kw: extract_pdf_images_impl(
@@ -1750,10 +1901,7 @@ def _read_file_text(
 
         # Check if file exists
         if not os.path.isfile(file_path):
-            return json.dumps({
-                "error": f"File not found: {file_path}",
-                "path": path
-            })
+            return json.dumps({"error": f"File not found: {file_path}", "path": path})
 
         # Get file info
         file_size = os.path.getsize(file_path)
@@ -1764,17 +1912,14 @@ def _read_file_text(
             return _read_binary(file_path, file_size, file_ext)
 
         # Handle PDF files
-        if file_ext == '.pdf':
+        if file_ext == ".pdf":
             return _read_pdf(file_path, file_size, max_chars)
 
         # Handle text files
         return _read_text(file_path, file_size, file_ext, encoding, max_chars)
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "path": path
-        })
+        return json.dumps({"error": str(e), "path": path})
 
 
 def _read_binary(file_path: str, file_size: int, file_ext: str) -> str:
@@ -1782,41 +1927,78 @@ def _read_binary(file_path: str, file_size: int, file_ext: str) -> str:
     # Categorize binary file types
     type_map = {
         # Images
-        '.jpg': 'image', '.jpeg': 'image', '.png': 'image', '.gif': 'image',
-        '.bmp': 'image', '.webp': 'image', '.ico': 'image', '.tiff': 'image',
-        '.tif': 'image', '.svg': 'image',
+        ".jpg": "image",
+        ".jpeg": "image",
+        ".png": "image",
+        ".gif": "image",
+        ".bmp": "image",
+        ".webp": "image",
+        ".ico": "image",
+        ".tiff": "image",
+        ".tif": "image",
+        ".svg": "image",
         # Audio
-        '.mp3': 'audio', '.wav': 'audio', '.ogg': 'audio', '.flac': 'audio',
-        '.aac': 'audio', '.m4a': 'audio', '.wma': 'audio',
+        ".mp3": "audio",
+        ".wav": "audio",
+        ".ogg": "audio",
+        ".flac": "audio",
+        ".aac": "audio",
+        ".m4a": "audio",
+        ".wma": "audio",
         # Video
-        '.mp4': 'video', '.avi': 'video', '.mov': 'video', '.mkv': 'video',
-        '.wmv': 'video', '.flv': 'video', '.webm': 'video',
+        ".mp4": "video",
+        ".avi": "video",
+        ".mov": "video",
+        ".mkv": "video",
+        ".wmv": "video",
+        ".flv": "video",
+        ".webm": "video",
         # Archives
-        '.zip': 'archive', '.tar': 'archive', '.gz': 'archive', '.rar': 'archive',
-        '.7z': 'archive', '.bz2': 'archive',
+        ".zip": "archive",
+        ".tar": "archive",
+        ".gz": "archive",
+        ".rar": "archive",
+        ".7z": "archive",
+        ".bz2": "archive",
         # Executables
-        '.exe': 'executable', '.dll': 'library', '.so': 'library',
-        '.dylib': 'library', '.bin': 'binary', '.o': 'object', '.a': 'archive',
+        ".exe": "executable",
+        ".dll": "library",
+        ".so": "library",
+        ".dylib": "library",
+        ".bin": "binary",
+        ".o": "object",
+        ".a": "archive",
         # Documents
-        '.doc': 'document', '.docx': 'document', '.xls': 'spreadsheet',
-        '.xlsx': 'spreadsheet', '.ppt': 'presentation', '.pptx': 'presentation',
+        ".doc": "document",
+        ".docx": "document",
+        ".xls": "spreadsheet",
+        ".xlsx": "spreadsheet",
+        ".ppt": "presentation",
+        ".pptx": "presentation",
         # Other
-        '.pyc': 'bytecode', '.class': 'bytecode', '.wasm': 'bytecode',
-        '.ttf': 'font', '.otf': 'font', '.woff': 'font', '.woff2': 'font'
+        ".pyc": "bytecode",
+        ".class": "bytecode",
+        ".wasm": "bytecode",
+        ".ttf": "font",
+        ".otf": "font",
+        ".woff": "font",
+        ".woff2": "font",
     }
 
-    file_type = type_map.get(file_ext, 'binary')
+    file_type = type_map.get(file_ext, "binary")
     file_name = os.path.basename(file_path)
 
-    return json.dumps({
-        "path": file_path,
-        "filename": file_name,
-        "size_bytes": file_size,
-        "format": file_ext.lstrip('.'),
-        "type": file_type,
-        "note": f"Binary file ({file_type}). Content not returned.",
-        "status": "success"
-    })
+    return json.dumps(
+        {
+            "path": file_path,
+            "filename": file_name,
+            "size_bytes": file_size,
+            "format": file_ext.lstrip("."),
+            "type": file_type,
+            "note": f"Binary file ({file_type}). Content not returned.",
+            "status": "success",
+        }
+    )
 
 
 def _read_pdf(file_path: str, file_size: int, max_chars: int) -> str:
@@ -1833,7 +2015,7 @@ def _read_pdf(file_path: str, file_size: int, max_chars: int) -> str:
             if total_chars + len(text) > max_chars:
                 # Truncate this page
                 remaining = max_chars - total_chars
-                text = text[:remaining] + f"\n\n... [TRUNCATED at page {i+1}/{len(reader.pages)}]"
+                text = text[:remaining] + f"\n\n... [TRUNCATED at page {i + 1}/{len(reader.pages)}]"
                 pages.append(text)
                 break
             pages.append(text)
@@ -1841,61 +2023,59 @@ def _read_pdf(file_path: str, file_size: int, max_chars: int) -> str:
 
         content = "\n\n".join(pages)
 
-        return json.dumps({
-            "content": content,
-            "path": file_path,
-            "size_bytes": file_size,
-            "format": "pdf",
-            "pages": len(reader.pages),
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "content": content,
+                "path": file_path,
+                "size_bytes": file_size,
+                "format": "pdf",
+                "pages": len(reader.pages),
+                "status": "success",
+            }
+        )
 
     except ImportError:
-        return json.dumps({
-            "error": "pypdf not installed. Run: pip install pypdf",
-            "path": file_path
-        })
+        return json.dumps(
+            {"error": "pypdf not installed. Run: pip install pypdf", "path": file_path}
+        )
     except Exception as e:
-        return json.dumps({
-            "error": f"Failed to read PDF: {str(e)}",
-            "path": file_path
-        })
+        return json.dumps({"error": f"Failed to read PDF: {str(e)}", "path": file_path})
 
 
 def _read_text(file_path: str, file_size: int, file_ext: str, encoding: str, max_chars: int) -> str:
     """Read text file content."""
     try:
-        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+        with open(file_path, "r", encoding=encoding, errors="replace") as f:
             content = f.read(max_chars)
 
         truncated = file_size > max_chars
 
         # Detect format
         format_map = {
-            '.py': 'python',
-            '.js': 'javascript',
-            '.ts': 'typescript',
-            '.json': 'json',
-            '.yaml': 'yaml',
-            '.yml': 'yaml',
-            '.md': 'markdown',
-            '.html': 'html',
-            '.css': 'css',
-            '.xml': 'xml',
-            '.txt': 'text',
-            '.sh': 'shell',
-            '.bash': 'shell',
-            '.sql': 'sql',
-            '.java': 'java',
-            '.c': 'c',
-            '.cpp': 'cpp',
-            '.h': 'c-header',
-            '.go': 'go',
-            '.rs': 'rust',
-            '.rb': 'ruby',
-            '.php': 'php',
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".json": "json",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".md": "markdown",
+            ".html": "html",
+            ".css": "css",
+            ".xml": "xml",
+            ".txt": "text",
+            ".sh": "shell",
+            ".bash": "shell",
+            ".sql": "sql",
+            ".java": "java",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".h": "c-header",
+            ".go": "go",
+            ".rs": "rust",
+            ".rb": "ruby",
+            ".php": "php",
         }
-        file_format = format_map.get(file_ext, 'text')
+        file_format = format_map.get(file_ext, "text")
 
         result = {
             "content": content,
@@ -1903,7 +2083,7 @@ def _read_text(file_path: str, file_size: int, file_ext: str, encoding: str, max
             "size_bytes": file_size,
             "format": file_format,
             "encoding": encoding,
-            "status": "success"
+            "status": "success",
         }
 
         if truncated:
@@ -1914,22 +2094,19 @@ def _read_text(file_path: str, file_size: int, file_ext: str, encoding: str, max
 
     except UnicodeDecodeError:
         # Try with latin-1 as fallback
-        if encoding != 'latin-1':
-            return _read_text(file_path, file_size, file_ext, 'latin-1', max_chars)
-        return json.dumps({
-            "error": f"Could not decode file with encoding: {encoding}",
-            "path": file_path
-        })
+        if encoding != "latin-1":
+            return _read_text(file_path, file_size, file_ext, "latin-1", max_chars)
+        return json.dumps(
+            {"error": f"Could not decode file with encoding: {encoding}", "path": file_path}
+        )
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "path": file_path
-        })
+        return json.dumps({"error": str(e), "path": file_path})
 
 
 # =============================================================================
 # TOOL 3: WRITE FILE
 # =============================================================================
+
 
 @mcp.tool(
     title="Write File",
@@ -1943,7 +2120,7 @@ Args:
 - encoding: Text encoding
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {path, size_bytes, mode, status}"""
+Returns JSON: {path, size_bytes, mode, status}""",
 )
 def write_file(
     path: Optional[str] = None,
@@ -1964,30 +2141,32 @@ def write_file(
         _secure_makedirs(os.path.dirname(file_path))
 
         # Determine file mode
-        file_mode = 'a' if mode == "append" else 'w'
+        file_mode = "a" if mode == "append" else "w"
 
         # Write content
-        fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "append" else os.O_TRUNC), 0o600)
+        fd = os.open(
+            file_path,
+            os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "append" else os.O_TRUNC),
+            0o600,
+        )
         with os.fdopen(fd, file_mode, encoding=encoding) as f:
             f.write(content)
 
         # Get final file size
         file_size = os.path.getsize(file_path)
 
-        return json.dumps({
-            "path": file_path,
-            "size_bytes": file_size,
-            "mode": mode,
-            "encoding": encoding,
-            "status": "success"
-        })
+        return json.dumps(
+            {
+                "path": file_path,
+                "size_bytes": file_size,
+                "mode": mode,
+                "encoding": encoding,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "path": path,
-            "status": "failed"
-        })
+        return json.dumps({"error": str(e), "path": path, "status": "failed"})
 
 
 def _normalize_to_data_path(path: str, base: str | None = None) -> str:
@@ -2031,6 +2210,7 @@ def _kill_process(pid: int, grace_timeout: float = 3.0) -> None:
 # TOOL 3b: EDIT FILE (TARGETED STRING REPLACEMENT)
 # =============================================================================
 
+
 @mcp.tool(
     title="Edit File",
     description="""Edit a file by replacing an exact string with new content. The file must exist.
@@ -2044,7 +2224,7 @@ Args:
 - encoding: Text encoding
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {path, replacements, status}"""
+Returns JSON: {path, replacements, status}""",
 )
 def edit_file(
     path: Optional[str] = None,
@@ -2063,14 +2243,18 @@ def edit_file(
         file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
 
         if not os.path.isfile(file_path):
-            return json.dumps({"error": f"File not found: {file_path}", "path": path, "status": "error"})
+            return json.dumps(
+                {"error": f"File not found: {file_path}", "path": path, "status": "error"}
+            )
 
         with open(file_path, "r", encoding=encoding) as f:
             content = f.read()
 
         count = content.count(old_string)
         if count == 0:
-            return json.dumps({"error": "old_string not found in file", "path": file_path, "status": "error"})
+            return json.dumps(
+                {"error": "old_string not found in file", "path": file_path, "status": "error"}
+            )
 
         if replace_all:
             new_content = content.replace(old_string, new_string)
@@ -2143,8 +2327,7 @@ def _process_running(pid: int) -> bool:
     # macOS fallback: check via ps
     try:
         result = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=2
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=2
         )
         stat = result.stdout.strip()
         return bool(stat) and "Z" not in stat
@@ -2182,19 +2365,17 @@ def _tail_file(path: str, lines: int, max_chars: int = 8000) -> str:
                     # Enough buffer to cover the requested line count even
                     # with long lines; the final slice below applies the cap.
                     break
-        text = b"\n".join(buf.split(b"\n")[-(lines + 1):]).decode("utf-8", errors="replace")
+        text = b"\n".join(buf.split(b"\n")[-(lines + 1) :]).decode("utf-8", errors="replace")
         if len(text) > max_chars:
-            text = ("... [older log lines omitted — full log at "
-                    + str(path) + "]\n") + text[-max_chars:]
+            text = ("... [older log lines omitted — full log at " + str(path) + "]\n") + text[
+                -max_chars:
+            ]
         return text
     except Exception:
         return ""
 
 
-@mcp.tool(
-    title="Serve",
-    description=SERVE_DESCRIPTION
-)
+@mcp.tool(title="Serve", description=SERVE_DESCRIPTION)
 def serve(
     action: Optional[str] = None,
     command: Optional[str] = None,
@@ -2228,8 +2409,7 @@ def serve(
         # AST command allowlist still apply so serve cannot bypass them —
         # including the approval path, so that a long-running job is not the
         # way around a prompt a foreground command would have raised.
-        if gated := _gate_serve_command(command, base, approval_token,
-                                        approval_scope):
+        if gated := _gate_serve_command(command, base, approval_token, approval_scope):
             return gated
 
         registry = _load_serve_registry(base)
@@ -2242,16 +2422,22 @@ def serve(
         # Reject if already running
         if name in registry and _process_running(registry[name]["pid"]):
             entry = registry[name]
-            return json.dumps({
-                "error": f"Process '{name}' is already running (pid {entry['pid']}). "
-                         "Use action='stop' first or choose a different name.",
-                "name": name, "pid": entry["pid"], "status": "already_running"
-            })
+            return json.dumps(
+                {
+                    "error": f"Process '{name}' is already running (pid {entry['pid']}). "
+                    "Use action='stop' first or choose a different name.",
+                    "name": name,
+                    "pid": entry["pid"],
+                    "status": "already_running",
+                }
+            )
 
         # Resolve cwd — allow any accessible directory (servers live outside DATA_PATH)
         work_dir = os.path.abspath(os.path.expanduser(cwd)) if cwd else base
         if not os.path.isdir(work_dir):
-            return json.dumps({"error": f"Working directory not found: {work_dir}", "status": "error"})
+            return json.dumps(
+                {"error": f"Working directory not found: {work_dir}", "status": "error"}
+            )
 
         # Create log directory under the session jail root
         log_dir = os.path.join(base, "serve_logs", name)
@@ -2274,11 +2460,14 @@ def serve(
             time.sleep(0.5)
             if not _process_running(proc.pid):
                 err_tail = _tail_file(stderr_log, 20)
-                return json.dumps({
-                    "error": "Process exited immediately after launch.",
-                    "stderr": err_tail,
-                    "name": name, "status": "failed"
-                })
+                return json.dumps(
+                    {
+                        "error": "Process exited immediately after launch.",
+                        "stderr": err_tail,
+                        "name": name,
+                        "status": "failed",
+                    }
+                )
 
             registry[name] = {
                 "pid": proc.pid,
@@ -2290,15 +2479,17 @@ def serve(
             }
             _save_serve_registry(registry, base)
 
-            return json.dumps({
-                "name": name,
-                "pid": proc.pid,
-                "command": command,
-                "cwd": work_dir,
-                "stdout_log": stdout_log,
-                "stderr_log": stderr_log,
-                "status": "started",
-            })
+            return json.dumps(
+                {
+                    "name": name,
+                    "pid": proc.pid,
+                    "command": command,
+                    "cwd": work_dir,
+                    "stdout_log": stdout_log,
+                    "stderr_log": stderr_log,
+                    "status": "started",
+                }
+            )
 
         except Exception as e:
             return json.dumps({"error": str(e), "name": name, "status": "error"})
@@ -2315,7 +2506,12 @@ def serve(
             name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
 
         if not entry:
-            return json.dumps({"error": f"No managed process found for name='{name}' / pid={pid}.", "status": "error"})
+            return json.dumps(
+                {
+                    "error": f"No managed process found for name='{name}' / pid={pid}.",
+                    "status": "error",
+                }
+            )
 
         target_pid = entry["pid"]
         if not _process_running(target_pid):
@@ -2325,7 +2521,9 @@ def serve(
             _kill_process(target_pid)
         except Exception as e:
             if _process_running(target_pid):
-                return json.dumps({"error": str(e), "name": name, "pid": target_pid, "status": "error"})
+                return json.dumps(
+                    {"error": str(e), "name": name, "pid": target_pid, "status": "error"}
+                )
 
         # The stopped process may have been launched with a git askpass env:
         # drop its token file so the secret does not outlive the process.
@@ -2346,19 +2544,26 @@ def serve(
             name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
 
         if not entry:
-            return json.dumps({"error": f"No managed process found for name='{name}' / pid={pid}.", "status": "error"})
+            return json.dumps(
+                {
+                    "error": f"No managed process found for name='{name}' / pid={pid}.",
+                    "status": "error",
+                }
+            )
 
         running = _process_running(entry["pid"])
-        return json.dumps({
-            "name": name,
-            "pid": entry["pid"],
-            "command": entry["command"],
-            "cwd": entry["cwd"],
-            "started_at": entry["started_at"],
-            "stdout_log": entry["stdout_log"],
-            "stderr_log": entry["stderr_log"],
-            "status": "running" if running else "stopped",
-        })
+        return json.dumps(
+            {
+                "name": name,
+                "pid": entry["pid"],
+                "command": entry["command"],
+                "cwd": entry["cwd"],
+                "started_at": entry["started_at"],
+                "stdout_log": entry["stdout_log"],
+                "stderr_log": entry["stderr_log"],
+                "status": "running" if running else "stopped",
+            }
+        )
 
     # ── LOGS ───────────────────────────────────────────────────────────
     elif action == "logs":
@@ -2372,19 +2577,26 @@ def serve(
             name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
 
         if not entry:
-            return json.dumps({"error": f"No managed process found for name='{name}' / pid={pid}.", "status": "error"})
+            return json.dumps(
+                {
+                    "error": f"No managed process found for name='{name}' / pid={pid}.",
+                    "status": "error",
+                }
+            )
 
         stdout_tail = _tail_file(entry["stdout_log"], lines)
         stderr_tail = _tail_file(entry["stderr_log"], lines)
         running = _process_running(entry["pid"])
 
-        return json.dumps({
-            "name": name,
-            "pid": entry["pid"],
-            "status": "running" if running else "stopped",
-            "stdout": stdout_tail or "(empty)",
-            "stderr": stderr_tail or "(empty)",
-        })
+        return json.dumps(
+            {
+                "name": name,
+                "pid": entry["pid"],
+                "status": "running" if running else "stopped",
+                "stdout": stdout_tail or "(empty)",
+                "stderr": stderr_tail or "(empty)",
+            }
+        )
 
     # ── LIST ───────────────────────────────────────────────────────────
     elif action == "list":
@@ -2396,14 +2608,16 @@ def serve(
         dirty = False
         for n, entry in list(registry.items()):
             running = _process_running(entry["pid"])
-            processes.append({
-                "name": n,
-                "pid": entry["pid"],
-                "command": entry["command"],
-                "cwd": entry["cwd"],
-                "started_at": entry["started_at"],
-                "status": "running" if running else "stopped",
-            })
+            processes.append(
+                {
+                    "name": n,
+                    "pid": entry["pid"],
+                    "command": entry["command"],
+                    "cwd": entry["cwd"],
+                    "started_at": entry["started_at"],
+                    "status": "running" if running else "stopped",
+                }
+            )
             if not running:
                 del registry[n]
                 dirty = True
@@ -2446,10 +2660,12 @@ def serve(
         )
 
     else:
-        return json.dumps({
-            "error": f"Unknown action '{action}'. Use: start, stop, status, logs, list, restart.",
-            "status": "error"
-        })
+        return json.dumps(
+            {
+                "error": f"Unknown action '{action}'. Use: start, stop, status, logs, list, restart.",
+                "status": "error",
+            }
+        )
 
 
 # =============================================================================
@@ -2457,6 +2673,7 @@ def serve(
 # =============================================================================
 
 MAX_BASE64_SIZE = 10 * 1024 * 1024  # 10MB limit for base64 transfer
+
 
 @mcp.tool(
     title="Send File",
@@ -2470,7 +2687,7 @@ Args:
 - callback_url: Full upload URL prefix (e.g., "http://host:9000/uploads/session_id"). File is POSTed to {callback_url}/ (optional)
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}"""
+Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}""",
 )
 def send_file(
     path: Optional[str] = None,
@@ -2503,68 +2720,80 @@ def send_file(
             allowed = (FILE_SERVER_URL or "").rstrip("/")
             cb = callback_url.rstrip("/")
             if not allowed or not (cb == allowed or cb.startswith(allowed + "/")):
-                return json.dumps({
-                    "error": (
-                        "callback_url refused: uploads are restricted to the "
-                        f"configured file server ({allowed or 'none configured'}). "
-                        "Pass the callback_url given in the Files section of "
-                        "your instructions, or omit callback_url to receive "
-                        "the file as base64."
-                    ),
-                    "path": file_path,
-                    "filename": filename,
-                    "status": "refused"
-                })
+                return json.dumps(
+                    {
+                        "error": (
+                            "callback_url refused: uploads are restricted to the "
+                            f"configured file server ({allowed or 'none configured'}). "
+                            "Pass the callback_url given in the Files section of "
+                            "your instructions, or omit callback_url to receive "
+                            "the file as base64."
+                        ),
+                        "path": file_path,
+                        "filename": filename,
+                        "status": "refused",
+                    }
+                )
             try:
                 assert_public_url(cb)
             except ValueError as e:
-                return json.dumps({
-                    "error": f"callback_url refused: {e}",
-                    "path": file_path,
-                    "filename": filename,
-                    "status": "refused"
-                })
+                return json.dumps(
+                    {
+                        "error": f"callback_url refused: {e}",
+                        "path": file_path,
+                        "filename": filename,
+                        "status": "refused",
+                    }
+                )
             # Upload to remote server
             try:
-                with open(file_path, 'rb') as f:
-                    files = {'file': (filename, f)}
+                with open(file_path, "rb") as f:
+                    files = {"file": (filename, f)}
                     resp = safe_fetch("POST", f"{cb}/", timeout=60, files=files)
                     resp.raise_for_status()
-                return json.dumps({
-                    "path": file_path,
-                    "filename": filename,
-                    "size_bytes": file_size,
-                    "download_url": f"{cb}/{filename}",
-                    "status": "uploaded"
-                })
+                return json.dumps(
+                    {
+                        "path": file_path,
+                        "filename": filename,
+                        "size_bytes": file_size,
+                        "download_url": f"{cb}/{filename}",
+                        "status": "uploaded",
+                    }
+                )
             except Exception as e:
-                return json.dumps({
-                    "error": f"Upload failed: {str(e)}",
-                    "path": file_path,
-                    "filename": filename,
-                    "status": "failed"
-                })
+                return json.dumps(
+                    {
+                        "error": f"Upload failed: {str(e)}",
+                        "path": file_path,
+                        "filename": filename,
+                        "status": "failed",
+                    }
+                )
 
         # No callback_url — return base64 content
         if file_size > MAX_BASE64_SIZE:
-            return json.dumps({
-                "error": f"File too large for base64 transfer ({file_size} bytes, max {MAX_BASE64_SIZE}). Provide a callback_url instead.",
+            return json.dumps(
+                {
+                    "error": f"File too large for base64 transfer ({file_size} bytes, max {MAX_BASE64_SIZE}). Provide a callback_url instead.",
+                    "path": file_path,
+                    "filename": filename,
+                    "size_bytes": file_size,
+                    "status": "failed",
+                }
+            )
+
+        with open(file_path, "rb") as f:
+            content = base64.b64encode(f.read()).decode("ascii")
+
+        return json.dumps(
+            {
                 "path": file_path,
                 "filename": filename,
                 "size_bytes": file_size,
-                "status": "failed"
-            })
-
-        with open(file_path, 'rb') as f:
-            content = base64.b64encode(f.read()).decode('ascii')
-
-        return json.dumps({
-            "path": file_path,
-            "filename": filename,
-            "size_bytes": file_size,
-            "file_data_base64": content,
-            "status": "success"
-        })
+                "file_data_base64": content,
+                "status": "success",
+            }
+        )
 
     except Exception as e:
         return json.dumps({"error": str(e), "path": path, "status": "failed"})
@@ -2577,8 +2806,9 @@ def send_file(
 MAX_CONTEXT_LINES = 5
 
 
-def _run_command(command: str, cwd: str = ".", timeout: int = 60,
-                 base: str | None = None) -> Dict[str, Any]:
+def _run_command(
+    command: str, cwd: str = ".", timeout: int = 60, base: str | None = None
+) -> Dict[str, Any]:
     """Execute a shell command and return results."""
     try:
         work_dir = os.path.abspath(os.path.expanduser(cwd))
@@ -2591,7 +2821,7 @@ def _run_command(command: str, cwd: str = ".", timeout: int = 60,
             "stdout": result.stdout.strip(),
             "stderr": result.stderr.strip(),
             "returncode": result.returncode,
-            "status": "success" if result.returncode == 0 else "failed"
+            "status": "success" if result.returncode == 0 else "failed",
         }
     except subprocess.TimeoutExpired:
         return {"error": f"Command timed out after {timeout} seconds", "status": "timeout"}
@@ -2602,6 +2832,7 @@ def _run_command(command: str, cwd: str = ".", timeout: int = 60,
 # =============================================================================
 # TOOL 5: SEARCH DOCUMENT
 # =============================================================================
+
 
 @mcp.tool(
     title="Search Document",
@@ -2633,20 +2864,25 @@ def search_document(
     base = _session_base(data_path)
     _validate = lambda p: _validate_read_path(p, base=base)
     return search_document_dispatch_impl(
-        path=path, mode=mode, pattern=pattern, query=query, keywords=keywords,
-        case_sensitive=case_sensitive, context_lines=context_lines,
-        max_matches=max_matches, context_chars=context_chars,
+        path=path,
+        mode=mode,
+        pattern=pattern,
+        query=query,
+        keywords=keywords,
+        case_sensitive=case_sensitive,
+        context_lines=context_lines,
+        max_matches=max_matches,
+        context_chars=context_chars,
         max_sections=max_sections,
-        search_pattern=lambda **kw: search_document_impl(
-            **kw, validate_read_path=_validate),
-        search_context=lambda **kw: get_document_context_impl(
-            **kw, validate_read_path=_validate),
+        search_pattern=lambda **kw: search_document_impl(**kw, validate_read_path=_validate),
+        search_context=lambda **kw: get_document_context_impl(**kw, validate_read_path=_validate),
     )
 
 
 # =============================================================================
 # TOOL 6: SEARCH DIRECTORY
 # =============================================================================
+
 
 @mcp.tool(
     title="Search Directory",
@@ -2662,7 +2898,7 @@ Args:
 - max_results: Maximum results to return
 
 Returns JSON: {results, total_files, total_matches, status}
-Each result includes: {file, line_number, content}"""
+Each result includes: {file, line_number, content}""",
 )
 def search_directory(
     directory: Optional[str] = None,
@@ -2677,8 +2913,11 @@ def search_directory(
     # Pre-resolve before validation (bash server convention)
     resolved = os.path.abspath(os.path.expanduser(directory)) if directory else directory
     return search_directory_impl(
-        directory=resolved, pattern=pattern, file_pattern=file_pattern,
-        case_sensitive=case_sensitive, include_hidden=include_hidden,
+        directory=resolved,
+        pattern=pattern,
+        file_pattern=file_pattern,
+        case_sensitive=case_sensitive,
+        include_hidden=include_hidden,
         max_results=max_results,
         validate_dir_path=lambda p: _validate_dir_path(p, base=base),
         run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
@@ -2688,6 +2927,7 @@ def search_directory(
 # =============================================================================
 # TOOL 7: EXTRACT TABLES
 # =============================================================================
+
 
 @mcp.tool(
     title="Extract Tables",
@@ -2700,7 +2940,7 @@ Args:
 - output_format: Output format - "json" or "markdown"
 
 Returns JSON: {tables, total_tables, file, format, status}
-Each table includes: {headers, rows, row_count, page (for PDF)}"""
+Each table includes: {headers, rows, row_count, page (for PDF)}""",
 )
 def extract_tables(
     path: Optional[str] = None,
@@ -2710,7 +2950,9 @@ def extract_tables(
 ) -> str:
     base = _session_base(data_path)
     return extract_tables_impl(
-        path=path, table_index=table_index, output_format=output_format,
+        path=path,
+        table_index=table_index,
+        output_format=output_format,
         validate_read_path=lambda p: _validate_read_path(p, base=base),
     )
 
@@ -2718,6 +2960,7 @@ def extract_tables(
 # =============================================================================
 # TOOL 8: FIND FILES
 # =============================================================================
+
 
 @mcp.tool(
     title="Find Files",
@@ -2733,7 +2976,7 @@ Args:
 - modified_days: Modified within N days (e.g., 7 for last week)
 - max_results: Maximum results
 
-Returns JSON: {files, total_files, directory, status}"""
+Returns JSON: {files, total_files, directory, status}""",
 )
 def find_files(
     directory: str = ".",
@@ -2750,8 +2993,12 @@ def find_files(
     # validation (bash server convention)
     resolved = base if directory == "." else os.path.abspath(os.path.expanduser(directory))
     return find_files_impl(
-        directory=resolved, name_pattern=name_pattern, file_type=file_type,
-        max_depth=max_depth, size_filter=size_filter, modified_days=modified_days,
+        directory=resolved,
+        name_pattern=name_pattern,
+        file_type=file_type,
+        max_depth=max_depth,
+        size_filter=size_filter,
+        modified_days=modified_days,
         max_results=max_results,
         validate_dir_path=lambda p: _validate_dir_path(p, base=base),
         run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
@@ -2761,6 +3008,7 @@ def find_files(
 # =============================================================================
 # TOOL 9: TRANSFORM TEXT
 # =============================================================================
+
 
 @mcp.tool(
     title="Transform Text",
@@ -2776,7 +3024,7 @@ Args:
   - awk: e.g., "{print $1}", "NR==1", "/pattern/{print}"
   - tr: e.g., "a-z A-Z" (translate), "-d '\\n'" (delete)
 
-Returns JSON: {output, operation, expression, status}"""
+Returns JSON: {output, operation, expression, status}""",
 )
 def transform_text(
     input_text: Optional[str] = None,
@@ -2794,8 +3042,11 @@ def transform_text(
         return _validate_read_path(os.path.abspath(os.path.expanduser(p)), base=base)
 
     return transform_text_impl(
-        input_text=input_text, operation=operation, expression=expression,
-        is_file=is_file, data_path=base,
+        input_text=input_text,
+        operation=operation,
+        expression=expression,
+        is_file=is_file,
+        data_path=base,
         validate_read_path=_bash_validate_read_path,
         run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
     )
@@ -2804,6 +3055,7 @@ def transform_text(
 # =============================================================================
 # TOOL 10: GET DOCUMENT CONTEXT
 # =============================================================================
+
 
 @mcp.tool(
     title="Get Document Context",
@@ -2818,7 +3070,7 @@ Args:
 - max_sections: Maximum context sections to return
 
 Returns JSON: {sections, query, file, status}
-Each section includes: {content, relevance_keywords, position}"""
+Each section includes: {content, relevance_keywords, position}""",
 )
 def get_document_context(
     path: Optional[str] = None,
@@ -2830,8 +3082,11 @@ def get_document_context(
 ) -> str:
     base = _session_base(data_path)
     return get_document_context_impl(
-        path=path, query=query, keywords=keywords,
-        context_chars=context_chars, max_sections=max_sections,
+        path=path,
+        query=query,
+        keywords=keywords,
+        context_chars=context_chars,
+        max_sections=max_sections,
         validate_read_path=lambda p: _validate_read_path(p, base=base),
     )
 
@@ -2840,79 +3095,99 @@ def get_document_context(
 # SERVER ENTRY POINT
 # =============================================================================
 
+
 def run(
     transport: str = "sse",
     host: str = "0.0.0.0",
     port: int = 18202,
     path: str = "/sse",
-    options: dict = None
+    options: dict = None,
 ) -> None:
     """Run the MCP server."""
     options = options or {}
-    global DATA_PATH, DOCUMENTS_PATH, _SANDBOX_ENV, SETTINGS_PATH, _PERMISSIONS_CACHE, FILE_SERVER_URL
+    global \
+        DATA_PATH, \
+        DOCUMENTS_PATH, \
+        _SANDBOX_ENV, \
+        SETTINGS_PATH, \
+        _PERMISSIONS_CACHE, \
+        FILE_SERVER_URL
 
-    if 'verbose' in options:
+    if "verbose" in options:
         logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.ERROR)
 
-    if 'file_server_url' in options and options['file_server_url']:
-        FILE_SERVER_URL = options['file_server_url']
-    elif os.environ.get('ONIT_FILE_SERVER_URL'):
-        FILE_SERVER_URL = os.environ['ONIT_FILE_SERVER_URL']
+    if "file_server_url" in options and options["file_server_url"]:
+        FILE_SERVER_URL = options["file_server_url"]
+    elif os.environ.get("ONIT_FILE_SERVER_URL"):
+        FILE_SERVER_URL = os.environ["ONIT_FILE_SERVER_URL"]
 
-    if 'data_path' in options:
-        DATA_PATH = options['data_path']
-    elif os.environ.get('ONIT_DATA_PATH'):
-        DATA_PATH = os.environ['ONIT_DATA_PATH']
+    if "data_path" in options:
+        DATA_PATH = options["data_path"]
+    elif os.environ.get("ONIT_DATA_PATH"):
+        DATA_PATH = os.environ["ONIT_DATA_PATH"]
     _secure_makedirs(os.path.abspath(os.path.expanduser(DATA_PATH)))
 
-    if 'documents_path' in options:
-        DOCUMENTS_PATH = options['documents_path']
-    elif os.environ.get('ONIT_DOCUMENTS_PATH'):
-        DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
+    if "documents_path" in options:
+        DOCUMENTS_PATH = options["documents_path"]
+    elif os.environ.get("ONIT_DOCUMENTS_PATH"):
+        DOCUMENTS_PATH = os.environ["ONIT_DOCUMENTS_PATH"]
 
-    if 'settings_path' in options:
-        SETTINGS_PATH = options['settings_path']
+    if "settings_path" in options:
+        SETTINGS_PATH = options["settings_path"]
     _PERMISSIONS_CACHE = None
     if os.path.isfile(_settings_path()):
         if _settings_rules_active():
             allow, deny, allowed_cmds = _load_permissions()
-            logger.info(f"Loaded permission rules from {_settings_path()}: "
-                        f"{len(allow)} allow, {len(deny)} deny, "
-                        f"{len(allowed_cmds)} extra allowed commands")
+            logger.info(
+                f"Loaded permission rules from {_settings_path()}: "
+                f"{len(allow)} allow, {len(deny)} deny, "
+                f"{len(allowed_cmds)} extra allowed commands"
+            )
         else:
-            logger.info(f"Ignoring permission rules in {_settings_path()}: "
-                        "settings-file rules apply only to the web UI "
-                        "(text UI runs privileged).")
+            logger.info(
+                f"Ignoring permission rules in {_settings_path()}: "
+                "settings-file rules apply only to the web UI "
+                "(text UI runs privileged)."
+            )
     if _is_contained():
         logger.error(
             f"Server is CONTAINED after prior policy violations. Command "
             f"execution and file writes are disabled. Remove "
-            f"{_containment_marker_path()} and restart to lift containment.")
+            f"{_containment_marker_path()} and restart to lift containment."
+        )
 
     # Reset sandbox env cache so it picks up new DATA_PATH/DOCUMENTS_PATH
     _SANDBOX_ENV = None
 
     logger.info(f"Starting Bash MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
-    logger.info("10 Core Tools: bash, read_file, write_file, send_file, search_document, search_directory, extract_tables, find_files, transform_text, get_document_context")
+    logger.info(
+        "10 Core Tools: bash, read_file, write_file, send_file, search_document, search_directory, extract_tables, find_files, transform_text, get_document_context"
+    )
 
-    quiet = 'verbose' not in options
+    quiet = "verbose" not in options
     if quiet:
         import uvicorn.config
+
         uvicorn.config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = "WARNING"
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-    if transport == 'stdio':
+    if transport == "stdio":
         # stdout is the protocol channel on stdio: no socket, no banner.
-        mcp.run(transport='stdio', show_banner=False)
+        mcp.run(transport="stdio", show_banner=False)
         return
 
-    mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config=uvicorn_config(quiet=quiet))
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        uvicorn_config=uvicorn_config(quiet=quiet),
+    )
+
 
 if __name__ == "__main__":
     run()
-    

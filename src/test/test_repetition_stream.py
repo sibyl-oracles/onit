@@ -41,8 +41,9 @@ class _Delta(SimpleNamespace):
 
 
 def _chunk(content=None, finish_reason=None, usage=None):
-    delta = _Delta(content=content, tool_calls=None, reasoning_content=None,
-                   reasoning=None, thinking=None)
+    delta = _Delta(
+        content=content, tool_calls=None, reasoning_content=None, reasoning=None, thinking=None
+    )
     choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], usage=usage)
 
@@ -60,32 +61,40 @@ class _Stream:
     async def _gen(self):
         # stream the loop in small pieces, as a real host would
         for i in range(0, len(self._text), 7):
-            yield _chunk(content=self._text[i:i + 7])
+            yield _chunk(content=self._text[i : i + 7])
         yield _chunk(finish_reason=self._finish)
 
 
 @pytest.mark.asyncio
 async def test_streaming_repetition_loop_is_stopped():
     mock_client = AsyncMock()
-    mock_client.chat.completions.create = AsyncMock(
-        side_effect=lambda **kw: _Stream(REPEATED))
+    mock_client.chat.completions.create = AsyncMock(side_effect=lambda **kw: _Stream(REPEATED))
 
-    with patch("model.serving.chat.AsyncOpenAI", return_value=mock_client), \
-         patch("model.serving.chat._resolve_model_id",
-               new_callable=AsyncMock, return_value="test-model"):
-        result = await asyncio.wait_for(chat(
-            host="http://localhost:8000/v1",
-            instruction="Write the file.",
-            tool_registry=None,
-            safety_queue=asyncio.Queue(),
-            stream=True,
-            max_ack_continuations=0,
-            verify_answers=False,
-        ), timeout=30)
+    with (
+        patch("model.serving.chat.AsyncOpenAI", return_value=mock_client),
+        patch(
+            "model.serving.chat._resolve_model_id",
+            new_callable=AsyncMock,
+            return_value="test-model",
+        ),
+    ):
+        result = await asyncio.wait_for(
+            chat(
+                host="http://localhost:8000/v1",
+                instruction="Write the file.",
+                tool_registry=None,
+                safety_queue=asyncio.Queue(),
+                stream=True,
+                max_ack_continuations=0,
+                verify_answers=False,
+            ),
+            timeout=30,
+        )
 
     print("CALLS:", mock_client.chat.completions.create.call_count)
     print("COPIES:", result.count("Let me output"))
     print("RESULT:", repr(result[:200]))
     assert result.count("Let me output") <= 2, (
-        f"loop returned to user: {result.count('Let me output')} copies")
+        f"loop returned to user: {result.count('Let me output')} copies"
+    )
     assert mock_client.chat.completions.create.call_count <= 5

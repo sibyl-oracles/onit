@@ -15,8 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class TestLegacyIsGone:
@@ -67,8 +66,7 @@ class TestDocsPointAtRealFiles:
                 # this test is about files that moved, not about syntax.
                 if "/" not in target and not os.path.splitext(target)[1]:
                     continue
-                resolved = os.path.normpath(
-                    os.path.join(os.path.dirname(doc), target))
+                resolved = os.path.normpath(os.path.join(os.path.dirname(doc), target))
                 if not os.path.exists(resolved):
                     broken.append(f"{os.path.relpath(doc, ROOT)} -> {target}")
         assert not broken, "links to paths that do not exist:\n" + "\n".join(broken)
@@ -80,10 +78,9 @@ class TestDocsPointAtRealFiles:
             if os.path.basename(doc) in ("test_tree_has_no_dead_links.py",):
                 continue
             if "archive" in doc.split(os.sep):
-                continue        # history, explicitly labelled as such
+                continue  # history, explicitly labelled as such
             with open(doc, errors="ignore") as fh:
                 for i, line in enumerate(fh, 1):
                     if re.search(r"python -m legacy\.", line):
-                        offenders.append(
-                            f"{os.path.relpath(doc, ROOT)}:{i}: {line.strip()}")
+                        offenders.append(f"{os.path.relpath(doc, ROOT)}:{i}: {line.strip()}")
         assert not offenders, offenders

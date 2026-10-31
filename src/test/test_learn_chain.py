@@ -22,8 +22,16 @@ import shutil
 
 import pytest
 
-from src.learn import (corpus, eval as ruler, playbook, recall, skills,
-                       skills_curator, skills_mining, trajectory)
+from src.learn import (
+    corpus,
+    eval as ruler,
+    playbook,
+    recall,
+    skills,
+    skills_curator,
+    skills_mining,
+    trajectory,
+)
 
 
 @pytest.fixture
@@ -51,11 +59,9 @@ def world(tmp_path):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _session(world, session_id, tasks, model="m1", owner=None,
-             verdict="clean", tools=None):
+def _session(world, session_id, tasks, model="m1", owner=None, verdict="clean", tools=None):
     """Write a whole session of task records, the way the recorder does."""
-    path = os.path.join(trajectory.trajectory_dir(world),
-                        "%s.jsonl" % session_id)
+    path = os.path.join(trajectory.trajectory_dir(world), "%s.jsonl" % session_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         for index, task in enumerate(tasks):
@@ -68,11 +74,13 @@ def _session(world, session_id, tasks, model="m1", owner=None,
                 "model": model,
                 "owner": owner,
                 "ts": "2026-10-20T10:00:00",
-                "trajectory": [{
-                    "turn": index,
-                    "tools": tools or [],
-                    "signals": {"verifier": verdict},
-                }],
+                "trajectory": [
+                    {
+                        "turn": index,
+                        "tools": tools or [],
+                        "signals": {"verifier": verdict},
+                    }
+                ],
                 "signals": {"verifier": verdict},
             }
             f.write(json.dumps(record) + "\n")
@@ -81,6 +89,7 @@ def _session(world, session_id, tasks, model="m1", owner=None,
 
 # ── the chain, in one run ─────────────────────────────────────────────────
 
+
 class TestTheWholeChain:
     """Record → label → split → mine → gate → promote → serve → roll back."""
 
@@ -88,10 +97,11 @@ class TestTheWholeChain:
         # 1. Record four sessions, each with a repeated bash fragment.
         for index in range(4):
             _session(
-                world, "s%d" % index,
-                ["deploy the service to staging %d" % index,
-                 "run the unit tests %d" % index],
-                tools=[{"name": "bash", "args_digest": "d" * 64, "ok": True}])
+                world,
+                "s%d" % index,
+                ["deploy the service to staging %d" % index, "run the unit tests %d" % index],
+                tools=[{"name": "bash", "args_digest": "d" * 64, "ok": True}],
+            )
 
         # 2. The records are readable.
         records = list(trajectory.iter_records(world))
@@ -120,8 +130,7 @@ class TestTheWholeChain:
         assert skills.read_skill(name, world), "the skill was not written"
 
         # 7. The gate has a verdict on it.
-        verdict = skills_curator.gate_skill(name, config_data=world,
-                                            delta=0.1)
+        verdict = skills_curator.gate_skill(name, config_data=world, delta=0.1)
         assert "passed" in verdict, "the gate returned no verdict"
 
         # 8. A skill that passes the gate can be promoted and pinned.
@@ -141,18 +150,22 @@ class TestTheWholeChain:
         """
         from src.mcp.servers.tasks.skills import mcp_server
 
-        candidate = {"tool": "bash", "digest": "e" * 64, "sessions": 3,
-                     "calls": 5, "errors": 0, "success_rate": 1.0,
-                     "arg_keys": ["cmd"]}
-        skills_curator.synthesize(candidate, name="served",
-                                  config_data=world)
-        skills_curator.synthesize(candidate, name="unserved",
-                                  config_data=world)
+        candidate = {
+            "tool": "bash",
+            "digest": "e" * 64,
+            "sessions": 3,
+            "calls": 5,
+            "errors": 0,
+            "success_rate": 1.0,
+            "arg_keys": ["cmd"],
+        }
+        skills_curator.synthesize(candidate, name="served", config_data=world)
+        skills_curator.synthesize(candidate, name="unserved", config_data=world)
         skills_curator.promote("served", config_data=world, delta=0.1)
 
         loaded = mcp_server.load_skills(
-            {"learn": {"path": world["learn"]["path"],
-                       "autonomy": "extend"}})
+            {"learn": {"path": world["learn"]["path"], "autonomy": "extend"}}
+        )
         assert "served" in loaded, "the pinned skill was not served"
         assert "unserved" not in loaded, "an unpinned skill was served"
 
@@ -166,59 +179,71 @@ class TestTheWholeChain:
         from src.mcp.servers.tasks.skills import mcp_server
 
         for name, digest in (("one", "a" * 64), ("two", "b" * 64)):
-            candidate = {"tool": "bash", "digest": digest, "sessions": 3,
-                         "calls": 5, "errors": 0, "success_rate": 1.0,
-                         "arg_keys": ["cmd"]}
-            skills_curator.synthesize(candidate, name=name,
-                                      config_data=world)
+            candidate = {
+                "tool": "bash",
+                "digest": digest,
+                "sessions": 3,
+                "calls": 5,
+                "errors": 0,
+                "success_rate": 1.0,
+                "arg_keys": ["cmd"],
+            }
+            skills_curator.synthesize(candidate, name=name, config_data=world)
             skills_curator.promote(name, config_data=world, delta=0.1)
 
         loaded = mcp_server.load_skills(
-            {"learn": {"path": world["learn"]["path"],
-                       "autonomy": "extend"}})
-        assert set(loaded) == {"one", "two"}, \
-            "the server served %r" % sorted(loaded)
+            {"learn": {"path": world["learn"]["path"], "autonomy": "extend"}}
+        )
+        assert set(loaded) == {"one", "two"}, "the server served %r" % sorted(loaded)
 
     def test_the_server_survives_one_broken_skill(self, world):
         """One broken skill should cost the agent that skill only."""
         from src.mcp.servers.tasks.skills import mcp_server
 
         for name, digest in (("good", "a" * 64), ("bad", "b" * 64)):
-            candidate = {"tool": "bash", "digest": digest, "sessions": 3,
-                         "calls": 5, "errors": 0, "success_rate": 1.0,
-                         "arg_keys": ["cmd"]}
-            skills_curator.synthesize(candidate, name=name,
-                                      config_data=world)
+            candidate = {
+                "tool": "bash",
+                "digest": digest,
+                "sessions": 3,
+                "calls": 5,
+                "errors": 0,
+                "success_rate": 1.0,
+                "arg_keys": ["cmd"],
+            }
+            skills_curator.synthesize(candidate, name=name, config_data=world)
             skills_curator.promote(name, config_data=world, delta=0.1)
-        with open(os.path.join(skills.skill_dir("bad", world), "tool.py"),
-                  "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(skills.skill_dir("bad", world), "tool.py"), "w", encoding="utf-8"
+        ) as f:
             f.write("this is not python(\n")
 
         loaded = mcp_server.load_skills(
-            {"learn": {"path": world["learn"]["path"],
-                       "autonomy": "extend"}})
+            {"learn": {"path": world["learn"]["path"], "autonomy": "extend"}}
+        )
         assert "good" in loaded, "the good skill went down with the bad one"
         assert "bad" not in loaded
 
 
 # ── the recall path, from the store to the prompt ────────────────────────
 
+
 class TestRecallReachesThePrompt:
     """A recorded episode has to arrive in the model's context."""
 
     def test_a_recorded_episode_is_recalled(self, world):
-        _session(world, "s1", ["deploy the service to staging"],
-                 tools=[{"name": "bash", "args_digest": "f" * 64,
-                         "ok": True}])
-        episodes = recall.recall("deploy the service to staging",
-                                 config_data=world)
+        _session(
+            world,
+            "s1",
+            ["deploy the service to staging"],
+            tools=[{"name": "bash", "args_digest": "f" * 64, "ok": True}],
+        )
+        episodes = recall.recall("deploy the service to staging", config_data=world)
         assert episodes, "the episode was recorded but not recalled"
         assert "deploy" in episodes[0]["summary"]
 
     def test_the_recall_block_is_injectable(self, world):
         _session(world, "s1", ["deploy the service to staging"])
-        context = recall.build_context("deploy the service to staging",
-                                       config_data=world)
+        context = recall.build_context("deploy the service to staging", config_data=world)
         assert context["text"].strip(), "the recall block was empty"
         assert context["ids"], "the recall block carried no ids"
 
@@ -230,13 +255,12 @@ class TestRecallReachesThePrompt:
         helped.  Without the ids the question cannot be asked.
         """
         _session(world, "s1", ["deploy the service to staging"])
-        context = recall.build_context("deploy the service to staging",
-                                       config_data=world)
-        assert any("s1" in i for i in context["ids"]), \
-            "the ids do not name the session"
+        context = recall.build_context("deploy the service to staging", config_data=world)
+        assert any("s1" in i for i in context["ids"]), "the ids do not name the session"
 
 
 # ── the playbook path, from reflection to injection ───────────────────────
+
 
 class TestPlaybookReachesThePrompt:
     """A reflected tactic has to arrive in the model's context."""
@@ -252,20 +276,23 @@ class TestPlaybookReachesThePrompt:
         """
         for index in range(3):
             _session(
-                world, "good%d" % index,
+                world,
+                "good%d" % index,
                 ["deploy the service %d" % index],
                 verdict="clean",
-                tools=[{"name": "bash", "args_digest": "g" * 64,
-                        "ok": True}])
+                tools=[{"name": "bash", "args_digest": "g" * 64, "ok": True}],
+            )
         for index in range(3):
             _session(
-                world, "bad%d" % index,
+                world,
+                "bad%d" % index,
                 ["deploy the service %d" % index],
                 verdict="issues",
-                tools=[{"name": "bash", "args_digest": "g" * 64,
-                        "ok": True},
-                       {"name": "grep", "args_digest": "g" * 64,
-                        "ok": True}])
+                tools=[
+                    {"name": "bash", "args_digest": "g" * 64, "ok": True},
+                    {"name": "grep", "args_digest": "g" * 64, "ok": True},
+                ],
+            )
 
         records = list(trajectory.iter_records(world))
         deltas = playbook.reflect(records, scope=playbook.SCOPE_GLOBAL)
@@ -275,8 +302,7 @@ class TestPlaybookReachesThePrompt:
         playbook.curate(current, deltas, config_data=world)
 
         context = playbook.build_context(world)
-        assert context["text"].strip(), \
-            "the playbook produced an empty block after curating"
+        assert context["text"].strip(), "the playbook produced an empty block after curating"
         assert context["items"], "the block carried no items"
         assert context["version"] >= 1
 
@@ -288,10 +314,17 @@ class TestPlaybookReachesThePrompt:
         in the same conversation, which is exactly what the prefix
         cache cannot survive.
         """
-        items = [{"id": "b1", "text": "a tactic", "status": "active",
-                  "scope": "global", "trigger": "", "provenance": []}]
-        playbook.write_playbook(playbook.global_path(world),
-                                {"version": 1, "items": items})
+        items = [
+            {
+                "id": "b1",
+                "text": "a tactic",
+                "status": "active",
+                "scope": "global",
+                "trigger": "",
+                "provenance": [],
+            }
+        ]
+        playbook.write_playbook(playbook.global_path(world), {"version": 1, "items": items})
         first = playbook.build_context(world)
         second = playbook.build_context(world)
         assert first["text"] == second["text"]
@@ -299,6 +332,7 @@ class TestPlaybookReachesThePrompt:
 
 
 # ── the labels, from the corpus to the recall ranking ────────────────────
+
 
 class TestLabelsReachTheRanking:
     """The signals are only useful if the retrieval honours them."""
@@ -310,32 +344,27 @@ class TestLabelsReachTheRanking:
         is retrieved ahead of a bad one.  If the ranking ignored the
         verdict, the labels would be decoration.
         """
-        _session(world, "good", ["deploy the service to staging"],
-                 verdict="clean")
-        _session(world, "bad", ["deploy the service to staging"],
-                 verdict="issues")
-        episodes = recall.recall("deploy the service to staging",
-                                 config_data=world)
+        _session(world, "good", ["deploy the service to staging"], verdict="clean")
+        _session(world, "bad", ["deploy the service to staging"], verdict="issues")
+        episodes = recall.recall("deploy the service to staging", config_data=world)
         assert len(episodes) >= 2, "the test needs two episodes"
         outcomes = [e["outcome"] for e in episodes]
-        assert outcomes.index("clean") < outcomes.index("issues"), \
+        assert outcomes.index("clean") < outcomes.index("issues"), (
             "the clean episode did not come first: %r" % outcomes
+        )
 
     def test_an_unjudged_episode_is_not_preferred_over_a_clean_one(self, world):
-        _session(world, "good", ["deploy the service to staging"],
-                 verdict="clean")
-        _session(world, "unknown", ["deploy the service to staging"],
-                 verdict=None)
-        episodes = recall.recall("deploy the service to staging",
-                                 config_data=world)
+        _session(world, "good", ["deploy the service to staging"], verdict="clean")
+        _session(world, "unknown", ["deploy the service to staging"], verdict=None)
+        episodes = recall.recall("deploy the service to staging", config_data=world)
         outcomes = [e["outcome"] for e in episodes]
         assert "clean" in outcomes
         if "unknown" in outcomes or "" in outcomes:
-            assert outcomes.index("clean") < max(
-                i for i, o in enumerate(outcomes) if o != "clean")
+            assert outcomes.index("clean") < max(i for i, o in enumerate(outcomes) if o != "clean")
 
 
 # ── the store is the only thing that crosses the chain ───────────────────
+
 
 class TestTheStoreIsTheHandoff:
     """Each module reads the store, not another module's memory.
@@ -346,28 +375,38 @@ class TestTheStoreIsTheHandoff:
     """
 
     def test_the_playbook_is_read_from_disk_not_from_memory(self, world):
-        items = [{"id": "b1", "text": "a tactic", "status": "active",
-                  "scope": "global", "trigger": "", "provenance": []}]
-        playbook.write_playbook(playbook.global_path(world),
-                                {"version": 1, "items": items})
+        items = [
+            {
+                "id": "b1",
+                "text": "a tactic",
+                "status": "active",
+                "scope": "global",
+                "trigger": "",
+                "provenance": [],
+            }
+        ]
+        playbook.write_playbook(playbook.global_path(world), {"version": 1, "items": items})
         loaded = playbook.load(world)
         assert len(loaded["items"]) == 1
 
     def test_a_second_reader_sees_what_the_first_wrote(self, world):
         """No in-process caching between the writer and the reader."""
         _session(world, "s1", ["deploy the service to staging"])
-        first = recall.build_context("deploy the service to staging",
-                                     config_data=world)
-        second = recall.build_context("deploy the service to staging",
-                                      config_data=world)
+        first = recall.build_context("deploy the service to staging", config_data=world)
+        second = recall.build_context("deploy the service to staging", config_data=world)
         assert first["text"] == second["text"]
 
     def test_the_pin_is_read_from_disk(self, world):
-        candidate = {"tool": "bash", "digest": "h" * 64, "sessions": 3,
-                     "calls": 5, "errors": 0, "success_rate": 1.0,
-                     "arg_keys": ["cmd"]}
-        skills_curator.synthesize(candidate, name="s1",
-                                  config_data=world)
+        candidate = {
+            "tool": "bash",
+            "digest": "h" * 64,
+            "sessions": 3,
+            "calls": 5,
+            "errors": 0,
+            "success_rate": 1.0,
+            "arg_keys": ["cmd"],
+        }
+        skills_curator.synthesize(candidate, name="s1", config_data=world)
         skills_curator.promote("s1", config_data=world, delta=0.1)
         assert "s1" in skills.pinned_skills(world)
         # Read it back through a fresh reader: the file is the truth.
@@ -376,6 +415,7 @@ class TestTheStoreIsTheHandoff:
 
 
 # ── nothing escapes the world ─────────────────────────────────────────────
+
 
 class TestNothingEscapes:
     """The chain must not write into the repository.
@@ -394,13 +434,11 @@ class TestNothingEscapes:
         ruler.write_split(ruler.build_split(config_data=world), world)
         candidates = skills_mining.mine_store(world)
         if candidates:
-            skills_curator.synthesize(candidates[0], name="x",
-                                      config_data=world)
+            skills_curator.synthesize(candidates[0], name="x", config_data=world)
         after = sorted(os.listdir(world["learn"]["path"]))
         assert after, "the chain wrote nothing at all"
 
     def test_the_ruler_stays_in_the_world(self, world):
         ruler.write_split(ruler.build_split(config_data=world), world)
-        assert ruler.holdout_path(world).startswith(
-            world["learn"]["eval"]["path"])
+        assert ruler.holdout_path(world).startswith(world["learn"]["eval"]["path"])
         assert ruler.is_outside_agent_surface(ruler.eval_dir(world), world)

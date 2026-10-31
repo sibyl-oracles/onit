@@ -1,12 +1,14 @@
 """Tests for src/lib/text.py — remove_tags and text_between_tags."""
 
 import sys, os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.text import remove_tags, text_between_tags
 
 
 # ── remove_tags ─────────────────────────────────────────────────────────────
+
 
 class TestRemoveTags:
     def test_removes_simple_tags(self):
@@ -40,8 +42,9 @@ class TestRemoveTags:
         The regression this guards: an answer containing "0.709 < 0.712" and a
         closing wrapper tag anywhere after it lost everything between the two.
         """
-        text = ("mean **0.70931** < 0.71205 -> rejected\n\n"
-                "## Round 2\ntext the user needs\n</answer>")
+        text = (
+            "mean **0.70931** < 0.71205 -> rejected\n\n## Round 2\ntext the user needs\n</answer>"
+        )
         out = remove_tags(text)
         assert "< 0.71205" in out
         assert "text the user needs" in out
@@ -68,6 +71,7 @@ class TestRemoveTags:
 
 
 # ── text_between_tags ───────────────────────────────────────────────────────
+
 
 class TestTextBetweenTags:
     def test_full_match(self):

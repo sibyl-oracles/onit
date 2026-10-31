@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,7 @@
 # limitations under the License.
 
 Tests for the Local Search toolkit and MCP tools (in-house document search).
-'''
+"""
 
 import json
 import os
@@ -87,6 +87,7 @@ def search_env(tmp_path, corpus, monkeypatch):
 
 # -- toolkit primitives -------------------------------------------------------
 
+
 def test_tokenize():
     assert tokenize("Hello, World! 42") == ["hello", "world", "42"]
 
@@ -140,6 +141,7 @@ def test_parse_document_unsupported_extension(tmp_path):
 
 
 # -- index lifecycle -----------------------------------------------------------
+
 
 def test_index_and_search(tmp_path, corpus):
     index = LocalSearchIndex(str(tmp_path / "idx"))
@@ -213,14 +215,14 @@ def test_index_records_path_independent_content_hash(tmp_path, corpus):
     copy.mkdir()
     (copy / "vacation-copy.md").write_text((corpus / "vacation.md").read_text())
     (copy / "edited.md").write_text(
-        (corpus / "vacation.md").read_text() + "Sabbaticals are unpaid.\n")
+        (corpus / "vacation.md").read_text() + "Sabbaticals are unpaid.\n"
+    )
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(corpus))
     index.index_directory(str(copy))
 
-    hashes = {os.path.basename(p): info["hash"]
-              for p, info in index.documents.items()}
+    hashes = {os.path.basename(p): info["hash"] for p, info in index.documents.items()}
     # Same bytes under a different name and directory hash alike; edited
     # content does not.
     assert hashes["vacation.md"] == hashes["vacation-copy.md"]
@@ -245,8 +247,7 @@ def test_filename_terms_make_document_discoverable(tmp_path):
 
     results = index.search("scholarship ai", method="bm25")
     assert results
-    assert (os.path.basename(results[0]["file"])
-            == "06-ayala-scholarship-ai-data-science.md")
+    assert os.path.basename(results[0]["file"]) == "06-ayala-scholarship-ai-data-science.md"
 
 
 def test_folder_terms_make_document_discoverable(tmp_path):
@@ -254,8 +255,7 @@ def test_folder_terms_make_document_discoverable(tmp_path):
     docs = tmp_path / "docs"
     (docs / "AI-Program").mkdir(parents=True)
     (docs / "AI-Program" / "06-ayala-grant.md").write_text(
-        "# Ayala Foundation Grant\n\n"
-        "Covers full tuition for two years of graduate study.\n"
+        "# Ayala Foundation Grant\n\nCovers full tuition for two years of graduate study.\n"
     )
     (docs / "parking.md").write_text("Parking permits are issued quarterly.\n")
 
@@ -274,7 +274,8 @@ def test_plural_query_reaches_singular_filename(tmp_path):
     docs = tmp_path / "docs"
     (docs / "AI-Program").mkdir(parents=True)
     (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
-        "# Ayala Graduate Grant\n\nCovers tuition and a monthly stipend.\n")
+        "# Ayala Graduate Grant\n\nCovers tuition and a monthly stipend.\n"
+    )
     (docs / "parking.md").write_text("Parking permits are issued quarterly.\n")
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
@@ -282,8 +283,7 @@ def test_plural_query_reaches_singular_filename(tmp_path):
 
     results = index.search("scholarships", method="bm25")
     assert results
-    assert (os.path.basename(results[0]["file"])
-            == "06-ayala-scholarship-ai-data-science.md")
+    assert os.path.basename(results[0]["file"]) == "06-ayala-scholarship-ai-data-science.md"
 
 
 def test_document_outranks_a_catalog_that_merely_lists_it(tmp_path):
@@ -298,7 +298,8 @@ def test_document_outranks_a_catalog_that_merely_lists_it(tmp_path):
     (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
         "# Ayala Graduate Scholarship Program\n\n"
         "Covers tuition, stipends, and research support for graduate "
-        "students in artificial intelligence and data science.\n")
+        "students in artificial intelligence and data science.\n"
+    )
     (docs / "README.md").write_text(
         "# Document Catalog\n\n"
         "### AI Program\n"
@@ -309,15 +310,15 @@ def test_document_outranks_a_catalog_that_merely_lists_it(tmp_path):
         "### Scholarships\n"
         "- Files: `02-sikap-annex-e-scholarship-privileges.pdf`\n"
         "- Note: SIKAP is a CHED scholarship; the AI Program scholarship "
-        "is separate.\n")
+        "is separate.\n"
+    )
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(docs))
 
     results = index.search("UPD AI Program scholarships", method="bm25")
     assert results
-    assert (os.path.basename(results[0]["file"])
-            == "06-ayala-scholarship-ai-data-science.md")
+    assert os.path.basename(results[0]["file"]) == "06-ayala-scholarship-ai-data-science.md"
 
 
 def test_one_document_cannot_fill_the_whole_result_page(tmp_path):
@@ -328,20 +329,24 @@ def test_one_document_cannot_fill_the_whole_result_page(tmp_path):
     (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
         "# Ayala Graduate Scholarship Program\n\n"
         "Covers tuition and stipends for graduate students in artificial "
-        "intelligence and data science at UP Diliman.\n")
-    for i, name in enumerate(("policy.md", "stipends.md", "admissions.md",
-                              "handbook.md")):
+        "intelligence and data science at UP Diliman.\n"
+    )
+    for i, name in enumerate(("policy.md", "stipends.md", "admissions.md", "handbook.md")):
         (docs / name).write_text(
             f"# {name}\n\nAI Program scholarship note {i}: scholarships and "
-            "stipends are released each semester at UPD.\n")
+            "stipends are released each semester at UPD.\n"
+        )
     # A catalogue long enough to be chunked many times over, every chunk of it
     # naming the query terms.
     (docs / "README.md").write_text(
-        "# Document Catalog\n\n" + "".join(
+        "# Document Catalog\n\n"
+        + "".join(
             f"- `AI-Program/{i:02d}-scholarship.md` — UPD AI Program "
             f"scholarship entry {i}, listing scholarships for the AI Program "
             f"at UPD.\n" * 6
-            for i in range(30)))
+            for i in range(30)
+        )
+    )
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(docs))
@@ -349,8 +354,9 @@ def test_one_document_cannot_fill_the_whole_result_page(tmp_path):
     results = index.search("UPD AI Program scholarships", top_k=5, method="bm25")
     readme_hits = [r for r in results if os.path.basename(r["file"]) == "README.md"]
     assert len(readme_hits) <= MAX_CHUNKS_PER_FILE
-    assert any(os.path.basename(r["file"])
-               == "06-ayala-scholarship-ai-data-science.md" for r in results)
+    assert any(
+        os.path.basename(r["file"]) == "06-ayala-scholarship-ai-data-science.md" for r in results
+    )
 
 
 def test_named_document_is_shown_through_its_opening(tmp_path):
@@ -369,14 +375,14 @@ def test_named_document_is_shown_through_its_opening(tmp_path):
     (docs / "AI-Program" / "06-ayala-scholarship-ai-data-science.md").write_text(
         # Opening: says what the document is, and matches the query weakly.
         "# Ayala Graduate Scholarship Program\n\n"
-        "Covers tuition, a stipend, and research support.\n\n"
-        + "filler " * 250 + "\n\n"
+        "Covers tuition, a stipend, and research support.\n\n" + "filler " * 250 + "\n\n"
         # Two passages that repeat the query words far more often.
         "## Covered programs\n\nThe AI Program at UPD: the MEngg AI program, "
         "the PhD AI program, and the PhD Data Science program of the AI "
         "Program at UPD.\n\n" + "filler " * 150 + "\n\n"
         "## Contact\n\nAI Program office at UPD, the AI Program mailing list, "
-        "and the AI Program page.\n")
+        "and the AI Program page.\n"
+    )
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(docs))
@@ -393,8 +399,8 @@ def test_opening_is_not_promoted_for_a_document_matched_only_by_text(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "minutes-2024.md").write_text(
-        "# Minutes\n\n" + "filler " * 250 + "\n\n"
-        "## Item 4\n\nThe stipend was raised.\n")
+        "# Minutes\n\n" + "filler " * 250 + "\n\n## Item 4\n\nThe stipend was raised.\n"
+    )
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(docs))
@@ -410,8 +416,11 @@ def test_result_page_is_filled_when_few_documents_match(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "handbook.md").write_text(
-        "".join(f"## Section {i}\n\nScholarship terms, clause {i}. " + "filler " * 300
-                + "\n\n" for i in range(6)))
+        "".join(
+            f"## Section {i}\n\nScholarship terms, clause {i}. " + "filler " * 300 + "\n\n"
+            for i in range(6)
+        )
+    )
 
     index = LocalSearchIndex(str(tmp_path / "idx"))
     index.index_directory(str(docs))
@@ -433,8 +442,7 @@ def test_documents_yielding_no_text_are_reported(tmp_path, corpus):
 
     assert result["total_documents"] == 4
     assert [os.path.basename(p) for p in result["no_text_extracted"]] == ["scanned.txt"]
-    assert [os.path.basename(p) for p in index.status()["no_text_extracted"]] \
-        == ["scanned.txt"]
+    assert [os.path.basename(p) for p in index.status()["no_text_extracted"]] == ["scanned.txt"]
 
 
 def test_name_label_backfilled_on_load_of_older_index(tmp_path, corpus):
@@ -474,6 +482,7 @@ def test_dense_method_errors_without_embeddings(tmp_path, corpus, monkeypatch):
 
 
 # -- MCP tool layer -------------------------------------------------------------
+
 
 def test_mcp_index_documents_default_corpus(search_env):
     result = json.loads(local_mod._index_documents_impl())
@@ -523,6 +532,7 @@ def test_mcp_rebuild(search_env):
 
 # -- shared corpus index across sessions ---------------------------------------
 
+
 def _make_session(data, name):
     session = data / name
     session.mkdir()
@@ -553,16 +563,14 @@ def test_search_uses_shared_index_across_sessions(search_env):
     session_a = _make_session(search_env, "session-a")
     session_b = _make_session(search_env, "session-b")
 
-    result_a = json.loads(local_mod._local_search_impl(
-        query="vacation days", data_path=session_a))
+    result_a = json.loads(local_mod._local_search_impl(query="vacation days", data_path=session_a))
     assert result_a["status"] == "success"
     assert result_a["results"][0]["file"].endswith("vacation.md")
 
     # Session B searches the same shared index without re-ingesting
     shared_index = local_mod._get_index(local_mod._shared_index_dir())
     docs_before = dict(shared_index.documents)
-    result_b = json.loads(local_mod._local_search_impl(
-        query="vacation days", data_path=session_b))
+    result_b = json.loads(local_mod._local_search_impl(query="vacation days", data_path=session_b))
     assert result_b["status"] == "success"
     assert result_b["results"][0]["file"].endswith("vacation.md")
     assert shared_index.documents == docs_before
@@ -577,20 +585,21 @@ def test_session_files_stay_isolated_and_merge_with_shared(search_env):
     (private / "secret.md").write_text(
         "# Project Zebra\n\nProject Zebra launches in October with a 2M budget.\n"
     )
-    result = json.loads(local_mod._index_documents_impl(
-        path=str(private), data_path=session_a))
+    result = json.loads(local_mod._index_documents_impl(path=str(private), data_path=session_a))
     assert result["scope"] == "session"
     assert len(result["indexed"]) == 1
 
     # Session A sees its private doc merged with the shared corpus
-    found = json.loads(local_mod._local_search_impl(
-        query="Project Zebra launch budget", data_path=session_a))
+    found = json.loads(
+        local_mod._local_search_impl(query="Project Zebra launch budget", data_path=session_a)
+    )
     assert found["results"][0]["file"].endswith("secret.md")
     assert found["total_documents"] == 4  # 3 shared + 1 session
 
     # Session B cannot see session A's private doc
-    hidden = json.loads(local_mod._local_search_impl(
-        query="Project Zebra launch budget", data_path=session_b))
+    hidden = json.loads(
+        local_mod._local_search_impl(query="Project Zebra launch budget", data_path=session_b)
+    )
     assert all(not r["file"].endswith("secret.md") for r in hidden["results"])
     assert hidden["total_documents"] == 3
 
@@ -605,16 +614,16 @@ def test_cross_index_merge_uses_reciprocal_rank_fusion(search_env):
     )
     local_mod._index_documents_impl(path=str(private), data_path=session_a)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="business travel meals per day", data_path=session_a))
+    found = json.loads(
+        local_mod._local_search_impl(query="business travel meals per day", data_path=session_a)
+    )
     results = found["results"]
     assert len(results) > 1
 
     # Scores are rank-derived, not raw BM25, so they are comparable across
     # the shared and session indexes.
     assert results[0]["score"] == pytest.approx(1.0 / (RRF_K + 1), abs=1e-6)
-    assert [r["score"] for r in results] == sorted(
-        (r["score"] for r in results), reverse=True)
+    assert [r["score"] for r in results] == sorted((r["score"] for r in results), reverse=True)
     assert [r["rank"] for r in results] == list(range(1, len(results) + 1))
 
     # Both indexes are represented: each contributes its own rank-1 hit, and
@@ -629,8 +638,7 @@ def test_cross_index_merge_uses_reciprocal_rank_fusion(search_env):
     assert len(keys) == len(set(keys))
 
 
-def test_cross_index_merge_boosts_chunks_ranked_by_both_indexes(
-        search_env, monkeypatch):
+def test_cross_index_merge_boosts_chunks_ranked_by_both_indexes(search_env, monkeypatch):
     session_a = _make_session(search_env, "session-a")
     local_mod._index_documents_impl(data_path=session_a)
 
@@ -639,8 +647,7 @@ def test_cross_index_merge_boosts_chunks_ranked_by_both_indexes(
     index = local_mod._get_index(local_mod._shared_index_dir())
     monkeypatch.setattr(local_mod, "_session_indexes", lambda base: (index, index))
 
-    found = json.loads(local_mod._local_search_impl(
-        query="vacation days", data_path=session_a))
+    found = json.loads(local_mod._local_search_impl(query="vacation days", data_path=session_a))
     top = found["results"][0]
     assert top["file"].endswith("vacation.md")
     assert top["score"] == pytest.approx(2.0 / (RRF_K + 1), abs=1e-6)
@@ -663,8 +670,11 @@ def test_cross_index_merge_keeps_chunks_of_one_file_apart(search_env, corpus):
     )
 
     session_a = _make_session(search_env, "session-a")
-    found = json.loads(local_mod._local_search_impl(
-        query="UPD AI scholarship program", top_k=5, data_path=session_a))
+    found = json.loads(
+        local_mod._local_search_impl(
+            query="UPD AI scholarship program", top_k=5, data_path=session_a
+        )
+    )
     results = found["results"]
 
     # The catalog's chunks stay separate entries, each carrying only its own
@@ -687,8 +697,9 @@ def test_duplicate_document_across_indexes_returned_once(search_env, corpus):
     (private / "vacation-copy.md").write_text((corpus / "vacation.md").read_text())
     local_mod._index_documents_impl(path=str(private), data_path=session_a)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="vacation days roll over", data_path=session_a))
+    found = json.loads(
+        local_mod._local_search_impl(query="vacation days roll over", data_path=session_a)
+    )
     results = found["results"]
 
     # The copy is not a second result: it merges into the shared corpus entry,
@@ -703,8 +714,7 @@ def test_duplicate_document_across_indexes_returned_once(search_env, corpus):
     assert "expenses.txt" in names or "onboarding.md" in names
 
 
-def test_duplicate_document_dedup_survives_an_index_without_hashes(
-        search_env, corpus):
+def test_duplicate_document_dedup_survives_an_index_without_hashes(search_env, corpus):
     session_a = _make_session(search_env, "session-a")
 
     private = search_env / "session-a" / "notes"
@@ -719,8 +729,9 @@ def test_duplicate_document_dedup_survives_an_index_without_hashes(
     for info in session_index.documents.values():
         info.pop("hash", None)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="vacation days roll over", data_path=session_a))
+    found = json.loads(
+        local_mod._local_search_impl(query="vacation days roll over", data_path=session_a)
+    )
     names = [os.path.basename(r["file"]) for r in found["results"]]
     assert names.count("vacation.md") == 1
     assert "vacation-copy.md" not in names
@@ -739,6 +750,7 @@ def test_document_key_falls_back_to_filename_for_unreadable_file(search_env):
 
 
 # -- where the shared index is stored -------------------------------------------
+
 
 def test_shared_index_lives_beside_the_corpus_not_under_data_path(search_env, corpus):
     """The index belongs with the documents it describes: a corpus mounted into
@@ -771,8 +783,9 @@ def test_missing_shared_index_is_rebuilt_from_the_corpus(search_env, corpus):
     os.unlink(corpus / "onboarding.md")
     assert not (corpus / ".local_search" / "index.json").exists()
 
-    result = json.loads(local_mod._local_search_impl(
-        query="vacation days", data_path=str(search_env / "session-a")))
+    result = json.loads(
+        local_mod._local_search_impl(query="vacation days", data_path=str(search_env / "session-a"))
+    )
 
     assert (corpus / ".local_search" / "index.json").is_file()
     built = json.loads((corpus / ".local_search" / "index.json").read_text())
@@ -785,6 +798,7 @@ def test_missing_shared_index_is_rebuilt_from_the_corpus(search_env, corpus):
 def test_read_only_corpus_falls_back_to_data_path(search_env, corpus, monkeypatch):
     """A corpus mounted read-only is the normal container deployment. Search
     must still work — the index just goes under DATA_PATH instead."""
+
     def _refuse(path, *args, **kwargs):
         if str(path).startswith(str(corpus)):
             raise PermissionError(f"read-only corpus: {path}")
@@ -795,8 +809,7 @@ def test_read_only_corpus_falls_back_to_data_path(search_env, corpus, monkeypatc
     assert local_mod._shared_index_dir() == str(search_env / "local_search" / "shared")
 
 
-def test_read_only_corpus_that_already_has_an_index_dir_falls_back_too(
-        search_env, corpus):
+def test_read_only_corpus_that_already_has_an_index_dir_falls_back_too(search_env, corpus):
     """A corpus remounted read-only still carries the .local_search left by an
     earlier read-write run, and makedirs(exist_ok=True) succeeds for it. The
     index would then be unwritable at the very moment it is saved."""
@@ -804,12 +817,14 @@ def test_read_only_corpus_that_already_has_an_index_dir_falls_back_too(
     stale.mkdir()
     stale.chmod(0o500)
     try:
-        assert local_mod._shared_index_dir() == str(
-            search_env / "local_search" / "shared")
+        assert local_mod._shared_index_dir() == str(search_env / "local_search" / "shared")
 
         # ...and searching still works against the fallback location
-        result = json.loads(local_mod._local_search_impl(
-            query="vacation days", data_path=str(search_env / "session-a")))
+        result = json.loads(
+            local_mod._local_search_impl(
+                query="vacation days", data_path=str(search_env / "session-a")
+            )
+        )
         assert result["results"][0]["file"].endswith("vacation.md")
         assert (search_env / "local_search" / "shared" / "index.json").is_file()
     finally:
@@ -817,6 +832,7 @@ def test_read_only_corpus_that_already_has_an_index_dir_falls_back_too(
 
 
 # -- what a session walk covers -------------------------------------------------
+
 
 @pytest.fixture
 def nested_corpus(tmp_path, corpus, monkeypatch):
@@ -828,7 +844,8 @@ def nested_corpus(tmp_path, corpus, monkeypatch):
     corpus.rename(nested)
     _reset_search_globals(monkeypatch, data, nested)
     (data / "session-notes.md").write_text(
-        "# Notes\n\nDraft notes about the quarterly planning offsite.\n")
+        "# Notes\n\nDraft notes about the quarterly planning offsite.\n"
+    )
     return data, nested
 
 
@@ -853,10 +870,12 @@ def test_both_scopes_stay_searchable(nested_corpus):
     the shared index still answers for it, the session index for its own files."""
     data, _ = nested_corpus
 
-    shared_hit = json.loads(local_mod._local_search_impl(
-        query="vacation days", data_path=str(data)))
-    session_hit = json.loads(local_mod._local_search_impl(
-        query="quarterly planning offsite", data_path=str(data)))
+    shared_hit = json.loads(
+        local_mod._local_search_impl(query="vacation days", data_path=str(data))
+    )
+    session_hit = json.loads(
+        local_mod._local_search_impl(query="quarterly planning offsite", data_path=str(data))
+    )
 
     assert shared_hit["results"][0]["file"].endswith("vacation.md")
     assert session_hit["results"][0]["file"].endswith("session-notes.md")
@@ -879,6 +898,7 @@ def test_documents_already_taken_by_the_session_index_are_dropped(nested_corpus)
 
 
 # -- startup rebuild ------------------------------------------------------------
+
 
 def test_rebuild_reflects_corpus_changed_while_server_was_down(search_env, corpus):
     local_mod._index_documents_impl()  # index built by the "previous run"
@@ -969,8 +989,7 @@ def test_status_only_combines_shared_and_session(search_env):
     session_a = _make_session(search_env, "session-a")
     local_mod._index_documents_impl(data_path=session_a)
 
-    status = json.loads(local_mod._index_documents_impl(
-        status_only=True, data_path=session_a))
+    status = json.loads(local_mod._index_documents_impl(status_only=True, data_path=session_a))
     assert status["status"] == "success"
     assert status["total_documents"] == 3
     assert status["shared_index"]["total_documents"] == 3
@@ -978,6 +997,7 @@ def test_status_only_combines_shared_and_session(search_env):
 
 
 # -- searches keep their corpora current ---------------------------------------
+
 
 def test_search_auto_indexes_session_file_alongside_shared_corpus(search_env):
     """A file dropped into the session's own folder is searchable without an
@@ -987,16 +1007,15 @@ def test_search_auto_indexes_session_file_alongside_shared_corpus(search_env):
         "# Project Falcon\n\nProject Falcon ships in November 2026.\n"
     )
 
-    found = json.loads(local_mod._local_search_impl(
-        query="Project Falcon November", data_path=session))
+    found = json.loads(
+        local_mod._local_search_impl(query="Project Falcon November", data_path=session)
+    )
     assert found["status"] == "success"
     assert found["results"][0]["file"].endswith("uploaded.md")
-    assert os.path.isfile(
-        os.path.join(session, "local_search", "index.json"))
+    assert os.path.isfile(os.path.join(session, "local_search", "index.json"))
 
 
-def test_search_picks_up_shared_corpus_file_added_while_server_runs(
-        search_env, corpus):
+def test_search_picks_up_shared_corpus_file_added_while_server_runs(search_env, corpus):
     """The shared index refreshes on search, so a document added to the corpus
     after the startup rebuild does not wait for a restart to become visible."""
     session = _make_session(search_env, "session-a")
@@ -1006,21 +1025,22 @@ def test_search_picks_up_shared_corpus_file_added_while_server_runs(
         "# Project Falcon\n\nProject Falcon ships in November 2026.\n"
     )
 
-    found = json.loads(local_mod._local_search_impl(
-        query="Project Falcon November", data_path=session))
+    found = json.loads(
+        local_mod._local_search_impl(query="Project Falcon November", data_path=session)
+    )
     assert found["results"][0]["file"].endswith("falcon.md")
     assert found["total_documents"] == 4
 
 
-def test_search_drops_shared_corpus_file_deleted_while_server_runs(
-        search_env, corpus):
+def test_search_drops_shared_corpus_file_deleted_while_server_runs(search_env, corpus):
     session = _make_session(search_env, "session-a")
     local_mod.rebuild_indexes(background=False)
 
     (corpus / "vacation.md").unlink()
 
-    found = json.loads(local_mod._local_search_impl(
-        query="vacation policy accrue days", data_path=session))
+    found = json.loads(
+        local_mod._local_search_impl(query="vacation policy accrue days", data_path=session)
+    )
     assert all(not r["file"].endswith("vacation.md") for r in found["results"])
     assert found["total_documents"] == 2
 
@@ -1033,8 +1053,7 @@ def test_search_reflects_edited_shared_document(search_env, corpus):
         "# Vacation Policy\n\nEmployees accrue 25 days of sabbatical leave.\n"
     )
 
-    found = json.loads(local_mod._local_search_impl(
-        query="sabbatical leave", data_path=session))
+    found = json.loads(local_mod._local_search_impl(query="sabbatical leave", data_path=session))
     assert found["results"][0]["file"].endswith("vacation.md")
     assert "sabbatical" in found["results"][0]["text"]
 
@@ -1048,17 +1067,20 @@ def test_session_refresh_does_not_leak_into_other_sessions(search_env):
         "# Project Zebra\n\nProject Zebra launches in October with a 2M budget.\n"
     )
 
-    seen = json.loads(local_mod._local_search_impl(
-        query="Project Zebra October budget", data_path=session_a))
+    seen = json.loads(
+        local_mod._local_search_impl(query="Project Zebra October budget", data_path=session_a)
+    )
     assert seen["results"][0]["file"].endswith("secret.md")
 
-    hidden = json.loads(local_mod._local_search_impl(
-        query="Project Zebra October budget", data_path=session_b))
+    hidden = json.loads(
+        local_mod._local_search_impl(query="Project Zebra October budget", data_path=session_b)
+    )
     assert all(not r["file"].endswith("secret.md") for r in hidden["results"])
     assert hidden["total_documents"] == 3
 
 
 # -- documents section --------------------------------------------------------
+
 
 def test_results_carry_the_documents_behind_them(search_env):
     """The excerpts are chosen for repeating the query's words; the opening is
@@ -1067,12 +1089,12 @@ def test_results_carry_the_documents_behind_them(search_env):
     session = _make_session(search_env, "session-a")
     local_mod.rebuild_indexes(background=False)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="vacation days accrue", data_path=session))
+    found = json.loads(
+        local_mod._local_search_impl(query="vacation days accrue", data_path=session)
+    )
 
     assert found["documents"], "every result page describes its documents"
-    vacation = next(d for d in found["documents"]
-                    if d["file"].endswith("vacation.md"))
+    vacation = next(d for d in found["documents"] if d["file"].endswith("vacation.md"))
     assert "Vacation Policy" in vacation["opening"]
     assert vacation["num_chunks"] >= 1
     assert vacation["best_rank"] >= 1
@@ -1082,8 +1104,7 @@ def test_one_entry_per_document_however_many_chunks_matched(search_env):
     session = _make_session(search_env, "session-a")
     local_mod.rebuild_indexes(background=False)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="days", top_k=10, data_path=session))
+    found = json.loads(local_mod._local_search_impl(query="days", top_k=10, data_path=session))
 
     files = [d["file"] for d in found["documents"]]
     assert len(files) == len(set(files))
@@ -1101,14 +1122,14 @@ def test_ranked_passages_are_serialized_before_the_document_summaries(search_env
     session = _make_session(search_env, "session-a")
     local_mod.rebuild_indexes(background=False)
 
-    raw = local_mod._local_search_impl(query="vacation days accrue",
-                                       top_k=10, data_path=session)
+    raw = local_mod._local_search_impl(query="vacation days accrue", top_k=10, data_path=session)
     assert raw.index('"results"') < raw.index('"documents"')
 
     # The passages start at the same offset however big the page is.
     heads = {
-        local_mod._local_search_impl(query="vacation days accrue", top_k=k,
-                                     data_path=session).index('"results"')
+        local_mod._local_search_impl(
+            query="vacation days accrue", top_k=k, data_path=session
+        ).index('"results"')
         for k in (1, 5, 20)
     }
     assert len(heads) == 1
@@ -1121,10 +1142,10 @@ def test_document_openings_are_bounded(search_env, corpus):
     session = _make_session(search_env, "session-a")
     local_mod.rebuild_indexes(background=False)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="handbook policy detail", data_path=session))
-    handbook = next(d for d in found["documents"]
-                    if d["file"].endswith("handbook.md"))
+    found = json.loads(
+        local_mod._local_search_impl(query="handbook policy detail", data_path=session)
+    )
+    handbook = next(d for d in found["documents"] if d["file"].endswith("handbook.md"))
     assert len(handbook["opening"]) <= DOCUMENT_OPENING_CHARS + 2
     assert len(found["documents"]) <= MAX_DOCUMENT_SUMMARIES
 
@@ -1140,14 +1161,15 @@ def test_opening_is_the_start_of_the_document_not_the_best_chunk(search_env, cor
     session = _make_session(search_env, "session-a")
     local_mod.rebuild_indexes(background=False)
 
-    found = json.loads(local_mod._local_search_impl(
-        query="dental cleanings coverage", data_path=session))
-    benefits = next(d for d in found["documents"]
-                    if d["file"].endswith("benefits.md"))
+    found = json.loads(
+        local_mod._local_search_impl(query="dental cleanings coverage", data_path=session)
+    )
+    benefits = next(d for d in found["documents"] if d["file"].endswith("benefits.md"))
     assert benefits["opening"].startswith("# Benefits Handbook")
 
 
 # -- refresh window -----------------------------------------------------------
+
 
 def test_a_corpus_is_not_rewalked_on_every_search(search_env, corpus, monkeypatch):
     """A research answer searches several times in a row and the corpus does not
@@ -1198,8 +1220,7 @@ def test_an_explicit_path_is_indexed_immediately(search_env, corpus, monkeypatch
     (corpus / "sabbatical.md").write_text(
         "# Sabbatical Policy\n\nStaff may take a sabbatical after seven years.\n"
     )
-    result = json.loads(local_mod._local_search_impl(query="sabbatical",
-                                                    path=str(corpus)))
+    result = json.loads(local_mod._local_search_impl(query="sabbatical", path=str(corpus)))
     assert result["status"] == "success"
     assert any("sabbatical" in r["file"].lower() for r in result["results"])
 

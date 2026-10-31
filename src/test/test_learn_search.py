@@ -53,31 +53,48 @@ def toolkit(monkeypatch):
 
 # ── the plural folding agrees ─────────────────────────────────────────────
 
+
 class TestPluralFolding:
     """The two implementations fold the same words the same way."""
 
-    @pytest.mark.parametrize("word,expected", [
-        ("tests", "test"),
-        ("classes", "class"),
-        ("cities", "city"),
-        ("batches", "batch"),
-        ("dishes", "dish"),
-        ("boxes", "box"),
-        ("dresses", "dress"),
-        ("churches", "church"),
-        ("is", "is"),
-        ("bus", "bus"),
-        ("status", "status"),
-        ("run", "run"),
-    ])
+    @pytest.mark.parametrize(
+        "word,expected",
+        [
+            ("tests", "test"),
+            ("classes", "class"),
+            ("cities", "city"),
+            ("batches", "batch"),
+            ("dishes", "dish"),
+            ("boxes", "box"),
+            ("dresses", "dress"),
+            ("churches", "church"),
+            ("is", "is"),
+            ("bus", "bus"),
+            ("status", "status"),
+            ("run", "run"),
+        ],
+    )
     def test_the_fallback_folds_as_expected(self, fallback, word, expected):
         assert fallback._fold_plural_fallback(word) == expected
 
-    @pytest.mark.parametrize("word", ["this", "does", "goes", "process",
-                                      "class", "pass", "miss", "address",
-                                      "bus", "gas", "status", "less"])
-    def test_the_fallback_mirrors_the_toolkit_including_its_quirks(
-            self, fallback, toolkit, word):
+    @pytest.mark.parametrize(
+        "word",
+        [
+            "this",
+            "does",
+            "goes",
+            "process",
+            "class",
+            "pass",
+            "miss",
+            "address",
+            "bus",
+            "gas",
+            "status",
+            "less",
+        ],
+    )
+    def test_the_fallback_mirrors_the_toolkit_including_its_quirks(self, fallback, toolkit, word):
         """The fallback copies the toolkit, quirks included.
 
         "this" folds to "thi" and "does" to "doe" in both.  Those are
@@ -98,11 +115,24 @@ class TestPluralFolding:
         other, and the symptom is a recall that returns nothing on the
         deployment that happens to be missing the optional file.
         """
-        words = ["tests", "classes", "cities", "batches", "dishes", "boxes",
-                 "is", "bus", "status", "run", "files", "values",
-                 "processes", "queries", "entries"]
-        toolkit_words = [toolkit._load_toolkit()._fold_plural(w)
-                         for w in words]
+        words = [
+            "tests",
+            "classes",
+            "cities",
+            "batches",
+            "dishes",
+            "boxes",
+            "is",
+            "bus",
+            "status",
+            "run",
+            "files",
+            "values",
+            "processes",
+            "queries",
+            "entries",
+        ]
+        toolkit_words = [toolkit._load_toolkit()._fold_plural(w) for w in words]
         fallback_words = [_search._fold_plural_fallback(w) for w in words]
         assert toolkit_words == fallback_words
 
@@ -122,6 +152,7 @@ class TestPluralFolding:
 
 
 # ── the two implementations rank the same ─────────────────────────────────
+
 
 class TestTheFallbackRanksTheSame:
     """A corpus that ranks differently is a corpus that measures
@@ -157,23 +188,23 @@ class TestTheFallbackRanksTheSame:
         fallback_scores = _search._bm25_fallback(corpus, query)
 
         assert len(toolkit_scores) == len(fallback_scores)
-        toolkit_order = [i for i, _ in
-                         sorted(enumerate(toolkit_scores),
-                                key=lambda pair: -pair[1])]
-        fallback_order = [i for i, _ in
-                          sorted(enumerate(fallback_scores),
-                                 key=lambda pair: -pair[1])]
-        assert toolkit_order == fallback_order, \
-            "the fallback ranked %r, the toolkit ranked %r" % (
-                fallback_order, toolkit_order)
+        toolkit_order = [i for i, _ in sorted(enumerate(toolkit_scores), key=lambda pair: -pair[1])]
+        fallback_order = [
+            i for i, _ in sorted(enumerate(fallback_scores), key=lambda pair: -pair[1])
+        ]
+        assert toolkit_order == fallback_order, "the fallback ranked %r, the toolkit ranked %r" % (
+            fallback_order,
+            toolkit_order,
+        )
 
     def test_the_relevant_document_comes_first(self, fallback):
         corpus = [self._tokens(c) for c in self.CORPUS]
         query = self._tokens("fix the failing unit tests")
         scores = fallback.bm25_scores(corpus, query)
         best = max(range(len(scores)), key=lambda i: scores[i])
-        assert "failing" in self.CORPUS[best], \
+        assert "failing" in self.CORPUS[best], (
             "the wrong document came first: %r" % self.CORPUS[best]
+        )
 
     def test_a_query_that_matches_nothing_scores_zero(self, fallback):
         corpus = [self._tokens(c) for c in self.CORPUS]
@@ -203,6 +234,7 @@ class TestTheFallbackRanksTheSame:
         ranking then depends on where the NaN happened to land.
         """
         import math
+
         corpus = [self._tokens(c) for c in self.CORPUS]
         scores = fallback.bm25_scores(corpus, self._tokens("the tests"))
         for score in scores:
@@ -211,24 +243,23 @@ class TestTheFallbackRanksTheSame:
 
 # ── the toolkit is loaded by path, and its absence is survivable ──────────
 
+
 class TestTheToolkitIsOptional:
     """The toolkit is an optional extra, and its absence is not fatal."""
 
-    def test_a_missing_toolkit_degrades_rather_than_crashes(self, monkeypatch,
-                                                            tmp_path):
+    def test_a_missing_toolkit_degrades_rather_than_crashes(self, monkeypatch, tmp_path):
         """Point the loader at a file that is not there."""
         monkeypatch.setattr(_search, "_TOOLKIT", None)
         monkeypatch.setattr(_search, "_TOOLKIT_TRIED", False)
-        monkeypatch.setattr(_search, "_TOOLKIT_REL", os.path.join(
-            str(tmp_path), "not-there.py"))
+        monkeypatch.setattr(_search, "_TOOLKIT_REL", os.path.join(str(tmp_path), "not-there.py"))
         assert _search._load_toolkit() is None
         # And the functions still work.
         assert _search.tokenize("the tests") == ["the", "test"]
-        assert _search.bm25_scores([["a", "b"]], ["a"]) == [pytest.approx(
-            _search.bm25_scores([["a", "b"]], ["a"])[0])]
+        assert _search.bm25_scores([["a", "b"]], ["a"]) == [
+            pytest.approx(_search.bm25_scores([["a", "b"]], ["a"])[0])
+        ]
 
-    def test_a_broken_toolkit_degrades_rather_than_crashes(self, monkeypatch,
-                                                           tmp_path):
+    def test_a_broken_toolkit_degrades_rather_than_crashes(self, monkeypatch, tmp_path):
         """A toolkit that raises on import must not take the run with it.
 
         Recall is an improvement to a working agent; it must never be
@@ -241,8 +272,7 @@ class TestTheToolkitIsOptional:
         monkeypatch.setattr(_search, "_TOOLKIT_REL", str(broken))
         assert _search._load_toolkit() is None
 
-    def test_a_toolkit_without_the_expected_api_is_refused(self, monkeypatch,
-                                                           tmp_path):
+    def test_a_toolkit_without_the_expected_api_is_refused(self, monkeypatch, tmp_path):
         """A file that loads but is not the toolkit is not the toolkit."""
         wrong = tmp_path / "toolkit.py"
         wrong.write_text("def something_else():\n    return 1\n")
@@ -282,8 +312,7 @@ class TestTheToolkitIsOptional:
         monkeypatch.setattr(_search, "_TOOLKIT_TRIED", False)
 
         # Force the cached path to resolve to the counting loader.
-        monkeypatch.setattr(_search, "_load_toolkit",
-                            lambda: CountingLoader)
+        monkeypatch.setattr(_search, "_load_toolkit", lambda: CountingLoader)
         monkeypatch.setattr(_search, "_TOOLKIT_TRIED", True)
         monkeypatch.setattr(_search, "_TOOLKIT", CountingLoader)
 
@@ -295,6 +324,7 @@ class TestTheToolkitIsOptional:
 
 
 # ── the recall path, through the search ──────────────────────────────────
+
 
 class TestRecallThroughTheSearch:
     """The search is the bottom of Loop A, so the chain is checked here."""
@@ -313,28 +343,39 @@ class TestRecallThroughTheSearch:
         root = tempfile.mkdtemp(prefix="onit-search-")
         try:
             config = {"learn": {"path": root}}
-            path = os.path.join(trajectory.trajectory_dir(config),
-                                "s1.jsonl")
+            path = os.path.join(trajectory.trajectory_dir(config), "s1.jsonl")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                for index, task in enumerate([
+                for index, task in enumerate(
+                    [
                         "deploy the service to staging",
                         "write a parser for the config file",
                         "index the database and check the plan",
-                        "run the payment reconciliation job"]):
-                    f.write(json.dumps({
-                        "kind": "task", "session_id": "s1", "turn": index,
-                        "task": task, "response": "done", "model": "m1",
-                        "owner": None, "ts": "2026-10-20T10:00:00",
-                        "trajectory": [{"turn": index, "tools": []}],
-                        "signals": {"verifier": "clean"},
-                    }) + "\n")
+                        "run the payment reconciliation job",
+                    ]
+                ):
+                    f.write(
+                        json.dumps(
+                            {
+                                "kind": "task",
+                                "session_id": "s1",
+                                "turn": index,
+                                "task": task,
+                                "response": "done",
+                                "model": "m1",
+                                "owner": None,
+                                "ts": "2026-10-20T10:00:00",
+                                "trajectory": [{"turn": index, "tools": []}],
+                                "signals": {"verifier": "clean"},
+                            }
+                        )
+                        + "\n"
+                    )
 
-            episodes = recall.recall("run the payment reconciliation job",
-                                     config_data=config)
+            episodes = recall.recall("run the payment reconciliation job", config_data=config)
             assert episodes, "the fallback path retrieved nothing"
-            assert "payment" in episodes[0]["summary"].lower(), \
-                "the fallback retrieved the wrong episode: %r" % (
-                    episodes[0]["summary"],)
+            assert "payment" in episodes[0]["summary"].lower(), (
+                "the fallback retrieved the wrong episode: %r" % (episodes[0]["summary"],)
+            )
         finally:
             shutil.rmtree(root, ignore_errors=True)

@@ -52,9 +52,7 @@ def resolve_endpoint(config_data: dict | None = None) -> dict:
     reflection about a model the agent is not using.
     """
     serving = dict((config_data or {}).get("serving") or {})
-    host = (serving.get("host")
-            or os.environ.get("ONIT_HOST")
-            or "http://127.0.0.1:8001/v1")
+    host = serving.get("host") or os.environ.get("ONIT_HOST") or "http://127.0.0.1:8001/v1"
     model = serving.get("model") or os.environ.get("ONIT_MODEL") or None
     host_key = serving.get("host_key") or "EMPTY"
     return {"host": host, "model": model, "host_key": host_key}
@@ -67,11 +65,13 @@ def _build_client(host: str, host_key: str, timeout: float | None):
     built here rather than borrowed so that no tool registry, no
     harness and no conversation can leak into a background call.
     """
-    from src.model.serving.chat import (_build_client_timeout,
-                                        _create_ollama_client,
-                                        _is_ollama_host,
-                                        _normalize_openai_base_url,
-                                        _resolve_api_key)
+    from src.model.serving.chat import (
+        _build_client_timeout,
+        _create_ollama_client,
+        _is_ollama_host,
+        _normalize_openai_base_url,
+        _resolve_api_key,
+    )
 
     api_key = _resolve_api_key(host, host_key)
     host = _normalize_openai_base_url(host)
@@ -85,32 +85,37 @@ def _build_client(host: str, host_key: str, timeout: float | None):
         # swallow that exception, so the failure was silent: the model
         # reflector wrote nothing and the grader returned an empty grade,
         # and an A/B on an Ollama host measured 0.000 in both arms.
-        return None, _create_ollama_client(host, api_key, timeout,
-                                           stream=False), True
+        return None, _create_ollama_client(host, api_key, timeout, stream=False), True
     from openai import AsyncOpenAI
-    client = AsyncOpenAI(base_url=host, api_key=api_key,
-                         timeout=_build_client_timeout(timeout, stream=False))
+
+    client = AsyncOpenAI(
+        base_url=host, api_key=api_key, timeout=_build_client_timeout(timeout, stream=False)
+    )
     return client, None, False
 
 
-async def _resolve_model(client, ollama_client, is_ollama: bool,
-                         host: str, model: str | None) -> str | None:
+async def _resolve_model(
+    client, ollama_client, is_ollama: bool, host: str, model: str | None
+) -> str | None:
     """The model name, auto-detected when the caller did not name one."""
     if model:
         return model
     try:
         if is_ollama:
             from src.model.serving.chat import _ollama_resolve_model_id
+
             return await _ollama_resolve_model_id(ollama_client, host)
         from src.model.serving.chat import _resolve_model_id
+
         return await _resolve_model_id(client, host)
     except Exception as e:
         logger.debug("model auto-detect failed at %s: %s", host, e)
         return None
 
 
-async def make_ask(config_data: dict | None = None, *, model: str | None = None,
-                   timeout: float | None = 120.0):
+async def make_ask(
+    config_data: dict | None = None, *, model: str | None = None, timeout: float | None = 120.0
+):
     """Build the ``ask(messages)`` callable the loops take.
 
     Returns a coroutine function that takes a message list and returns
@@ -119,25 +124,30 @@ async def make_ask(config_data: dict | None = None, *, model: str | None = None,
     """
     endpoint = resolve_endpoint(config_data)
     host = endpoint["host"]
-    client, ollama_client, is_ollama = _build_client(host, endpoint["host_key"],
-                                                     timeout)
-    model_id = await _resolve_model(client, ollama_client, is_ollama, host,
-                                    model or endpoint["model"])
+    client, ollama_client, is_ollama = _build_client(host, endpoint["host_key"], timeout)
+    model_id = await _resolve_model(
+        client, ollama_client, is_ollama, host, model or endpoint["model"]
+    )
 
     async def ask(messages: list) -> str:
         if is_ollama:
             from src.model.serving.chat import _adapt_messages_for_ollama
+
             resp = await ollama_client.chat(
                 model=model_id,
                 messages=_adapt_messages_for_ollama(messages),
-                stream=False, think=False,
-                options={"temperature": 0.0, "num_predict": JUDGE_MAX_TOKENS
-                         if len(messages) < 3 else 400, "stop": []},
+                stream=False,
+                think=False,
+                options={
+                    "temperature": 0.0,
+                    "num_predict": JUDGE_MAX_TOKENS if len(messages) < 3 else 400,
+                    "stop": [],
+                },
             )
             return getattr(resp.message, "content", "") or ""
         from src.model.serving.chat import _is_openai_host
-        _kw = {"model": model_id, "messages": messages, "temperature": 0.0,
-               "stream": False}
+
+        _kw = {"model": model_id, "messages": messages, "temperature": 0.0, "stream": False}
         if _is_openai_host(host):
             _kw["max_completion_tokens"] = 400
         else:

@@ -22,11 +22,11 @@ from ui import auth as ui_auth
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+
 class FakeOnit:
     """Stub of Onit.process_task that streams two tokens and returns a reply."""
 
-    def __init__(self, response="Hello world", delay=0.0, config_data=None,
-                 correction=None):
+    def __init__(self, response="Hello world", delay=0.0, config_data=None, correction=None):
         self.response = response
         self.delay = delay
         self.calls = []
@@ -39,16 +39,27 @@ class FakeOnit:
         # learn defaults would send trajectories to the developer's ~/.onit.
         self.config_data = config_data if config_data is not None else {}
 
-    async def process_task(self, task, session_path=None, data_path=None,
-                           safety_queue=None, stream_callback=None,
-                           stream_complete_callback=None, stats=None,
-                           tool_status_callback=None, correction_callback=None,
-                           session_id=None, **kwargs):
+    async def process_task(
+        self,
+        task,
+        session_path=None,
+        data_path=None,
+        safety_queue=None,
+        stream_callback=None,
+        stream_complete_callback=None,
+        stats=None,
+        tool_status_callback=None,
+        correction_callback=None,
+        session_id=None,
+        **kwargs,
+    ):
         self.calls.append(task)
         if self.correction and correction_callback:
+
             async def _late():
                 await asyncio.sleep(0.05)
                 correction_callback(*self.correction)
+
             self.background_checks[session_id] = asyncio.ensure_future(_late())
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -68,15 +79,15 @@ class FakeOnit:
             stats["tokens_per_second"] = 42.0
         if session_path:
             with open(session_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"task": task, "response": self.response,
-                                    "timestamp": 0}) + "\n")
+                f.write(
+                    json.dumps({"task": task, "response": self.response, "timestamp": 0}) + "\n"
+                )
         return self.response
 
 
 # Smallest valid PNG (1×1, transparent) — enough for mimetype and byte checks.
 _PNG_1X1 = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAY"
-    "AAjCB0C8AAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
 
 
@@ -106,8 +117,9 @@ def ui(tmp_path, bg_loop):
         title="Test Chat",
         require_auth=False,
     )
-    ui._onit = FakeOnit(config_data={
-        "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
+    ui._onit = FakeOnit(
+        config_data={"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
+    )
     ui._loop = bg_loop
     ui.build_app()
     return ui
@@ -134,6 +146,7 @@ def parse_sse(text):
 
 
 # ── Unit: session management ───────────────────────────────────────────────
+
 
 class TestSessionManagement:
     def test_create_new_session(self, ui):
@@ -173,8 +186,7 @@ class TestExtractFilePaths:
         with open(os.path.join(session.data_path, fname), "w") as f:
             f.write("a,b\n")
         text = f"Saved to {session.data_path}/{fname}"
-        cleaned, files = ui._extract_file_paths(
-            text, data_path=session.data_path, session_id=sid)
+        cleaned, files = ui._extract_file_paths(text, data_path=session.data_path, session_id=sid)
         assert f"[{fname}](/uploads/{sid}/{fname})" in cleaned
         assert files == [os.path.join(session.data_path, fname)]
 
@@ -183,8 +195,7 @@ class TestExtractFilePaths:
         # "https://", turning arxiv links into "https:/2510.07979".
         sid, session = ui._get_or_create_session()
         text = "IntMeanFlow (ByteDance): https://arxiv.org/abs/2510.07979"
-        cleaned, files = ui._extract_file_paths(
-            text, data_path=session.data_path, session_id=sid)
+        cleaned, files = ui._extract_file_paths(text, data_path=session.data_path, session_id=sid)
         assert cleaned == text
         assert files == []
 
@@ -192,7 +203,9 @@ class TestExtractFilePaths:
         sid, session = ui._get_or_create_session()
         cleaned, _ = ui._extract_file_paths(
             "See /home/user/notes/report.txt for details",
-            data_path=session.data_path, session_id=sid)
+            data_path=session.data_path,
+            session_id=sid,
+        )
         assert cleaned == "See report.txt for details"
 
     def test_markdown_image_keeps_its_syntax(self, ui):
@@ -202,7 +215,9 @@ class TestExtractFilePaths:
         _write_png(session.data_path, "chart.png")
         cleaned, files = ui._extract_file_paths(
             f"Here it is:\n\n![chart]({session.data_path}/chart.png)",
-            data_path=session.data_path, session_id=sid)
+            data_path=session.data_path,
+            session_id=sid,
+        )
         assert cleaned.endswith(f"![chart](/uploads/{sid}/chart.png)")
         assert files == [os.path.join(session.data_path, "chart.png")]
 
@@ -211,8 +226,8 @@ class TestExtractFilePaths:
         with open(os.path.join(session.data_path, "report.pdf"), "wb") as f:
             f.write(b"%PDF-1.4\n")
         cleaned, _ = ui._extract_file_paths(
-            "[report.pdf](report.pdf)",
-            data_path=session.data_path, session_id=sid)
+            "[report.pdf](report.pdf)", data_path=session.data_path, session_id=sid
+        )
         assert cleaned == f"[report.pdf](/uploads/{sid}/report.pdf)"
 
 
@@ -308,7 +323,7 @@ class TestCodePreview:
     def test_long_file_truncated_on_a_line_boundary(self, ui):
         sid, session = ui._get_or_create_session()
         line = "print('x' * 10)\n"
-        path = self._write(session, "big.py", line * 8000)   # ~125 KB
+        path = self._write(session, "big.py", line * 8000)  # ~125 KB
         preview = ui._file_infos([path], sid)[0]["preview"]
         assert preview["truncated"] is True
         assert len(preview["text"]) <= 64 * 1024
@@ -325,8 +340,9 @@ class TestCodePreview:
         sid, session = ui._get_or_create_session()
         self._write(session, "script.py", "print('hi')\n")
         ui._onit = FakeOnit(response="Wrote script.py for you.")
-        res = client.post("/api/chat", json={"message": "write a script"},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/chat", json={"message": "write a script"}, headers={"X-Session-Id": sid}
+        )
         done = [d for e, d in parse_sse(res.text) if e == "done"][0]
         code = [f for f in done["files"] if f["name"] == "script.py"][0]
         assert code["kind"] == "code"
@@ -349,8 +365,8 @@ class TestWebPreview:
         info = ui._file_infos([self._write_page(session)], sid)[0]
         assert info["kind"] == "web"
         assert info["preview_url"] == f"/preview/{sid}/game.html"
-        assert info["preview"]["text"] == self.PAGE     # still inspectable
-        assert info["url"] == f"/uploads/{sid}/game.html"   # still downloadable
+        assert info["preview"]["text"] == self.PAGE  # still inspectable
+        assert info["url"] == f"/uploads/{sid}/game.html"  # still downloadable
 
     def test_served_with_sandbox_csp(self, client, ui):
         sid, session = ui._get_or_create_session()
@@ -378,7 +394,7 @@ class TestWebPreview:
         self._write_page(session)
         body = client.get(f"/preview/{sid}/game.html").text
         assert body.index("localStorage") < body.index("<h1>Tic tac toe</h1>")
-        assert body.startswith("<!doctype html>")     # doctype stays first
+        assert body.startswith("<!doctype html>")  # doctype stays first
 
     def test_source_on_disk_is_untouched(self, client, ui):
         sid, session = ui._get_or_create_session()
@@ -417,8 +433,12 @@ class TestWebPreview:
         self._write_page(session)
         with open(os.path.join(ui.data_path, "secret.html"), "w") as f:
             f.write("<p>not this session's</p>")
-        for path in ("..%2fsecret.html", "../secret.html", "..%2f..%2fetc%2fpasswd",
-                     "%2e%2e%2fsecret.html"):
+        for path in (
+            "..%2fsecret.html",
+            "../secret.html",
+            "..%2f..%2fetc%2fpasswd",
+            "%2e%2e%2fsecret.html",
+        ):
             assert client.get(f"/preview/{sid}/{path}").status_code == 404, path
         assert client.get(f"/preview/{uuid.uuid4()}/game.html").status_code == 404
 
@@ -440,15 +460,18 @@ class TestWebPreview:
         assert "sandbox" not in res.headers["content-security-policy"]
 
     def test_disabled_by_config(self, tmp_path, bg_loop):
-        off = WebApiUI(data_path=str(tmp_path / "d"),
-                       session_path=str(tmp_path / "s" / "c.jsonl"),
-                       require_auth=False, html_preview=False)
+        off = WebApiUI(
+            data_path=str(tmp_path / "d"),
+            session_path=str(tmp_path / "s" / "c.jsonl"),
+            require_auth=False,
+            html_preview=False,
+        )
         off._onit = FakeOnit()
         off._loop = bg_loop
         off.build_app()
         sid, session = off._get_or_create_session()
         info = off._file_infos([self._write_page(session)], sid)[0]
-        assert info["kind"] == "code"           # source and download only
+        assert info["kind"] == "code"  # source and download only
         assert "preview_url" not in info
         assert TestClient(off.app).get(f"/preview/{sid}/game.html").status_code == 404
 
@@ -461,6 +484,7 @@ class TestWebPreview:
 
 
 # ── API endpoints ──────────────────────────────────────────────────────────
+
 
 class TestConfigEndpoint:
     def test_config(self, client):
@@ -519,6 +543,7 @@ class TestGaIdNotLeakedPreLogin:
 
     def test_ga_id_present_after_auth(self, auth_ga_ui):
         from datetime import datetime, timedelta
+
         auth_ga_ui._authenticated_cookies["c"] = {
             "email": "user@test.com",
             "session_id": "s1",
@@ -567,22 +592,18 @@ class TestDomainBranding:
         assert data["brand"] == "mychat.ai"
 
     def test_host_header_fallback(self, tmp_path):
-        data = self._client(
-            tmp_path, base_url="http://mychat.ai").get("/api/config").json()
+        data = self._client(tmp_path, base_url="http://mychat.ai").get("/api/config").json()
         assert data["title"] == "mychat.ai"
         assert data["brand"] == "mychat.ai"
 
     def test_ip_address_keeps_default_branding(self, tmp_path):
-        data = self._client(
-            tmp_path, base_url="http://192.168.1.5").get("/api/config").json()
+        data = self._client(tmp_path, base_url="http://192.168.1.5").get("/api/config").json()
         assert data["title"] == "OnIt Chat"
         assert data["brand"] == "OnIt"
 
-    def test_custom_web_title_keeps_title_but_brand_is_domain(
-            self, tmp_path, monkeypatch):
+    def test_custom_web_title_keeps_title_but_brand_is_domain(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ONIT_DOMAIN", "mychat.ai")
-        data = self._client(
-            tmp_path, title="My Assistant").get("/api/config").json()
+        data = self._client(tmp_path, title="My Assistant").get("/api/config").json()
         assert data["title"] == "My Assistant"
         assert data["brand"] == "mychat.ai"
 
@@ -609,8 +630,7 @@ class TestGoogleAnalytics:
         assert self._client(tmp_path).get("/api/config").json()["ga_id"] is None
 
     def test_config_id_exposed(self, tmp_path):
-        data = self._client(
-            tmp_path, ga_measurement_id="G-ABC123XYZ0").get("/api/config").json()
+        data = self._client(tmp_path, ga_measurement_id="G-ABC123XYZ0").get("/api/config").json()
         assert data["ga_id"] == "G-ABC123XYZ0"
 
     def test_env_id_exposed(self, tmp_path, monkeypatch):
@@ -619,14 +639,14 @@ class TestGoogleAnalytics:
 
     def test_config_id_beats_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ONIT_GA_MEASUREMENT_ID", "G-ENVID12345")
-        data = self._client(
-            tmp_path, ga_measurement_id="G-CFGID12345").get("/api/config").json()
+        data = self._client(tmp_path, ga_measurement_id="G-CFGID12345").get("/api/config").json()
         assert data["ga_id"] == "G-CFGID12345"
 
     def test_malformed_id_dropped(self, tmp_path):
         bad = '"><script>alert(1)</script>'
-        assert self._client(
-            tmp_path, ga_measurement_id=bad).get("/api/config").json()["ga_id"] is None
+        assert (
+            self._client(tmp_path, ga_measurement_id=bad).get("/api/config").json()["ga_id"] is None
+        )
 
 
 class TestHistoryEndpoint:
@@ -645,8 +665,7 @@ class TestHistoryEndpoint:
 class TestChatEndpoint:
     def test_chat_streams_and_persists(self, client, ui):
         sid = client.get("/api/history").json()["session_id"]
-        res = client.post("/api/chat", json={"message": "hi"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid})
         assert res.status_code == 200
         assert res.headers["content-type"].startswith("text/event-stream")
         events = parse_sse(res.text)
@@ -674,16 +693,13 @@ class TestChatEndpoint:
         as it happens — and kept off the `token` channel, which is the answer
         the browser renders and copies."""
         sid = client.get("/api/history").json()["session_id"]
-        res = client.post("/api/chat", json={"message": "hi"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid})
         events = parse_sse(res.text)
         names = [e for e, _ in events]
         assert "think" in names
-        assert "".join(d["delta"] for e, d in events if e == "think") \
-            == "Let me check."
+        assert "".join(d["delta"] for e, d in events if e == "think") == "Let me check."
         # The answer is untouched by it.
-        assert "".join(d["delta"] for e, d in events if e == "token") \
-            == "Hello world"
+        assert "".join(d["delta"] for e, d in events if e == "token") == "Hello world"
         assert dict(events)["done"]["content"] == "Hello world"
         # And it arrives before the answer it produced, not after.
         assert names.index("think") < names.index("token")
@@ -694,8 +710,7 @@ class TestChatEndpoint:
         session has, so it stays open until the check is done with it."""
         ui._onit.correction = ("Hello corrected world", "3.1M, not 4.2M")
         sid = client.get("/api/history").json()["session_id"]
-        res = client.post("/api/chat", json={"message": "hi"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid})
         events = parse_sse(res.text)
         names = [e for e, _ in events]
         assert names.index("done") < names.index("correction")
@@ -705,8 +720,7 @@ class TestChatEndpoint:
 
     def test_a_clean_check_just_closes_the_stream(self, client, ui):
         sid = client.get("/api/history").json()["session_id"]
-        res = client.post("/api/chat", json={"message": "hi"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid})
         assert "correction" not in [e for e, _ in parse_sse(res.text)]
 
     def test_the_next_question_lets_go_of_the_held_stream(self, client, ui):
@@ -715,8 +729,7 @@ class TestChatEndpoint:
         sid, session = ui._get_or_create_session()
         held = queue.Queue()
         session.open_stream = held
-        client.post("/api/chat", json={"message": "next"},
-                    headers={"X-Session-Id": sid})
+        client.post("/api/chat", json={"message": "next"}, headers={"X-Session-Id": sid})
         assert session.open_stream is None
         assert held.get_nowait() is _END
 
@@ -734,17 +747,18 @@ class TestChatEndpoint:
     def test_chat_conflict_while_processing(self, client, ui):
         sid, session = ui._get_or_create_session()
         session.processing = True
-        res = client.post("/api/chat", json={"message": "hi"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid})
         assert res.status_code == 409
 
     def test_chat_attaches_uploaded_files(self, client, ui):
         sid, session = ui._get_or_create_session()
         with open(os.path.join(session.data_path, "notes.txt"), "w") as f:
             f.write("hello")
-        res = client.post("/api/chat",
-                          json={"message": "summarize", "files": ["notes.txt"]},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/chat",
+            json={"message": "summarize", "files": ["notes.txt"]},
+            headers={"X-Session-Id": sid},
+        )
         assert res.status_code == 200
         assert "Relevant files:" in ui._onit.calls[-1]
         assert os.path.join(session.data_path, "notes.txt") in ui._onit.calls[-1]
@@ -763,9 +777,9 @@ class TestChatEndpoint:
 class TestUploadEndpoints:
     def test_upload_roundtrip(self, client):
         sid = client.get("/api/history").json()["session_id"]
-        res = client.post("/api/upload",
-                          files={"file": ("data.txt", b"payload")},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/upload", files={"file": ("data.txt", b"payload")}, headers={"X-Session-Id": sid}
+        )
         assert res.status_code == 200
         body = res.json()
         assert body["name"] == "data.txt"
@@ -776,9 +790,9 @@ class TestUploadEndpoints:
 
     def test_upload_path_traversal_blocked(self, client, ui):
         sid, session = ui._get_or_create_session()
-        res = client.post("/api/upload",
-                          files={"file": ("../../evil.txt", b"x")},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/upload", files={"file": ("../../evil.txt", b"x")}, headers={"X-Session-Id": sid}
+        )
         assert res.status_code == 200
         assert res.json()["name"] == "evil.txt"
         assert os.path.isfile(os.path.join(session.data_path, "evil.txt"))
@@ -788,8 +802,7 @@ class TestUploadEndpoints:
 
     def test_mcp_callback_upload(self, client, ui):
         sid, session = ui._get_or_create_session()
-        res = client.post(f"/uploads/{sid}/",
-                          files={"file": ("tool-output.png", b"png")})
+        res = client.post(f"/uploads/{sid}/", files={"file": ("tool-output.png", b"png")})
         assert res.status_code == 200
         assert os.path.isfile(os.path.join(session.data_path, "tool-output.png"))
 
@@ -815,15 +828,14 @@ class TestRatingEndpoint:
         sid, session = ui._get_or_create_session()
         with open(session.session_path, "w") as f:
             for n in range(turns):
-                f.write(json.dumps({"task": f"t{n}", "response": "r",
-                                    "timestamp": 0}) + "\n")
+                f.write(json.dumps({"task": f"t{n}", "response": "r", "timestamp": 0}) + "\n")
         return sid, session
 
     def test_thumbs_up_lands_on_the_newest_answer(self, client, ui):
         from learn import read_session
+
         sid, _ = self._answered(ui, turns=2)
-        res = client.post("/api/rating", json={"rating": "up"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/rating", json={"rating": "up"}, headers={"X-Session-Id": sid})
         assert res.status_code == 200
         body = res.json()
         assert body == {"recorded": True, "session_id": sid, "turn": 2, "rating": 1}
@@ -833,27 +845,31 @@ class TestRatingEndpoint:
 
     def test_an_older_answer_can_be_rated_explicitly(self, client, ui):
         sid, _ = self._answered(ui, turns=3)
-        res = client.post("/api/rating", json={"rating": -1, "turn": 1},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/rating", json={"rating": -1, "turn": 1}, headers={"X-Session-Id": sid}
+        )
         assert res.json()["turn"] == 1
         assert res.json()["rating"] == -1
 
     def test_a_comment_rides_along(self, client, ui):
         from learn import read_session, record_task
+
         sid, _ = self._answered(ui)
-        record_task(session_id=sid, turn=1, task="t0", response="r",
-                    config_data=ui._onit.config_data)
-        client.post("/api/rating",
-                    json={"rating": "down", "comment": "wrong policy"},
-                    headers={"X-Session-Id": sid})
+        record_task(
+            session_id=sid, turn=1, task="t0", response="r", config_data=ui._onit.config_data
+        )
+        client.post(
+            "/api/rating",
+            json={"rating": "down", "comment": "wrong policy"},
+            headers={"X-Session-Id": sid},
+        )
         record = read_session(sid, ui._onit.config_data)[0]
         assert record["signals"]["user_rating"] == -1
         assert record["signals"]["user_comment"] == "wrong policy"
 
     def test_a_meaningless_rating_is_rejected(self, client, ui):
         sid, _ = self._answered(ui)
-        res = client.post("/api/rating", json={"rating": "maybe"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/rating", json={"rating": "maybe"}, headers={"X-Session-Id": sid})
         assert res.status_code == 400
 
     def test_a_missing_rating_is_rejected(self, client, ui):
@@ -865,13 +881,15 @@ class TestRatingEndpoint:
         """A thumb pressed by accident has to be undoable, so an explicit
         nothing is a retraction rather than a malformed request."""
         from learn import read_session, record_task
+
         sid, _ = self._answered(ui)
-        record_task(session_id=sid, turn=1, task="t0", response="r",
-                    config_data=ui._onit.config_data)
-        client.post("/api/rating", json={"rating": "up"},
-                    headers={"X-Session-Id": sid})
-        res = client.post("/api/rating", json={"rating": None, "turn": 1},
-                          headers={"X-Session-Id": sid})
+        record_task(
+            session_id=sid, turn=1, task="t0", response="r", config_data=ui._onit.config_data
+        )
+        client.post("/api/rating", json={"rating": "up"}, headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/rating", json={"rating": None, "turn": 1}, headers={"X-Session-Id": sid}
+        )
         assert res.status_code == 200
         assert res.json()["rating"] is None
         record = read_session(sid, ui._onit.config_data)[0]
@@ -881,52 +899,54 @@ class TestRatingEndpoint:
         """The buttons need a turn number, and guessing it client-side breaks
         as soon as history is restored."""
         sid, _ = self._answered(ui)
-        res = client.post("/api/chat", json={"message": "hello"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/chat", json={"message": "hello"}, headers={"X-Session-Id": sid})
         done = [d for e, d in parse_sse(res.text) if e == "done"]
         assert done and done[0]["turn"] == 2
         assert done[0]["rating_enabled"] is True
 
     def test_history_carries_turns_and_prior_verdicts(self, client, ui):
         from learn import record_task
+
         sid, _ = self._answered(ui, turns=2)
         for turn in (1, 2):
-            record_task(session_id=sid, turn=turn, task=f"t{turn}", response="r",
-                        config_data=ui._onit.config_data)
-        client.post("/api/rating", json={"rating": "down", "turn": 1},
-                    headers={"X-Session-Id": sid})
-        messages = client.get("/api/history",
-                              headers={"X-Session-Id": sid}).json()["messages"]
+            record_task(
+                session_id=sid,
+                turn=turn,
+                task=f"t{turn}",
+                response="r",
+                config_data=ui._onit.config_data,
+            )
+        client.post(
+            "/api/rating", json={"rating": "down", "turn": 1}, headers={"X-Session-Id": sid}
+        )
+        messages = client.get("/api/history", headers={"X-Session-Id": sid}).json()["messages"]
         answers = [m for m in messages if m["role"] == "assistant"]
         assert [m["turn"] for m in answers] == [1, 2]
         assert [m["rating"] for m in answers] == [-1, None]
 
     def test_config_hides_the_buttons_when_nothing_is_recorded(self, client, ui, tmp_path):
         assert client.get("/api/config").json()["rating_enabled"] is True
-        ui._onit.config_data = {"learn": {"autonomy": "off",
-                                          "path": str(tmp_path / "nope")}}
+        ui._onit.config_data = {"learn": {"autonomy": "off", "path": str(tmp_path / "nope")}}
         assert client.get("/api/config").json()["rating_enabled"] is False
 
     def test_rating_before_any_answer_is_rejected(self, client, ui):
         sid, _ = ui._get_or_create_session()
-        res = client.post("/api/rating", json={"rating": "up"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/rating", json={"rating": "up"}, headers={"X-Session-Id": sid})
         assert res.status_code == 400
 
     def test_a_non_numeric_turn_is_rejected(self, client, ui):
         sid, _ = self._answered(ui)
-        res = client.post("/api/rating", json={"rating": "up", "turn": "last"},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/rating", json={"rating": "up", "turn": "last"}, headers={"X-Session-Id": sid}
+        )
         assert res.status_code == 400
 
     def test_recording_off_answers_without_storing(self, client, ui, tmp_path):
         """The UI offered a button and the deployment declined to keep the
         answer — not an error, and nothing on disk."""
-        ui._onit.config_data = {"learn": {"autonomy": "off",
-                                          "path": str(tmp_path / "nope")}}
+        ui._onit.config_data = {"learn": {"autonomy": "off", "path": str(tmp_path / "nope")}}
         sid, _ = self._answered(ui)
-        res = client.post("/api/rating", json={"rating": "up"},
-                          headers={"X-Session-Id": sid})
+        res = client.post("/api/rating", json={"rating": "up"}, headers={"X-Session-Id": sid})
         assert res.status_code == 200
         assert res.json()["recorded"] is False
         assert not (tmp_path / "nope").exists()
@@ -936,12 +956,13 @@ class TestVerifyLinks:
     def test_malformed_urls_rejected_without_probe(self, client, ui, monkeypatch):
         def _boom(url):
             raise AssertionError(f"should not probe {url}")
+
         monkeypatch.setattr(ui, "_probe_url", _boom)
         urls = [
-            "https://manual",             # dotless host
-            "ftp://example.com/file",     # non-http scheme
-            "http://localhost:8080/x",    # loopback
-            "http://192.168.1.5/admin",   # private range
+            "https://manual",  # dotless host
+            "ftp://example.com/file",  # non-http scheme
+            "http://localhost:8080/x",  # loopback
+            "http://192.168.1.5/admin",  # private range
             "not a url",
         ]
         res = client.post("/api/verify_links", json={"urls": urls})
@@ -949,11 +970,13 @@ class TestVerifyLinks:
         assert res.json()["results"] == {u: False for u in urls}
 
     def test_reachable_and_dead_links(self, client, ui, monkeypatch):
-        monkeypatch.setattr(ui, "_probe_url",
-                            lambda url: url == "https://example.com/ok")
-        res = client.post("/api/verify_links", json={
-            "urls": ["https://example.com/ok", "https://ge.php"],
-        })
+        monkeypatch.setattr(ui, "_probe_url", lambda url: url == "https://example.com/ok")
+        res = client.post(
+            "/api/verify_links",
+            json={
+                "urls": ["https://example.com/ok", "https://ge.php"],
+            },
+        )
         assert res.json()["results"] == {
             "https://example.com/ok": True,
             "https://ge.php": False,
@@ -961,11 +984,9 @@ class TestVerifyLinks:
 
     def test_verdicts_are_cached(self, client, ui, monkeypatch):
         calls = []
-        monkeypatch.setattr(ui, "_probe_url",
-                            lambda url: calls.append(url) or True)
+        monkeypatch.setattr(ui, "_probe_url", lambda url: calls.append(url) or True)
         for _ in range(3):
-            client.post("/api/verify_links",
-                        json={"urls": ["https://example.com/"]})
+            client.post("/api/verify_links", json={"urls": ["https://example.com/"]})
         assert calls == ["https://example.com/"]
 
     def test_urls_capped_per_request(self, client, ui, monkeypatch):
@@ -975,8 +996,10 @@ class TestVerifyLinks:
         assert len(res.json()["results"]) == 20
 
     def test_non_list_body_rejected(self, client):
-        assert client.post("/api/verify_links",
-                           json={"urls": "https://example.com"}).status_code == 400
+        assert (
+            client.post("/api/verify_links", json={"urls": "https://example.com"}).status_code
+            == 400
+        )
 
 
 class TestVerifyEmails:
@@ -984,24 +1007,28 @@ class TestVerifyEmails:
 
     @staticmethod
     def _verdict(client, sid, addr, monkeypatch=None):
-        res = client.post("/api/verify_links", json={"urls": [f"mailto:{addr}"]},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/verify_links", json={"urls": [f"mailto:{addr}"]}, headers={"X-Session-Id": sid}
+        )
         return res.json()["results"][f"mailto:{addr}"]
 
     def test_ungrounded_address_is_not_verified(self, client, ui, monkeypatch):
-        monkeypatch.setattr(ui, "_probe_url",
-                            lambda url: pytest.fail(f"probed {url}"))
+        monkeypatch.setattr(ui, "_probe_url", lambda url: pytest.fail(f"probed {url}"))
         sid, _session = ui._get_or_create_session()
         assert self._verdict(client, sid, "invented@nowhere.example") is False
 
     def test_address_from_user_message_is_verified(self, client, ui):
         sid, _session = ui._get_or_create_session()
-        client.post("/api/chat", json={"message": "mail rowel@sibyl.ai please"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/chat",
+            json={"message": "mail rowel@sibyl.ai please"},
+            headers={"X-Session-Id": sid},
+        )
         assert self._verdict(client, sid, "rowel@sibyl.ai") is True
 
     def test_address_from_tool_result_is_verified(self, client, ui):
         """A web search hit or document read grounds the address."""
+
         class SearchingOnit(FakeOnit):
             async def process_task(self, task, **kwargs):
                 cb = kwargs.get("tool_result_callback")
@@ -1012,59 +1039,83 @@ class TestVerifyEmails:
         ui._onit = SearchingOnit()
         sid, _session = ui._get_or_create_session()
         assert self._verdict(client, sid, "press@newsroom.example") is False
-        client.post("/api/chat", json={"message": "find the press contact"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/chat", json={"message": "find the press contact"}, headers={"X-Session-Id": sid}
+        )
         assert self._verdict(client, sid, "press@newsroom.example") is True
 
     def test_address_from_uploaded_document_is_verified(self, client, ui):
         sid, _session = ui._get_or_create_session()
-        client.post("/api/upload",
-                    files={"file": ("contacts.csv", b"name,email\nAda,ada@lovelace.example\n")},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/upload",
+            files={"file": ("contacts.csv", b"name,email\nAda,ada@lovelace.example\n")},
+            headers={"X-Session-Id": sid},
+        )
         assert self._verdict(client, sid, "ada@lovelace.example") is True
 
     def test_grounding_survives_session_eviction(self, client, ui):
         """A page reload after the in-memory session is dropped must not
         resurrect strikethrough on an already-grounded address."""
         sid, _session = ui._get_or_create_session()
-        client.post("/api/chat", json={"message": "write to ada@lovelace.example"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/chat",
+            json={"message": "write to ada@lovelace.example"},
+            headers={"X-Session-Id": sid},
+        )
         del ui._web_sessions[sid]
         assert self._verdict(client, sid, "ada@lovelace.example") is True
 
     def test_grounding_does_not_leak_across_sessions(self, client, ui):
         sid_a, _a = ui._get_or_create_session()
-        client.post("/api/chat", json={"message": "ping ada@lovelace.example"},
-                    headers={"X-Session-Id": sid_a})
+        client.post(
+            "/api/chat",
+            json={"message": "ping ada@lovelace.example"},
+            headers={"X-Session-Id": sid_a},
+        )
         sid_b = client.post("/api/sessions/new").json()["session_id"]
         assert self._verdict(client, sid_a, "ada@lovelace.example") is True
         assert self._verdict(client, sid_b, "ada@lovelace.example") is False
 
     def test_matching_ignores_case_and_mailto_params(self, client, ui):
         sid, _session = ui._get_or_create_session()
-        client.post("/api/chat", json={"message": "Ada@Lovelace.example wrote back"},
-                    headers={"X-Session-Id": sid})
-        res = client.post("/api/verify_links", headers={"X-Session-Id": sid}, json={
-            "urls": ["mailto:ada@lovelace.example?subject=Hi%20there"],
-        })
+        client.post(
+            "/api/chat",
+            json={"message": "Ada@Lovelace.example wrote back"},
+            headers={"X-Session-Id": sid},
+        )
+        res = client.post(
+            "/api/verify_links",
+            headers={"X-Session-Id": sid},
+            json={
+                "urls": ["mailto:ada@lovelace.example?subject=Hi%20there"],
+            },
+        )
         assert res.json()["results"]["mailto:ada@lovelace.example?subject=Hi%20there"] is True
 
     def test_malformed_mailto_rejected(self, client, ui):
         sid, session = ui._get_or_create_session()
         session.sourced_emails = {"ada@lovelace.example"}
         for bad in ["mailto:", "mailto:not-an-address", "mailto:missing@tld"]:
-            res = client.post("/api/verify_links", json={"urls": [bad]},
-                              headers={"X-Session-Id": sid})
+            res = client.post(
+                "/api/verify_links", json={"urls": [bad]}, headers={"X-Session-Id": sid}
+            )
             assert res.json()["results"][bad] is False, bad
 
     def test_mixed_batch_splits_by_scheme(self, client, ui, monkeypatch):
         monkeypatch.setattr(ui, "_probe_url", lambda url: True)
         sid, session = ui._get_or_create_session()
         session.sourced_emails = {"ada@lovelace.example"}
-        res = client.post("/api/verify_links", headers={"X-Session-Id": sid}, json={
-            "urls": ["https://example.com/ok", "mailto:ada@lovelace.example",
-                     "mailto:ghost@nowhere.example"],
-        })
+        res = client.post(
+            "/api/verify_links",
+            headers={"X-Session-Id": sid},
+            json={
+                "urls": [
+                    "https://example.com/ok",
+                    "mailto:ada@lovelace.example",
+                    "mailto:ghost@nowhere.example",
+                ],
+            },
+        )
         assert res.json()["results"] == {
             "https://example.com/ok": True,
             "mailto:ada@lovelace.example": True,
@@ -1073,15 +1124,21 @@ class TestVerifyEmails:
 
     def test_clear_chat_drops_grounding(self, client, ui):
         sid, _session = ui._get_or_create_session()
-        client.post("/api/chat", json={"message": "ping ada@lovelace.example"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/chat",
+            json={"message": "ping ada@lovelace.example"},
+            headers={"X-Session-Id": sid},
+        )
         client.post("/api/clear", headers={"X-Session-Id": sid})
         assert self._verdict(client, sid, "ada@lovelace.example") is False
 
     def test_delete_session_removes_sidecar(self, client, ui):
         sid, session = ui._get_or_create_session()
-        client.post("/api/chat", json={"message": "ping ada@lovelace.example"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/chat",
+            json={"message": "ping ada@lovelace.example"},
+            headers={"X-Session-Id": sid},
+        )
         sidecar = ui._email_store_path(session)
         assert os.path.isfile(sidecar)
         client.delete(f"/api/sessions/{sid}")
@@ -1096,8 +1153,7 @@ class TestSessionsEndpoints:
     def test_list_sessions(self, client, ui):
         sid, session = ui._get_or_create_session()
         with open(session.session_path, "w") as f:
-            f.write(json.dumps({"task": "first task", "response": "r",
-                                "timestamp": 0}) + "\n")
+            f.write(json.dumps({"task": "first task", "response": "r", "timestamp": 0}) + "\n")
         sessions = client.get("/api/sessions").json()["sessions"]
         assert any(s["session_id"] == sid for s in sessions)
 
@@ -1151,6 +1207,7 @@ class TestSessionsEndpoints:
     def _indexed_session(self, ui, task):
         """A session that has had a turn, which is when it enters the index."""
         from src.sessions import register_session, update_session
+
         sid = str(uuid.uuid4())
         d = ui._sessions_dir()
         register_session(sid, d)
@@ -1169,21 +1226,21 @@ class TestSessionsEndpoints:
         finding either of them."""
         first = self._indexed_session(ui, "do the first thing")
         second = self._indexed_session(ui, "do the second thing")
-        assert client.patch(f"/api/sessions/{first}",
-                            json={"tag": "shared"}).status_code == 200
+        assert client.patch(f"/api/sessions/{first}", json={"tag": "shared"}).status_code == 200
         res = client.patch(f"/api/sessions/{second}", json={"tag": "shared"})
         assert res.status_code == 400
 
     def test_a_name_survives_into_the_listing(self, ui, client):
         sid = self._indexed_session(ui, "do the first thing")
-        assert client.patch(f"/api/sessions/{sid}",
-                            json={"tag": "My Research"}).status_code == 200
-        names = {s["session_id"]: s.get("tag")
-                 for s in client.get("/api/sessions").json()["sessions"]}
+        assert client.patch(f"/api/sessions/{sid}", json={"tag": "My Research"}).status_code == 200
+        names = {
+            s["session_id"]: s.get("tag") for s in client.get("/api/sessions").json()["sessions"]
+        }
         assert names.get(sid) == "My Research"
 
 
 # ── Auth-enabled app ───────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def auth_ui(tmp_path, bg_loop, monkeypatch):
@@ -1196,8 +1253,9 @@ def auth_ui(tmp_path, bg_loop, monkeypatch):
         google_client_id="test-client-id.apps.googleusercontent.com",
         google_client_secret="test-secret",
     )
-    ui._onit = FakeOnit(config_data={
-        "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
+    ui._onit = FakeOnit(
+        config_data={"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
+    )
     ui._loop = bg_loop
     ui.build_app()
     return ui
@@ -1217,6 +1275,7 @@ class TestAuth:
 
     def test_valid_cookie_grants_access(self, auth_ui):
         from datetime import datetime, timedelta
+
         auth_ui._authenticated_cookies["cookie123"] = {
             "email": "user@test.com",
             "session_id": "s1",
@@ -1230,6 +1289,7 @@ class TestAuth:
 
     def test_expired_cookie_rejected(self, auth_ui):
         from datetime import datetime, timedelta
+
         auth_ui._authenticated_cookies["old"] = {
             "email": "user@test.com",
             "session_id": "s1",
@@ -1266,8 +1326,9 @@ class TestForcedLogin:
             google_client_secret="test-secret",
             require_auth=False,
         )
-        ui._onit = FakeOnit(config_data={
-        "learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}})
+        ui._onit = FakeOnit(
+            config_data={"learn": {"autonomy": "observe", "path": str(tmp_path / "learned")}}
+        )
         ui._loop = bg_loop
         ui.build_app()
         client = TestClient(ui.app)
@@ -1292,6 +1353,7 @@ class TestForcedLogin:
 
 # ── Google-hosted mail gate ─────────────────────────────────────────────────
 
+
 class TestGoogleHostedGate:
     """Only Gmail or Google-Workspace-hosted domains may log in."""
 
@@ -1315,9 +1377,11 @@ class TestGoogleHostedGate:
 
 # ── Per-user session gating ─────────────────────────────────────────────────
 
+
 def _login(auth_ui, email):
     """Register an auth cookie for *email* and return a client wearing it."""
     from datetime import datetime, timedelta
+
     cookie = f"cookie-{email}"
     auth_ui._authenticated_cookies[cookie] = {
         "email": email,
@@ -1400,6 +1464,7 @@ class TestSessionOwnership:
 
 # ── Misc ───────────────────────────────────────────────────────────────────
 
+
 def test_sse_format():
     out = _sse("token", {"delta": "hi"})
     assert out == 'event: token\ndata: {"delta": "hi"}\n\n'
@@ -1407,6 +1472,7 @@ def test_sse_format():
 
 def test_delete_session_helper(tmp_path):
     from sessions import delete_session, register_session
+
     sid = str(uuid.uuid4())
     sessions_dir = str(tmp_path)
     with open(os.path.join(sessions_dir, f"{sid}.jsonl"), "w") as f:
@@ -1418,6 +1484,7 @@ def test_delete_session_helper(tmp_path):
 
 
 # ── Security hardening ─────────────────────────────────────────────────────
+
 
 class TestSecurityHeaders:
     def test_openapi_spec_disabled(self, client):
@@ -1483,6 +1550,7 @@ class TestWellKnown:
 class TestUploadLimit:
     def test_oversized_upload_rejected(self, client, monkeypatch):
         import ui.api as api_mod
+
         monkeypatch.setattr(api_mod, "_MAX_UPLOAD_BYTES", 1024)
         big = b"x" * 4096
         r = client.post("/api/upload", files={"file": ("big.bin", big, "application/octet-stream")})
@@ -1543,9 +1611,11 @@ class TestApprovalEndpoint:
     def test_answers_this_session(self, client, ui, bg_loop):
         sid = client.get("/api/history").json()["session_id"]
         future = self._pending(ui, sid, "tok-1", bg_loop)
-        res = client.post("/api/approval",
-                          json={"approval_id": "tok-1", "decision": "once"},
-                          headers={"X-Session-Id": sid})
+        res = client.post(
+            "/api/approval",
+            json={"approval_id": "tok-1", "decision": "once"},
+            headers={"X-Session-Id": sid},
+        )
         assert res.json()["ok"] is True
         deadline = time.time() + 2
         while not future.done() and time.time() < deadline:
@@ -1554,22 +1624,26 @@ class TestApprovalEndpoint:
 
     def test_another_session_cannot_answer_it(self, client, ui, bg_loop):
         mine = client.get("/api/history").json()["session_id"]
-        theirs = client.get("/api/history",
-                            headers={"X-Session-Id": str(uuid.uuid4())}
-                            ).json()["session_id"]
+        theirs = client.get("/api/history", headers={"X-Session-Id": str(uuid.uuid4())}).json()[
+            "session_id"
+        ]
         future = self._pending(ui, mine, "tok-2", bg_loop)
-        res = client.post("/api/approval",
-                          json={"approval_id": "tok-2", "decision": "session"},
-                          headers={"X-Session-Id": theirs})
+        res = client.post(
+            "/api/approval",
+            json={"approval_id": "tok-2", "decision": "session"},
+            headers={"X-Session-Id": theirs},
+        )
         assert res.json()["ok"] is False
         assert not future.done()
 
     def test_an_unknown_answer_is_a_refusal(self, client, ui, bg_loop):
         sid = client.get("/api/history").json()["session_id"]
         future = self._pending(ui, sid, "tok-3", bg_loop)
-        client.post("/api/approval",
-                    json={"approval_id": "tok-3", "decision": "definitely"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/approval",
+            json={"approval_id": "tok-3", "decision": "definitely"},
+            headers={"X-Session-Id": sid},
+        )
         deadline = time.time() + 2
         while not future.done() and time.time() < deadline:
             time.sleep(0.01)
@@ -1578,20 +1652,25 @@ class TestApprovalEndpoint:
     def test_answering_twice_changes_nothing(self, client, ui, bg_loop):
         sid = client.get("/api/history").json()["session_id"]
         future = self._pending(ui, sid, "tok-4", bg_loop)
-        client.post("/api/approval",
-                    json={"approval_id": "tok-4", "decision": "once"},
-                    headers={"X-Session-Id": sid})
+        client.post(
+            "/api/approval",
+            json={"approval_id": "tok-4", "decision": "once"},
+            headers={"X-Session-Id": sid},
+        )
         deadline = time.time() + 2
         while not future.done() and time.time() < deadline:
             time.sleep(0.01)
-        second = client.post("/api/approval",
-                             json={"approval_id": "tok-4", "decision": "session"},
-                             headers={"X-Session-Id": sid})
+        second = client.post(
+            "/api/approval",
+            json={"approval_id": "tok-4", "decision": "session"},
+            headers={"X-Session-Id": sid},
+        )
         assert second.json()["ok"] is False
         assert future.result() == "once"
 
 
 # ── per-run token stats on the done event ─────────────────────────────────
+
 
 class TestTokenStatsOnDone:
     """The browser shows the same line the terminal prints.
@@ -1602,21 +1681,34 @@ class TestTokenStatsOnDone:
 
     def test_done_carries_the_rendered_line_and_the_raw_counts(self):
         from ui.api import _timing_summary
-        metrics = {"turn_count": 5, "tool_calls": 4, "model_s": 300.0,
-                   "tool_s": 10.0, "instruction_s": 1.0, "prefill_s": 100.0,
-                   "decode_s": 200.0, "compaction_s": 0.0,
-                   "prompt_tokens_max": 500_000,
-                   "prompt_tokens_total": 4_665_239,
-                   "completion_tokens": 33_580}
-        out = _timing_summary(metrics, 316.6, session_name="thesis ch3",
-                              model_name="space-bunny-alpha",
-                              provider_name="ollama",
-                              data_path="/Users/rowel/sandbox")
+
+        metrics = {
+            "turn_count": 5,
+            "tool_calls": 4,
+            "model_s": 300.0,
+            "tool_s": 10.0,
+            "instruction_s": 1.0,
+            "prefill_s": 100.0,
+            "decode_s": 200.0,
+            "compaction_s": 0.0,
+            "prompt_tokens_max": 500_000,
+            "prompt_tokens_total": 4_665_239,
+            "completion_tokens": 33_580,
+        }
+        out = _timing_summary(
+            metrics,
+            316.6,
+            session_name="thesis ch3",
+            model_name="space-bunny-alpha",
+            provider_name="ollama",
+            data_path="/Users/rowel/sandbox",
+        )
         assert out["token_stats"] == (
             "session thesis ch3 · model space-bunny-alpha · "
             "provider ollama · "
             "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
-            "(4,665,239 in / 33,580 out) · 316.6s")
+            "(4,665,239 in / 33,580 out) · 316.6s"
+        )
         # The counts ship raw too, so a client that wants its own presentation
         # is not forced to parse the sentence.
         assert out["prompt_tokens_total"] == 4_665_239
@@ -1627,15 +1719,17 @@ class TestTokenStatsOnDone:
         copy names the session as well -- a bare `onit` resumes the last one,
         and the web footer answers the same question."""
         from ui.api import _timing_summary
-        out = _timing_summary({"completion_tokens": 5}, 1.0,
-                              session_name="(unnamed) 5ea03e3c")
+
+        out = _timing_summary({"completion_tokens": 5}, 1.0, session_name="(unnamed) 5ea03e3c")
         assert out["token_stats"].startswith("session (unnamed) 5ea03e3c · ")
 
     def test_no_session_in_the_line_when_the_caller_has_none(self):
         from ui.api import _timing_summary
+
         out = _timing_summary({"completion_tokens": 5}, 1.0)
         assert "session " not in out["token_stats"]
 
     def test_a_run_with_no_metrics_sends_no_line(self):
         from ui.api import _timing_summary
+
         assert _timing_summary({}, 1.0) == {}

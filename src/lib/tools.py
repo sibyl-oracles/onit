@@ -1,8 +1,8 @@
-'''
+"""
 
 Tool related utility functions for On-it agent.
 
-'''
+"""
 
 import asyncio
 import logging
@@ -14,9 +14,8 @@ from urllib.parse import urlparse
 from fastmcp import Client
 from rich.status import Status
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from type.tools import (ToolHandler, ToolRegistry, _transport_for,
-                        is_stdio_url)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from type.tools import ToolHandler, ToolRegistry, _transport_for, is_stdio_url
 
 
 # The MCP servers OnIt runs when a config names none. Defined here rather than
@@ -26,35 +25,35 @@ from type.tools import (ToolHandler, ToolRegistry, _transport_for,
 # running as this user, reachable by no other account on the machine.
 DEFAULT_MCP_SERVERS = [
     {
-        'name': 'PromptsMCPServer',
-        'description': 'Provides prompt templates for instruction generation',
-        'transport': 'stdio',
-        'module': 'src.mcp.prompts.prompts',
-        'enabled': True,
+        "name": "PromptsMCPServer",
+        "description": "Provides prompt templates for instruction generation",
+        "transport": "stdio",
+        "module": "src.mcp.prompts.prompts",
+        "enabled": True,
     },
     {
-        'name': 'ToolsLocalMCPServer',
-        'description': 'Bash, file operations, document search, local retrieval',
-        'transport': 'stdio',
-        'module': 'tasks.tools',
-        'profile': 'local',
-        'enabled': True,
+        "name": "ToolsLocalMCPServer",
+        "description": "Bash, file operations, document search, local retrieval",
+        "transport": "stdio",
+        "module": "tasks.tools",
+        "profile": "local",
+        "enabled": True,
     },
     {
-        'name': 'ToolsNetMCPServer',
-        'description': 'Web search and weather',
-        'transport': 'stdio',
-        'module': 'tasks.tools',
-        'profile': 'net',
-        'enabled': True,
+        "name": "ToolsNetMCPServer",
+        "description": "Web search and weather",
+        "transport": "stdio",
+        "module": "tasks.tools",
+        "profile": "net",
+        "enabled": True,
     },
 ]
 
 # A config predating the local/net split names one combined server. Leave such
 # a config alone rather than adding the two halves beside it, which would offer
 # every tool twice.
-LEGACY_COMBINED_SERVER = 'ToolsMCPServer'
-_SPLIT_SERVERS = frozenset({'ToolsLocalMCPServer', 'ToolsNetMCPServer'})
+LEGACY_COMBINED_SERVER = "ToolsMCPServer"
+_SPLIT_SERVERS = frozenset({"ToolsLocalMCPServer", "ToolsNetMCPServer"})
 
 
 def apply_default_mcp_servers(servers: list) -> list:
@@ -64,19 +63,19 @@ def apply_default_mcp_servers(servers: list) -> list:
     OnIt (which may be built without the CLI) call it, and the second call
     finds nothing to add.
     """
-    existing = {s.get('name') for s in servers}
+    existing = {s.get("name") for s in servers}
     legacy = LEGACY_COMBINED_SERVER in existing
     for default in DEFAULT_MCP_SERVERS:
-        if legacy and default['name'] in _SPLIT_SERVERS:
+        if legacy and default["name"] in _SPLIT_SERVERS:
             continue
-        if default['name'] not in existing:
+        if default["name"] not in existing:
             servers.insert(0, dict(default))
     return servers
 
 
 def is_stdio_server(server: dict) -> bool:
     """True when this server is spawned over a pipe rather than reached on a port."""
-    return 'stdio' in str(server.get('transport', ''))
+    return "stdio" in str(server.get("transport", ""))
 
 
 def _package_root() -> str:
@@ -87,7 +86,7 @@ def _package_root() -> str:
     stdlib ``type`` module if a child process ran with it as its working
     directory.
     """
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _learn_autonomy_env(config_data: dict | None) -> dict:
@@ -111,14 +110,15 @@ def _learn_autonomy_env(config_data: dict | None) -> dict:
     """
     try:
         from learn.config import autonomy
-        return {'ONIT_LEARN_AUTONOMY': str(autonomy(config_data))}
+
+        return {"ONIT_LEARN_AUTONOMY": str(autonomy(config_data))}
     except Exception:  # pragma: no cover - learn package absent or broken
         return {}
 
 
-def register_stdio_servers(servers: list, data_path: str,
-                           log_level: str = 'ERROR',
-                           config_data: dict | None = None) -> None:
+def register_stdio_servers(
+    servers: list, data_path: str, log_level: str = "ERROR", config_data: dict | None = None
+) -> None:
     """Give each stdio server its pseudo-URL and the command that starts it.
 
     The subprocess inherits this process's environment with ONIT_DATA_PATH
@@ -137,46 +137,55 @@ def register_stdio_servers(servers: list, data_path: str,
     from pathlib import Path
     from type.tools import _STDIO_SPECS, register_stdio_server, stdio_url
 
-    log_dir = Path.home() / '.onit' / 'logs'
+    log_dir = Path.home() / ".onit" / "logs"
     created_log_dir = False
     extra_env = _learn_autonomy_env(config_data)
 
     for server in servers:
-        if not is_stdio_server(server) or not server.get('enabled', True):
+        if not is_stdio_server(server) or not server.get("enabled", True):
             continue
-        if server.get('url') in _STDIO_SPECS:
+        if server.get("url") in _STDIO_SPECS:
             continue  # already registered, by the CLI or an earlier call
-        name = server.get('name') or 'StdioMCPServer'
-        module = server.get('module')
+        name = server.get("name") or "StdioMCPServer"
+        module = server.get("module")
         if not module:
             logger.error("[register_stdio_servers] %s has no module; disabling", name)
-            server['enabled'] = False
+            server["enabled"] = False
             continue
 
         if not created_log_dir:
             log_dir.mkdir(parents=True, exist_ok=True)
             created_log_dir = True
 
-        args = ['-m', 'src.mcp.servers.run', '--stdio', '--name', name,
-                '--module', module, '--log-level', log_level]
-        if server.get('profile'):
-            args += ['--profile', str(server['profile'])]
+        args = [
+            "-m",
+            "src.mcp.servers.run",
+            "--stdio",
+            "--name",
+            name,
+            "--module",
+            module,
+            "--log-level",
+            log_level,
+        ]
+        if server.get("profile"):
+            args += ["--profile", str(server["profile"])]
 
         url = stdio_url(name)
-        server['url'] = url
+        server["url"] = url
         register_stdio_server(
             url,
             command=sys.executable,
             args=args,
-            env={'ONIT_DATA_PATH': data_path, **extra_env},
+            env={"ONIT_DATA_PATH": data_path, **extra_env},
             cwd=_package_root(),
-            log_file=str(log_dir / f'mcp_{name}.log'),
+            log_file=str(log_dir / f"mcp_{name}.log"),
         )
+
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARNING,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.WARNING, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -197,8 +206,7 @@ logger.setLevel(logging.INFO)
 # means it: a call carrying a parameter the tool does not define is rejected.
 # Without it the harness cannot tell "extras allowed" from "extras rejected",
 # and has to let every such call make the round trip to find out.
-_SCHEMA_KEYS = ('properties', 'required', 'additionalProperties',
-                '$defs', 'definitions')
+_SCHEMA_KEYS = ("properties", "required", "additionalProperties", "$defs", "definitions")
 
 # Parameters the harness fills in and the model must never be offered.
 #
@@ -211,7 +219,7 @@ _SCHEMA_KEYS = ('properties', 'required', 'additionalProperties',
 #
 # Removing them from the *description* only. The server still accepts them,
 # which is what lets the harness re-issue an approved call.
-_HARNESS_ONLY_PARAMS = ('approval_token', 'approval_scope')
+_HARNESS_ONLY_PARAMS = ("approval_token", "approval_scope")
 
 
 def _build_parameters(tool_item: Any) -> dict:
@@ -223,53 +231,50 @@ def _build_parameters(tool_item: Any) -> dict:
     Returns:
         A JSON-schema-style dict describing the tool's parameters.
     """
-    if hasattr(tool_item, 'inputSchema'):
+    if hasattr(tool_item, "inputSchema"):
         schema = tool_item.inputSchema or {}
         # ``type`` is pinned rather than copied: the chat-completions API wants
         # an object schema here, and that is what the properties describe
         # whatever the server nominally declared.
-        parameters: dict = {'type': 'object'}
+        parameters: dict = {"type": "object"}
         for key in _SCHEMA_KEYS:
             if key in schema:
                 parameters[key] = schema[key]
-        parameters.setdefault('properties', {})
-        props = parameters.get('properties')
+        parameters.setdefault("properties", {})
+        props = parameters.get("properties")
         if isinstance(props, dict):
             hidden = [n for n in _HARNESS_ONLY_PARAMS if n in props]
             if hidden:
                 # Copied before editing: the schema belongs to the MCP client's
                 # cached tool object, and other readers of it are entitled to
                 # see what the server actually declared.
-                parameters['properties'] = {k: v for k, v in props.items()
-                                            if k not in _HARNESS_ONLY_PARAMS}
-                required = parameters.get('required')
+                parameters["properties"] = {
+                    k: v for k, v in props.items() if k not in _HARNESS_ONLY_PARAMS
+                }
+                required = parameters.get("required")
                 if isinstance(required, list):
-                    parameters['required'] = [
-                        r for r in required if r not in _HARNESS_ONLY_PARAMS]
+                    parameters["required"] = [r for r in required if r not in _HARNESS_ONLY_PARAMS]
         return parameters
 
-    if hasattr(tool_item, 'arguments') and tool_item.arguments:
+    if hasattr(tool_item, "arguments") and tool_item.arguments:
         properties: dict[str, dict[str, str]] = {}
         for arg in tool_item.arguments:
-            prop: dict[str, str] = {'type': 'string'}
+            prop: dict[str, str] = {"type": "string"}
             if arg.description:
-                prop['description'] = arg.description
+                prop["description"] = arg.description
             properties[arg.name] = prop
         return {
-            'type': 'object',
-            'properties': properties,
+            "type": "object",
+            "properties": properties,
         }
 
     # Fallback: serialize all attributes
     parameters: dict[str, Any] = {}
     for attr, value in tool_item.__dict__.items():
-        if hasattr(value, 'model_dump'):
+        if hasattr(value, "model_dump"):
             parameters[attr] = value.model_dump()
         elif isinstance(value, list):
-            parameters[attr] = [
-                v.model_dump() if hasattr(v, 'model_dump') else v
-                for v in value
-            ]
+            parameters[attr] = [v.model_dump() if hasattr(v, "model_dump") else v for v in value]
         else:
             parameters[attr] = value
     return parameters
@@ -284,13 +289,15 @@ def _build_returns(tool_item: Any) -> dict:
     Returns:
         A dict describing the tool's return schema properties.
     """
-    output_schema = getattr(tool_item, 'outputSchema', {})
-    if output_schema and 'properties' in output_schema:
-        return output_schema['properties']
+    output_schema = getattr(tool_item, "outputSchema", {})
+    if output_schema and "properties" in output_schema:
+        return output_schema["properties"]
     return {}
 
 
-async def _wait_for_port(host: str, port: int, timeout: float = 30.0, poll_interval: float = 0.5) -> bool:
+async def _wait_for_port(
+    host: str, port: int, timeout: float = 30.0, poll_interval: float = 0.5
+) -> bool:
     """Poll a TCP port until it accepts connections or the timeout expires.
 
     Args:
@@ -337,13 +344,13 @@ async def _discover_server_tools(
     """
     import random
 
-    name = server.get('name', 'Unknown')
-    enabled = server.get('enabled', True)
+    name = server.get("name", "Unknown")
+    enabled = server.get("enabled", True)
     if not enabled:
         logger.info("[discover_tools] Skipping disabled MCP server: %s", name)
         return []
 
-    url: Optional[str] = server.get('url', None)
+    url: Optional[str] = server.get("url", None)
     if not url:
         logger.error("[discover_tools] MCP server URL is not provided.")
         return []
@@ -356,12 +363,14 @@ async def _discover_server_tools(
     # A stdio server has no port to wait on: connecting *is* starting it.
     if not is_stdio_url(url):
         parsed = urlparse(url)
-        host = parsed.hostname or '127.0.0.1'
+        host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 80
         if not await _wait_for_port(host, port):
             logger.error(
                 "[discover_tools] %s did not become ready at %s:%d within timeout",
-                name, host, port,
+                name,
+                host,
+                port,
             )
             return []
 
@@ -379,7 +388,9 @@ async def _discover_server_tools(
 
                 # Retry if server connected but returned no tools — it may still be initializing
                 if not tools_list:
-                    raise ValueError(f"Server {name} returned empty tool list (may still be initializing)")
+                    raise ValueError(
+                        f"Server {name} returned empty tool list (may still be initializing)"
+                    )
 
                 handlers: list[ToolHandler] = []
                 for tool_item in tools_list:
@@ -387,13 +398,13 @@ async def _discover_server_tools(
                     returns = _build_returns(tool_item)
 
                     tool_entry: dict[str, Any] = {
-                        'type': 'function',
-                        'function': {
-                            'name': tool_item.name,
-                            'description': tool_item.description,
-                            'parameters': parameters,
-                            'returns': returns,
-                        }
+                        "type": "function",
+                        "function": {
+                            "name": tool_item.name,
+                            "description": tool_item.description,
+                            "parameters": parameters,
+                            "returns": returns,
+                        },
                     }
                     handler = ToolHandler(url=url, tool_item=tool_entry)
                     handlers.append(handler)
@@ -409,15 +420,20 @@ async def _discover_server_tools(
                 jitter = random.uniform(0, delay * 0.2)
                 wait = delay + jitter
                 logger.warning(
-                    "[discover_tools] Attempt %d/%d failed for %s: %s. "
-                    "Retrying in %.1fs...",
-                    attempt, max_retries, name, exc, wait,
+                    "[discover_tools] Attempt %d/%d failed for %s: %s. Retrying in %.1fs...",
+                    attempt,
+                    max_retries,
+                    name,
+                    exc,
+                    wait,
                 )
                 await asyncio.sleep(wait)
             else:
                 logger.error(
                     "[discover_tools] All %d attempts failed for %s: %s",
-                    max_retries, name, last_error,
+                    max_retries,
+                    name,
+                    last_error,
                 )
 
     raise last_error  # type: ignore[misc]
@@ -437,8 +453,7 @@ async def discover_tools(mcp_servers: list[dict]) -> ToolRegistry:
 
     # Discover tools from all servers concurrently
     results = await asyncio.gather(
-        *[_discover_server_tools(server) for server in mcp_servers],
-        return_exceptions=True
+        *[_discover_server_tools(server) for server in mcp_servers], return_exceptions=True
     )
 
     # Registered in the order servers appear in the config, not in the order
@@ -447,7 +462,7 @@ async def discover_tools(mcp_servers: list[dict]) -> ToolRegistry:
     # race between servers.
     for i, result in enumerate(results):
         if isinstance(result, Exception):
-            name = mcp_servers[i].get('name', 'Unknown')
+            name = mcp_servers[i].get("name", "Unknown")
             logger.error("[discover_tools] Failed to discover tools from %s: %s", name, result)
             continue
         for handler in result:
@@ -459,8 +474,10 @@ async def discover_tools(mcp_servers: list[dict]) -> ToolRegistry:
         # means the model is being shown one tool's parameters while some
         # other tool may look like the obvious one to reach for, and no
         # symptom of that points back here.
-        print(f"  ⚠ {len(tool_registry.collisions)} tool name collision(s) — "
-              f"same name, different parameters:")
+        print(
+            f"  ⚠ {len(tool_registry.collisions)} tool name collision(s) — "
+            f"same name, different parameters:"
+        )
         for tool_name, losing_url, winning_url in tool_registry.collisions:
             print(f"    - {tool_name}: using {winning_url}, ignoring {losing_url}")
         print("    Disable one server, or reorder mcp.servers to change which wins.")
@@ -490,10 +507,12 @@ async def listen(
     Returns:
         The transcribed text, an empty string for safety tasks, or None on failure.
     """
-    microphone = tool_registry['microphone'] if 'microphone' in tool_registry.tools else None
-    tts = tool_registry['speech_synthesis'] if 'speech_synthesis' in tool_registry.tools else None
-    speaker = tool_registry['speaker'] if 'speaker' in tool_registry.tools else None
-    asr = tool_registry['speech_recognition'] if 'speech_recognition' in tool_registry.tools else None
+    microphone = tool_registry["microphone"] if "microphone" in tool_registry.tools else None
+    tts = tool_registry["speech_synthesis"] if "speech_synthesis" in tool_registry.tools else None
+    speaker = tool_registry["speaker"] if "speaker" in tool_registry.tools else None
+    asr = (
+        tool_registry["speech_recognition"] if "speech_recognition" in tool_registry.tools else None
+    )
 
     if not microphone or not asr or not tts or not speaker:
         logger.error("[%s] Microphone, ASR, TTS or Speaker tool is not available.", listen.__name__)

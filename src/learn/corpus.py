@@ -72,8 +72,11 @@ def _session_ids(config_data: dict | None = None) -> list:
         names = sorted(os.listdir(directory))
     except OSError:
         return []
-    return [n[:-len(".jsonl")] for n in names
-            if n.endswith(".jsonl") and _is_session_name(n[:-len(".jsonl")])]
+    return [
+        n[: -len(".jsonl")]
+        for n in names
+        if n.endswith(".jsonl") and _is_session_name(n[: -len(".jsonl")])
+    ]
 
 
 def read_sessions(config_data: dict | None = None) -> dict:
@@ -118,6 +121,7 @@ def write_labels(config_data: dict | None = None) -> str | None:
     stop the agent from answering.
     """
     from .config import recording_enabled
+
     if not recording_enabled(config_data):
         return None
     sessions = read_sessions(config_data)
@@ -126,15 +130,22 @@ def write_labels(config_data: dict | None = None) -> str | None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             import json
+
             for session_id, records in sessions.items():
                 label_records(records)
                 for record in records:
-                    f.write(json.dumps({
-                        "session_id": session_id,
-                        "turn": record.get("turn"),
-                        "task": record.get("task"),
-                        "signals": record.get("signals") or {},
-                    }, default=str) + "\n")
+                    f.write(
+                        json.dumps(
+                            {
+                                "session_id": session_id,
+                                "turn": record.get("turn"),
+                                "task": record.get("task"),
+                                "signals": record.get("signals") or {},
+                            },
+                            default=str,
+                        )
+                        + "\n"
+                    )
     except OSError:
         return None
     return path
@@ -143,6 +154,7 @@ def write_labels(config_data: dict | None = None) -> str | None:
 def read_labels(config_data: dict | None = None) -> list:
     """The materialised labels, if they were written."""
     import json
+
     path = labels_path(config_data)
     rows: list = []
     try:
@@ -164,9 +176,11 @@ def format_summary(summary: dict) -> str:
     """The signal report as one screen of text."""
     total = summary.get("total", 0)
     if not total:
-        return ("No trajectories on disk, so there is nothing to label.\n"
-                "Run a task first — one file per session appears under the "
-                "learned path.")
+        return (
+            "No trajectories on disk, so there is nothing to label.\n"
+            "Run a task first — one file per session appears under the "
+            "learned path."
+        )
     labeled = summary.get("labeled", 0)
     lines = [
         "Implicit signals",
@@ -178,8 +192,9 @@ def format_summary(summary: dict) -> str:
     if summary.get("explicit_ratings"):
         lines.append(f"  explicit     {summary['explicit_ratings']} human rating(s)")
     if labeled:
-        lines.append(f"  positive     {summary.get('positive_rate', 0.0) * 100:.1f}% "
-                     f"of the labelled records")
+        lines.append(
+            f"  positive     {summary.get('positive_rate', 0.0) * 100:.1f}% of the labelled records"
+        )
     lines += [
         "",
         "The label is read off what the user did next: a rephrase of the",

@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,7 +31,7 @@ Retrieval methods:
 
 Optional dependencies:
     pip install python-docx openpyxl   # .docx and .xlsx ingestion
-'''
+"""
 
 import contextlib
 import hashlib
@@ -52,28 +52,34 @@ INDEX_FILENAME = "index.json"
 INDEX_VERSION = 1
 
 SUPPORTED_EXTENSIONS = {
-    '.pdf', '.md', '.markdown', '.txt', '.text', '.csv',
-    '.docx', '.xlsx', '.xlsm',
+    ".pdf",
+    ".md",
+    ".markdown",
+    ".txt",
+    ".text",
+    ".csv",
+    ".docx",
+    ".xlsx",
+    ".xlsm",
 }
 
-CONTENT_HASH_CHARS = 16           # sha256 prefix kept as the document identity
+CONTENT_HASH_CHARS = 16  # sha256 prefix kept as the document identity
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # skip files larger than 20MB
-MAX_SHEET_ROWS = 5000             # cap rows read per spreadsheet sheet
+MAX_SHEET_ROWS = 5000  # cap rows read per spreadsheet sheet
 EMBED_BATCH_SIZE = 64
-RRF_K = 60                        # reciprocal rank fusion constant
+RRF_K = 60  # reciprocal rank fusion constant
 
-DEFAULT_CHUNK_SIZE = 1600         # characters per chunk
-DEFAULT_CHUNK_OVERLAP = 200       # character overlap between chunks
+DEFAULT_CHUNK_SIZE = 1600  # characters per chunk
+DEFAULT_CHUNK_OVERLAP = 200  # character overlap between chunks
 
-NAME_LABEL_WEIGHT = 1.0           # weight of the filename/folder field in BM25
-MAX_CHUNKS_PER_FILE = 2           # chunks one document may fill in a result page
-DOCUMENT_OPENING_CHARS = 700      # opening excerpt returned per document
-MAX_DOCUMENT_SUMMARIES = 6        # documents described in one result page
+NAME_LABEL_WEIGHT = 1.0  # weight of the filename/folder field in BM25
+MAX_CHUNKS_PER_FILE = 2  # chunks one document may fill in a result page
+DOCUMENT_OPENING_CHARS = 700  # opening excerpt returned per document
+MAX_DOCUMENT_SUMMARIES = 6  # documents described in one result page
 
 
-def cap_per_file(ordered: List[Any], top_k: int,
-                 file_of: Callable[[Any], str]) -> List[Any]:
+def cap_per_file(ordered: List[Any], top_k: int, file_of: Callable[[Any], str]) -> List[Any]:
     """Take the top_k best-ranked items, letting no one document supply more
     than MAX_CHUNKS_PER_FILE of them while other documents are still waiting.
 
@@ -100,7 +106,7 @@ def cap_per_file(ordered: List[Any], top_k: int,
                 return kept
         else:
             overflow.append(item)
-    return kept + overflow[:top_k - len(kept)]
+    return kept + overflow[: top_k - len(kept)]
 
 
 def file_content_hash(file_path: str, block_size: int = 1 << 20) -> str:
@@ -119,6 +125,7 @@ def file_content_hash(file_path: str, block_size: int = 1 << 20) -> str:
 # INGESTION: PARSERS
 # =============================================================================
 
+
 def parse_document(file_path: str) -> List[Tuple[str, str]]:
     """Parse a document into a list of (location, text) blocks.
 
@@ -128,20 +135,22 @@ def parse_document(file_path: str) -> List[Tuple[str, str]]:
     ext = Path(file_path).suffix.lower()
 
     if ext not in SUPPORTED_EXTENSIONS:
-        raise ValueError(f"Unsupported file type: {ext}. "
-                         f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+        raise ValueError(
+            f"Unsupported file type: {ext}. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+        )
 
-    if ext == '.pdf':
+    if ext == ".pdf":
         return _parse_pdf(file_path)
-    if ext == '.docx':
+    if ext == ".docx":
         return _parse_docx(file_path)
-    if ext in ('.xlsx', '.xlsm'):
+    if ext in (".xlsx", ".xlsm"):
         return _parse_xlsx(file_path)
     return _parse_text(file_path)
 
 
 def _parse_pdf(file_path: str) -> List[Tuple[str, str]]:
     from pypdf import PdfReader
+
     reader = PdfReader(file_path)
     blocks = []
     for i, page in enumerate(reader.pages, 1):
@@ -196,7 +205,7 @@ def _parse_xlsx(file_path: str) -> List[Tuple[str, str]]:
 
 
 def _parse_text(file_path: str) -> List[Tuple[str, str]]:
-    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read().strip()
     return [("", content)] if content else []
 
@@ -205,8 +214,10 @@ def _parse_text(file_path: str) -> List[Tuple[str, str]]:
 # INGESTION: CHUNKING
 # =============================================================================
 
-def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
-               overlap: int = DEFAULT_CHUNK_OVERLAP) -> List[str]:
+
+def chunk_text(
+    text: str, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_CHUNK_OVERLAP
+) -> List[str]:
     """Split text into chunks of ~chunk_size characters with overlap.
 
     Packs whole paragraphs when possible; paragraphs longer than chunk_size
@@ -216,7 +227,7 @@ def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
         return [text] if text.strip() else []
 
     overlap = min(overlap, chunk_size // 2)
-    paragraphs = [p for p in re.split(r'\n\s*\n', text) if p.strip()]
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
 
     pieces = []
     for para in paragraphs:
@@ -225,7 +236,7 @@ def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
         else:
             step = chunk_size - overlap
             for start in range(0, len(para), step):
-                piece = para[start:start + chunk_size]
+                piece = para[start : start + chunk_size]
                 if piece.strip():
                     pieces.append(piece)
                 if start + chunk_size >= len(para):
@@ -267,15 +278,21 @@ def _fold_plural(word: str) -> str:
     a missed match. What matters is that queries and documents are folded by
     the same function, so an imperfect fold still lines the two sides up.
     """
-    if len(word) > 4 and word.endswith("ies"):        # policies -> policy
+    if len(word) > 4 and word.endswith("ies"):  # policies -> policy
         return word[:-3] + "y"
-    if len(word) > 4 and (word.endswith("ches") or word.endswith("shes")
-                          or (word.endswith("es") and word[-3] in "sxz")):
-        return word[:-2]                              # boxes -> box
-    if (len(word) > 3 and word.endswith("s")
-            and not word.endswith("ss")               # process, class
-            and not word.endswith("us")):             # campus, syllabus
-        return word[:-1]                              # scholarships -> scholarship
+    if len(word) > 4 and (
+        word.endswith("ches")
+        or word.endswith("shes")
+        or (word.endswith("es") and word[-3] in "sxz")
+    ):
+        return word[:-2]  # boxes -> box
+    if (
+        len(word) > 3
+        and word.endswith("s")
+        and not word.endswith("ss")  # process, class
+        and not word.endswith("us")
+    ):  # campus, syllabus
+        return word[:-1]  # scholarships -> scholarship
     return word
 
 
@@ -299,7 +316,7 @@ def _name_label(file_path: str) -> str:
     """
     path = Path(file_path)
     parts = [path.parent.name, path.stem]
-    return " ".join(p.replace('-', ' ').replace('_', ' ') for p in parts if p)
+    return " ".join(p.replace("-", " ").replace("_", " ") for p in parts if p)
 
 
 def _labelled(chunk: Dict[str, Any]) -> str:
@@ -328,8 +345,7 @@ class BM25:
                 df[term] = df.get(term, 0) + 1
         n = len(corpus_tokens)
         self.idf = {
-            term: math.log(1 + (n - freq + 0.5) / (freq + 0.5))
-            for term, freq in df.items()
+            term: math.log(1 + (n - freq + 0.5) / (freq + 0.5)) for term, freq in df.items()
         }
 
     def scores(self, query_tokens: List[str]) -> List[float]:
@@ -355,6 +371,7 @@ class BM25:
 # RETRIEVAL: DENSE EMBEDDINGS (OPTIONAL)
 # =============================================================================
 
+
 def embedding_config() -> Optional[Dict[str, str]]:
     """Return embedding endpoint config from environment, or None if unset.
 
@@ -362,14 +379,16 @@ def embedding_config() -> Optional[Dict[str, str]]:
     ONIT_EMBEDDING_MODEL. ONIT_EMBEDDING_API_KEY is optional (local servers
     such as vLLM or Ollama usually don't need one).
     """
-    host = os.environ.get('ONIT_EMBEDDING_HOST')
-    model = os.environ.get('ONIT_EMBEDDING_MODEL')
+    host = os.environ.get("ONIT_EMBEDDING_HOST")
+    model = os.environ.get("ONIT_EMBEDDING_MODEL")
     if not host or not model:
         return None
-    key = (os.environ.get('ONIT_EMBEDDING_API_KEY')
-           or os.environ.get('VLLM_API_KEY')
-           or os.environ.get('OPENROUTER_API_KEY')
-           or 'none')
+    key = (
+        os.environ.get("ONIT_EMBEDDING_API_KEY")
+        or os.environ.get("VLLM_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+        or "none"
+    )
     return {"host": host, "model": model, "key": key}
 
 
@@ -383,10 +402,11 @@ def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
         return None
     try:
         from openai import OpenAI
+
         client = OpenAI(base_url=config["host"], api_key=config["key"])
         vectors: List[List[float]] = []
         for start in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[start:start + EMBED_BATCH_SIZE]
+            batch = texts[start : start + EMBED_BATCH_SIZE]
             response = client.embeddings.create(model=config["model"], input=batch)
             vectors.extend(item.embedding for item in response.data)
         return vectors
@@ -417,6 +437,7 @@ def reciprocal_rank_fusion(rankings: List[List[int]], k: int = RRF_K) -> Dict[in
 # THE INDEX
 # =============================================================================
 
+
 class LocalSearchIndex:
     """Persistent chunk index over a corpus of local documents.
 
@@ -446,7 +467,7 @@ class LocalSearchIndex:
         if not os.path.isfile(self.index_path):
             return
         try:
-            with open(self.index_path, 'r', encoding='utf-8') as f:
+            with open(self.index_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
             logger.error(f"Failed to load index {self.index_path}: {e}")
@@ -457,7 +478,8 @@ class LocalSearchIndex:
         if data.get("version") != INDEX_VERSION:
             logger.warning(
                 f"Ignoring index {self.index_path}: version {data.get('version')} "
-                f"!= {INDEX_VERSION}; it will be rebuilt from the corpus")
+                f"!= {INDEX_VERSION}; it will be rebuilt from the corpus"
+            )
             return
         self.chunk_size = data.get("chunk_size", DEFAULT_CHUNK_SIZE)
         self.chunk_overlap = data.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP)
@@ -485,7 +507,7 @@ class LocalSearchIndex:
         os.makedirs(self.index_dir, mode=0o700, exist_ok=True)
         data = {
             "version": INDEX_VERSION,
-            "updated": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
             "embedding_model": self.embedding_model,
@@ -494,10 +516,9 @@ class LocalSearchIndex:
         }
         # mkstemp creates the file 0o600, and the leading dot keeps a partial
         # write out of any corpus walk over the directory holding the index.
-        fd, tmp_path = tempfile.mkstemp(dir=self.index_dir, prefix=".index-",
-                                        suffix=".tmp")
+        fd, tmp_path = tempfile.mkstemp(dir=self.index_dir, prefix=".index-", suffix=".tmp")
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f)
             os.replace(tmp_path, self.index_path)
         except Exception:
@@ -507,9 +528,13 @@ class LocalSearchIndex:
 
     # -- ingestion -----------------------------------------------------------
 
-    def index_directory(self, directory: str, recursive: bool = True,
-                        rebuild: bool = False,
-                        exclude: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    def index_directory(
+        self,
+        directory: str,
+        recursive: bool = True,
+        rebuild: bool = False,
+        exclude: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
         """Index all supported documents under directory. Skips unchanged
         files, drops entries for deleted files, and persists the result.
 
@@ -524,15 +549,14 @@ class LocalSearchIndex:
             self.chunks = []
 
         def _is_excluded(path: str) -> bool:
-            return any(path == root or path.startswith(root + os.sep)
-                       for root in excluded)
+            return any(path == root or path.startswith(root + os.sep) for root in excluded)
 
         pattern = "**/*" if recursive else "*"
         candidates = []
         for path in sorted(Path(directory).glob(pattern)):
             if not path.is_file():
                 continue
-            if any(part.startswith('.') for part in path.parts):
+            if any(part.startswith(".") for part in path.parts):
                 continue
             if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
@@ -543,9 +567,11 @@ class LocalSearchIndex:
         # Drop index entries for files that no longer exist under this root, and
         # for files an exclusion has since handed to another index — an earlier
         # pass may have ingested them while they were still in scope.
-        removed = [p for p in self.documents
-                   if p.startswith(directory + os.sep)
-                   and (not os.path.isfile(p) or _is_excluded(p))]
+        removed = [
+            p
+            for p in self.documents
+            if p.startswith(directory + os.sep) and (not os.path.isfile(p) or _is_excluded(p))
+        ]
         for p in removed:
             self._remove_document(p)
 
@@ -557,8 +583,11 @@ class LocalSearchIndex:
                     errors.append({"file": file_path, "error": "file too large (>20MB)"})
                     continue
                 existing = self.documents.get(file_path)
-                if existing and existing.get("mtime") == stat.st_mtime \
-                        and existing.get("size") == stat.st_size:
+                if (
+                    existing
+                    and existing.get("mtime") == stat.st_mtime
+                    and existing.get("size") == stat.st_size
+                ):
                     skipped.append(file_path)
                     continue
                 self._index_file(file_path, stat)
@@ -593,8 +622,7 @@ class LocalSearchIndex:
         to search. That reads as a corpus with no answer rather than as a file
         needing OCR, so it is reported instead of passing silently.
         """
-        return sorted(path for path, info in self.documents.items()
-                      if not info.get("num_chunks"))
+        return sorted(path for path, info in self.documents.items() if not info.get("num_chunks"))
 
     def _index_file(self, file_path: str, stat: os.stat_result) -> None:
         blocks = parse_document(file_path)
@@ -603,18 +631,20 @@ class LocalSearchIndex:
         count = 0
         for location, text in blocks:
             for piece in chunk_text(text, self.chunk_size, self.chunk_overlap):
-                self.chunks.append({
-                    "path": file_path,
-                    "location": location,
-                    "name_label": name_label,
-                    "text": piece,
-                })
+                self.chunks.append(
+                    {
+                        "path": file_path,
+                        "location": location,
+                        "name_label": name_label,
+                        "text": piece,
+                    }
+                )
                 count += 1
         self.documents[file_path] = {
             "mtime": stat.st_mtime,
             "size": stat.st_size,
             "hash": file_content_hash(file_path),
-            "format": Path(file_path).suffix.lstrip('.').lower(),
+            "format": Path(file_path).suffix.lstrip(".").lower(),
             "num_chunks": count,
         }
 
@@ -639,8 +669,7 @@ class LocalSearchIndex:
 
     # -- retrieval -----------------------------------------------------------
 
-    def search(self, query: str, top_k: int = 5,
-               method: str = "hybrid") -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 5, method: str = "hybrid") -> List[Dict[str, Any]]:
         """Search the index. Returns ranked results with source metadata."""
         if not self.chunks:
             return []
@@ -653,7 +682,8 @@ class LocalSearchIndex:
             raise ValueError(
                 "Dense retrieval unavailable: index has no embeddings or no "
                 "embedding endpoint is configured (set ONIT_EMBEDDING_HOST "
-                "and ONIT_EMBEDDING_MODEL)")
+                "and ONIT_EMBEDDING_MODEL)"
+            )
 
         if method == "bm25" or dense_ranking is None:
             ranked = bm25_ranking
@@ -662,28 +692,31 @@ class LocalSearchIndex:
             ranked = dense_ranking
             method_used = "dense"
         else:
-            fused = reciprocal_rank_fusion([
-                [idx for idx, _ in bm25_ranking],
-                [idx for idx, _ in dense_ranking],
-            ])
+            fused = reciprocal_rank_fusion(
+                [
+                    [idx for idx, _ in bm25_ranking],
+                    [idx for idx, _ in dense_ranking],
+                ]
+            )
             ranked = sorted(fused.items(), key=lambda item: -item[1])
             method_used = "hybrid"
 
         ranked = self._promote_document_openings(query, ranked)
-        ranked = cap_per_file(ranked, top_k,
-                              lambda item: self.chunks[item[0]]["path"])
+        ranked = cap_per_file(ranked, top_k, lambda item: self.chunks[item[0]]["path"])
 
         results = []
         for rank, (idx, score) in enumerate(ranked, 1):
             chunk = self.chunks[idx]
-            results.append({
-                "rank": rank,
-                "score": round(float(score), 6),
-                "file": chunk["path"],
-                "location": chunk["location"],
-                "text": chunk["text"],
-                "method": method_used,
-            })
+            results.append(
+                {
+                    "rank": rank,
+                    "score": round(float(score), 6),
+                    "file": chunk["path"],
+                    "location": chunk["location"],
+                    "text": chunk["text"],
+                    "method": method_used,
+                }
+            )
         return results
 
     def document_opening(self, path: str) -> Optional[Dict[str, Any]]:
@@ -721,8 +754,8 @@ class LocalSearchIndex:
         return self._leading.get(path)
 
     def _promote_document_openings(
-            self, query: str,
-            ranked: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
+        self, query: str, ranked: List[Tuple[int, float]]
+    ) -> List[Tuple[int, float]]:
         """Give each document matched by name a slot for its opening chunk.
 
         A document is retrieved as a whole but shown as an excerpt, and the
@@ -752,13 +785,12 @@ class LocalSearchIndex:
         moved: set = set()
         for idx, score in ranked:
             if idx in moved:
-                continue        # already emitted ahead of its document
+                continue  # already emitted ahead of its document
             path = self.chunks[idx]["path"]
             if path not in seen_paths:
                 seen_paths.add(path)
                 opening = self._leading_chunk(path)
-                if (opening is not None and opening != idx
-                        and label_scores[idx] > 0):
+                if opening is not None and opening != idx and label_scores[idx] > 0:
                     # Ahead of the document's other chunks, so the per-file cap
                     # keeps it — ranked lower it was deferred as the document's
                     # third chunk and never shown. It stands for the document
@@ -790,20 +822,20 @@ class LocalSearchIndex:
         """
         if self._bm25 is None:
             self._bm25 = BM25([tokenize(c["text"]) for c in self.chunks])
-            self._bm25_label = BM25(
-                [tokenize(c.get("name_label", "")) for c in self.chunks])
+            self._bm25_label = BM25([tokenize(c.get("name_label", "")) for c in self.chunks])
         query_tokens = tokenize(query)
         text_scores = self._bm25.scores(query_tokens)
         label_scores = self._bm25_label.scores(query_tokens)
-        ranking = [(i, t + NAME_LABEL_WEIGHT * l)
-                   for i, (t, l) in enumerate(zip(text_scores, label_scores))
-                   if t + NAME_LABEL_WEIGHT * l > 0]
+        ranking = [
+            (i, t + NAME_LABEL_WEIGHT * l)
+            for i, (t, l) in enumerate(zip(text_scores, label_scores))
+            if t + NAME_LABEL_WEIGHT * l > 0
+        ]
         ranking.sort(key=lambda item: -item[1])
         return ranking
 
     def _dense_ranking(self, query: str) -> Optional[List[Tuple[int, float]]]:
-        embedded = [(i, c["embedding"]) for i, c in enumerate(self.chunks)
-                    if "embedding" in c]
+        embedded = [(i, c["embedding"]) for i, c in enumerate(self.chunks) if "embedding" in c]
         if not embedded:
             return None
         vectors = embed_texts([query])

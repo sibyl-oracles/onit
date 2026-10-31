@@ -38,11 +38,38 @@ from src.learn import signals as sig
 
 # ── generators ────────────────────────────────────────────────────────────
 
-_WORDS = ["run", "the", "tests", "fix", "bug", "write", "parser", "for",
-          "benchmark", "dataset", "add", "feature", "refactor", "module",
-          "build", "docker", "image", "deploy", "service", "query",
-          "database", "index", "implement", "function", "that", "takes",
-          "list", "and", "returns", "sum"]
+_WORDS = [
+    "run",
+    "the",
+    "tests",
+    "fix",
+    "bug",
+    "write",
+    "parser",
+    "for",
+    "benchmark",
+    "dataset",
+    "add",
+    "feature",
+    "refactor",
+    "module",
+    "build",
+    "docker",
+    "image",
+    "deploy",
+    "service",
+    "query",
+    "database",
+    "index",
+    "implement",
+    "function",
+    "that",
+    "takes",
+    "list",
+    "and",
+    "returns",
+    "sum",
+]
 
 
 def _sentence(rng, n=None):
@@ -59,6 +86,7 @@ def _garbage(rng, n=None):
 
 # ── property 1: a label is one of three values ────────────────────────────
 
+
 class TestLabelDomain:
     """Every label is good, bad or unknown.  Nothing else."""
 
@@ -70,11 +98,11 @@ class TestLabelDomain:
         rng = random.Random(20261023)
         for _ in range(400):
             previous = _sentence(rng)
-            following = rng.choice([_sentence(rng), _garbage(rng), "",
-                                     "no", "thanks", "yes, that worked"])
+            following = rng.choice(
+                [_sentence(rng), _garbage(rng), "", "no", "thanks", "yes, that worked"]
+            )
             label = sig.label_pair(previous, following)
-            assert label in ("good", "bad", "unknown"), \
-                "label_pair returned %r" % label
+            assert label in ("good", "bad", "unknown"), "label_pair returned %r" % label
 
     def test_label_session_returns_one_label_per_record(self):
         rng = random.Random(20261023)
@@ -94,6 +122,7 @@ class TestLabelDomain:
 
 
 # ── property 2: the label is deterministic ────────────────────────────────
+
 
 class TestDeterminism:
     """The same corpus must produce the same labels, every time.
@@ -143,23 +172,39 @@ class TestDeterminism:
 
 # ── property 3: rephrase and acceptance are exclusive ─────────────────────
 
+
 class TestExclusivity:
     """A task cannot be both a rephrase and an acceptance."""
 
-    @pytest.mark.parametrize("following", [
-        "no", "no, do it again", "i said, use python", "again",
-        "thanks, no, run it again", "still failing, try again",
-        "no that is wrong", "that is not what i asked for",
-    ])
+    @pytest.mark.parametrize(
+        "following",
+        [
+            "no",
+            "no, do it again",
+            "i said, use python",
+            "again",
+            "thanks, no, run it again",
+            "still failing, try again",
+            "no that is wrong",
+            "that is not what i asked for",
+        ],
+    )
     def test_a_rephrase_is_never_an_acceptance(self, following):
         previous = "write a script that sums a list"
         assert sig.is_rephrase(previous, following)
         assert not sig.is_acceptance(previous, following)
 
-    @pytest.mark.parametrize("following", [
-        "thanks", "great, now do the next one", "perfect", "that worked",
-        "yes that is right", "ok, now the second part",
-    ])
+    @pytest.mark.parametrize(
+        "following",
+        [
+            "thanks",
+            "great, now do the next one",
+            "perfect",
+            "that worked",
+            "yes that is right",
+            "ok, now the second part",
+        ],
+    )
     def test_an_acceptance_is_never_a_rephrase(self, following):
         previous = "write a script that sums a list"
         assert sig.is_acceptance(previous, following)
@@ -181,15 +226,25 @@ class TestExclusivity:
         rng = random.Random(20261023)
         for _ in range(400):
             previous = _sentence(rng)
-            following = rng.choice([
-                _sentence(rng), "no", "thanks", "no, again",
-                "great, next one", _garbage(rng), "yes", "still wrong",
-            ])
-            assert not (sig.is_rephrase(previous, following)
-                        and sig.is_acceptance(previous, following))
+            following = rng.choice(
+                [
+                    _sentence(rng),
+                    "no",
+                    "thanks",
+                    "no, again",
+                    "great, next one",
+                    _garbage(rng),
+                    "yes",
+                    "still wrong",
+                ]
+            )
+            assert not (
+                sig.is_rephrase(previous, following) and sig.is_acceptance(previous, following)
+            )
 
 
 # ── property 4: an explicit rating is never overwritten ───────────────────
+
 
 class TestExplicitRatingsWin:
     """A click is stronger evidence than a heuristic."""
@@ -200,8 +255,9 @@ class TestExplicitRatingsWin:
             {"task": "no, again", "signals": {}},
         ]
         sig.label_records(records)
-        assert records[0]["signals"].get("implicit") is None, \
+        assert records[0]["signals"].get("implicit") is None, (
             "the heuristic overwrote an explicit rating"
+        )
         assert records[0]["signals"]["implicit_source"] == "explicit-rating"
 
     def test_a_negative_rating_survives_labeling(self):
@@ -236,6 +292,7 @@ class TestExplicitRatingsWin:
 
 # ── property 5: a different subject is not a rephrase ─────────────────────
 
+
 class TestSubstitutionIsNotRephrase:
     """Same shape, different subject: a new task, not a repeat.
 
@@ -245,15 +302,18 @@ class TestSubstitutionIsNotRephrase:
     sequence of similar work into a string of failures.
     """
 
-    @pytest.mark.parametrize("pair", [
-        ("benchmark mbpp", "benchmark bigcodebench"),
-        ("implement the parser for the json format",
-         "implement the parser for the yaml format"),
-        ("write a test for the http client",
-         "write a test for the db client"),
-        ("add a function that sums a list",
-         "add a function that finds the maximum of a list"),
-    ])
+    @pytest.mark.parametrize(
+        "pair",
+        [
+            ("benchmark mbpp", "benchmark bigcodebench"),
+            (
+                "implement the parser for the json format",
+                "implement the parser for the yaml format",
+            ),
+            ("write a test for the http client", "write a test for the db client"),
+            ("add a function that sums a list", "add a function that finds the maximum of a list"),
+        ],
+    )
     def test_a_swapped_subject_is_not_a_rephrase(self, pair):
         previous, following = pair
         assert not sig.is_rephrase(previous, following)
@@ -265,8 +325,9 @@ class TestSubstitutionIsNotRephrase:
         """The screen must not be so eager that it stops catching
         genuine repeats -- that would silently disable the whole
         negative-signal path."""
-        assert sig.is_rephrase("run the unit tests for the parser",
-                               "run the unit tests for the parser again")
+        assert sig.is_rephrase(
+            "run the unit tests for the parser", "run the unit tests for the parser again"
+        )
 
     def test_a_paraphrase_of_the_same_request_is_a_rephrase(self):
         """The same request, differently worded.
@@ -274,29 +335,31 @@ class TestSubstitutionIsNotRephrase:
         The tokens differ by a filler word only, so the content overlap
         stays high and the similarity clears the bar.
         """
-        assert sig.is_rephrase("please run the unit tests",
-                               "please run the unit tests now")
+        assert sig.is_rephrase("please run the unit tests", "please run the unit tests now")
 
     def test_a_shorter_request_that_drops_content_is_not_a_rephrase(self):
-        """"Run the tests" after "run the unit tests" drops a content
+        """ "Run the tests" after "run the unit tests" drops a content
         word.  It is a *narrower* request, not the same one, and
         treating it as a repeat would label every narrowing request as
         a failure."""
-        assert not sig.is_rephrase("please run the unit tests",
-                                   "run the tests please")
+        assert not sig.is_rephrase("please run the unit tests", "run the tests please")
 
 
 # ── property 6: a changed parameter is a new request ─────────────────────
+
 
 class TestChangedParameterIsNew:
     """Numbers survive tokenization, and a changed number changes the
     request."""
 
-    @pytest.mark.parametrize("pair", [
-        ("build a 3-layer cnn", "build a 2-layer cnn"),
-        ("run epoch 5", "run epoch 10"),
-        ("use batch size 32", "use batch size 64"),
-    ])
+    @pytest.mark.parametrize(
+        "pair",
+        [
+            ("build a 3-layer cnn", "build a 2-layer cnn"),
+            ("run epoch 5", "run epoch 10"),
+            ("use batch size 32", "use batch size 64"),
+        ],
+    )
     def test_a_changed_number_is_not_a_rephrase(self, pair):
         previous, following = pair
         assert not sig.is_rephrase(previous, following)
@@ -319,6 +382,7 @@ class TestChangedParameterIsNew:
 
 
 # ── the degenerate inputs ─────────────────────────────────────────────────
+
 
 class TestDegenerateInputs:
     """Empty, whitespace and garbage must not raise and must not label."""
@@ -357,13 +421,16 @@ class TestDegenerateInputs:
 
 # ── the summary is honest ─────────────────────────────────────────────────
 
+
 class TestSummaryIsHonest:
     """A report that hides the unknowns reads as a stronger corpus."""
 
     def test_the_unknowns_are_counted(self):
-        records = [{"task": "a", "signals": {"implicit": "unknown"}},
-                   {"task": "b", "signals": {"implicit": "good"}},
-                   {"task": "c", "signals": {"implicit": "bad"}}]
+        records = [
+            {"task": "a", "signals": {"implicit": "unknown"}},
+            {"task": "b", "signals": {"implicit": "good"}},
+            {"task": "c", "signals": {"implicit": "bad"}},
+        ]
         summary = sig.summarize(records)
         assert summary["unknown"] == 1
         assert summary["good"] == 1
@@ -371,8 +438,10 @@ class TestSummaryIsHonest:
         assert summary["total"] == 3
 
     def test_the_coverage_is_the_labeled_share(self):
-        records = [{"task": "a", "signals": {"implicit": "good"}},
-                   {"task": "b", "signals": {"implicit": "unknown"}}]
+        records = [
+            {"task": "a", "signals": {"implicit": "good"}},
+            {"task": "b", "signals": {"implicit": "unknown"}},
+        ]
         summary = sig.summarize(records)
         assert summary["coverage"] == 0.5
 
@@ -397,6 +466,7 @@ class TestSummaryIsHonest:
 
 # ── the last task of a session ────────────────────────────────────────────
 
+
 class TestSessionEnd:
     """The last task of a session is labelled from the session's end.
 
@@ -418,8 +488,7 @@ class TestSessionEnd:
     def test_a_middle_task_is_never_labelled_from_the_session_end(self):
         """A middle task has a following task, and the following task is
         the evidence.  The session end is not a substitute for it."""
-        records = [{"task": "write a script"}, {"task": "no, again"},
-                   {"task": "something else"}]
+        records = [{"task": "write a script"}, {"task": "no, again"}, {"task": "something else"}]
         labels = sig.label_session(records)
         assert labels[0] == "bad", "the middle task was labelled from the end"
 

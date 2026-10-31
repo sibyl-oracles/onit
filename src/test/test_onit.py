@@ -11,12 +11,18 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.onit import (OnIt, StreamingAdapter, friendly_tool_status,
-                      MAX_FAILOVER_ATTEMPTS, _chat_with_failover)
+from src.onit import (
+    OnIt,
+    StreamingAdapter,
+    friendly_tool_status,
+    MAX_FAILOVER_ATTEMPTS,
+    _chat_with_failover,
+)
 from src.model.serving.state import RunState
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
 
 def _make_config(tmp_path, overrides=None):
     """Build a minimal config dict."""
@@ -47,10 +53,12 @@ def _make_config(tmp_path, overrides=None):
 def _mock_discover():
     """Patch discover_tools to return an empty registry."""
     from type.tools import ToolRegistry
+
     return patch("src.onit.discover_tools", return_value=ToolRegistry())
 
 
 # ── ChatUIProtocol conformance ──────────────────────────────────────────────
+
 
 class TestChatUIProtocolConformance:
     """Every UI handed to chat() carries the full ChatUIProtocol surface.
@@ -63,10 +71,12 @@ class TestChatUIProtocolConformance:
     def test_terminal_ui_satisfies_the_protocol(self):
         from ui.protocol import ChatUIProtocol
         from ui.text import ChatUI
+
         assert isinstance(ChatUI(), ChatUIProtocol)
 
     def test_streaming_adapter_satisfies_the_protocol(self):
         from ui.protocol import ChatUIProtocol
+
         assert isinstance(StreamingAdapter(), ChatUIProtocol)
 
     def test_adapter_fold_is_a_noop_not_an_error(self):
@@ -90,17 +100,18 @@ class TestChatUIProtocolConformance:
 
 # ── friendly_tool_status / StreamingAdapter.tool_log ────────────────────────
 
+
 class TestFriendlyToolStatus:
     def test_unwraps_mcp_dict_payload(self):
-        data = {"msg": "Collecting opencv-python-headless (from easyocr)",
-                "extra": None}
+        data = {"msg": "Collecting opencv-python-headless (from easyocr)", "extra": None}
         assert friendly_tool_status("bash", data) == "Downloading required files…"
 
     def test_common_operations_are_humanized(self):
-        assert friendly_tool_status("bash", "Installing collected packages: numpy") \
+        assert (
+            friendly_tool_status("bash", "Installing collected packages: numpy")
             == "Installing components…"
-        assert friendly_tool_status("bash", "Cloning into 'repo'...") \
-            == "Downloading source code…"
+        )
+        assert friendly_tool_status("bash", "Cloning into 'repo'...") == "Downloading source code…"
 
     def test_unrecognized_line_kept_one_line_with_tool_name(self):
         out = friendly_tool_status("search", "first line\nsecond line")
@@ -168,14 +179,16 @@ class TestFriendlyToolStatus:
         """
         statuses = []
         adapter = StreamingAdapter(on_tool_status=statuses.append)
-        adapter.start_tool_batch([
-            ("read_file", {"path": "/a.pdf"}),
-            ("read_file", {"path": "/b.pdf"}),
-            ("search", {"query": "tuition fees"}),
-        ])
+        adapter.start_tool_batch(
+            [
+                ("read_file", {"path": "/a.pdf"}),
+                ("read_file", {"path": "/b.pdf"}),
+                ("search", {"query": "tuition fees"}),
+            ]
+        )
         adapter.start_tool_spinner("read_file", {"path": "/a.pdf"})  # suppressed
         adapter.show_tool_done("read_file", "ok")
-        adapter.stop_tool_spinner()                                  # suppressed
+        adapter.stop_tool_spinner()  # suppressed
         adapter.show_tool_done("read_file", "ok")
         adapter.end_tool_batch()
         assert statuses == [
@@ -197,10 +210,12 @@ class TestFriendlyToolStatus:
         one says more about the wait than "searching the web" does."""
         statuses = []
         adapter = StreamingAdapter(on_tool_status=statuses.append)
-        adapter.start_tool_batch([
-            ("search", {"query": "Vietnam GDP 2024"}),
-            ("search", {"query": "Indonesia GDP 2024"}),
-        ])
+        adapter.start_tool_batch(
+            [
+                ("search", {"query": "Vietnam GDP 2024"}),
+                ("search", {"query": "Indonesia GDP 2024"}),
+            ]
+        )
         adapter.show_tool_done("search", "ok")
         assert statuses == [
             "Searching the web for Vietnam GDP 2024 (+1 more)…",
@@ -214,15 +229,15 @@ class TestFriendlyToolStatus:
         adapter = StreamingAdapter(on_tool_status=statuses.append)
         adapter.start_tool_spinner("search", {"query": "peso rate"})
         adapter.show_tool_done("search", "ok")
-        assert statuses == ["Searching the web for peso rate…",
-                            "Going through what it found…"]
+        assert statuses == ["Searching the web for peso rate…", "Going through what it found…"]
 
     def test_url_is_reported_as_its_site(self):
         """A tracking-laden URL fills the line without saying anything."""
         statuses = []
         adapter = StreamingAdapter(on_tool_status=statuses.append)
         adapter.start_tool_spinner(
-            "fetch_content", {"url": "https://www.msn.com/en-ph/money/x?ocid=abc"})
+            "fetch_content", {"url": "https://www.msn.com/en-ph/money/x?ocid=abc"}
+        )
         assert statuses == ["Fetching msn.com…"]
 
     def test_unnamed_tool_during_fact_check_reports_the_phase(self):
@@ -301,6 +316,7 @@ class TestFriendlyToolStatus:
 
 # ── OnIt.__init__ ───────────────────────────────────────────────────────────
 
+
 class TestOnItInit:
     def test_init_from_dict(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -311,6 +327,7 @@ class TestOnItInit:
 
     def test_init_from_yaml_path(self, tmp_path):
         import yaml
+
         cfg = _make_config(tmp_path)
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(cfg))
@@ -331,8 +348,12 @@ class TestOnItInit:
     def test_init_prompts_server_disabled_raises(self, tmp_path):
         cfg = _make_config(tmp_path)
         cfg["mcp"]["servers"] = [
-            {"name": "PromptsMCPServer", "transport": "stdio",
-             "module": "src.mcp.prompts.prompts", "enabled": False},
+            {
+                "name": "PromptsMCPServer",
+                "transport": "stdio",
+                "module": "src.mcp.prompts.prompts",
+                "enabled": False,
+            },
         ]
         with _mock_discover():
             with pytest.raises(ValueError, match="PromptsMCPServer"):
@@ -349,6 +370,7 @@ class TestOnItInit:
 
 # ── OnIt.initialize ────────────────────────────────────────────────────────
 
+
 class TestOnItInitialize:
     def test_mcp_host_override(self, tmp_path):
         """mcp_host moves external socket-served servers, and only those.
@@ -360,8 +382,8 @@ class TestOnItInitialize:
         cfg = _make_config(tmp_path)
         cfg["mcp"]["mcp_host"] = "192.168.1.100"
         cfg["mcp"]["servers"].append(
-            {"name": "Ext", "url": "http://127.0.0.1:9000/mcp",
-             "external": True, "enabled": True})
+            {"name": "Ext", "url": "http://127.0.0.1:9000/mcp", "external": True, "enabled": True}
+        )
         with _mock_discover():
             onit = OnIt(config=cfg)
 
@@ -389,13 +411,15 @@ class TestOnItInitialize:
         assert onit.load_balancer.hosts == ["http://localhost:8000/v1"]
         assert onit.load_balancer.acquire().host == "http://localhost:8000/v1"
 
-    def test_second_endpoint_enables_load_balancing(self, tmp_path,
-                                                    monkeypatch):
+    def test_second_endpoint_enables_load_balancing(self, tmp_path, monkeypatch):
         cfg = _make_config(tmp_path)
         cfg["serving"]["endpoints"] = [
             {"host": "http://localhost:8000/v1"},
-            {"host": "https://api.ollama.com", "model": "glm-5.1:cloud",
-             "api_key": "sk-second-key"},
+            {
+                "host": "https://api.ollama.com",
+                "model": "glm-5.1:cloud",
+                "api_key": "sk-second-key",
+            },
         ]
         cfg["serving"]["load_balancer"] = "least_busy"
         with _mock_discover():
@@ -448,8 +472,12 @@ class TestOnItInitialize:
         cfg["serving"]["endpoints"] = [
             {"name": "gpu-a", "host": "http://gpu-a:8000/v1", "priority": 1},
             {"name": "gpu-b", "host": "http://gpu-b:8000/v1", "priority": 1},
-            {"name": "ollama", "host": "https://ollama.com",
-             "model": "glm-5.1:cloud", "priority": 2},
+            {
+                "name": "ollama",
+                "host": "https://ollama.com",
+                "model": "glm-5.1:cloud",
+                "priority": 2,
+            },
         ]
         with _mock_discover():
             onit = OnIt(config=cfg)
@@ -472,20 +500,18 @@ class TestOnItInitialize:
         ]
         with _mock_discover():
             onit = OnIt(config=cfg)
-        assert [ep.host_key for ep in onit.load_balancer.endpoints] == \
-            ["sk-a", "sk-b"]
+        assert [ep.host_key for ep in onit.load_balancer.endpoints] == ["sk-a", "sk-b"]
 
     def test_endpoints_list_still_reads_the_old_host_key_spelling(self, tmp_path):
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]
-        cfg["serving"]["endpoints"] = [
-            {"host": "http://gpu-a:8000/v1", "host_key": "sk-old"}]
+        cfg["serving"]["endpoints"] = [{"host": "http://gpu-a:8000/v1", "host_key": "sk-old"}]
         with _mock_discover():
             onit = OnIt(config=cfg)
         assert onit.load_balancer.endpoints[0].host_key == "sk-old"
 
     def test_an_entry_without_a_key_defers_to_the_keychain(self, tmp_path):
-        """"EMPTY" is the signal that chat() should look the key up by URL,
+        """ "EMPTY" is the signal that chat() should look the key up by URL,
         so a config file need not carry one at all."""
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]
@@ -515,8 +541,7 @@ class TestOnItInitialize:
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]
         cfg["serving"]["endpoints"] = [
-            {"host": "https://ollama.com", "model": "glm-5.1:cloud",
-             "priority": 1},
+            {"host": "https://ollama.com", "model": "glm-5.1:cloud", "priority": 1},
             {"host": "http://gpu-a:8000/v1", "priority": 2},
         ]
         with _mock_discover():
@@ -526,8 +551,7 @@ class TestOnItInitialize:
     def test_endpoints_list_accepts_url_strings(self, tmp_path):
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]
-        cfg["serving"]["endpoints"] = ["http://gpu-a:8000/v1",
-                                       "http://gpu-b:8000/v1"]
+        cfg["serving"]["endpoints"] = ["http://gpu-a:8000/v1", "http://gpu-b:8000/v1"]
         with _mock_discover():
             onit = OnIt(config=cfg)
         lb = onit.load_balancer
@@ -541,13 +565,12 @@ class TestOnItInitialize:
         cfg["serving"]["endpoints"] = [
             {"host": "http://gpu-a:8000/v1"},
             {"model": "no-host-here"},
-            {"host": "http://gpu-a:8000/v1"},   # duplicate
+            {"host": "http://gpu-a:8000/v1"},  # duplicate
             "http://gpu-b:8000/v1",
         ]
         with _mock_discover():
             onit = OnIt(config=cfg)
-        assert onit.load_balancer.hosts == ["http://gpu-a:8000/v1",
-                                            "http://gpu-b:8000/v1"]
+        assert onit.load_balancer.hosts == ["http://gpu-a:8000/v1", "http://gpu-b:8000/v1"]
 
     def test_two_models_on_one_host_are_two_endpoints(self, tmp_path):
         """Ollama cloud is one host serving many models, so a repeated URL
@@ -562,8 +585,7 @@ class TestOnItInitialize:
         with _mock_discover():
             onit = OnIt(config=cfg)
         assert onit.load_balancer.hosts == ["https://ollama.com"] * 2
-        assert [ep.model for ep in onit.load_balancer.endpoints] == [
-            "glm-5.3:cloud", "qwen3:cloud"]
+        assert [ep.model for ep in onit.load_balancer.endpoints] == ["glm-5.3:cloud", "qwen3:cloud"]
 
     def test_the_same_model_twice_on_one_host_is_still_dropped(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -583,8 +605,7 @@ class TestOnItInitialize:
             onit = OnIt(config=cfg)
         assert onit.load_balancer.hosts == ["http://gpu-a:8000/v1"]
 
-    def test_endpoints_list_with_no_usable_host_raises(self, tmp_path,
-                                                       monkeypatch):
+    def test_endpoints_list_with_no_usable_host_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("ONIT_HOST", raising=False)
         cfg = _make_config(tmp_path)
         del cfg["serving"]["host"]
@@ -642,6 +663,7 @@ class TestOnItInitialize:
 
 # ── OnIt.load_session_history ───────────────────────────────────────────────
 
+
 class TestLoadSessionHistory:
     def test_reads_jsonl(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -690,13 +712,20 @@ class TestLoadSessionHistory:
 
 # ── OnIt._chat_kwargs ─────────────────────────────────────────────────────────
 
+
 class TestChatKwargs:
     """The one builder every chat() caller goes through."""
 
     def _base(self, onit):
-        return dict(metrics={}, run_state=RunState(), chat_ui=None,
-                    verbose=False, data_path=".", session_id="s",
-                    session_history=[])
+        return dict(
+            metrics={},
+            run_state=RunState(),
+            chat_ui=None,
+            verbose=False,
+            data_path=".",
+            session_id="s",
+            session_history=[],
+        )
 
     def test_defaults(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -705,35 +734,39 @@ class TestChatKwargs:
         metrics, run_state = {}, RunState()
         history = [{"task": "earlier", "response": "answer"}]
         kwargs = onit._chat_kwargs(
-            metrics=metrics, run_state=run_state, chat_ui=None,
-            verbose=False, data_path=str(tmp_path), session_id="s1",
-            session_history=history)
-        assert kwargs['metrics'] is metrics
-        assert kwargs['run_state'] is run_state
-        assert kwargs['chat_ui'] is None
-        assert kwargs['verbose'] is False
+            metrics=metrics,
+            run_state=run_state,
+            chat_ui=None,
+            verbose=False,
+            data_path=str(tmp_path),
+            session_id="s1",
+            session_history=history,
+        )
+        assert kwargs["metrics"] is metrics
+        assert kwargs["run_state"] is run_state
+        assert kwargs["chat_ui"] is None
+        assert kwargs["verbose"] is False
         # The config's own serving.max_tokens wins over chat()'s default.
-        assert kwargs['max_tokens'] == 1024
-        assert kwargs['max_context_tokens'] is None
-        assert kwargs['stream'] == onit.stream
+        assert kwargs["max_tokens"] == 1024
+        assert kwargs["max_context_tokens"] is None
+        assert kwargs["stream"] == onit.stream
         # The history the caller loaded must reach chat(): chat() replays it
         # ahead of the task, and a builder that drops it silently strips every
         # session of its conversation — the model then answers "continue" with
         # no idea what to continue (regression from 83d9d94).
-        assert kwargs['session_history'] is history
+        assert kwargs["session_history"] is history
         # Optional keys stay out entirely when there is nothing to put in
         # them — chat() keys off presence, not value.
-        assert 'prompt_intro' not in kwargs
-        assert 'background_verify' not in kwargs
+        assert "prompt_intro" not in kwargs
+        assert "background_verify" not in kwargs
 
     def test_prompt_intro_included_and_suppressible(self, tmp_path):
         cfg = _make_config(tmp_path, {"prompt_intro": "I am a custom bot."})
         with _mock_discover():
             onit = OnIt(config=cfg)
         base = self._base(onit)
-        assert onit._chat_kwargs(**base)['prompt_intro'] == "I am a custom bot."
-        assert 'prompt_intro' not in onit._chat_kwargs(**base,
-                                                       with_prompt_intro=False)
+        assert onit._chat_kwargs(**base)["prompt_intro"] == "I am a custom bot."
+        assert "prompt_intro" not in onit._chat_kwargs(**base, with_prompt_intro=False)
 
     def test_serving_passthrough_forwarded(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -741,23 +774,23 @@ class TestChatKwargs:
         with _mock_discover():
             onit = OnIt(config=cfg)
         kwargs = onit._chat_kwargs(**self._base(onit))
-        assert kwargs['temperature'] == 0.2
-        assert kwargs['max_chat_iterations'] == 7
+        assert kwargs["temperature"] == 0.2
+        assert kwargs["max_chat_iterations"] == 7
         # An unset passthrough key is not invented.
-        assert 'top_p' not in kwargs
+        assert "top_p" not in kwargs
 
     def test_background_verify_and_stream_override(self, tmp_path):
         cfg = _make_config(tmp_path)
         with _mock_discover():
             onit = OnIt(config=cfg)
         sink = lambda *a, **k: None  # noqa: E731
-        kwargs = onit._chat_kwargs(
-            **self._base(onit), background_verify=sink, stream=False)
-        assert kwargs['background_verify'] is sink
-        assert kwargs['stream'] is False
+        kwargs = onit._chat_kwargs(**self._base(onit), background_verify=sink, stream=False)
+        assert kwargs["background_verify"] is sink
+        assert kwargs["stream"] is False
 
 
 # ── _chat_with_failover ──────────────────────────────────────────────────────
+
 
 class TestChatWithFailover:
     """The one failover layer every whole-run chat() caller goes through."""
@@ -778,11 +811,20 @@ class TestChatWithFailover:
 
         with patch("src.onit.chat", new=_chat):
             result = await _chat_with_failover(
-                onit, instruction="hi", kwargs=onit._chat_kwargs(
-                    metrics={}, run_state=RunState(), chat_ui=None,
-                    verbose=False, data_path=".", session_id="s",
-                    session_history=[]),
-                safety_queue=onit.safety_queue, session_key="s")
+                onit,
+                instruction="hi",
+                kwargs=onit._chat_kwargs(
+                    metrics={},
+                    run_state=RunState(),
+                    chat_ui=None,
+                    verbose=False,
+                    data_path=".",
+                    session_id="s",
+                    session_history=[],
+                ),
+                safety_queue=onit.safety_queue,
+                session_key="s",
+            )
         assert result == "The answer"
         assert len(calls) == 1
 
@@ -797,11 +839,20 @@ class TestChatWithFailover:
 
         with patch("src.onit.chat", new=_chat):
             result = await _chat_with_failover(
-                onit, instruction="hi", kwargs=onit._chat_kwargs(
-                    metrics={}, run_state=RunState(), chat_ui=None,
-                    verbose=False, data_path=".", session_id="s",
-                    session_history=[]),
-                safety_queue=onit.safety_queue, session_key="s")
+                onit,
+                instruction="hi",
+                kwargs=onit._chat_kwargs(
+                    metrics={},
+                    run_state=RunState(),
+                    chat_ui=None,
+                    verbose=False,
+                    data_path=".",
+                    session_id="s",
+                    session_history=[],
+                ),
+                safety_queue=onit.safety_queue,
+                session_key="s",
+            )
         # One initial attempt + one failover, then give up with the last
         # response — the caller decides what "nothing" means.
         assert len(calls) == MAX_FAILOVER_ATTEMPTS
@@ -819,11 +870,20 @@ class TestChatWithFailover:
 
         with patch("src.onit.chat", new=_chat):
             result = await _chat_with_failover(
-                onit, instruction="hi", kwargs=onit._chat_kwargs(
-                    metrics={}, run_state=RunState(), chat_ui=None,
-                    verbose=False, data_path=".", session_id="s",
-                    session_history=[]),
-                safety_queue=onit.safety_queue, session_key="s")
+                onit,
+                instruction="hi",
+                kwargs=onit._chat_kwargs(
+                    metrics={},
+                    run_state=RunState(),
+                    chat_ui=None,
+                    verbose=False,
+                    data_path=".",
+                    session_id="s",
+                    session_history=[],
+                ),
+                safety_queue=onit.safety_queue,
+                session_key="s",
+            )
         assert calls == []
         assert result is None
 
@@ -836,16 +896,26 @@ class TestChatWithFailover:
 
         with patch("src.onit.chat", new=_chat):
             await _chat_with_failover(
-                onit, instruction="hi", kwargs=onit._chat_kwargs(
-                    metrics={}, run_state=RunState(), chat_ui=None,
-                    verbose=False, data_path=".", session_id="s",
-                    session_history=[]),
-                safety_queue=onit.safety_queue, session_key="s")
+                onit,
+                instruction="hi",
+                kwargs=onit._chat_kwargs(
+                    metrics={},
+                    run_state=RunState(),
+                    chat_ui=None,
+                    verbose=False,
+                    data_path=".",
+                    session_id="s",
+                    session_history=[],
+                ),
+                safety_queue=onit.safety_queue,
+                session_key="s",
+            )
         preferred = onit.load_balancer.preferred
         assert preferred.failed_at > 0.0  # cooldown started
 
 
 # ── OnIt.process_task ───────────────────────────────────────────────────────
+
 
 def _make_onit_for_async(tmp_path, overrides=None):
     """Create an OnIt instance safe for use within async tests.
@@ -860,8 +930,10 @@ def _make_onit_for_async(tmp_path, overrides=None):
     cfg = _make_config(tmp_path, overrides)
     empty_registry = ToolRegistry()
 
-    with patch("src.onit.discover_tools", return_value=empty_registry), \
-         patch("src.onit.asyncio.run", return_value=empty_registry):
+    with (
+        patch("src.onit.discover_tools", return_value=empty_registry),
+        patch("src.onit.asyncio.run", return_value=empty_registry),
+    ):
         onit = OnIt(config=cfg)
     return onit
 
@@ -883,8 +955,10 @@ class TestProcessTask:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"):
+        with (
+            patch("src.onit.Client", return_value=mock_client),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"),
+        ):
             result = await onit.process_task("What is 2+2?")
 
         assert result == "The answer"
@@ -904,8 +978,10 @@ class TestProcessTask:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", new_callable=AsyncMock, return_value=None):
+        with (
+            patch("src.onit.Client", return_value=mock_client),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value=None),
+        ):
             result = await onit.process_task("fail")
 
         assert "rephrase" in result
@@ -926,8 +1002,7 @@ class TestProcessTask:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         mock_chat = AsyncMock(return_value="answer")
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", mock_chat):
+        with patch("src.onit.Client", return_value=mock_client), patch("src.onit.chat", mock_chat):
             await onit.process_task("test")
 
         call_kwargs = mock_chat.call_args.kwargs
@@ -949,34 +1024,43 @@ class TestProcessTask:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         mock_chat = AsyncMock(return_value="answer")
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", mock_chat):
+        with patch("src.onit.Client", return_value=mock_client), patch("src.onit.chat", mock_chat):
             await onit.process_task("test")
         return mock_chat.call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_loop_policy_reaches_chat(self, tmp_path):
         """serving.max_chat_iterations et al. are forwarded, not dropped."""
-        kwargs = await self._chat_kwargs_for(tmp_path, {"serving": {
-            "host": "http://localhost:8000/v1",
-            "max_chat_iterations": 25,
-            "max_repeated_tool_calls": 8,
-            "max_planning_continuations": 4,
-        }})
+        kwargs = await self._chat_kwargs_for(
+            tmp_path,
+            {
+                "serving": {
+                    "host": "http://localhost:8000/v1",
+                    "max_chat_iterations": 25,
+                    "max_repeated_tool_calls": 8,
+                    "max_planning_continuations": 4,
+                }
+            },
+        )
         assert kwargs.get("max_chat_iterations") == 25
         assert kwargs.get("max_repeated_tool_calls") == 8
         assert kwargs.get("max_planning_continuations") == 4
 
     @pytest.mark.asyncio
     async def test_fact_check_keys_are_forwarded(self, tmp_path):
-        kwargs = await self._chat_kwargs_for(tmp_path, {"serving": {
-            "host": "http://localhost:8000/v1",
-            "verify_answers": False,
-            "verify_max_tool_turns": 0,
-            "verify_timeout_s": 1.5,
-            "verify_background": False,
-            "verify_trusted_domains": ["docs.internal.corp"],
-        }})
+        kwargs = await self._chat_kwargs_for(
+            tmp_path,
+            {
+                "serving": {
+                    "host": "http://localhost:8000/v1",
+                    "verify_answers": False,
+                    "verify_max_tool_turns": 0,
+                    "verify_timeout_s": 1.5,
+                    "verify_background": False,
+                    "verify_trusted_domains": ["docs.internal.corp"],
+                }
+            },
+        )
         assert kwargs.get("verify_answers") is False
         assert kwargs.get("verify_max_tool_turns") == 0
         assert kwargs.get("verify_timeout_s") == 1.5
@@ -987,19 +1071,30 @@ class TestProcessTask:
     async def test_unset_loop_policy_keys_are_not_forwarded(self, tmp_path):
         """An unset key must not appear at all, so chat()'s signature stays the
         single place each default is defined."""
-        kwargs = await self._chat_kwargs_for(tmp_path, {"serving": {
-            "host": "http://localhost:8000/v1",
-            "max_chat_iterations": 25,
-        }})
+        kwargs = await self._chat_kwargs_for(
+            tmp_path,
+            {
+                "serving": {
+                    "host": "http://localhost:8000/v1",
+                    "max_chat_iterations": 25,
+                }
+            },
+        )
         assert kwargs.get("max_chat_iterations") == 25
-        for absent in ("max_repeated_tool_calls", "max_api_retries",
-                       "max_planning_continuations", "max_ack_continuations",
-                       "max_final_continuations", "verify_answers",
-                       "verify_max_tool_turns"):
+        for absent in (
+            "max_repeated_tool_calls",
+            "max_api_retries",
+            "max_planning_continuations",
+            "max_ack_continuations",
+            "max_final_continuations",
+            "verify_answers",
+            "verify_max_tool_turns",
+        ):
             assert absent not in kwargs
 
 
 # ── fact-checks that outlive the answer ─────────────────────────────────────
+
 
 class TestBackgroundChecks:
     """The deep check runs after process_task returns, so what matters is who
@@ -1018,10 +1113,8 @@ class TestBackgroundChecks:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_chat = AsyncMock(return_value=answer)
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", mock_chat):
-            result = await onit.process_task(
-                "q", correction_callback=correction_callback)
+        with patch("src.onit.Client", return_value=mock_client), patch("src.onit.chat", mock_chat):
+            result = await onit.process_task("q", correction_callback=correction_callback)
         return onit, mock_chat, result
 
     @pytest.mark.asyncio
@@ -1046,8 +1139,7 @@ class TestBackgroundChecks:
             started.set()
             await asyncio.sleep(3600)
 
-        onit._schedule_background_check(onit.session_id, _never_finishes(),
-                                        onit.session_path)
+        onit._schedule_background_check(onit.session_id, _never_finishes(), onit.session_path)
         await started.wait()
         task = onit.background_checks[onit.session_id]
 
@@ -1058,8 +1150,10 @@ class TestBackgroundChecks:
         mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", new_callable=AsyncMock, return_value="next"):
+        with (
+            patch("src.onit.Client", return_value=mock_client),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value="next"),
+        ):
             await onit.process_task("something else")
 
         await asyncio.sleep(0)
@@ -1072,9 +1166,11 @@ class TestBackgroundChecks:
         that is not written there is one the model contradicts later, citing
         itself."""
         onit, _, _ = await self._run(tmp_path, correction_callback=lambda *a: None)
-        saved = [json.loads(line) for line
-                 in open(onit.session_path, encoding="utf-8").read().splitlines()
-                 if line.strip()]
+        saved = [
+            json.loads(line)
+            for line in open(onit.session_path, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
         assert saved[-1]["response"] == "The answer"
 
         async def _found():
@@ -1083,10 +1179,12 @@ class TestBackgroundChecks:
         onit._schedule_background_check(onit.session_id, _found(), onit.session_path)
         await onit.background_checks[onit.session_id]
 
-        saved = [json.loads(line) for line
-                 in open(onit.session_path, encoding="utf-8").read().splitlines()
-                 if line.strip()]
-        assert len(saved) == 1                      # amended, not appended
+        saved = [
+            json.loads(line)
+            for line in open(onit.session_path, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
+        assert len(saved) == 1  # amended, not appended
         assert saved[-1]["response"] == "The corrected answer"
         assert saved[-1]["fact_checked"] is True
 
@@ -1099,9 +1197,11 @@ class TestBackgroundChecks:
 
         onit._schedule_background_check(onit.session_id, _clean(), onit.session_path)
         await onit.background_checks[onit.session_id]
-        saved = [json.loads(line) for line
-                 in open(onit.session_path, encoding="utf-8").read().splitlines()
-                 if line.strip()]
+        saved = [
+            json.loads(line)
+            for line in open(onit.session_path, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
         assert saved[-1]["response"] == "The answer"
         assert "fact_checked" not in saved[-1]
 
@@ -1114,15 +1214,15 @@ class TestBackgroundChecks:
 
         onit._schedule_background_check(onit.session_id, _boom(), onit.session_path)
         await onit.background_checks[onit.session_id]
-        saved = [json.loads(line) for line
-                 in open(onit.session_path, encoding="utf-8").read().splitlines()
-                 if line.strip()]
+        saved = [
+            json.loads(line)
+            for line in open(onit.session_path, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
         assert saved[-1]["response"] == "The answer"
 
 
-
 # ── OnItA2AExecutor ─────────────────────────────────────────────────────────
-
 
 
 class TestEnterKeyListener:
@@ -1191,16 +1291,20 @@ class TestEnterKeyListener:
 
 # ── trajectory recording ────────────────────────────────────────────────────
 
+
 class TestRecordTrajectory:
     """What a task leaves behind beyond its answer. Best-effort by contract:
     a trajectory that fails to write must never turn a completed task into a
     failed one."""
 
     def _onit(self, tmp_path, autonomy="observe"):
-        cfg = _make_config(tmp_path, {
-            "data_path": str(tmp_path / "data"),
-            "learn": {"autonomy": autonomy, "path": str(tmp_path / "learned")},
-        })
+        cfg = _make_config(
+            tmp_path,
+            {
+                "data_path": str(tmp_path / "data"),
+                "learn": {"autonomy": autonomy, "path": str(tmp_path / "learned")},
+            },
+        )
         with _mock_discover():
             onit = OnIt(config=cfg)
         onit.tool_registry = MagicMock(tools={"search", "bash"})
@@ -1213,12 +1317,29 @@ class TestRecordTrajectory:
 
     def test_records_the_run_alongside_the_answer(self, tmp_path):
         from learn import read_session
+
         onit = self._onit(tmp_path)
-        metrics = {"turns": [{"n": 1, "prompt_tokens": 300, "finish_reason": "stop",
-                              "tool_runs": [{"name": "search", "ok": False, "ms": 9}]}],
-                   "turn_count": 1, "tool_calls": 1, "api_retries": 1}
-        onit._record_trajectory("find the policy", "here it is", metrics,
-                                self._session_with_one_turn(tmp_path), "sess-1", None)
+        metrics = {
+            "turns": [
+                {
+                    "n": 1,
+                    "prompt_tokens": 300,
+                    "finish_reason": "stop",
+                    "tool_runs": [{"name": "search", "ok": False, "ms": 9}],
+                }
+            ],
+            "turn_count": 1,
+            "tool_calls": 1,
+            "api_retries": 1,
+        }
+        onit._record_trajectory(
+            "find the policy",
+            "here it is",
+            metrics,
+            self._session_with_one_turn(tmp_path),
+            "sess-1",
+            None,
+        )
         records = read_session("sess-1", onit.config_data)
         assert len(records) == 1
         assert records[0]["task"] == "find the policy"
@@ -1228,14 +1349,20 @@ class TestRecordTrajectory:
         # among them: it is derived when the record is read, because it
         # can only be computed over a session's records together.
         stored = dict(records[0]["signals"])
-        derived = {"implicit": stored.pop("implicit", None),
-                   "implicit_source": stored.pop("implicit_source", None)}
+        derived = {
+            "implicit": stored.pop("implicit", None),
+            "implicit_source": stored.pop("implicit_source", None),
+        }
         assert stored == {
-            "tool_errors": 1, "retries": 1, "truncations": 0, "compactions": 0,
+            "tool_errors": 1,
+            "retries": 1,
+            "truncations": 0,
+            "compactions": 0,
             # No run state was supplied, so how the loop ended is unknown
             # rather than assumed to have been fine.
             "stop_reason": "",
-            "user_rating": None, "verifier": None,
+            "user_rating": None,
+            "verifier": None,
         }
         # And the derived label is present on read: a single-task
         # session ends, and an ended session is the weakest possible
@@ -1251,41 +1378,46 @@ class TestRecordTrajectory:
 
         onit = self._onit(tmp_path)
         onit._record_trajectory(
-            "an impossible task", "partial", {"turns": [], "turn_count": 9},
-            self._session_with_one_turn(tmp_path), "sess-1", None,
-            run_state=RunState(iteration_count=9, stop_reason=STOP_TURN_LIMIT))
+            "an impossible task",
+            "partial",
+            {"turns": [], "turn_count": 9},
+            self._session_with_one_turn(tmp_path),
+            "sess-1",
+            None,
+            run_state=RunState(iteration_count=9, stop_reason=STOP_TURN_LIMIT),
+        )
         records = read_session("sess-1", onit.config_data)
         assert records[0]["signals"]["stop_reason"] == STOP_TURN_LIMIT
 
     def test_turn_number_follows_the_session_file(self, tmp_path):
         from learn import read_session
+
         onit = self._onit(tmp_path)
         path = tmp_path / "s.jsonl"
-        path.write_text("".join(
-            json.dumps({"task": f"t{n}", "response": "r"}) + "\n" for n in range(3)))
+        path.write_text(
+            "".join(json.dumps({"task": f"t{n}", "response": "r"}) + "\n" for n in range(3))
+        )
         onit._record_trajectory("t2", "r", {}, str(path), "sess-1", None)
         assert read_session("sess-1", onit.config_data)[0]["turn"] == 3
 
     def test_off_writes_nothing(self, tmp_path):
         onit = self._onit(tmp_path, autonomy="off")
-        onit._record_trajectory("t", "r", {},
-                                self._session_with_one_turn(tmp_path), "sess-1", None)
+        onit._record_trajectory("t", "r", {}, self._session_with_one_turn(tmp_path), "sess-1", None)
         assert not (tmp_path / "learned").exists()
 
     def test_a_broken_store_does_not_propagate(self, tmp_path, monkeypatch):
         onit = self._onit(tmp_path)
         import learn.trajectory as traj
-        monkeypatch.setattr(traj.os, "makedirs",
-                            MagicMock(side_effect=OSError("read-only")))
-        onit._record_trajectory("t", "r", {},
-                                self._session_with_one_turn(tmp_path), "sess-1", None)
+
+        monkeypatch.setattr(traj.os, "makedirs", MagicMock(side_effect=OSError("read-only")))
+        onit._record_trajectory("t", "r", {}, self._session_with_one_turn(tmp_path), "sess-1", None)
 
     def test_a_missing_registry_does_not_propagate(self, tmp_path):
         onit = self._onit(tmp_path)
         onit.tool_registry = None
-        onit._record_trajectory("t", "r", {},
-                                self._session_with_one_turn(tmp_path), "sess-1", None)
+        onit._record_trajectory("t", "r", {}, self._session_with_one_turn(tmp_path), "sess-1", None)
         from learn import read_session
+
         assert read_session("sess-1", onit.config_data)[0]["tools_available"] == []
 
 
@@ -1321,6 +1453,7 @@ class TestHarnessToolsFlag:
 
     def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
         from src.onit import SERVING_PASSTHROUGH
+
         assert "harness_tools" in SERVING_PASSTHROUGH
         cfg = _make_config(tmp_path)
         with _mock_discover():
@@ -1328,8 +1461,8 @@ class TestHarnessToolsFlag:
         assert "harness_tools" not in onit.model_serving
 
 
-
 # ── run state across the tasks of a session ─────────────────────────────────
+
 
 class TestRunState:
     """The other half of a session: what was done, not what was said.
@@ -1380,8 +1513,10 @@ class TestRunState:
             state.stop_reason = STOP_ANSWERED
             return "The answer"
 
-        with patch("src.onit.Client", return_value=self._prompt_client()), \
-             patch("src.onit.chat", new=_fake_chat):
+        with (
+            patch("src.onit.Client", return_value=self._prompt_client()),
+            patch("src.onit.chat", new=_fake_chat),
+        ):
             await onit.process_task("List the files.")
 
         path = state_path_for(onit.session_path)
@@ -1408,8 +1543,10 @@ class TestRunState:
             state.stop_reason = STOP_TURN_LIMIT
             return None
 
-        with patch("src.onit.Client", return_value=self._prompt_client()), \
-             patch("src.onit.chat", new=_fake_chat):
+        with (
+            patch("src.onit.Client", return_value=self._prompt_client()),
+            patch("src.onit.chat", new=_fake_chat),
+        ):
             result = await onit.process_task("Impossible task.")
 
         assert "rephrase" in result
@@ -1426,8 +1563,10 @@ class TestRunState:
             kwargs["run_state"].iteration_count = 1
             return "ok"
 
-        with patch("src.onit.Client", return_value=self._prompt_client()), \
-             patch("src.onit.chat", new=_fake_chat):
+        with (
+            patch("src.onit.Client", return_value=self._prompt_client()),
+            patch("src.onit.chat", new=_fake_chat),
+        ):
             await onit.process_task("one")
             await onit.process_task("two")
 
@@ -1450,8 +1589,10 @@ class TestRunState:
             kwargs["run_state"].tool_call_history.append(("bash", "{}"))
             return "ok"
 
-        with patch("src.onit.Client", return_value=self._prompt_client()), \
-             patch("src.onit.chat", new=_fake_chat):
+        with (
+            patch("src.onit.Client", return_value=self._prompt_client()),
+            patch("src.onit.chat", new=_fake_chat),
+        ):
             await onit.process_task("one")
             await onit.process_task("two")
 
@@ -1460,17 +1601,16 @@ class TestRunState:
     # ── resume ──────────────────────────────────────────────────────────────
 
     def test_resume_restores_the_tool_call_history(self, tmp_path):
-        from src.model.serving.state import (RunState, STOP_TURN_LIMIT,
-                                             state_path_for)
+        from src.model.serving.state import RunState, STOP_TURN_LIMIT, state_path_for
 
         cfg = self._config(tmp_path)
         with _mock_discover():
             first = OnIt(config=cfg)
 
-        state = RunState(iteration_count=4, stop_reason=STOP_TURN_LIMIT,
-                         task_count=1, total_turns=4)
-        state.tool_call_history = [("local_search", '{"query": "x"}'),
-                                   ("bash", "{}")]
+        state = RunState(
+            iteration_count=4, stop_reason=STOP_TURN_LIMIT, task_count=1, total_turns=4
+        )
+        state.tool_call_history = [("local_search", '{"query": "x"}'), ("bash", "{}")]
         state.save(state_path_for(first.session_path))
 
         resumed_cfg = dict(cfg)
@@ -1480,23 +1620,27 @@ class TestRunState:
 
         assert second.session_id == first.session_id
         assert second.run_state.tool_call_history == [
-            ("local_search", '{"query": "x"}'), ("bash", "{}")]
+            ("local_search", '{"query": "x"}'),
+            ("bash", "{}"),
+        ]
         assert second.run_state.stop_reason == STOP_TURN_LIMIT
         assert second.run_state.total_turns == 4
 
     def test_a_resumed_session_tells_the_model_what_it_tried(self, tmp_path):
         """Step 5 of the phase: the history is fed into the instruction, so a
         continued session knows what has already been attempted."""
-        from src.model.serving.state import (RunState, STOP_TURN_LIMIT,
-                                             state_path_for)
+        from src.model.serving.state import RunState, STOP_TURN_LIMIT, state_path_for
 
         cfg = self._config(tmp_path)
         with _mock_discover():
             first = OnIt(config=cfg)
 
         state = RunState(stop_reason=STOP_TURN_LIMIT, total_turns=9)
-        state.tool_call_history = [("local_search", "{}"), ("local_search", '{"q":1}'),
-                                   ("bash", "{}")]
+        state.tool_call_history = [
+            ("local_search", "{}"),
+            ("local_search", '{"q":1}'),
+            ("bash", "{}"),
+        ]
         state.save(state_path_for(first.session_path))
 
         resumed_cfg = dict(cfg)
@@ -1511,8 +1655,7 @@ class TestRunState:
             return "instruction"
 
         with patch("src.onit.build_assistant_instruction", new=_fake):
-            asyncio.run(second._assistant_instruction("carry on",
-                                                      str(tmp_path / "data")))
+            asyncio.run(second._assistant_instruction("carry on", str(tmp_path / "data")))
 
         note = captured["prior_attempts"]
         assert "local_search×2" in note
@@ -1554,25 +1697,26 @@ class TestRunState:
             kwargs["run_state"].tool_call_history.append(("bash", "{}"))
             return "ok"
 
-        with patch("src.onit.Client", return_value=self._prompt_client()), \
-             patch("src.onit.chat", new=_fake_chat):
-            await onit.process_task("hi", session_path=str(other),
-                                    session_id="other")
+        with (
+            patch("src.onit.Client", return_value=self._prompt_client()),
+            patch("src.onit.chat", new=_fake_chat),
+        ):
+            await onit.process_task("hi", session_path=str(other), session_id="other")
 
         assert os.path.exists(state_path_for(str(other)))
         assert not os.path.exists(state_path_for(onit.session_path))
         assert onit.run_state.tool_call_history == []
 
     @pytest.mark.asyncio
-    async def test_a_state_file_that_cannot_be_written_does_not_fail_the_task(
-            self, tmp_path):
+    async def test_a_state_file_that_cannot_be_written_does_not_fail_the_task(self, tmp_path):
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
         onit.safety_queue = asyncio.Queue()
 
-        with patch("src.onit.Client", return_value=self._prompt_client()), \
-             patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"), \
-             patch("src.model.serving.state.RunState.save",
-                   side_effect=OSError("read-only")):
+        with (
+            patch("src.onit.Client", return_value=self._prompt_client()),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"),
+            patch("src.model.serving.state.RunState.save", side_effect=OSError("read-only")),
+        ):
             result = await onit.process_task("hi")
 
         assert result == "The answer"
@@ -1614,6 +1758,7 @@ class TestResultStoreFlag:
 
     def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
         from src.onit import SERVING_PASSTHROUGH
+
         assert "result_store" in SERVING_PASSTHROUGH
         with _mock_discover():
             onit = OnIt(config=_make_config(tmp_path))
@@ -1681,6 +1826,7 @@ class TestSandboxAvailable:
 
     def test_reaches_chat_only_when_the_config_sets_it(self, tmp_path):
         from src.onit import SERVING_PASSTHROUGH
+
         assert "code_execution" in SERVING_PASSTHROUGH
         assert "code_timeout" in SERVING_PASSTHROUGH
         with _mock_discover():
@@ -1707,6 +1853,7 @@ class TestSandboxAvailable:
 
 # ── _handle_successful_response: one answer, one block ──────────────────────
 
+
 class TestFinalAnswerBlock:
     """The panel must show a turn's answer once.
 
@@ -1718,6 +1865,7 @@ class TestFinalAnswerBlock:
 
     def _onit(self, tmp_path):
         from src.ui.text import ChatUI
+
         with _mock_discover():
             onit = OnIt(config=_make_config(tmp_path))
         onit.chat_ui = ChatUI()
@@ -1763,8 +1911,9 @@ class TestFinalAnswerBlock:
         """End to end over the path that lost the tail: a wrapper tag is
         removed, the comparison and everything after it are kept."""
         onit = self._onit(tmp_path)
-        answer = ("mean **0.70931** < 0.71205 -> rejected\n\n"
-                  "## Round 2\ntext the user needs\n</answer>")
+        answer = (
+            "mean **0.70931** < 0.71205 -> rejected\n\n## Round 2\ntext the user needs\n</answer>"
+        )
         self._handle(onit, answer)
         stored = onit.chat_ui.messages[-1].content
         assert "< 0.71205" in stored
@@ -1772,6 +1921,7 @@ class TestFinalAnswerBlock:
 
 
 # ── a caller that brings no queue ────────────────────────────────────────────
+
 
 class TestProcessTaskWithoutAnInstanceQueue:
     """An agent built outside ``run()`` has no queue, and must still run.
@@ -1809,9 +1959,10 @@ class TestProcessTaskWithoutAnInstanceQueue:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", new_callable=AsyncMock,
-                   return_value="The answer"):
+        with (
+            patch("src.onit.Client", return_value=mock_client),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"),
+        ):
             result = await onit.process_task("What is 2+2?", safety_queue=None)
 
         assert result == "The answer"
@@ -1823,7 +1974,8 @@ class TestProcessTaskWithoutAnInstanceQueue:
         onit = _make_onit_for_async(tmp_path)
         assert onit.safety_queue is None, (
             "an agent built outside run() must have no instance queue, "
-            "or this test is not testing the fallback")
+            "or this test is not testing the fallback"
+        )
 
         mock_prompt_msg = MagicMock()
         mock_prompt_msg.content.text = "Instruction text"
@@ -1835,13 +1987,15 @@ class TestProcessTaskWithoutAnInstanceQueue:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.onit.Client", return_value=mock_client), \
-             patch("src.onit.chat", new_callable=AsyncMock,
-                   return_value="ok"):
+        with (
+            patch("src.onit.Client", return_value=mock_client),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value="ok"),
+        ):
             assert await onit.process_task("q", safety_queue=None) == "ok"
 
 
 # ── the session named in the UI ──────────────────────────────────────────────
+
 
 class TestTheUiIsToldWhichSession:
     """A bare ``onit`` resumes the last session.  The footer under every answer
@@ -1867,8 +2021,7 @@ class TestTheUiIsToldWhichSession:
         cfg = self._config(tmp_path)
         with _mock_discover():
             first = OnIt(config=cfg)
-        sessions.tag_session(first.session_id, "thesis ch3",
-                             str(tmp_path / "sessions"))
+        sessions.tag_session(first.session_id, "thesis ch3", str(tmp_path / "sessions"))
 
         with _mock_discover():
             second = OnIt(config={**cfg, "resume_session_id": first.session_id})
@@ -1883,9 +2036,9 @@ class TestTheUiIsToldWhichSession:
         cfg = self._config(tmp_path)
         with _mock_discover():
             first = OnIt(config=cfg)
-        sessions.update_session(first.session_id,
-                                task="debug the cuda kernel",
-                                sessions_dir=str(tmp_path / "sessions"))
+        sessions.update_session(
+            first.session_id, task="debug the cuda kernel", sessions_dir=str(tmp_path / "sessions")
+        )
 
         with _mock_discover():
             second = OnIt(config={**cfg, "resume_session_id": first.session_id})
@@ -1896,9 +2049,12 @@ class TestTheUiIsToldWhichSession:
         footer with neither field leaves the person unable to tell whether
         they are pointed where they meant to be."""
         with _mock_discover():
-            onit = OnIt(config=self._config(
-                tmp_path, serving={"host": "http://localhost:11434/v1",
-                                   "model": "qwen3-coder:30b"}))
+            onit = OnIt(
+                config=self._config(
+                    tmp_path,
+                    serving={"host": "http://localhost:11434/v1", "model": "qwen3-coder:30b"},
+                )
+            )
         assert onit.chat_ui.model_name == "qwen3-coder:30b"
         assert onit.chat_ui.provider_name == "ollama"
 
@@ -1918,16 +2074,18 @@ class TestTheUiIsToldWhichSession:
             onit = OnIt(config=self._config(tmp_path))
         assert onit.chat_ui.session_name.startswith("(unnamed) ")
 
-        onit._refresh_session_label(
-            onit.session_id, os.path.dirname(onit.session_path))
+        onit._refresh_session_label(onit.session_id, os.path.dirname(onit.session_path))
         # No turn yet, so still unnamed -- the index has nothing new to say.
         assert onit.chat_ui.session_name.startswith("(unnamed) ")
 
         from src.sessions import update_session
-        update_session(onit.session_id, task="review the onit codebase",
-                       sessions_dir=os.path.dirname(onit.session_path))
-        onit._refresh_session_label(
-            onit.session_id, os.path.dirname(onit.session_path))
+
+        update_session(
+            onit.session_id,
+            task="review the onit codebase",
+            sessions_dir=os.path.dirname(onit.session_path),
+        )
+        onit._refresh_session_label(onit.session_id, os.path.dirname(onit.session_path))
         assert onit.chat_ui.session_name == "review-onit-codebase"
 
     def test_another_sessions_label_does_not_overwrite_this_one(self, tmp_path):
@@ -1937,8 +2095,7 @@ class TestTheUiIsToldWhichSession:
         with _mock_discover():
             onit = OnIt(config=self._config(tmp_path))
         before = onit.chat_ui.session_name
-        onit._refresh_session_label("some-other-session", 
-                                    os.path.dirname(onit.session_path))
+        onit._refresh_session_label("some-other-session", os.path.dirname(onit.session_path))
         assert onit.chat_ui.session_name == before
 
 
@@ -1963,9 +2120,10 @@ class TestTheFooterIsRenamedByTheFirstAnswer:
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.onit.Client", return_value=client), \
-             patch("src.onit.chat", new_callable=AsyncMock,
-                   return_value="The answer"):
+        with (
+            patch("src.onit.Client", return_value=client),
+            patch("src.onit.chat", new_callable=AsyncMock, return_value="The answer"),
+        ):
             await onit.process_task("review the onit codebase")
 
         assert onit.chat_ui.session_name == "review-onit-codebase"

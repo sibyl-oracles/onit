@@ -1,6 +1,8 @@
 """Verify the anchored rm-on-root patterns via the real policy module."""
+
 import sys
-sys.path.insert(0, '/Users/rowel/github/sibyl/onit')
+
+sys.path.insert(0, "/Users/rowel/github/sibyl/onit")
 import src.mcp.servers.tasks.os.bash.mcp_server as m
 
 cases = [

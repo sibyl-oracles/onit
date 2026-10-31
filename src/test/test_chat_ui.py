@@ -17,6 +17,7 @@ from ui.text import Message, ChatUI
 
 # ── Message dataclass ───────────────────────────────────────────────────────
 
+
 class TestMessage:
     def test_create_with_required_fields(self):
         m = Message(role="user", content="hello", timestamp="12:00 PM")
@@ -30,6 +31,7 @@ class TestMessage:
 
 
 # ── ChatUI ──────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def chat_ui():
@@ -145,6 +147,7 @@ class TestChatUI:
 
 # ── fact-check display ──────────────────────────────────────────────────────
 
+
 class TestVerificationDisplay:
     def test_clean_check_leaves_the_answer_alone(self, chat_ui):
         chat_ui.add_message("assistant", "Revenue was 4.2M in 2019.")
@@ -210,6 +213,7 @@ class TestLateCorrection:
 
 # ── turn timing ─────────────────────────────────────────────────────────────
 
+
 def _meta_line(output: str) -> str:
     """The footer rule line, which is where the per-turn meta text lives.
 
@@ -220,8 +224,7 @@ def _meta_line(output: str) -> str:
     border also uses.  Rich wraps the rule on a narrow console, so the meta text
     can continue onto the next line; everything up to the stats line is meta.
     """
-    lines = [re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", ln) for ln in
-             output.splitlines()]
+    lines = [re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", ln) for ln in output.splitlines()]
     for line in lines:
         # What follows the rule on its own line is the meta text.  Rich
         # re-wraps, so this can also be the start of the line, but the run of
@@ -234,7 +237,6 @@ def _meta_line(output: str) -> str:
 
 
 class TestTurnTiming:
-
     def test_meta_matches_the_web_ui_shape(self):
         """The browser prints '12.35s · 21.5 tok/s'; the terminal must agree."""
         assert ChatUI.format_meta(12.345, 21.47) == "12.35s · 21.5 tok/s"
@@ -248,7 +250,7 @@ class TestTurnTiming:
         waited through them — the web UI counts them, so this must too."""
         chat_ui.turn_start()
         chat_ui._turn_start_time -= 5.0  # 5s of tool calls
-        chat_ui.stream_start()           # first token only now
+        chat_ui.stream_start()  # first token only now
         assert chat_ui._turn_elapsed() >= 5.0
 
     def test_turn_clock_falls_back_to_the_stream(self, chat_ui):
@@ -301,6 +303,7 @@ class TestTurnTiming:
 
 # ── streamed answer text ────────────────────────────────────────────────────
 
+
 def _stream(chat_ui, tokens, capsys):
     """Feed tokens through a full stream and return everything printed."""
     chat_ui.console = Console(file=sys.stdout, width=120)
@@ -318,8 +321,9 @@ class TestStreamedAnswerIsComplete:
     """The link/tag filters buffer across tokens; nothing they hold may be lost."""
 
     def test_unclosed_link_paren_does_not_eat_the_rest(self, chat_ui, capsys):
-        out = _stream(chat_ui, ["The plot ", "f[i](t ", "keeps rising. ",
-                                "Final answer: 42.\n"], capsys)
+        out = _stream(
+            chat_ui, ["The plot ", "f[i](t ", "keeps rising. ", "Final answer: 42.\n"], capsys
+        )
         assert "Final answer: 42." in out
         assert "f[i](t keeps rising." in out
 
@@ -414,8 +418,7 @@ class TestAskApproval:
 
     REQUEST = {
         "command": "ls /home/rowel; grep '[0-9]' notes.txt",
-        "reason": "Command blocked: references path '/home/rowel' outside "
-                  "allowed directories.",
+        "reason": "Command blocked: references path '/home/rowel' outside allowed directories.",
         "subjects": ["path:/home/rowel"],
     }
 
@@ -443,8 +446,7 @@ class TestAskApproval:
         # reads through input() no matter how the suite was started. Under
         # `pytest -s` stdin is the real terminal, and without this these tests
         # would poll it for five minutes instead of reading the queue.
-        with patch("builtins.input", _input), \
-                patch.object(sys, "stdin", _NotATTY(sys.stdin)):
+        with patch("builtins.input", _input), patch.object(sys, "stdin", _NotATTY(sys.stdin)):
             choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
         return choice, buf.getvalue(), prompts
 
@@ -467,14 +469,24 @@ class TestAskApproval:
         _, out, _prompts = self._ask(chat_ui, ["3"])
         assert "grep '[0-9]' notes.txt" in out
 
-    @pytest.mark.parametrize("typed,expected", [
-        ("1", "once"), ("y", "once"), ("yes", "once"), ("run", "once"),
-        # Ambiguous — the screen offers "allow" as the session label, but on
-        # its own it just means yes, so it takes the narrower reading.
-        ("allow", "once"),
-        ("2", "session"), ("a", "session"), ("always", "session"),
-        ("3", "deny"), ("n", "deny"), ("no", "deny"),
-    ])
+    @pytest.mark.parametrize(
+        "typed,expected",
+        [
+            ("1", "once"),
+            ("y", "once"),
+            ("yes", "once"),
+            ("run", "once"),
+            # Ambiguous — the screen offers "allow" as the session label, but on
+            # its own it just means yes, so it takes the narrower reading.
+            ("allow", "once"),
+            ("2", "session"),
+            ("a", "session"),
+            ("always", "session"),
+            ("3", "deny"),
+            ("n", "deny"),
+            ("no", "deny"),
+        ],
+    )
     def test_words_people_actually_type(self, chat_ui, typed, expected):
         choice, _, _prompts = self._ask(chat_ui, [typed])
         assert choice == expected
@@ -510,8 +522,7 @@ class TestAskApproval:
         def _eof(prompt=""):
             raise EOFError
 
-        with patch("builtins.input", _eof), \
-                patch.object(sys, "stdin", _NotATTY(sys.stdin)):
+        with patch("builtins.input", _eof), patch.object(sys, "stdin", _NotATTY(sys.stdin)):
             choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
         assert choice == "deny"
 
@@ -535,15 +546,15 @@ class TestAskApproval:
         try:
             stdin = os.fdopen(slave, "r")
             with patch.object(sys, "stdin", stdin):
-                late = asyncio.run(chat_ui._read_answer_tty(
-                    "  ➤ approve? ", _time.monotonic() + 0.2))
+                late = asyncio.run(
+                    chat_ui._read_answer_tty("  ➤ approve? ", _time.monotonic() + 0.2)
+                )
                 assert late is None, "the prompt should stop at its deadline"
 
                 # Typed just after the question expired — the keystrokes the
                 # abandoned thread used to eat.
                 os.write(master, b"2\n")
-                after = asyncio.run(chat_ui._read_answer_tty(
-                    "  ➤ ", _time.monotonic() + 5))
+                after = asyncio.run(chat_ui._read_answer_tty("  ➤ ", _time.monotonic() + 5))
             assert after == "2"
         finally:
             os.close(master)
@@ -571,9 +582,11 @@ class TestAskApproval:
             answered.wait(30)  # a person who is not at the keyboard
             return "2"
 
-        with patch("ui.text.APPROVAL_TIMEOUT", 0.3), \
-                patch("builtins.input", _never), \
-                patch.object(sys, "stdin", _NotATTY(sys.stdin)):
+        with (
+            patch("ui.text.APPROVAL_TIMEOUT", 0.3),
+            patch("builtins.input", _never),
+            patch.object(sys, "stdin", _NotATTY(sys.stdin)),
+        ):
             try:
                 choice = asyncio.run(chat_ui.ask_approval(self.REQUEST))
             finally:
@@ -598,49 +611,48 @@ class TestAskApproval:
             return "1"
 
         async def _run():
-            with patch("builtins.input", _never), \
-                    patch.object(sys, "stdin", _NotATTY(sys.stdin)):
+            with patch("builtins.input", _never), patch.object(sys, "stdin", _NotATTY(sys.stdin)):
                 import time as _time
-                return await chat_ui._read_answer_piped(
-                    "? ", _time.monotonic() + 0.3)
+
+                return await chat_ui._read_answer_piped("? ", _time.monotonic() + 0.3)
 
         try:
             assert asyncio.run(_run()) is None
-            readers = [t for t in _threading.enumerate()
-                       if t.name == "onit-approval-read"]
+            readers = [t for t in _threading.enumerate() if t.name == "onit-approval-read"]
             assert readers, "the reader should still be the one blocked"
             assert all(t.daemon for t in readers)
         finally:
             release.set()
 
+
 # ── token budget label ──────────────────────────────────────────────────────
+
 
 class TestTokenBudgetLabel:
     """The status label names both budgets, so a run's two token limits — the
     window and one reply's share of it — are told apart on sight."""
 
     def test_both_budgets_are_labelled(self, chat_ui):
-        chat_ui.set_token_budgets(max_output_tokens=131072,
-                                  max_context_tokens=262144)
+        chat_ui.set_token_budgets(max_output_tokens=131072, max_context_tokens=262144)
         chat_ui.set_context_usage(42.0)
         assert chat_ui._fmt_ctx_label() == (
-            "ctx: 42%, max context toks: 262k, max output toks: 131k")
+            "ctx: 42%, max context toks: 262k, max output toks: 131k"
+        )
 
     def test_context_percentage_sits_beside_the_context_budget(self, chat_ui):
-        chat_ui.set_token_budgets(max_output_tokens=131072,
-                                  max_context_tokens=262144)
+        chat_ui.set_token_budgets(max_output_tokens=131072, max_context_tokens=262144)
         chat_ui.set_context_usage(10.0)
         label = chat_ui._fmt_ctx_label()
-        assert label.index("ctx: ") < label.index("max context toks") \
-            < label.index("max output toks")
+        assert (
+            label.index("ctx: ") < label.index("max context toks") < label.index("max output toks")
+        )
 
     def test_unknown_output_budget_is_left_out(self, chat_ui):
         chat_ui.set_context_usage(42.0, max_tokens=262144)
         assert chat_ui._fmt_ctx_label() == "ctx: 42%, max context toks: 262k"
 
     def test_zero_means_unchanged(self, chat_ui):
-        chat_ui.set_token_budgets(max_output_tokens=4096,
-                                  max_context_tokens=32768)
+        chat_ui.set_token_budgets(max_output_tokens=4096, max_context_tokens=32768)
         chat_ui.set_token_budgets()  # nothing known yet — must not clear them
         assert chat_ui._max_output_tokens == 4096
         assert chat_ui._context_max_tokens == 32768
@@ -770,8 +782,9 @@ class TestRunStatsLine:
         chat_ui.console = Console(file=buf, width=120)
         chat_ui.model_name = "stealth/space-bunny-alpha"
         chat_ui.provider_name = "ollama"
-        chat_ui.set_metrics({"prompt_tokens_total": 4_665_239,
-                             "completion_tokens": 33_580, "decode_s": 30.0})
+        chat_ui.set_metrics(
+            {"prompt_tokens_total": 4_665_239, "completion_tokens": 33_580, "decode_s": 30.0}
+        )
         chat_ui.turn_start()
         chat_ui.stream_start()
         chat_ui.stream_token("hello")
@@ -797,6 +810,7 @@ class TestRunStatsLine:
 
 
 # ── the session named in the stats line ──────────────────────────────────────
+
 
 class TestTheLineSaysWhichSession:
     """A bare ``onit`` resumes the last session, so the footer has to say

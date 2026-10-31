@@ -69,9 +69,16 @@ async def _make_agent(config: dict):
     return await loop.run_in_executor(None, _agent_factory, config)
 
 
-async def run_ab(items: list, *, root: str, base_config: dict | None = None,
-                 arms=("off", "adapt"), limit: int | None = None,
-                 with_grader: bool = True, make_agent=None) -> dict:
+async def run_ab(
+    items: list,
+    *,
+    root: str,
+    base_config: dict | None = None,
+    arms=("off", "adapt"),
+    limit: int | None = None,
+    with_grader: bool = True,
+    make_agent=None,
+) -> dict:
     """Replay a split through two arms and compare them.
 
     ``make_agent(config)`` builds the agent for one arm.  It defaults to
@@ -82,8 +89,7 @@ async def run_ab(items: list, *, root: str, base_config: dict | None = None,
     per-arm results attached under ``"results"``.
     """
     from .llm import make_ask
-    from .runner import (ARM_CONTROL, ARM_TREATMENT, compare, run_arm,
-                         summarise)
+    from .runner import ARM_CONTROL, ARM_TREATMENT, compare, run_arm, summarise
 
     base_config = dict(base_config or {})
     ask = None
@@ -91,8 +97,7 @@ async def run_ab(items: list, *, root: str, base_config: dict | None = None,
         try:
             ask = await make_ask(base_config)
         except Exception as e:
-            logger.warning("no grader available (%s); answers will be "
-                           "recorded but not graded", e)
+            logger.warning("no grader available (%s); answers will be recorded but not graded", e)
 
     def factory(config: dict):
         if make_agent is not None:
@@ -101,10 +106,15 @@ async def run_ab(items: list, *, root: str, base_config: dict | None = None,
 
     per_arm = {}
     for arm in arms:
-        results = await run_arm(items, arm=arm, root=root,
-                                 base_config=base_config,
-                                 make_agent=factory, ask=ask,
-                                 limit=limit)
+        results = await run_arm(
+            items,
+            arm=arm,
+            root=root,
+            base_config=base_config,
+            make_agent=factory,
+            ask=ask,
+            limit=limit,
+        )
         per_arm[arm] = results
 
     control = per_arm.get(ARM_CONTROL, [])

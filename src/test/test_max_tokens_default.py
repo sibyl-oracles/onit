@@ -39,12 +39,14 @@ EXPECTED = 32768
 
 def _shipped_config() -> dict:
     import yaml
+
     with open(os.path.join(SRC, "configs", "default.yaml")) as f:
         return yaml.safe_load(f) or {}
 
 
 def _cli_help_text() -> str:
     from src.cli import _build_parser
+
     return _build_parser().format_help()
 
 
@@ -58,6 +60,7 @@ def _flag_help(flag: str) -> str:
     source, with no wrapping or re-flowing in the way.
     """
     from src.cli import _build_parser
+
     parser = _build_parser()
     action = parser._option_string_actions.get(flag)
     assert action is not None, f"{flag} is not an option of the parser"
@@ -65,6 +68,7 @@ def _flag_help(flag: str) -> str:
 
 
 # ── the code constant ──────────────────────────────────────────────────────
+
 
 class TestCodeConstant:
     def test_the_constant_is_the_expected_value(self):
@@ -78,6 +82,7 @@ class TestCodeConstant:
 
 
 # ── the shipped config ─────────────────────────────────────────────────────
+
 
 class TestShippedConfig:
     def test_the_shipped_config_agrees_with_the_code(self):
@@ -94,6 +99,7 @@ class TestShippedConfig:
 
 
 # ── the CLI help text ──────────────────────────────────────────────────────
+
 
 class TestCliHelp:
     def test_the_help_text_names_the_real_default(self):
@@ -118,6 +124,7 @@ class TestCliHelp:
 
 
 # ── the compaction threshold, which is what the number really controls ────
+
 
 class TestCompactionThreshold:
     """The output default is reserved against the context window, so it
@@ -162,11 +169,11 @@ class TestCompactionThreshold:
     def test_the_threshold_is_monotonic_in_the_default(self, window):
         """A bigger output default reserves more of the window, so the
         threshold can only go down."""
-        assert (self._threshold(DEFAULT_MAX_TOKENS, window)
-                <= self._threshold(16384, window))
+        assert self._threshold(DEFAULT_MAX_TOKENS, window) <= self._threshold(16384, window)
 
 
 # ── the docs ───────────────────────────────────────────────────────────────
+
 
 class TestDocs:
     def _read(self, *parts: str) -> str:
@@ -193,6 +200,7 @@ class TestDocs:
 
 # ── the effective value, resolved the way a run resolves it ────────────────
 
+
 class TestEffectiveValue:
     """The number that actually reaches the model is not the constant
     directly: it is the config's value when there is one, and the constant
@@ -202,6 +210,7 @@ class TestEffectiveValue:
         from src.onit import OnIt
         from type.tools import ToolRegistry
         from unittest.mock import patch
+
         # Building an OnIt creates a session, and a config without
         # ``session_path`` sends that to ``~/.onit/sessions`` -- the real store
         # of whoever runs the suite.  Three tests in this class meant three
@@ -218,23 +227,21 @@ class TestEffectiveValue:
         """A session store that is thrown away with the test."""
         return tmp_path / "sessions"
 
-    def test_a_config_without_max_tokens_falls_back_to_the_constant(
-            self, _sessions_dir):
-        assert self._resolved({"serving": {"host": "http://x/v1"}},
-                              _sessions_dir) == EXPECTED
+    def test_a_config_without_max_tokens_falls_back_to_the_constant(self, _sessions_dir):
+        assert self._resolved({"serving": {"host": "http://x/v1"}}, _sessions_dir) == EXPECTED
 
     def test_a_config_with_max_tokens_wins(self, _sessions_dir):
-        assert self._resolved({"serving": {"host": "http://x/v1",
-                                           "max_tokens": 4096}},
-                              _sessions_dir) == 4096
+        assert (
+            self._resolved({"serving": {"host": "http://x/v1", "max_tokens": 4096}}, _sessions_dir)
+            == 4096
+        )
 
-    def test_a_user_config_without_the_key_gets_the_code_default(
-            self, _sessions_dir):
+    def test_a_user_config_without_the_key_gets_the_code_default(self, _sessions_dir):
         """The case that made the shipped YAML irrelevant: a user config
         replaces the shipped file, so it is the code constant that answers
         when the user config omits the key."""
         import yaml
-        user_cfg = yaml.safe_load(
-            "serving:\n  host: http://x/v1\n  think: true\n")
+
+        user_cfg = yaml.safe_load("serving:\n  host: http://x/v1\n  think: true\n")
         assert "max_tokens" not in user_cfg.get("serving", {})
         assert self._resolved(user_cfg, _sessions_dir) == EXPECTED

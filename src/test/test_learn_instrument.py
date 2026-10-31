@@ -35,8 +35,15 @@ def _stub_factory(config):
 
 
 def _item(task="a question", response="the right answer", item_id="s1#1"):
-    return {"id": item_id, "task": task, "response": response,
-            "model": "m1", "owner": None, "session_id": "s1", "turn": 1}
+    return {
+        "id": item_id,
+        "task": task,
+        "response": response,
+        "model": "m1",
+        "owner": None,
+        "session_id": "s1",
+        "turn": 1,
+    }
 
 
 async def _ask_ok(messages):
@@ -45,17 +52,21 @@ async def _ask_ok(messages):
 
 # ── the A/B ─────────────────────────────────────────────────────────────────
 
+
 class TestRunAb:
     """Two arms, one comparison."""
 
     async def test_the_ab_produces_a_comparison(self, tmp_path):
         StubAgent.instances = []
-        items = [_item("q1", "the reference", "s1#1"),
-                 _item("q2", "the reference", "s1#2")]
-        result = await ab.run_ab(items, root=str(tmp_path),
-                                 base_config={"serving": {"host": "x"}},
-                                 limit=2, with_grader=False,
-                                 make_agent=_stub_factory)
+        items = [_item("q1", "the reference", "s1#1"), _item("q2", "the reference", "s1#2")]
+        result = await ab.run_ab(
+            items,
+            root=str(tmp_path),
+            base_config={"serving": {"host": "x"}},
+            limit=2,
+            with_grader=False,
+            make_agent=_stub_factory,
+        )
         assert result["control"]["n"] == 2
         assert result["treatment"]["n"] == 2
         assert "delta" in result
@@ -70,22 +81,29 @@ class TestRunAb:
         """
         StubAgent.instances = []
         items = [_item()]
-        await ab.run_ab(items, root=str(tmp_path),
-                        base_config={"serving": {"host": "x"}},
-                        limit=1, with_grader=False,
-                        make_agent=_stub_factory)
+        await ab.run_ab(
+            items,
+            root=str(tmp_path),
+            base_config={"serving": {"host": "x"}},
+            limit=1,
+            with_grader=False,
+            make_agent=_stub_factory,
+        )
         assert len(StubAgent.instances) == 2
-        autonomies = {a.config["learn"]["autonomy"]
-                       for a in StubAgent.instances}
+        autonomies = {a.config["learn"]["autonomy"] for a in StubAgent.instances}
         assert autonomies == {"off", "adapt"}
 
     async def test_the_results_are_on_disk(self, tmp_path):
         StubAgent.instances = []
         items = [_item()]
-        await ab.run_ab(items, root=str(tmp_path),
-                        base_config={"serving": {"host": "x"}},
-                        limit=1, with_grader=False,
-                        make_agent=_stub_factory)
+        await ab.run_ab(
+            items,
+            root=str(tmp_path),
+            base_config={"serving": {"host": "x"}},
+            limit=1,
+            with_grader=False,
+            make_agent=_stub_factory,
+        )
         for arm in ("off", "adapt"):
             path = os.path.join(str(tmp_path), "arms", arm, "results.json")
             assert os.path.exists(path), "no results for the %s arm" % arm
@@ -95,10 +113,14 @@ class TestRunAb:
     async def test_the_comparison_is_formattable(self, tmp_path):
         StubAgent.instances = []
         items = [_item()]
-        result = await ab.run_ab(items, root=str(tmp_path),
-                                 base_config={"serving": {"host": "x"}},
-                                 limit=1, with_grader=False,
-                                 make_agent=_stub_factory)
+        result = await ab.run_ab(
+            items,
+            root=str(tmp_path),
+            base_config={"serving": {"host": "x"}},
+            limit=1,
+            with_grader=False,
+            make_agent=_stub_factory,
+        )
         text = runner.format_comparison(result, label="A/B:")
         assert "control" in text
         assert "treatment" in text
@@ -106,6 +128,7 @@ class TestRunAb:
 
 
 # ── the base config ─────────────────────────────────────────────────────────
+
 
 class TestBaseConfigForRun:
     def test_the_ui_is_off(self):
@@ -120,6 +143,7 @@ class TestBaseConfigForRun:
 
 # ── the reflector, end to end ───────────────────────────────────────────────
 
+
 class TestReflectorToPlaybook:
     """A model bullet has to survive the curator and reach the context."""
 
@@ -130,23 +154,32 @@ class TestReflectorToPlaybook:
         accepts, because a delta the curator rejects is a lesson
         silently thrown away.
         """
-        config = {"learn": {"path": str(tmp_path / "learned")},
-                  "data_path": str(tmp_path / "work")}
+        config = {"learn": {"path": str(tmp_path / "learned")}, "data_path": str(tmp_path / "work")}
 
-        good = {"session_id": "s1", "turn": 1,
-                "task": "find the weather forecast",
-                "response": "an answer", "signals": {"verifier": "clean"},
-                "trajectory": [{"turn": 1, "tools": [{"name": "search",
-                                                      "ok": True}]}]}
-        bad = {"session_id": "s2", "turn": 1,
-               "task": "find the weather forecast",
-               "response": "an answer", "signals": {"verifier": "issues"},
-               "trajectory": [{"turn": 1, "tools": [{"name": "search",
-                                                     "ok": False}]}]}
+        good = {
+            "session_id": "s1",
+            "turn": 1,
+            "task": "find the weather forecast",
+            "response": "an answer",
+            "signals": {"verifier": "clean"},
+            "trajectory": [{"turn": 1, "tools": [{"name": "search", "ok": True}]}],
+        }
+        bad = {
+            "session_id": "s2",
+            "turn": 1,
+            "task": "find the weather forecast",
+            "response": "an answer",
+            "signals": {"verifier": "issues"},
+            "trajectory": [{"turn": 1, "tools": [{"name": "search", "ok": False}]}],
+        }
 
-        reply = json.dumps({"bullets": [
-            {"text": "Check the date on the page before quoting it",
-             "trigger": "fetch"}]})
+        reply = json.dumps(
+            {
+                "bullets": [
+                    {"text": "Check the date on the page before quoting it", "trigger": "fetch"}
+                ]
+            }
+        )
 
         async def ask(messages):
             return reply
@@ -174,11 +207,21 @@ class TestReflectorToPlaybook:
         async def ask(messages):
             return reply
 
-        good = {"session_id": "s1", "turn": 1, "task": "find the weather",
-                "response": "an answer", "signals": {"verifier": "clean"},
-                "trajectory": [{"turn": 1, "tools": []}]}
-        bad = {"session_id": "s2", "turn": 1, "task": "find the weather",
-               "response": "an answer", "signals": {"verifier": "issues"},
-               "trajectory": [{"turn": 1, "tools": []}]}
+        good = {
+            "session_id": "s1",
+            "turn": 1,
+            "task": "find the weather",
+            "response": "an answer",
+            "signals": {"verifier": "clean"},
+            "trajectory": [{"turn": 1, "tools": []}],
+        }
+        bad = {
+            "session_id": "s2",
+            "turn": 1,
+            "task": "find the weather",
+            "response": "an answer",
+            "signals": {"verifier": "issues"},
+            "trajectory": [{"turn": 1, "tools": []}],
+        }
         deltas = await reflector.reflect_corpus(ask, [good, bad])
         assert deltas == [], "a bullet with no text was produced"

@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,7 +34,7 @@ document search, and GitHub repository management into a single MCP server.
 12. github_repo     - Create, get, list, fork, or delete GitHub repositories
 13. index_documents - Ingest in-house documents (pdf/md/txt/csv/docx/xlsx) into the local search index
 14. local_search    - BM25/dense/hybrid retrieval over indexed in-house documents
-'''
+"""
 
 import os
 import inspect
@@ -44,7 +44,8 @@ from typing import Optional
 from fastmcp import FastMCP, Context
 
 import logging
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("Tools MCP Server")
@@ -67,8 +68,9 @@ from src.mcp.servers.tasks.shared import (
 )
 
 
-def _init_submodules(data_path: str, documents_path: str = None, verbose: bool = False,
-                     file_server_url: str = None):
+def _init_submodules(
+    data_path: str, documents_path: str = None, verbose: bool = False, file_server_url: str = None
+):
     """Initialize DATA_PATH, DOCUMENTS_PATH, and logging in the sub-modules."""
     import src.mcp.servers.tasks.os.bash.mcp_server as bash_mod
     import src.mcp.servers.tasks.web.search.mcp_server as search_mod
@@ -114,11 +116,9 @@ from src.mcp.servers.tasks.web.search.mcp_server import (
 # Conditionally register tools based on API key availability.
 # When the env var is set, the tool is not registered at all (not just disabled at runtime).
 
-if not os.environ.get('ONIT_DISABLE_WEB_SEARCH'):
-    @mcp.tool(
-        title="Search the Web",
-        description=SEARCH_TOOL_DESCRIPTION
-    )
+if not os.environ.get("ONIT_DISABLE_WEB_SEARCH"):
+
+    @mcp.tool(title="Search the Web", description=SEARCH_TOOL_DESCRIPTION)
     def search(query: Optional[str] = None, type: str = "web", max_results: int = 5) -> str:
         if err := _validate_required(query=query):
             return err
@@ -137,7 +137,7 @@ Args:
 - media_limit: Max files to download
 - data_path: Session working directory — set automatically by the harness; leave unset.
 
-Returns JSON: {title, url, content, images, videos, downloaded}"""
+Returns JSON: {title, url, content, images, videos, downloaded}""",
 )
 def fetch_content(
     url: Optional[str] = None,
@@ -159,7 +159,8 @@ def fetch_content(
     )
 
 
-if not os.environ.get('ONIT_DISABLE_WEATHER'):
+if not os.environ.get("ONIT_DISABLE_WEATHER"):
+
     @mcp.tool(
         title="Get Weather",
         description="""Get current weather and optional 5-day forecast. Auto-detects location if not specified.
@@ -170,7 +171,7 @@ if not os.environ.get('ONIT_DISABLE_WEATHER'):
 
     Returns JSON: {location, current: {description, temperature_c, humidity_percent, wind_speed_ms, sunrise, sunset}, forecast_5day}
 
-    Requires: OPENWEATHER_API_KEY environment variable."""
+    Requires: OPENWEATHER_API_KEY environment variable.""",
     )
     def get_weather(place: Optional[str] = None, forecast: bool = False) -> str:
         return _get_weather(place=place, forecast=forecast)
@@ -190,7 +191,6 @@ from src.mcp.servers.tasks.os.bash.mcp_server import (
 )
 
 
-
 @mcp.tool(
     title="Run Shell Command",
     description="""Execute a bash/shell command. Captures stdout, stderr, and return code.
@@ -206,12 +206,17 @@ Returns JSON: {stdout, stderr, returncode, cwd, command, status}
 For work that may run past 300 seconds — installs, builds, test suites — use
 the serve tool instead: it runs detached with no time limit and lets you poll
 its logs. Raising this timeout cannot get you past 300; the command is killed
-there regardless. Servers and daemons likewise belong in serve."""
+there regardless. Servers and daemons likewise belong in serve.""",
 )
-async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300,
-               data_path: str = "",
-               approval_token: str = "", approval_scope: str = "",
-               ctx: Context = None) -> str:
+async def bash(
+    command: Optional[str] = None,
+    cwd: str = ".",
+    timeout: int = 300,
+    data_path: str = "",
+    approval_token: str = "",
+    approval_scope: str = "",
+    ctx: Context = None,
+) -> str:
     # approval_token/approval_scope are harness-only parameters, deliberately
     # absent from the description above: the model must not learn it can pass
     # them (dispatch strips them from model-supplied arguments anyway). They
@@ -223,9 +228,15 @@ async def bash(command: Optional[str] = None, cwd: str = ".", timeout: int = 300
     # gating, the scope constants, and the empty-scope default.
     if err := _validate_required(command=command):
         return err
-    return await _bash(command=command, cwd=cwd, timeout=timeout,
-                       data_path=data_path, approval_token=approval_token,
-                       approval_scope=approval_scope, ctx=ctx)
+    return await _bash(
+        command=command,
+        cwd=cwd,
+        timeout=timeout,
+        data_path=data_path,
+        approval_token=approval_token,
+        approval_scope=approval_scope,
+        ctx=ctx,
+    )
 
 
 @mcp.tool(
@@ -247,11 +258,16 @@ def read_file(
     modes itself.  Signature and description are shared verbatim so the two
     registrations are replicas of one tool rather than a name collision."""
     return _read_file(
-        path=path, mode=mode, encoding=encoding, max_chars=max_chars,
-        table_index=table_index, output_format=output_format,
-        output_dir=output_dir, min_size=min_size, data_path=data_path,
+        path=path,
+        mode=mode,
+        encoding=encoding,
+        max_chars=max_chars,
+        table_index=table_index,
+        output_format=output_format,
+        output_dir=output_dir,
+        min_size=min_size,
+        data_path=data_path,
     )
-
 
 
 @mcp.tool(
@@ -265,7 +281,7 @@ Args:
 - mode: "write" (overwrite) or "append" (add to end)
 - encoding: Text encoding
 
-Returns JSON: {path, size_bytes, mode, status}"""
+Returns JSON: {path, size_bytes, mode, status}""",
 )
 def write_file(
     path: Optional[str] = None,
@@ -276,8 +292,9 @@ def write_file(
 ) -> str:
     if err := _validate_required(path=path, content=content):
         return err
-    return _write_file(path=path, content=content, mode=mode, encoding=encoding,
-                       data_path=data_path)
+    return _write_file(
+        path=path, content=content, mode=mode, encoding=encoding, data_path=data_path
+    )
 
 
 @mcp.tool(
@@ -291,7 +308,7 @@ Args:
 - replace_all: Replace every occurrence of old_string (default: false, replaces first only)
 - encoding: Text encoding
 
-Returns JSON: {path, replacements, status}"""
+Returns JSON: {path, replacements, status}""",
 )
 def edit_file(
     path: Optional[str] = None,
@@ -303,13 +320,17 @@ def edit_file(
 ) -> str:
     if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
         return err
-    return _edit_file(path=path, old_string=old_string, new_string=new_string, replace_all=replace_all, encoding=encoding, data_path=data_path)
+    return _edit_file(
+        path=path,
+        old_string=old_string,
+        new_string=new_string,
+        replace_all=replace_all,
+        encoding=encoding,
+        data_path=data_path,
+    )
 
 
-@mcp.tool(
-    title="Serve",
-    description=SERVE_DESCRIPTION
-)
+@mcp.tool(title="Serve", description=SERVE_DESCRIPTION)
 def serve(
     action: Optional[str] = None,
     command: Optional[str] = None,
@@ -326,10 +347,17 @@ def serve(
     # serve command survives argument validation.
     if err := _validate_required(action=action):
         return err
-    return _serve(action=action, command=command, name=name, pid=pid, cwd=cwd, lines=lines,
-                  data_path=data_path, approval_token=approval_token,
-                  approval_scope=approval_scope)
-
+    return _serve(
+        action=action,
+        command=command,
+        name=name,
+        pid=pid,
+        cwd=cwd,
+        lines=lines,
+        data_path=data_path,
+        approval_token=approval_token,
+        approval_scope=approval_scope,
+    )
 
 
 @mcp.tool(
@@ -346,7 +374,7 @@ Args:
 - max_results: Maximum matches to return
 
 Returns JSON: {results, total_matches, pattern, directory, file_pattern, status}
-Each result includes: {file, line_number, content}"""
+Each result includes: {file, line_number, content}""",
 )
 def grep(
     path: Optional[str] = None,
@@ -360,9 +388,13 @@ def grep(
     if err := _validate_required(path=path, pattern=pattern):
         return err
     return _search_directory(
-        directory=path, pattern=pattern, file_pattern=file_pattern,
-        case_sensitive=case_sensitive, include_hidden=include_hidden,
-        max_results=max_results, data_path=data_path,
+        directory=path,
+        pattern=pattern,
+        file_pattern=file_pattern,
+        case_sensitive=case_sensitive,
+        include_hidden=include_hidden,
+        max_results=max_results,
+        data_path=data_path,
     )
 
 
@@ -377,10 +409,11 @@ Args:
 - path: Path to the file within data_path folder (required)
 - callback_url: Full upload URL prefix (e.g., "http://host:9000/uploads/session_id"). File is POSTed to {callback_url}/ (optional)
 
-Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}"""
+Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}""",
 )
-def send_file(path: Optional[str] = None, callback_url: Optional[str] = None,
-              data_path: str = "") -> str:
+def send_file(
+    path: Optional[str] = None, callback_url: Optional[str] = None, data_path: str = ""
+) -> str:
     if err := _validate_required(path=path):
         return err
     return _send_file(path=path, callback_url=callback_url, data_path=data_path)
@@ -393,10 +426,7 @@ from src.mcp.servers.tasks.github.mcp_server import (
 )
 
 
-@mcp.tool(
-    title="GitHub Repository",
-    description=GITHUB_REPO_DESCRIPTION
-)
+@mcp.tool(title="GitHub Repository", description=GITHUB_REPO_DESCRIPTION)
 def github_repo(
     action: Optional[str] = None,
     name: Optional[str] = None,
@@ -444,10 +474,17 @@ def search_document(
     modes itself.  Signature and description are shared verbatim so the two
     registrations are replicas of one tool rather than a name collision."""
     return _search_document(
-        path=path, mode=mode, pattern=pattern, query=query, keywords=keywords,
-        case_sensitive=case_sensitive, context_lines=context_lines,
-        max_matches=max_matches, context_chars=context_chars,
-        max_sections=max_sections, data_path=data_path,
+        path=path,
+        mode=mode,
+        pattern=pattern,
+        query=query,
+        keywords=keywords,
+        case_sensitive=case_sensitive,
+        context_lines=context_lines,
+        max_matches=max_matches,
+        context_chars=context_chars,
+        max_sections=max_sections,
+        data_path=data_path,
     )
 
 
@@ -460,7 +497,8 @@ from src.mcp.servers.tasks.local.search.mcp_server import (
     local_search as _local_search,
 )
 
-if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
+if not os.environ.get("ONIT_DISABLE_LOCAL_SEARCH"):
+
     @mcp.tool(
         title="Index Local Documents",
         description=INDEX_DOCUMENTS_DESCRIPTION,
@@ -475,9 +513,13 @@ if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
         data_path: str = "",
     ) -> str:
         return _index_documents(
-            path=path, recursive=recursive, rebuild=rebuild,
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-            status_only=status_only, data_path=data_path,
+            path=path,
+            recursive=recursive,
+            rebuild=rebuild,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            status_only=status_only,
+            data_path=data_path,
         )
 
     @mcp.tool(
@@ -493,8 +535,9 @@ if not os.environ.get('ONIT_DISABLE_LOCAL_SEARCH'):
     ) -> str:
         if err := _validate_required(query=query):
             return err
-        return _local_search(query=query, top_k=top_k, method=method, path=path,
-                             data_path=data_path)
+        return _local_search(
+            query=query, top_k=top_k, method=method, path=path, data_path=data_path
+        )
 
 
 # =============================================================================
@@ -568,8 +611,10 @@ def _apply_profile(profile: str) -> list[str]:
     elif profile == PROFILE_NET:
         drop = [n for n in registered if n not in NET_TOOLS]
     else:
-        raise ValueError(f"Unknown tool profile {profile!r}; "
-                         f"expected {PROFILE_LOCAL}, {PROFILE_NET} or {PROFILE_ALL}")
+        raise ValueError(
+            f"Unknown tool profile {profile!r}; "
+            f"expected {PROFILE_LOCAL}, {PROFILE_NET} or {PROFILE_ALL}"
+        )
 
     for name in drop:
         # remove_tool() moved onto the provider in fastmcp 3.x; the shim keeps
@@ -584,64 +629,74 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18201,
     path: str = "/sse",
-    options: dict = None
+    options: dict = None,
 ) -> None:
     """Run the consolidated Tools MCP server."""
     options = options or {}
     global DATA_PATH, DOCUMENTS_PATH
 
-    verbose = 'verbose' in options
+    verbose = "verbose" in options
     if verbose:
         logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.ERROR)
 
-    if 'data_path' in options:
-        DATA_PATH = options['data_path']
-    elif os.environ.get('ONIT_DATA_PATH'):
-        DATA_PATH = os.environ['ONIT_DATA_PATH']
+    if "data_path" in options:
+        DATA_PATH = options["data_path"]
+    elif os.environ.get("ONIT_DATA_PATH"):
+        DATA_PATH = os.environ["ONIT_DATA_PATH"]
     abs_data = os.path.abspath(os.path.expanduser(DATA_PATH))
     _secure_makedirs(abs_data)
 
-    if 'documents_path' in options:
-        DOCUMENTS_PATH = options['documents_path']
-    elif os.environ.get('ONIT_DOCUMENTS_PATH'):
-        DOCUMENTS_PATH = os.environ['ONIT_DOCUMENTS_PATH']
+    if "documents_path" in options:
+        DOCUMENTS_PATH = options["documents_path"]
+    elif os.environ.get("ONIT_DOCUMENTS_PATH"):
+        DOCUMENTS_PATH = os.environ["ONIT_DOCUMENTS_PATH"]
 
     # Propagate DATA_PATH, DOCUMENTS_PATH, and log level to sub-modules
-    _init_submodules(DATA_PATH, documents_path=DOCUMENTS_PATH, verbose=verbose,
-                     file_server_url=options.get('file_server_url'))
+    _init_submodules(
+        DATA_PATH,
+        documents_path=DOCUMENTS_PATH,
+        verbose=verbose,
+        file_server_url=options.get("file_server_url"),
+    )
 
-    profile = options.get('profile', PROFILE_ALL)
+    profile = options.get("profile", PROFILE_ALL)
     dropped = _apply_profile(profile)
     if dropped:
         logger.info(f"Tool profile {profile!r}: dropped {', '.join(sorted(dropped))}")
 
-    if transport == 'stdio':
+    if transport == "stdio":
         logger.info(f"Starting Tools MCP Server ({profile}) on stdio")
     else:
         logger.info(f"Starting Tools MCP Server ({profile}) at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
 
-    if transport == 'stdio':
+    if transport == "stdio":
         # stdout carries the protocol here, so no uvicorn and no banner.
         # show_banner arrived in fastmcp 3.x; on 2.x the banner goes to
         # stderr, which the parent already captures to its own log file,
         # so dropping the kwarg there is safe.
-        run_kwargs = {'show_banner': False}
-        if 'show_banner' not in inspect.signature(mcp.run).parameters:
-            run_kwargs.pop('show_banner')
-        mcp.run(transport='stdio', **run_kwargs)
+        run_kwargs = {"show_banner": False}
+        if "show_banner" not in inspect.signature(mcp.run).parameters:
+            run_kwargs.pop("show_banner")
+        mcp.run(transport="stdio", **run_kwargs)
         return
 
     if not verbose:
         import uvicorn.config
+
         uvicorn.config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = "WARNING"
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-    mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config=uvicorn_config(quiet=not verbose))
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        uvicorn_config=uvicorn_config(quiet=not verbose),
+    )
 
 
 if __name__ == "__main__":

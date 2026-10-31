@@ -10,8 +10,13 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from model.serving.harness import (COMPACTION_NOTICE, MAX_NOTE_CHARS, MAX_NOTES,
-                                   NOTES_SUBDIR, HarnessTools)
+from model.serving.harness import (
+    COMPACTION_NOTICE,
+    MAX_NOTE_CHARS,
+    MAX_NOTES,
+    NOTES_SUBDIR,
+    HarnessTools,
+)
 from model.serving.chat import _execute_tool, _parse_tool_call_from_content
 from model.serving.interpreter import shutdown_session
 
@@ -22,11 +27,16 @@ def _harness(tmp_path, **kwargs):
 
 # ── what the run offers ─────────────────────────────────────────────────────
 
+
 class TestAvailability:
     def test_the_full_set_with_a_data_path(self, tmp_path):
         assert set(_harness(tmp_path).names) == {
-            "context_status", "note_write", "note_read",
-            "result_read", "result_grep"}
+            "context_status",
+            "note_write",
+            "note_read",
+            "result_read",
+            "result_grep",
+        }
 
     def test_notes_withheld_without_a_data_path(self):
         """A tool that could only fail is worse than one that is not offered."""
@@ -53,6 +63,7 @@ class TestAvailability:
 
 
 # ── context_status ──────────────────────────────────────────────────────────
+
 
 class TestContextStatus:
     def test_reports_the_loops_real_numbers(self, tmp_path):
@@ -102,6 +113,7 @@ class TestContextStatus:
 
 # ── notes ───────────────────────────────────────────────────────────────────
 
+
 class TestNotes:
     def test_write_then_read_round_trips(self, tmp_path):
         harness = _harness(tmp_path)
@@ -132,10 +144,19 @@ class TestNotes:
     def test_missing_note_with_nothing_saved(self, tmp_path):
         assert "none saved yet" in _harness(tmp_path).note_read("plan")
 
-    @pytest.mark.parametrize("key", [
-        "../escape", "sub/dir", "..", "/etc/passwd", "", "-leading", "a" * 65,
-        "spaced key",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "../escape",
+            "sub/dir",
+            "..",
+            "/etc/passwd",
+            "",
+            "-leading",
+            "a" * 65,
+            "spaced key",
+        ],
+    )
     def test_unusable_keys_are_refused(self, tmp_path, key):
         harness = _harness(tmp_path)
         assert harness.note_write(key, "x").startswith("Error:")
@@ -171,6 +192,7 @@ class TestNotes:
 
 # ── dispatch ────────────────────────────────────────────────────────────────
 
+
 class TestDispatch:
     def test_unknown_name_is_not_ours(self, tmp_path):
         assert _harness(tmp_path).dispatch("read_file", {"path": "x"}) is None
@@ -181,8 +203,7 @@ class TestDispatch:
         assert "text" in result
 
     def test_unknown_parameters_are_refused_by_name(self, tmp_path):
-        result = _harness(tmp_path).dispatch(
-            "note_read", {"key": "k", "offset": 10})
+        result = _harness(tmp_path).dispatch("note_read", {"key": "k", "offset": 10})
         assert "offset" in result and "key" in result
 
     def test_arguments_are_coerced_like_the_mcp_path(self, tmp_path):
@@ -194,15 +215,26 @@ class TestDispatch:
 
 # ── dispatch through _execute_tool ──────────────────────────────────────────
 
+
 class TestExecuteToolIntegration:
     def _run(self, harness, name, args, registry=None, history=None):
         messages: list = []
-        asyncio.run(_execute_tool(
-            name, args, "call_1", registry, timeout=5, data_path=harness.data_path,
-            chat_ui=None, verbose=False, messages=messages,
-            tool_call_history=history if history is not None else [],
-            max_repeated=30, harness=harness,
-        ))
+        asyncio.run(
+            _execute_tool(
+                name,
+                args,
+                "call_1",
+                registry,
+                timeout=5,
+                data_path=harness.data_path,
+                chat_ui=None,
+                verbose=False,
+                messages=messages,
+                tool_call_history=history if history is not None else [],
+                max_repeated=30,
+                harness=harness,
+            )
+        )
         return messages
 
     def test_harness_call_never_reaches_the_registry(self, tmp_path):
@@ -230,44 +262,89 @@ class TestExecuteToolIntegration:
         history: list = []
         for _ in range(29):
             self._run(harness, "context_status", {}, history=history)
-        bail = asyncio.run(_execute_tool(
-            "context_status", {}, "call_x", None, timeout=5,
-            data_path=harness.data_path, chat_ui=None, verbose=False,
-            messages=[], tool_call_history=history, max_repeated=30,
-            harness=harness,
-        ))
+        bail = asyncio.run(
+            _execute_tool(
+                "context_status",
+                {},
+                "call_x",
+                None,
+                timeout=5,
+                data_path=harness.data_path,
+                chat_ui=None,
+                verbose=False,
+                messages=[],
+                tool_call_history=history,
+                max_repeated=30,
+                harness=harness,
+            )
+        )
         assert bail is not None
 
     def test_a_harness_call_is_recorded_in_the_tool_log(self, tmp_path):
         """Trajectories must show these calls; they are turns the model spent."""
         harness = _harness(tmp_path)
         tool_log: list = []
-        asyncio.run(_execute_tool(
-            "note_write", {"key": "k", "text": "v"}, "call_1", None, timeout=5,
-            data_path=harness.data_path, chat_ui=None, verbose=False, messages=[],
-            tool_call_history=[], max_repeated=30, tool_log=tool_log, harness=harness,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "note_write",
+                {"key": "k", "text": "v"},
+                "call_1",
+                None,
+                timeout=5,
+                data_path=harness.data_path,
+                chat_ui=None,
+                verbose=False,
+                messages=[],
+                tool_call_history=[],
+                max_repeated=30,
+                tool_log=tool_log,
+                harness=harness,
+            )
+        )
         assert len(tool_log) == 1 and tool_log[0]["name"] == "note_write"
 
     def test_a_refusal_is_logged_as_a_failed_call(self, tmp_path):
         harness = _harness(tmp_path)
         tool_log: list = []
-        asyncio.run(_execute_tool(
-            "note_read", {"key": "missing"}, "call_1", None, timeout=5,
-            data_path=harness.data_path, chat_ui=None, verbose=False, messages=[],
-            tool_call_history=[], max_repeated=30, tool_log=tool_log, harness=harness,
-        ))
+        asyncio.run(
+            _execute_tool(
+                "note_read",
+                {"key": "missing"},
+                "call_1",
+                None,
+                timeout=5,
+                data_path=harness.data_path,
+                chat_ui=None,
+                verbose=False,
+                messages=[],
+                tool_call_history=[],
+                max_repeated=30,
+                tool_log=tool_log,
+                harness=harness,
+            )
+        )
         assert tool_log[0]["ok"] is False
 
     def test_ui_is_told_the_call_happened(self, tmp_path):
         chat_ui = MagicMock()
         messages: list = []
-        asyncio.run(_execute_tool(
-            "context_status", {}, "call_1", None, timeout=5,
-            data_path=str(tmp_path), chat_ui=chat_ui, verbose=False,
-            messages=messages, tool_call_history=[], max_repeated=30,
-            is_structured=True, harness=_harness(tmp_path),
-        ))
+        asyncio.run(
+            _execute_tool(
+                "context_status",
+                {},
+                "call_1",
+                None,
+                timeout=5,
+                data_path=str(tmp_path),
+                chat_ui=chat_ui,
+                verbose=False,
+                messages=messages,
+                tool_call_history=[],
+                max_repeated=30,
+                is_structured=True,
+                harness=_harness(tmp_path),
+            )
+        )
         chat_ui.add_tool_call.assert_called_once()
         chat_ui.add_tool_result.assert_called_once()
         chat_ui.stop_tool_spinner.assert_called_once()
@@ -275,15 +352,20 @@ class TestExecuteToolIntegration:
 
 # ── repeated-call guard × policy refusals ────────────────────────────────────
 
-_REFUSAL = json.dumps({
-    "error": "Command blocked: env command is not allowed.",
-    "command": "cat .env", "status": "blocked", "retryable": False,
-    "guidance": "This command was refused by policy and was not run.",
-})
+_REFUSAL = json.dumps(
+    {
+        "error": "Command blocked: env command is not allowed.",
+        "command": "cat .env",
+        "status": "blocked",
+        "retryable": False,
+        "guidance": "This command was refused by policy and was not run.",
+    }
+)
 
 
 class _RefusingRegistry:
     """A registry whose tool answers with the bash server's refusal shape."""
+
     tools = {"bash"}
 
     def tool_accepts_param(self, name, param):
@@ -292,11 +374,13 @@ class _RefusingRegistry:
     def __getitem__(self, name):
         async def handler(**kw):
             return _REFUSAL
+
         return handler
 
 
 class _SucceedingRegistry:
     """A registry whose tool answers with an ordinary (non-refusal) result."""
+
     tools = {"bash"}
 
     def tool_accepts_param(self, name, param):
@@ -305,6 +389,7 @@ class _SucceedingRegistry:
     def __getitem__(self, name):
         async def handler(**kw):
             return "some result"
+
         return handler
 
 
@@ -322,11 +407,21 @@ class TestRefusalLoopBailsEarly:
         history: list = []
         bail = None
         for i in range(limit):
-            bail = asyncio.run(_execute_tool(
-                "bash", args, f"call_{i}", registry, timeout=5,
-                data_path=None, chat_ui=None, verbose=False, messages=messages,
-                tool_call_history=history, max_repeated=30,
-            ))
+            bail = asyncio.run(
+                _execute_tool(
+                    "bash",
+                    args,
+                    f"call_{i}",
+                    registry,
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=30,
+                )
+            )
             if bail:
                 break
         return bail, history, messages
@@ -346,10 +441,12 @@ class TestRefusalLoopBailsEarly:
 
     def test_interleaved_refusals_do_not_trip_the_streak(self):
         """Streak, not lifetime: refusal, success, refusal... is not one loop."""
+
         class Mixed(_SucceedingRegistry):
             def __getitem__(self, name):
                 async def handler(**kw):
                     return _REFUSAL if kw.get("command") == "cat .env" else "ok"
+
                 return handler
 
         messages: list = []
@@ -357,11 +454,21 @@ class TestRefusalLoopBailsEarly:
         bail = None
         for i in range(6):
             cmd = "cat .env" if i % 2 == 0 else "ls"
-            bail = asyncio.run(_execute_tool(
-                "bash", {"command": cmd}, f"call_{i}", Mixed(), timeout=5,
-                data_path=None, chat_ui=None, verbose=False, messages=messages,
-                tool_call_history=history, max_repeated=30,
-            ))
+            bail = asyncio.run(
+                _execute_tool(
+                    "bash",
+                    {"command": cmd},
+                    f"call_{i}",
+                    Mixed(),
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=30,
+                )
+            )
             if bail:
                 break
         assert bail is None, f"interleaved loop bailed early: {bail}"
@@ -376,18 +483,28 @@ class TestRefusalLoopBailsEarly:
         history: list = []
         calls = [{"command": "cat .env"}, {"command": "printenv HOME"}]
         for i, args in enumerate(calls):
-            asyncio.run(_execute_tool(
-                "bash", args, f"call_{i}",
-                _RefusingRegistry(), timeout=5, data_path=None,
-                chat_ui=None, verbose=False, messages=messages,
-                tool_call_history=history, max_repeated=1,
-            ))
+            asyncio.run(
+                _execute_tool(
+                    "bash",
+                    args,
+                    f"call_{i}",
+                    _RefusingRegistry(),
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=1,
+                )
+            )
         assert "repeated call #" in messages[-1]["content"]
         assert "The refusal reason:" in messages[-1]["content"]
         assert "env command is not allowed" in messages[-1]["content"]
 
 
 # ── raw JSON tool calls ─────────────────────────────────────────────────────
+
 
 class TestRawToolCallParsing:
     def test_a_harness_call_written_as_content_is_recognized(self, tmp_path):
@@ -408,11 +525,11 @@ class TestRawToolCallParsing:
         registry = MagicMock()
         registry.tools = {"read_file"}
         content = '{"name": "note_write", "arguments": {"key": "k", "text": "v"}}'
-        assert _parse_tool_call_from_content(content, registry,
-                                             HarnessTools(data_path="")) is None
+        assert _parse_tool_call_from_content(content, registry, HarnessTools(data_path="")) is None
 
 
 # ── the result tools ────────────────────────────────────────────────────────
+
 
 class TestResultToolsOnTheHarness:
     """Phase 4's two tools, dispatched in-process exactly like Phase 2's."""
@@ -420,8 +537,9 @@ class TestResultToolsOnTheHarness:
     @staticmethod
     def _stored(tmp_path, text=None, tool="local_search"):
         harness = _harness(tmp_path)
-        text = text or "".join(f"line {i} NEEDLE\n" if i == 500
-                               else f"line {i}\n" for i in range(4000))
+        text = text or "".join(
+            f"line {i} NEEDLE\n" if i == 500 else f"line {i}\n" for i in range(4000)
+        )
         preview = harness.results.put(tool, text)
         return harness, preview, text
 
@@ -437,8 +555,7 @@ class TestResultToolsOnTheHarness:
 
     def test_read_dispatches_to_the_store(self, tmp_path):
         harness, preview, text = self._stored(tmp_path)
-        out = harness.dispatch("result_read", {"handle": "0001", "offset": 0,
-                                               "limit": 100})
+        out = harness.dispatch("result_read", {"handle": "0001", "offset": 0, "limit": 100})
         assert not out.startswith("Error:")
         assert "line 0" in out
 
@@ -476,8 +593,12 @@ class TestResultToolsOnTheHarness:
         harness, _, _ = self._stored(tmp_path)
         status = json.loads(harness.context_status())
         assert status["results_stored"] == [
-            {"handle": "0001", "tool": "local_search",
-             "chars": status["results_stored"][0]["chars"]}]
+            {
+                "handle": "0001",
+                "tool": "local_search",
+                "chars": status["results_stored"][0]["chars"],
+            }
+        ]
 
     def test_context_status_reports_nothing_stored_as_empty(self, tmp_path):
         assert json.loads(_harness(tmp_path).context_status())["results_stored"] == []
@@ -491,33 +612,50 @@ class TestResultToolsOnTheHarness:
 
 # ── code as action ──────────────────────────────────────────────────────────
 
+
 class TestRunCodeOnTheHarness:
     """Phase 5's tool. Off unless the deployment asked for it."""
 
     @staticmethod
     def _registry(answer='[{"title": "Q3"}]'):
         from unittest.mock import AsyncMock
+
         handler = AsyncMock(return_value=answer)
         registry = MagicMock()
         registry.tools = {"local_search"}
         registry.get_tool_items.return_value = [
-            {"type": "function",
-             "function": {"name": "local_search", "description": "search",
-                          "parameters": {"type": "object",
-                                         "properties": {"query": {"type": "string"},
-                                                        "data_path": {"type": "string"},
-                                                        "session_id": {"type": "string"}},
-                                         "required": ["query"]}}}]
-        registry.tool_accepts_param.side_effect = (
-            lambda tool, param: param in ("data_path", "session_id"))
+            {
+                "type": "function",
+                "function": {
+                    "name": "local_search",
+                    "description": "search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "data_path": {"type": "string"},
+                            "session_id": {"type": "string"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+        registry.tool_accepts_param.side_effect = lambda tool, param: (
+            param in ("data_path", "session_id")
+        )
         registry.__getitem__ = MagicMock(return_value=handler)
         registry.handler = handler
         return registry
 
     def _harness_with_code(self, tmp_path, session_id="s1", **kwargs):
-        return HarnessTools(data_path=str(tmp_path), code_execution=True,
-                            session_id=session_id,
-                            tool_registry=self._registry(), **kwargs)
+        return HarnessTools(
+            data_path=str(tmp_path),
+            code_execution=True,
+            session_id=session_id,
+            tool_registry=self._registry(),
+            **kwargs,
+        )
 
     # ── availability ────────────────────────────────────────────────────────
 
@@ -534,8 +672,7 @@ class TestRunCodeOnTheHarness:
         assert "note_write" not in harness.names
 
     def test_withdrawn_with_the_whole_harness(self, tmp_path):
-        harness = HarnessTools(data_path=str(tmp_path), enabled=False,
-                               code_execution=True)
+        harness = HarnessTools(data_path=str(tmp_path), enabled=False, code_execution=True)
         assert harness.names == ()
 
     # ── running ─────────────────────────────────────────────────────────────
@@ -555,7 +692,8 @@ class TestRunCodeOnTheHarness:
         harness = self._harness_with_code(tmp_path, session_id="run-2")
         try:
             out = await harness.adispatch(
-                "run_code", {"code": 'print(local_search("Q3")[0]["title"])'})
+                "run_code", {"code": 'print(local_search("Q3")[0]["title"])'}
+            )
             assert "Q3" in out
         finally:
             await shutdown_session("run-2")
@@ -565,12 +703,20 @@ class TestRunCodeOnTheHarness:
         """The acceptance criterion: whatever the code passes, the handler is
         called with the harness's session_id and data_path."""
         registry = self._registry()
-        harness = HarnessTools(data_path=str(tmp_path), code_execution=True,
-                               session_id="the-real-session", tool_registry=registry)
+        harness = HarnessTools(
+            data_path=str(tmp_path),
+            code_execution=True,
+            session_id="the-real-session",
+            tool_registry=registry,
+        )
         try:
-            await harness.adispatch("run_code", {
-                "code": 'call_tool("local_search", query="Q3", '
-                        'data_path="/etc", session_id="somebody-else")'})
+            await harness.adispatch(
+                "run_code",
+                {
+                    "code": 'call_tool("local_search", query="Q3", '
+                    'data_path="/etc", session_id="somebody-else")'
+                },
+            )
             kwargs = registry.handler.await_args.kwargs
             assert kwargs["session_id"] == "the-real-session"
             assert kwargs["data_path"] == str(tmp_path)
@@ -605,6 +751,7 @@ class TestRunCodeOnTheHarness:
         """Why Phase 4 came first: a print that turns out to be a whole file is
         addressed, not pasted."""
         from model.serving.results import handle_of
+
         harness = self._harness_with_code(tmp_path, session_id="run-5")
         try:
             out = await harness.adispatch("run_code", {"code": "print('x' * 50000)"})

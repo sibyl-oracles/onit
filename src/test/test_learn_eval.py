@@ -31,6 +31,7 @@ from learn import trajectory as traj
 
 # ─── fixtures ───────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def learned(tmp_path):
     """A learned store under tmp_path, recording on."""
@@ -49,11 +50,25 @@ def eval_dir(tmp_path, monkeypatch):
     return target
 
 
-def _record(learned, *, session="s1", turn=1, task="a question worth replaying",
-            response="an answer worth comparing", model="m1", owner=None):
-    return traj.record_task(session_id=session, turn=turn, task=task,
-                            response=response, model=model, owner=owner,
-                            config_data=learned)
+def _record(
+    learned,
+    *,
+    session="s1",
+    turn=1,
+    task="a question worth replaying",
+    response="an answer worth comparing",
+    model="m1",
+    owner=None,
+):
+    return traj.record_task(
+        session_id=session,
+        turn=turn,
+        task=task,
+        response=response,
+        model=model,
+        owner=owner,
+        config_data=learned,
+    )
 
 
 def _seed(learned, n, *, model="m1", owner=None):
@@ -63,14 +78,20 @@ def _seed(learned, n, *, model="m1", owner=None):
     session#turn, and two tasks sharing one would be indistinguishable.
     """
     for i in range(n):
-        _record(learned, session=f"s{i}", turn=1,
-                task=f"question number {i} about something worth asking",
-                response=f"answer number {i} worth comparing", model=model,
-                owner=owner)
+        _record(
+            learned,
+            session=f"s{i}",
+            turn=1,
+            task=f"question number {i} about something worth asking",
+            response=f"answer number {i} worth comparing",
+            model=model,
+            owner=owner,
+        )
     return n
 
 
 # ─── I7: the boundary ───────────────────────────────────────────────────────
+
 
 class TestOwnershipBoundary:
     """The ruler lives outside the agent's writable surface."""
@@ -132,16 +153,14 @@ class TestOwnershipBoundary:
         with pytest.raises(PermissionError):
             lev.write_split(split, cfg)
 
-    def test_writing_the_baseline_inside_the_agent_surface_is_refused(self,
-                                                                      learned):
+    def test_writing_the_baseline_inside_the_agent_surface_is_refused(self, learned):
         cfg = dict(learned)
         cfg["learn"] = dict(learned["learn"])
         cfg["learn"]["eval"] = {"path": learned["learn"]["path"] + "/eval"}
         with pytest.raises(PermissionError):
             lev.write_baseline({"model": "m1"}, cfg)
 
-    def test_an_eval_path_override_is_honoured(self, learned, tmp_path,
-                                               monkeypatch):
+    def test_an_eval_path_override_is_honoured(self, learned, tmp_path, monkeypatch):
         target = tmp_path / "ruler"
         monkeypatch.setenv("ONIT_EVAL_PATH", str(target))
         assert lev.eval_dir(learned) == str(target)
@@ -149,15 +168,14 @@ class TestOwnershipBoundary:
 
 # ─── drawing the split ──────────────────────────────────────────────────────
 
+
 class TestBuildSplit:
     """A split drawn from the real corpus."""
 
     def test_a_split_needs_real_questions_and_answers(self, learned):
         # A task with no text, or no answer, measures the harness.
-        traj.record_task(session_id="s1", turn=1, task="hi", response="",
-                         config_data=learned)
-        traj.record_task(session_id="s1", turn=2, task="", response="hello",
-                         config_data=learned)
+        traj.record_task(session_id="s1", turn=1, task="hi", response="", config_data=learned)
+        traj.record_task(session_id="s1", turn=2, task="", response="hello", config_data=learned)
         split = lev.build_split(config_data=learned)
         assert split["counts"]["candidates"] == 0
 
@@ -169,8 +187,7 @@ class TestBuildSplit:
     def test_the_two_splits_partition_the_candidates(self, learned):
         _seed(learned, 10)
         split = lev.build_split(config_data=learned, holdout_ratio=0.4)
-        assert split["counts"]["holdout"] + split["counts"]["dev"] == \
-            split["counts"]["candidates"]
+        assert split["counts"]["holdout"] + split["counts"]["dev"] == split["counts"]["candidates"]
 
     def test_the_ratio_is_respected(self, learned):
         _seed(learned, 10)
@@ -188,10 +205,8 @@ class TestBuildSplit:
         _seed(learned, 12)
         first = lev.build_split(config_data=learned)
         second = lev.build_split(config_data=learned)
-        assert [i["id"] for i in first["holdout"]] == \
-            [i["id"] for i in second["holdout"]]
-        assert [i["id"] for i in first["dev"]] == \
-            [i["id"] for i in second["dev"]]
+        assert [i["id"] for i in first["holdout"]] == [i["id"] for i in second["holdout"]]
+        assert [i["id"] for i in first["dev"]] == [i["id"] for i in second["dev"]]
 
     def test_no_item_appears_in_both_splits(self, learned):
         _seed(learned, 12)
@@ -211,12 +226,10 @@ class TestBuildSplit:
     def test_an_owner_filter_restricts_the_draw(self, learned):
         _record(learned, session="a", owner="alice@example.com")
         _record(learned, session="b", owner="bob@example.com")
-        split = lev.build_split(config_data=learned,
-                                owner=traj.owner_hash("alice@example.com"))
+        split = lev.build_split(config_data=learned, owner=traj.owner_hash("alice@example.com"))
         assert split["counts"]["candidates"] == 1
         drawn = split["holdout"] + split["dev"]
-        assert [i["owner"] for i in drawn] == \
-            [traj.owner_hash("alice@example.com")]
+        assert [i["owner"] for i in drawn] == [traj.owner_hash("alice@example.com")]
 
     def test_a_tenant_owned_task_never_enters_a_shared_split(self, learned):
         # The default draw is owner-less only.  A task belonging to a tenant
@@ -235,8 +248,12 @@ class TestBuildSplit:
         assert len(split["holdout"]) + len(split["dev"]) == 10
 
     def test_a_split_entry_carries_what_a_replay_needs(self, learned):
-        _record(learned, model="m1", task="a question worth replaying here",
-                response="an answer worth comparing here")
+        _record(
+            learned,
+            model="m1",
+            task="a question worth replaying here",
+            response="an answer worth comparing here",
+        )
         split = lev.build_split(config_data=learned)
         entry = (split["holdout"] + split["dev"])[0]
         assert entry["task"] == "a question worth replaying here"
@@ -248,6 +265,7 @@ class TestBuildSplit:
 
 
 # ─── freezing and reading ───────────────────────────────────────────────────
+
 
 class TestFreezeAndRead:
     """What gets written, and what comes back."""
@@ -264,8 +282,7 @@ class TestFreezeAndRead:
         assert len(holdout) == split["counts"]["holdout"]
         assert holdout[0]["task"] == split["holdout"][0]["task"]
 
-    def test_the_holdout_and_the_dev_split_are_separate_files(self, learned,
-                                                               eval_dir):
+    def test_the_holdout_and_the_dev_split_are_separate_files(self, learned, eval_dir):
         # A process handed the holdout must not also receive the dev split.
         _seed(learned, 6)
         lev.write_split(lev.build_split(config_data=learned), learned)
@@ -274,8 +291,7 @@ class TestFreezeAndRead:
         assert holdout_ids and dev_ids
         assert not (holdout_ids & dev_ids)
 
-    def test_reading_a_missing_holdout_is_empty_not_an_error(self, learned,
-                                                              eval_dir):
+    def test_reading_a_missing_holdout_is_empty_not_an_error(self, learned, eval_dir):
         assert lev.read_holdout(learned) == []
         assert lev.read_dev(learned) == []
 
@@ -288,8 +304,7 @@ class TestFreezeAndRead:
         # The good items still read.
         assert len(lev.read_holdout(learned)) >= 1
 
-    def test_a_split_with_no_holdout_and_no_dev_reads_as_empty(self, learned,
-                                                               eval_dir):
+    def test_a_split_with_no_holdout_and_no_dev_reads_as_empty(self, learned, eval_dir):
         assert lev.read_split(learned)["holdout"] == []
         assert lev.read_split(learned)["dev"] == []
 
@@ -303,6 +318,7 @@ class TestFreezeAndRead:
 
 
 # ─── the gate ───────────────────────────────────────────────────────────────
+
 
 class TestGate:
     """What the promotion gate is allowed to see."""
@@ -318,21 +334,17 @@ class TestGate:
         lev.write_split(lev.build_split(config_data=learned), learned)
         assert lev.holdout_is_sealed(learned)
 
-    def test_the_gate_refuses_to_run_without_a_holdout(self, learned,
-                                                       eval_dir):
+    def test_the_gate_refuses_to_run_without_a_holdout(self, learned, eval_dir):
         with pytest.raises(FileNotFoundError) as excinfo:
             lev.assert_readable_by_gate(learned)
         assert "holdout" in str(excinfo.value).lower()
 
-    def test_the_gate_gets_the_holdout_when_there_is_one(self, learned,
-                                                          eval_dir):
+    def test_the_gate_gets_the_holdout_when_there_is_one(self, learned, eval_dir):
         _seed(learned, lev.MIN_HOLDOUT_ITEMS * 3)
         lev.write_split(lev.build_split(config_data=learned), learned)
-        assert len(lev.assert_readable_by_gate(learned)) >= \
-            lev.MIN_HOLDOUT_ITEMS
+        assert len(lev.assert_readable_by_gate(learned)) >= lev.MIN_HOLDOUT_ITEMS
 
-    def test_the_dev_split_is_readable_without_the_holdout(self, learned,
-                                                            eval_dir):
+    def test_the_dev_split_is_readable_without_the_holdout(self, learned, eval_dir):
         # I1: iteration is on dev.  Dev must be readable on its own, because
         # a loop iterating on a candidate never touches the holdout.
         _seed(learned, 6)
@@ -341,6 +353,7 @@ class TestGate:
 
 
 # ─── the summary ────────────────────────────────────────────────────────────
+
 
 class TestSummary:
     """What `onit learn --eval` reports."""
@@ -379,24 +392,26 @@ class TestSummary:
 # is the current SOTA in TTS" and "marikina river water level latest".  The
 # corpus asks the same question many times, so this is not a rare case.
 
-class TestTheSplitIsDisjointByQuestion:
 
+class TestTheSplitIsDisjointByQuestion:
     def _ask_twice(self, learned, question, sessions):
         for session in sessions:
-            _record(learned, session=session, turn=1, task=question,
-                    response="the answer to that question, at length")
+            _record(
+                learned,
+                session=session,
+                turn=1,
+                task=question,
+                response="the answer to that question, at length",
+            )
 
     def test_a_question_asked_in_two_sessions_lands_on_one_side(self, learned):
-        self._ask_twice(learned,
-                        "what is the current state of the art in speech",
-                        ["s1", "s2"])
+        self._ask_twice(learned, "what is the current state of the art in speech", ["s1", "s2"])
         _seed(learned, 10)
         split = lev.build_split(config_data=learned, holdout_ratio=0.4)
         holdout_tasks = {lev.task_key(item["task"]) for item in split["holdout"]}
         dev_tasks = {lev.task_key(item["task"]) for item in split["dev"]}
         shared = holdout_tasks & dev_tasks
-        assert not shared, (
-            "these questions are on both sides of the split: %r" % shared)
+        assert not shared, "these questions are on both sides of the split: %r" % shared
 
     def test_the_whole_split_has_no_shared_question(self, learned):
         """The property over a corpus with many repeated questions."""
@@ -405,7 +420,8 @@ class TestTheSplitIsDisjointByQuestion:
             self._ask_twice(
                 learned,
                 "question number %d about something worth asking" % (i % 3),
-                ["a%d" % i, "b%d" % i, "c%d" % i])
+                ["a%d" % i, "b%d" % i, "c%d" % i],
+            )
         split = lev.build_split(config_data=learned, holdout_ratio=0.4)
         holdout_tasks = {lev.task_key(item["task"]) for item in split["holdout"]}
         dev_tasks = {lev.task_key(item["task"]) for item in split["dev"]}
@@ -417,8 +433,7 @@ class TestTheSplitIsDisjointByQuestion:
         """A split that silently discarded most of the corpus would look
         like a small corpus, and the two are different problems."""
         for i in range(6):
-            self._ask_twice(learned, "the same question, asked again",
-                            ["x%d" % i, "y%d" % i])
+            self._ask_twice(learned, "the same question, asked again", ["x%d" % i, "y%d" % i])
         split = lev.build_split(config_data=learned)
         assert split["counts"]["duplicate_questions"] == 11
         assert split["counts"]["candidates"] == 1
@@ -426,12 +441,12 @@ class TestTheSplitIsDisjointByQuestion:
     def test_the_draw_is_still_deterministic(self, learned):
         """Deduping must not make the split change between runs."""
         for i in range(8):
-            self._ask_twice(learned,
-                            "question number %d about something worth asking"
-                            % (i % 3), ["a%d" % i, "b%d" % i])
+            self._ask_twice(
+                learned,
+                "question number %d about something worth asking" % (i % 3),
+                ["a%d" % i, "b%d" % i],
+            )
         first = lev.build_split(config_data=learned, holdout_ratio=0.4)
         second = lev.build_split(config_data=learned, holdout_ratio=0.4)
-        assert ([i["id"] for i in first["holdout"]]
-                == [i["id"] for i in second["holdout"]])
-        assert ([i["id"] for i in first["dev"]]
-                == [i["id"] for i in second["dev"]])
+        assert [i["id"] for i in first["holdout"]] == [i["id"] for i in second["holdout"]]
+        assert [i["id"] for i in first["dev"]] == [i["id"] for i in second["dev"]]

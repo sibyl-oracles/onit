@@ -87,14 +87,45 @@ from .skills import manifest_errors
 # it, and ``types.ModuleType`` / ``types.FunctionType`` build a callable
 # out of parts.  A module is on this list only if *every* name it exports
 # is pure computation, and those two do not qualify.
-STDLIB_ALLOWED = frozenset({
-    "argparse", "base64", "bisect", "collections", "colorsys", "copy",
-    "csv", "dataclasses", "datetime", "decimal", "difflib", "enum",
-    "fnmatch", "fractions", "functools", "hashlib", "heapq", "html",
-    "itertools", "json", "math", "numbers", "operator", "pprint",
-    "random", "re", "secrets", "statistics", "string", "textwrap",
-    "time", "typing", "unicodedata", "uuid", "warnings",
-})
+STDLIB_ALLOWED = frozenset(
+    {
+        "argparse",
+        "base64",
+        "bisect",
+        "collections",
+        "colorsys",
+        "copy",
+        "csv",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "difflib",
+        "enum",
+        "fnmatch",
+        "fractions",
+        "functools",
+        "hashlib",
+        "heapq",
+        "html",
+        "itertools",
+        "json",
+        "math",
+        "numbers",
+        "operator",
+        "pprint",
+        "random",
+        "re",
+        "secrets",
+        "statistics",
+        "string",
+        "textwrap",
+        "time",
+        "typing",
+        "unicodedata",
+        "uuid",
+        "warnings",
+    }
+)
 
 # The standard library modules that reach outside the process or the
 # filesystem, with the reason a skill may not have them.  Named
@@ -266,8 +297,9 @@ _FORBIDDEN_MODULE_NAMES = frozenset(FORBIDDEN_MODULES) | {"_os", "_sys"}
 # looks at attributes never sees it.  The audit's payload was written as
 # an attribute chain; the same reach written as a name walked past the
 # first version of this screen.
-ALLOWED_DUNDERS = frozenset({"__name__", "__main__", "__doc__", "__all__",
-                             "__version__", "__init__"})
+ALLOWED_DUNDERS = frozenset(
+    {"__name__", "__main__", "__doc__", "__all__", "__version__", "__init__"}
+)
 
 # How a dunder is recognised inside a *string literal*.  A skill can
 # reach the same namespace without writing an attribute at all:
@@ -315,7 +347,9 @@ FORBIDDEN_PATTERNS = (
 # The paths a skill may not reach.  Compared against the *resolved*
 # path, so a symlink or a ``..`` does not get around it.
 FORBIDDEN_PATH_PARTS = (
-    "eval", "baselines", "holdout",
+    "eval",
+    "baselines",
+    "holdout",
 )
 
 # The check names, in the order the gate runs them.  The order matters
@@ -327,8 +361,7 @@ CHECK_DEPS = "dependencies"
 CHECK_TESTS = "tests"
 CHECK_REGRESSION = "regression"
 
-ALL_CHECKS = (CHECK_MANIFEST, CHECK_SOURCE, CHECK_DEPS, CHECK_TESTS,
-              CHECK_REGRESSION)
+ALL_CHECKS = (CHECK_MANIFEST, CHECK_SOURCE, CHECK_DEPS, CHECK_TESTS, CHECK_REGRESSION)
 
 
 class GateResult:
@@ -344,18 +377,17 @@ class GateResult:
         # checks: {name: {"passed": bool, "reason": str, "detail": dict}}
         self.checks = checks or {}
 
-    def add(self, name: str, passed: bool, reason: str = "",
-            detail: dict | None = None) -> None:
-        self.checks[name] = {"passed": bool(passed), "reason": reason,
-                             "detail": detail or {}}
+    def add(self, name: str, passed: bool, reason: str = "", detail: dict | None = None) -> None:
+        self.checks[name] = {"passed": bool(passed), "reason": reason, "detail": detail or {}}
         if not passed:
             self.passed = False
 
     @property
     def failures(self) -> list:
         """The failed checks, in the order they ran."""
-        return [name for name in ALL_CHECKS
-                if name in self.checks and not self.checks[name]["passed"]]
+        return [
+            name for name in ALL_CHECKS if name in self.checks and not self.checks[name]["passed"]
+        ]
 
     def reason(self) -> str:
         """Why the gate said no, in one line."""
@@ -368,15 +400,18 @@ class GateResult:
         return "; ".join(parts)
 
     def to_dict(self) -> dict:
-        return {"passed": self.passed, "checks": self.checks,
-                "failures": self.failures, "reason": self.reason()}
+        return {
+            "passed": self.passed,
+            "checks": self.checks,
+            "failures": self.failures,
+            "reason": self.reason(),
+        }
 
     def __bool__(self) -> bool:
         return self.passed
 
     def __repr__(self) -> str:
-        return "<GateResult passed=%s failures=%s>" % (self.passed,
-                                                       self.failures)
+        return "<GateResult passed=%s failures=%s>" % (self.passed, self.failures)
 
 
 def check_manifest(manifest: dict | None) -> tuple:
@@ -424,8 +459,7 @@ def _call_name(node: ast.AST) -> str:
 # The callables whose whole job is to fetch an attribute by name.  A
 # literal handed to one of them is an attribute reference that no
 # ``ast.Attribute`` node appears in, so the attribute rule cannot see it.
-_ATTRIBUTE_GETTERS = frozenset({"getattr", "attrgetter", "itemgetter",
-                                "methodcaller"})
+_ATTRIBUTE_GETTERS = frozenset({"getattr", "attrgetter", "itemgetter", "methodcaller"})
 
 
 def _reaches_from_module(node: ast.AST, modules: set) -> bool:
@@ -493,10 +527,12 @@ def _is_super_init(node: ast.Attribute) -> bool:
     a ``dataclass`` or an exception has to call its parent's
     initialiser, and the parent is named in the skill's own source.
     """
-    return (node.attr == "__init__"
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "super")
+    return (
+        node.attr == "__init__"
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "super"
+    )
 
 
 def _ast_problems(tree: ast.AST) -> list:
@@ -559,12 +595,14 @@ def _ast_problems(tree: ast.AST) -> list:
     # class or function and is a bare string expression.
     docstrings = set()
     for owner in ast.walk(tree):
-        if isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                              ast.AsyncFunctionDef)):
+        if isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             body = getattr(owner, "body", None) or []
-            if body and isinstance(body[0], ast.Expr) \
-                    and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 docstrings.add(id(body[0].value))
 
     # The names that are *called* are the call rule's business; a
@@ -581,18 +619,22 @@ def _ast_problems(tree: ast.AST) -> list:
         # call screen only sees a name in front of a bracket, and a
         # skill that passes ``open`` around calls it through another
         # name.  The capability is the same one.
-        if isinstance(node, ast.Name) and node.id in FORBIDDEN_CALLS \
-                and id(node) not in called:
-            problems.append("uses %s as a value rather than calling it, "
-                            "which %s" % (node.id, FORBIDDEN_CALLS[node.id]))
+        if isinstance(node, ast.Name) and node.id in FORBIDDEN_CALLS and id(node) not in called:
+            problems.append(
+                "uses %s as a value rather than calling it, "
+                "which %s" % (node.id, FORBIDDEN_CALLS[node.id])
+            )
 
         # A bare dunder *name*.  ``__builtins__['open']`` needs no
         # import and no attribute chain, so neither the import screen
         # nor the attribute rule sees it.  The allowed set is module
         # metadata only -- see :data:`ALLOWED_DUNDERS`.
-        if isinstance(node, ast.Name) and node.id.startswith("__") \
-                and node.id.endswith("__") \
-                and node.id not in ALLOWED_DUNDERS:
+        if (
+            isinstance(node, ast.Name)
+            and node.id.startswith("__")
+            and node.id.endswith("__")
+            and node.id not in ALLOWED_DUNDERS
+        ):
             problems.append("reaches the dunder name %r" % node.id)
 
         # A dunder spelled inside a string literal.  ``'{0.__globals__}'
@@ -606,22 +648,25 @@ def _ast_problems(tree: ast.AST) -> list:
         # teach the curator's own prompt that a comment is dangerous --
         # the screen has to be about what runs, not about what is
         # written down.
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
-                and id(node) not in docstrings:
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ):
             for found in _DUNDER_IN_TEXT_RE.findall(node.value):
                 if found not in ALLOWED_DUNDERS:
                     problems.append(
                         "spells the dunder %r inside a string, which "
                         "reaches the same attribute the attribute rule "
-                        "refuses" % found)
+                        "refuses" % found
+                    )
                     break
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _call_name(node)
             if name in FORBIDDEN_CALLS:
-                problems.append("calls %s(), which %s"
-                                % (name, FORBIDDEN_CALLS[name]))
+                problems.append("calls %s(), which %s" % (name, FORBIDDEN_CALLS[name]))
             if name == DYNAMIC_GETATTR:
                 # getattr(obj, "literal") is a field read; getattr(obj,
                 # anything-else) is a capability assembled at runtime.
@@ -631,15 +676,15 @@ def _ast_problems(tree: ast.AST) -> list:
                         problems.append(
                             "calls getattr() with a name that is not a "
                             "literal, so the attribute it reaches cannot "
-                            "be read from the source")
+                            "be read from the source"
+                        )
                     elif literal.startswith("__") and literal.endswith("__"):
                         # A *written* dunder is no better than a computed
                         # one: getattr(m, "__globals__") reaches the same
                         # namespace that writing m.__globals__ does, and
                         # the attribute-chain rule above cannot see it
                         # because the name is a string, not an attribute.
-                        problems.append(
-                            "calls getattr() for the dunder %r" % literal)
+                        problems.append("calls getattr() for the dunder %r" % literal)
 
         # A dunder reached through any chain: the sandbox escape that
         # needs no import at all.  ``().__class__.__bases__`` gets from
@@ -649,8 +694,11 @@ def _ast_problems(tree: ast.AST) -> list:
         # ``super().__init__()`` is the one legitimate spelling, and it
         # is allowed by name: a skill that subclasses something needs it,
         # and it reaches a base class the skill itself declared.
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__") \
-                and node.attr.endswith("__"):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("__")
+            and node.attr.endswith("__")
+        ):
             if not _is_super_init(node):
                 problems.append("reaches the dunder attribute %r" % node.attr)
 
@@ -658,16 +706,13 @@ def _ast_problems(tree: ast.AST) -> list:
         if isinstance(node, ast.Subscript):
             chain = _attribute_chain(node.value)
             if chain and chain[0] == "modules":
-                problems.append(
-                    "subscripts .modules, which is the table of every "
-                    "loaded module")
+                problems.append("subscripts .modules, which is the table of every loaded module")
 
         # A forbidden module used as a value, under whatever local name.
         if isinstance(node, ast.Name) and node.id in aliases:
             root = aliases[node.id]
             if root in FORBIDDEN_MODULES:
-                problems.append("uses %r, which is %s"
-                                % (node.id, FORBIDDEN_MODULES[root]))
+                problems.append("uses %r, which is %s" % (node.id, FORBIDDEN_MODULES[root]))
 
         # The third round: an escape reached as an *attribute* off an
         # allowed module.  See :data:`FORBIDDEN_ATTRIBUTES`.
@@ -681,20 +726,20 @@ def _ast_problems(tree: ast.AST) -> list:
         # the capability actually appears.
         if isinstance(node, ast.Attribute):
             bare = node.attr.lstrip("_")
-            if node.attr in _FORBIDDEN_MODULE_NAMES \
-                    or bare in _FORBIDDEN_MODULE_NAMES:
+            if node.attr in _FORBIDDEN_MODULE_NAMES or bare in _FORBIDDEN_MODULE_NAMES:
                 if _reaches_from_module(node.value, modules):
                     problems.append(
                         "reaches %r off an imported module, which is the "
-                        "%r module by another name" % (node.attr, bare))
+                        "%r module by another name" % (node.attr, bare)
+                    )
             # The capability names are scoped to a module root for the
             # same reason: ``xs.remove(1)`` is a list method, and
             # ``uuid.os.remove(p)`` is a deleted file.  Only the second
             # is this screen's business, and the difference is the root.
-            if bare in FORBIDDEN_ATTRIBUTES \
-                    and _reaches_from_module(node.value, modules):
-                problems.append("reaches the attribute %r, which %s"
-                                % (node.attr, FORBIDDEN_ATTRIBUTES[bare]))
+            if bare in FORBIDDEN_ATTRIBUTES and _reaches_from_module(node.value, modules):
+                problems.append(
+                    "reaches the attribute %r, which %s" % (node.attr, FORBIDDEN_ATTRIBUTES[bare])
+                )
 
         # ``getattr(uuid, "os")`` and ``operator.attrgetter("os")(uuid)``
         # name the attribute as *data*, so the rule above cannot see it.
@@ -704,17 +749,16 @@ def _ast_problems(tree: ast.AST) -> list:
         if isinstance(node, ast.Call):
             target = _call_name(node)
             if target in _ATTRIBUTE_GETTERS:
-                for arg in node.args[1 if target == "getattr" else 0:]:
+                for arg in node.args[1 if target == "getattr" else 0 :]:
                     literal = _literal_str(arg)
                     if literal is None:
                         continue
                     bare = literal.lstrip("_")
-                    if bare in FORBIDDEN_ATTRIBUTES \
-                            or bare in _FORBIDDEN_MODULE_NAMES:
+                    if bare in FORBIDDEN_ATTRIBUTES or bare in _FORBIDDEN_MODULE_NAMES:
                         problems.append(
                             "reaches %r by name through %s(), which is "
-                            "the attribute rule written as data"
-                            % (literal, target))
+                            "the attribute rule written as data" % (literal, target)
+                        )
 
     # Deduplicate, and keep the order the rules ran in: the first
     # message is the one an operator reads.
@@ -736,8 +780,7 @@ def _ast_problems(tree: ast.AST) -> list:
 # `open('../eval/dev.jsonl')` both slipped through: the separator, not a
 # quote, is what precedes the directory name in a real path.  The screen
 # has to see the *directory*, not the literal.
-_PATH_PART_RE = (
-    r"(?:^|[/\\\s'\"`(=]){part}(?:[/\\\s'\"`).,]|$)")
+_PATH_PART_RE = r"(?:^|[/\\\s'\"`(=]){part}(?:[/\\\s'\"`).,]|$)"
 
 
 def _mentions_path_part(part: str, source: str) -> bool:
@@ -790,8 +833,10 @@ def check_source(source: str, *, forbidden_paths: list | None = None) -> tuple:
         if root in FORBIDDEN_MODULES:
             outside.append("%s (%s)" % (name, FORBIDDEN_MODULES[root]))
         elif root not in STDLIB_ALLOWED:
-            outside.append("%s (not on the allowed list: a skill computes, "
-                           "it does not reach outside its arguments)" % name)
+            outside.append(
+                "%s (not on the allowed list: a skill computes, "
+                "it does not reach outside its arguments)" % name
+            )
     if outside:
         return False, ("the source imports %s" % "; ".join(outside)), detail
 
@@ -811,12 +856,18 @@ def check_source(source: str, *, forbidden_paths: list | None = None) -> tuple:
     paths = forbidden_paths or []
     for part in FORBIDDEN_PATH_PARTS:
         if _mentions_path_part(part, source):
-            return False, ("the source refers to %r, which is outside the "
-                           "agent's writable surface" % part), detail
+            return (
+                False,
+                ("the source refers to %r, which is outside the agent's writable surface" % part),
+                detail,
+            )
     for path in paths:
         if path and str(path) in source:
-            return False, ("the source refers to %r, which is outside the "
-                           "agent's writable surface" % path), detail
+            return (
+                False,
+                ("the source refers to %r, which is outside the agent's writable surface" % path),
+                detail,
+            )
 
     return True, "", detail
 
@@ -832,8 +883,12 @@ def ruler_paths(config_data: dict | None = None) -> list:
     """
     from .eval import baseline_path, dev_path, eval_dir, holdout_path
 
-    return [eval_dir(config_data), holdout_path(config_data),
-            dev_path(config_data), baseline_path(config_data)]
+    return [
+        eval_dir(config_data),
+        holdout_path(config_data),
+        dev_path(config_data),
+        baseline_path(config_data),
+    ]
 
 
 def check_dependencies(manifest: dict | None, *, sealed: bool = False) -> tuple:
@@ -854,8 +909,14 @@ def check_dependencies(manifest: dict | None, *, sealed: bool = False) -> tuple:
     detail = {"dependencies": deps, "sealed": bool(sealed)}
 
     if deps and sealed:
-        return False, ("the skill needs %s, and package installs are "
-                       "sealed in this deployment" % ", ".join(deps)), detail
+        return (
+            False,
+            (
+                "the skill needs %s, and package installs are "
+                "sealed in this deployment" % ", ".join(deps)
+            ),
+            detail,
+        )
     return True, "", detail
 
 
@@ -894,19 +955,34 @@ def check_regression(delta: float | None, *, required: bool = True) -> tuple:
     detail = {"delta": delta, "required": bool(required)}
     if delta is None:
         if required:
-            return False, ("no benchmark delta was measured; a skill is "
-                           "not admitted on an unmeasured claim"), detail
+            return (
+                False,
+                ("no benchmark delta was measured; a skill is not admitted on an unmeasured claim"),
+                detail,
+            )
         return True, "", detail
     if delta < 0:
-        return False, ("the benchmark delta is %+.3f; a skill that makes "
-                       "things worse is not a skill" % delta), detail
+        return (
+            False,
+            (
+                "the benchmark delta is %+.3f; a skill that makes "
+                "things worse is not a skill" % delta
+            ),
+            detail,
+        )
     return True, "", detail
 
 
-def run_gate(*, manifest: dict | None = None, source: str | None = None,
-             test_source: str | None = None, delta: float | None = None,
-             sealed: bool = False, require_benchmark: bool = True,
-             forbidden_paths: list | None = None) -> GateResult:
+def run_gate(
+    *,
+    manifest: dict | None = None,
+    source: str | None = None,
+    test_source: str | None = None,
+    delta: float | None = None,
+    sealed: bool = False,
+    require_benchmark: bool = True,
+    forbidden_paths: list | None = None,
+) -> GateResult:
     """Run all five checks and return the result.
 
     The checks are conjunctive, and each one runs even if an earlier one
@@ -944,15 +1020,13 @@ def read_skill_sources(directory: str) -> tuple:
     test_source = None
     error = ""
     try:
-        with io.open(os.path.join(directory, "tool.py"), "r",
-                     encoding="utf-8") as f:
+        with io.open(os.path.join(directory, "tool.py"), "r", encoding="utf-8") as f:
             source = f.read()
     except OSError:
         error = "there is no tool.py"
     try:
         name = os.path.basename(directory.rstrip("/"))
-        with io.open(os.path.join(directory, "test_%s.py" % name), "r",
-                     encoding="utf-8") as f:
+        with io.open(os.path.join(directory, "test_%s.py" % name), "r", encoding="utf-8") as f:
             test_source = f.read()
     except OSError:
         if not error:

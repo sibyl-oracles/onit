@@ -51,8 +51,7 @@ logger = logging.getLogger(__name__)
 
 # The toolkit, relative to this file: src/learn/_search.py ->
 # src/mcp/servers/tasks/local/search/toolkit.py
-_TOOLKIT_REL = os.path.join(
-    "..", "mcp", "servers", "tasks", "local", "search", "toolkit.py")
+_TOOLKIT_REL = os.path.join("..", "mcp", "servers", "tasks", "local", "search", "toolkit.py")
 
 # Word characters for the fallback tokenizer.  Deliberately the same shape as
 # the toolkit's: letters, digits and underscores, so "don't" splits into
@@ -77,8 +76,7 @@ def _load_toolkit():
         return None
 
     try:
-        spec = importlib.util.spec_from_file_location(
-            "onit_local_search_toolkit", path)
+        spec = importlib.util.spec_from_file_location("onit_local_search_toolkit", path)
         if spec is None or spec.loader is None:
             return None
         module = importlib.util.module_from_spec(spec)
@@ -99,6 +97,7 @@ def toolkit_available() -> bool:
 
 # ─── fallback tokenizer ─────────────────────────────────────────────────────
 
+
 def _fold_plural_fallback(word: str) -> str:
     """The toolkit's plural folding, reimplemented for the fallback path.
 
@@ -108,12 +107,13 @@ def _fold_plural_fallback(word: str) -> str:
     """
     if len(word) > 4 and word.endswith("ies"):
         return word[:-3] + "y"
-    if len(word) > 4 and (word.endswith("ches") or word.endswith("shes")
-                          or (word.endswith("es") and word[-3] in "sxz")):
+    if len(word) > 4 and (
+        word.endswith("ches")
+        or word.endswith("shes")
+        or (word.endswith("es") and word[-3] in "sxz")
+    ):
         return word[:-2]
-    if (len(word) > 3 and word.endswith("s")
-            and not word.endswith("ss")
-            and not word.endswith("us")):
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss") and not word.endswith("us"):
         return word[:-1]
     return word
 
@@ -127,11 +127,11 @@ def tokenize(text: str) -> list:
     toolkit = _load_toolkit()
     if toolkit is not None:
         return list(toolkit.tokenize(text or ""))
-    return [_fold_plural_fallback(w)
-            for w in _TOKEN_RE.findall((text or "").lower())]
+    return [_fold_plural_fallback(w) for w in _TOKEN_RE.findall((text or "").lower())]
 
 
 # ─── BM25 ───────────────────────────────────────────────────────────────────
+
 
 def bm25_scores(corpus_tokens: list, query_tokens: list) -> list:
     """Score every document in ``corpus_tokens`` against ``query_tokens``.
@@ -146,8 +146,9 @@ def bm25_scores(corpus_tokens: list, query_tokens: list) -> list:
     return _bm25_fallback(corpus_tokens, query_tokens)
 
 
-def _bm25_fallback(corpus_tokens: list, query_tokens: list,
-                   k1: float = 1.5, b: float = 0.75) -> list:
+def _bm25_fallback(
+    corpus_tokens: list, query_tokens: list, k1: float = 1.5, b: float = 0.75
+) -> list:
     """Okapi BM25, matching the toolkit's parameters."""
     doc_lens = [len(t) for t in corpus_tokens]
     if not doc_lens:
@@ -159,8 +160,7 @@ def _bm25_fallback(corpus_tokens: list, query_tokens: list,
         for term in set(tokens):
             df[term] = df.get(term, 0) + 1
     n = len(corpus_tokens)
-    idf = {term: math.log(1 + (n - freq + 0.5) / (freq + 0.5))
-           for term, freq in df.items()}
+    idf = {term: math.log(1 + (n - freq + 0.5) / (freq + 0.5)) for term, freq in df.items()}
 
     results = []
     for tokens, doc_len in zip(corpus_tokens, doc_lens):

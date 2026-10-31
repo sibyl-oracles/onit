@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,7 +27,7 @@ Requires:
 
 1 Core Tool:
 1. github_repo - Create, get, list, fork, or delete GitHub repositories
-'''
+"""
 
 import json
 import os
@@ -41,7 +41,8 @@ from src.mcp.servers.tasks.shared import uvicorn_config
 from src.mcp.servers.tasks.shared import GITHUB_REPO_DESCRIPTION
 
 import logging
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("GitHub MCP Server")
@@ -56,6 +57,7 @@ def _get_token() -> Optional[str]:
         return token
     try:
         from src.setup import get_secret
+
         return get_secret("github_token")
     except Exception:
         pass
@@ -86,10 +88,7 @@ def _repo_summary(repo: dict) -> dict:
     }
 
 
-@mcp.tool(
-    title="GitHub Repository",
-    description=GITHUB_REPO_DESCRIPTION
-)
+@mcp.tool(title="GitHub Repository", description=GITHUB_REPO_DESCRIPTION)
 def github_repo(
     action: Optional[str] = None,
     name: Optional[str] = None,
@@ -106,10 +105,12 @@ def github_repo(
 
     token = _get_token()
     if not token:
-        return json.dumps({
-            "error": "GitHub token not found. Set GITHUB_TOKEN env var or run 'onit setup'.",
-            "status": "error",
-        })
+        return json.dumps(
+            {
+                "error": "GitHub token not found. Set GITHUB_TOKEN env var or run 'onit setup'.",
+                "status": "error",
+            }
+        )
 
     headers = _auth_headers(token)
 
@@ -139,17 +140,21 @@ def github_repo(
 
             if resp.status_code == 201:
                 repo = resp.json()
-                return json.dumps({
-                    "repo": _repo_summary(repo),
-                    "status": "created",
-                })
+                return json.dumps(
+                    {
+                        "repo": _repo_summary(repo),
+                        "status": "created",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": resp.json().get("message", resp.text),
-                    "errors": resp.json().get("errors"),
-                    "status": "error",
-                    "http_status": resp.status_code,
-                })
+                return json.dumps(
+                    {
+                        "error": resp.json().get("message", resp.text),
+                        "errors": resp.json().get("errors"),
+                        "status": "error",
+                        "http_status": resp.status_code,
+                    }
+                )
 
         elif action == "get":
             if err := _validate_required(name=name):
@@ -158,16 +163,20 @@ def github_repo(
             url = f"{GITHUB_API}/repos/{name}"
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code == 200:
-                return json.dumps({
-                    "repo": _repo_summary(resp.json()),
-                    "status": "ok",
-                })
+                return json.dumps(
+                    {
+                        "repo": _repo_summary(resp.json()),
+                        "status": "ok",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": resp.json().get("message", resp.text),
-                    "status": "error",
-                    "http_status": resp.status_code,
-                })
+                return json.dumps(
+                    {
+                        "error": resp.json().get("message", resp.text),
+                        "status": "error",
+                        "http_status": resp.status_code,
+                    }
+                )
 
         elif action == "list":
             if org:
@@ -177,17 +186,21 @@ def github_repo(
             resp = requests.get(url, headers=headers, params={"per_page": per_page}, timeout=30)
             if resp.status_code == 200:
                 repos = [_repo_summary(r) for r in resp.json()]
-                return json.dumps({
-                    "repos": repos,
-                    "count": len(repos),
-                    "status": "ok",
-                })
+                return json.dumps(
+                    {
+                        "repos": repos,
+                        "count": len(repos),
+                        "status": "ok",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": resp.json().get("message", resp.text),
-                    "status": "error",
-                    "http_status": resp.status_code,
-                })
+                return json.dumps(
+                    {
+                        "error": resp.json().get("message", resp.text),
+                        "status": "error",
+                        "http_status": resp.status_code,
+                    }
+                )
 
         elif action == "fork":
             if err := _validate_required(name=name):
@@ -199,16 +212,20 @@ def github_repo(
                 payload["organization"] = org
             resp = requests.post(url, headers=headers, json=payload, timeout=30)
             if resp.status_code in (202, 200):
-                return json.dumps({
-                    "repo": _repo_summary(resp.json()),
-                    "status": "forked",
-                })
+                return json.dumps(
+                    {
+                        "repo": _repo_summary(resp.json()),
+                        "status": "forked",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": resp.json().get("message", resp.text),
-                    "status": "error",
-                    "http_status": resp.status_code,
-                })
+                return json.dumps(
+                    {
+                        "error": resp.json().get("message", resp.text),
+                        "status": "error",
+                        "http_status": resp.status_code,
+                    }
+                )
 
         elif action == "delete":
             if err := _validate_required(name=name):
@@ -220,17 +237,21 @@ def github_repo(
                 return json.dumps({"message": f"Repository '{name}' deleted.", "status": "deleted"})
             else:
                 body = resp.json() if resp.content else {}
-                return json.dumps({
-                    "error": body.get("message", resp.text),
-                    "status": "error",
-                    "http_status": resp.status_code,
-                })
+                return json.dumps(
+                    {
+                        "error": body.get("message", resp.text),
+                        "status": "error",
+                        "http_status": resp.status_code,
+                    }
+                )
 
         else:
-            return json.dumps({
-                "error": f"Unknown action '{action}'. Use: create, get, list, fork, delete",
-                "status": "error",
-            })
+            return json.dumps(
+                {
+                    "error": f"Unknown action '{action}'. Use: create, get, list, fork, delete",
+                    "status": "error",
+                }
+            )
 
     except requests.RequestException as e:
         return json.dumps({"error": str(e), "status": "error"})
@@ -239,6 +260,7 @@ def github_repo(
 # =============================================================================
 # SERVER ENTRY POINT
 # =============================================================================
+
 
 def run(
     transport: str = "sse",
@@ -257,17 +279,23 @@ def run(
 
     if not verbose:
         import uvicorn.config
+
         uvicorn.config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = "WARNING"
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-    if transport == 'stdio':
+    if transport == "stdio":
         # stdout is the protocol channel on stdio: no socket, no banner.
-        mcp.run(transport='stdio', show_banner=False)
+        mcp.run(transport="stdio", show_banner=False)
         return
 
-    mcp.run(transport=transport, host=host, port=port, path=path,
-            uvicorn_config=uvicorn_config(quiet=not verbose))
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        uvicorn_config=uvicorn_config(quiet=not verbose),
+    )
 
 
 if __name__ == "__main__":

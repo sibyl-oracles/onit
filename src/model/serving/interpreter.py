@@ -126,8 +126,12 @@ def _as_data(value):
 
 
 def _is_identifier(name) -> bool:
-    return (isinstance(name, str) and name.isidentifier()
-            and name not in _RESERVED and not name.startswith("_"))
+    return (
+        isinstance(name, str)
+        and name.isidentifier()
+        and name not in _RESERVED
+        and not name.startswith("_")
+    )
 
 
 def bindings_for(tool_items: list) -> list[dict]:
@@ -162,11 +166,13 @@ def bindings_for(tool_items: list) -> list[dict]:
         # Required first: Python will not accept a non-default parameter after
         # a defaulted one, and a schema is under no obligation to order them.
         params.sort(key=lambda p: not p["required"])
-        bindings.append({
-            "name": name,
-            "params": params,
-            "doc": (fn.get("description") or "")[:400],
-        })
+        bindings.append(
+            {
+                "name": name,
+                "params": params,
+                "doc": (fn.get("description") or "")[:400],
+            }
+        )
     return bindings
 
 
@@ -359,8 +365,7 @@ while True:
 
 
 def child_source(max_stdout: int = MAX_STDOUT_CHARS) -> str:
-    return _CHILD_SOURCE % {"max_stdout": int(max_stdout),
-                            "approval_params": APPROVAL_PARAMS}
+    return _CHILD_SOURCE % {"max_stdout": int(max_stdout), "approval_params": APPROVAL_PARAMS}
 
 
 class InterpreterError(RuntimeError):
@@ -375,11 +380,15 @@ class PythonInterpreter:
     never call it.
     """
 
-    def __init__(self, session_id: str = "", data_path: str = "",
-                 tool_items: list | None = None,
-                 dispatch=None,
-                 tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
-                 max_stdout: int = MAX_STDOUT_CHARS):
+    def __init__(
+        self,
+        session_id: str = "",
+        data_path: str = "",
+        tool_items: list | None = None,
+        dispatch=None,
+        tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
+        max_stdout: int = MAX_STDOUT_CHARS,
+    ):
         self.session_id = session_id or ""
         self.data_path = data_path or ""
         self.tool_items = list(tool_items or [])
@@ -417,11 +426,15 @@ class PythonInterpreter:
             env["ONIT_SESSION_ID"] = self.session_id
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-I", "-c", child_source(self.max_stdout),
+                sys.executable,
+                "-I",
+                "-c",
+                child_source(self.max_stdout),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                cwd=cwd, env=env,
+                cwd=cwd,
+                env=env,
             )
         except (OSError, ValueError) as e:
             self._proc = None
@@ -469,8 +482,7 @@ class PythonInterpreter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise asyncio.TimeoutError()
-            line = await asyncio.wait_for(self._proc.stdout.readline(),
-                                          timeout=remaining)
+            line = await asyncio.wait_for(self._proc.stdout.readline(), timeout=remaining)
             if not line:
                 raise InterpreterError("the interpreter exited unexpectedly")
             try:
@@ -508,12 +520,10 @@ class PythonInterpreter:
         try:
             if self.dispatch is None:
                 raise InterpreterError("this interpreter has no tools")
-            value = await asyncio.wait_for(self.dispatch(name, kwargs),
-                                           timeout=self.tool_timeout)
+            value = await asyncio.wait_for(self.dispatch(name, kwargs), timeout=self.tool_timeout)
             reply.update(ok=True, value=_as_data(value))
         except asyncio.TimeoutError:
-            reply.update(ok=False,
-                         error=f"{name} timed out after {self.tool_timeout:g}s")
+            reply.update(ok=False, error=f"{name} timed out after {self.tool_timeout:g}s")
         except Exception as e:
             # Raised as ToolError inside the code, where it can be caught: a
             # script that loops over ten documents should be able to survive
@@ -544,12 +554,16 @@ class PythonInterpreter:
                 # is inside the model's own loop and will not answer again.
                 await self.stop()
                 return {
-                    "ok": False, "stdout": "", "timed_out": True,
-                    "error": (f"the code did not finish within {timeout:g}s and was "
-                              "stopped. The interpreter has been restarted, so "
-                              "variables from earlier calls are gone. Break the work "
-                              "into smaller pieces, or check for a loop that does "
-                              "not end."),
+                    "ok": False,
+                    "stdout": "",
+                    "timed_out": True,
+                    "error": (
+                        f"the code did not finish within {timeout:g}s and was "
+                        "stopped. The interpreter has been restarted, so "
+                        "variables from earlier calls are gone. Break the work "
+                        "into smaller pieces, or check for a loop that does "
+                        "not end."
+                    ),
                 }
             except InterpreterError as e:
                 await self.stop()

@@ -60,8 +60,7 @@ _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 # A session id, as the store writes it.  Used to tell a session file
 # from another ".jsonl" file that happens to live in the same directory.
-_UUID_NAME = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_UUID_NAME = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 # Long enough that two distinct argument sets colliding is not a practical
 # concern, short enough to read in a terminal.
@@ -99,9 +98,9 @@ def args_digest(arguments: dict | None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:_DIGEST_CHARS]
 
 
-def describe_tool_call(name: str, arguments: dict | None, *,
-                       ok: bool, ms: int, result_chars: int,
-                       redact: bool = True) -> dict:
+def describe_tool_call(
+    name: str, arguments: dict | None, *, ok: bool, ms: int, result_chars: int, redact: bool = True
+) -> dict:
     """One tool call, as it is stored.
 
     Argument *names* are kept either way: which parameters a model reaches for
@@ -135,9 +134,7 @@ def _turn_view(turn: dict) -> dict:
         # Rich per-call records when the loop supplied them, names otherwise:
         # a turn whose tools ran through a path that predates this field still
         # says which tools ran.
-        "tools": turn.get("tool_runs") or [
-            {"name": n} for n in (turn.get("tools") or [])
-        ],
+        "tools": turn.get("tool_runs") or [{"name": n} for n in (turn.get("tools") or [])],
     }
 
 
@@ -206,16 +203,22 @@ def derive_signals(metrics: dict | None, stop_reason: str | None = None) -> dict
     }
 
 
-def build_record(*, session_id: str, turn: int, task: str, response: str,
-                 metrics: dict | None = None,
-                 tools_available: list | None = None,
-                 owner: str | None = None,
-                 topic_hint: str | None = None,
-                 model: str | None = None,
-                 stop_reason: str | None = None,
-                 playbook_version=None,
-                 episodes_used: list | None = None,
-                 playbook_items: list | None = None) -> dict:
+def build_record(
+    *,
+    session_id: str,
+    turn: int,
+    task: str,
+    response: str,
+    metrics: dict | None = None,
+    tools_available: list | None = None,
+    owner: str | None = None,
+    topic_hint: str | None = None,
+    model: str | None = None,
+    stop_reason: str | None = None,
+    playbook_version=None,
+    episodes_used: list | None = None,
+    playbook_items: list | None = None,
+) -> dict:
     """Assemble one task record.  Pure: writes nothing, raises nothing."""
     metrics = metrics or {}
     return {
@@ -250,8 +253,7 @@ def build_record(*, session_id: str, turn: int, task: str, response: str,
 
 def session_file(session_id: str, config_data: dict | None = None) -> str:
     """Path of the trajectory file for a session."""
-    return os.path.join(trajectory_dir(config_data),
-                        f"{_safe_name(session_id)}.jsonl")
+    return os.path.join(trajectory_dir(config_data), f"{_safe_name(session_id)}.jsonl")
 
 
 def _append(path: str, record: dict) -> bool:
@@ -274,8 +276,15 @@ def write_record(record: dict, config_data: dict | None = None) -> str | None:
     return path if _append(path, record) else None
 
 
-def record_task(*, session_id: str, turn: int, task: str, response: str,
-                config_data: dict | None = None, **kwargs) -> str | None:
+def record_task(
+    *,
+    session_id: str,
+    turn: int,
+    task: str,
+    response: str,
+    config_data: dict | None = None,
+    **kwargs,
+) -> str | None:
     """Build and append one task record.
 
     The single call the agent loop makes.  Best-effort by construction: a
@@ -285,18 +294,24 @@ def record_task(*, session_id: str, turn: int, task: str, response: str,
     if not recording_enabled(config_data):
         return None
     try:
-        record = build_record(session_id=session_id, turn=turn, task=task,
-                              response=response, **kwargs)
+        record = build_record(
+            session_id=session_id, turn=turn, task=task, response=response, **kwargs
+        )
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("trajectory record build failed: %s", e)
         return None
     return write_record(record, config_data)
 
 
-def append_rating(*, session_id: str, turn: int, rating,
-                  comment: str | None = None,
-                  source: str = "user",
-                  config_data: dict | None = None) -> str | None:
+def append_rating(
+    *,
+    session_id: str,
+    turn: int,
+    rating,
+    comment: str | None = None,
+    source: str = "user",
+    config_data: dict | None = None,
+) -> str | None:
     """Record a verdict on an earlier task.
 
     ``rating`` is normalized to +1 / -1 / None so that a thumbs-up from the web
@@ -408,6 +423,7 @@ def _label_in_place(records: list) -> list:
     if not records:
         return records
     from .signals import label_records
+
     label_records(records)
     return records
 
@@ -469,8 +485,11 @@ def _session_names(directory: str) -> list:
         names = sorted(os.listdir(directory))
     except OSError:
         return []
-    return [n[:-len(".jsonl")] for n in names
-            if n.endswith(".jsonl") and _is_session_name(n[:-len(".jsonl")])]
+    return [
+        n[: -len(".jsonl")]
+        for n in names
+        if n.endswith(".jsonl") and _is_session_name(n[: -len(".jsonl")])
+    ]
 
 
 def _split_membership(config_data: dict | None = None) -> dict:
@@ -492,7 +511,7 @@ def _split_membership(config_data: dict | None = None) -> dict:
     by_id = set()
     by_task = set()
     for bucket, name in (("holdout", "holdout"), ("dev", "dev")):
-        for item in (split.get(name) or []):
+        for item in split.get(name) or []:
             item_id = item.get("id")
             if item_id:
                 by_id.add((bucket, str(item_id)))
@@ -509,12 +528,12 @@ def _record_split(record: dict, membership: dict) -> str | None:
     asked a holdout question is a holdout record whatever its own id
     says.
     """
-    record_id = "%s#%s" % (record.get("session_id", "?"),
-                           record.get("turn", "?"))
+    record_id = "%s#%s" % (record.get("session_id", "?"), record.get("turn", "?"))
     for bucket, member in membership["by_id"]:
         if member == record_id:
             return bucket
     from .eval import task_key
+
     key = task_key(record.get("task") or "")
     if key:
         for bucket, member in membership["by_task"]:
@@ -523,9 +542,14 @@ def _record_split(record: dict, membership: dict) -> str | None:
     return None
 
 
-def iter_records(config_data: dict | None = None, *, owner: str | None = None,
-                 model: str | None = None, split: str | None = None,
-                 exclude_holdout: bool = False):
+def iter_records(
+    config_data: dict | None = None,
+    *,
+    owner: str | None = None,
+    model: str | None = None,
+    split: str | None = None,
+    exclude_holdout: bool = False,
+):
     """Every task record on disk, oldest session file first.
 
     The entry point for the loops that come after this one — reflection,

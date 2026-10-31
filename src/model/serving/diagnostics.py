@@ -77,8 +77,7 @@ def parse_prometheus(text: str, names: tuple) -> Optional[float]:
     return None
 
 
-async def prefix_cache_report(host: str, api_key: str = "EMPTY",
-                              timeout: float = 10.0) -> dict:
+async def prefix_cache_report(host: str, api_key: str = "EMPTY", timeout: float = 10.0) -> dict:
     """Ask a vLLM host whether automatic prefix caching is on and working.
 
     Returns {"reachable", "enabled", "queries", "hits", "hit_rate", "detail"}.
@@ -90,13 +89,24 @@ async def prefix_cache_report(host: str, api_key: str = "EMPTY",
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
     except Exception as e:
-        return {"reachable": False, "enabled": None, "queries": None, "hits": None,
-                "hit_rate": None, "detail": f"could not reach {url}: {e}"}
+        return {
+            "reachable": False,
+            "enabled": None,
+            "queries": None,
+            "hits": None,
+            "hit_rate": None,
+            "detail": f"could not reach {url}: {e}",
+        }
 
     if resp.status_code != 200:
-        return {"reachable": False, "enabled": None, "queries": None, "hits": None,
-                "hit_rate": None,
-                "detail": f"{url} returned HTTP {resp.status_code}"}
+        return {
+            "reachable": False,
+            "enabled": None,
+            "queries": None,
+            "hits": None,
+            "hit_rate": None,
+            "detail": f"{url} returned HTTP {resp.status_code}",
+        }
 
     text = resp.text
     queries = parse_prometheus(text, _QUERY_METRICS)
@@ -104,11 +114,16 @@ async def prefix_cache_report(host: str, api_key: str = "EMPTY",
     rate = parse_prometheus(text, _RATE_METRICS)
 
     if queries is None and rate is None:
-        return {"reachable": True, "enabled": None, "queries": None, "hits": None,
-                "hit_rate": None,
-                "detail": "host exposes no prefix-cache metrics; it is either "
-                          "not vLLM, predates them, or was started with "
-                          "--no-enable-prefix-caching"}
+        return {
+            "reachable": True,
+            "enabled": None,
+            "queries": None,
+            "hits": None,
+            "hit_rate": None,
+            "detail": "host exposes no prefix-cache metrics; it is either "
+            "not vLLM, predates them, or was started with "
+            "--no-enable-prefix-caching",
+        }
 
     if rate is not None and queries is None:
         hit_rate = rate
@@ -120,9 +135,14 @@ async def prefix_cache_report(host: str, api_key: str = "EMPTY",
     # Metrics present means the feature is compiled in and reporting; queries
     # accumulating means requests are actually being looked up in the cache.
     enabled = True if (queries or rate is not None) else None
-    return {"reachable": True, "enabled": enabled, "queries": queries,
-            "hits": hits, "hit_rate": hit_rate,
-            "detail": "prefix caching is reporting"}
+    return {
+        "reachable": True,
+        "enabled": enabled,
+        "queries": queries,
+        "hits": hits,
+        "hit_rate": hit_rate,
+        "detail": "prefix caching is reporting",
+    }
 
 
 def format_report(host: str, report: dict) -> str:
@@ -132,8 +152,10 @@ def format_report(host: str, report: dict) -> str:
         return "\n".join(lines)
     if report["enabled"] is None:
         lines.append(f"  status:   unknown — {report['detail']}")
-        lines.append("  fix:      start vLLM with --enable-prefix-caching "
-                     "(V1 enables it by default) and leave /metrics on")
+        lines.append(
+            "  fix:      start vLLM with --enable-prefix-caching "
+            "(V1 enables it by default) and leave /metrics on"
+        )
         return "\n".join(lines)
 
     lines.append("  status:   enabled")
@@ -147,14 +169,15 @@ def format_report(host: str, report: dict) -> str:
             # tool result, so the prefix is shared by construction.  A low rate
             # means something is breaking it — a prompt whose head changes per
             # request, or eviction under memory pressure.
-            lines.append("  note:     low for an agent workload; the prompt "
-                         "prefix is probably changing between turns")
+            lines.append(
+                "  note:     low for an agent workload; the prompt "
+                "prefix is probably changing between turns"
+            )
     return "\n".join(lines)
 
 
 def main(argv: list) -> int:
-    host = (argv[1] if len(argv) > 1
-            else os.environ.get("ONIT_HOST") or "http://localhost:8000/v1")
+    host = argv[1] if len(argv) > 1 else os.environ.get("ONIT_HOST") or "http://localhost:8000/v1"
     api_key = os.environ.get("VLLM_API_KEY", "EMPTY")
     report = asyncio.run(prefix_cache_report(host, api_key))
     print(format_report(host, report))

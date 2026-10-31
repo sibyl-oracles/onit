@@ -46,8 +46,7 @@ EVOLVE = 4
 
 DEFAULT_AUTONOMY = OBSERVE
 
-_NAMES = {"off": OFF, "observe": OBSERVE, "adapt": ADAPT,
-          "extend": EXTEND, "evolve": EVOLVE}
+_NAMES = {"off": OFF, "observe": OBSERVE, "adapt": ADAPT, "extend": EXTEND, "evolve": EVOLVE}
 
 # Level implemented today.  A config asking for more gets what exists, rather
 # than a run that silently believes it is learning more than it is.

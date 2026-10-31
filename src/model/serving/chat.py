@@ -39,18 +39,28 @@ try:
     from ...ui.protocol import ChatUIProtocol
 except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
     from ui.protocol import ChatUIProtocol
-from .verify import (DEFAULT_TRUSTED_DOMAINS, REVISION_MAX_TOKENS,
-                     THINKING_VERDICT_MAX_TOKENS,
-                     VERDICT_MAX_TOKENS, has_tool_evidence,
-                     needs_verification, verify_answer)
+from .verify import (
+    DEFAULT_TRUSTED_DOMAINS,
+    REVISION_MAX_TOKENS,
+    THINKING_VERDICT_MAX_TOKENS,
+    VERDICT_MAX_TOKENS,
+    has_tool_evidence,
+    needs_verification,
+    verify_answer,
+)
 
 from .harness import COMPACTION_NOTICE, HarnessTools
 from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
 from .interpreter import DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT
-from .state import (RunState, STOP_ANSWERED, STOP_PLANNING_EXHAUSTED,
-                    STOP_REPEATED_TOOL_CALL, STOP_REPETITION_LOOP,
-                    STOP_SAFETY_ABORT,
-                    STOP_TURN_LIMIT)
+from .state import (
+    RunState,
+    STOP_ANSWERED,
+    STOP_PLANNING_EXHAUSTED,
+    STOP_REPEATED_TOOL_CALL,
+    STOP_REPETITION_LOOP,
+    STOP_SAFETY_ABORT,
+    STOP_TURN_LIMIT,
+)
 
 try:
     from ...lib.text import split_instruction
@@ -63,12 +73,14 @@ except ImportError:  # imported with src/ itself on sys.path (tests, scripts)
 
 try:
     from ollama import AsyncClient as OllamaAsyncClient
+
     OLLAMA_SDK_AVAILABLE = True
 except ImportError:
     OllamaAsyncClient = None
     OLLAMA_SDK_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
 
 # The OpenAI SDK vendors a forked HTTP stack: recent releases ship ``httpx2``
 # and ``httpcore2`` instead of depending on ``httpx`` directly, and the fork's
@@ -137,7 +149,12 @@ def _truncate_tool_response(response: str, tool: str = "") -> str:
     if len(response) <= budget:
         return response
     half = budget // 2
-    return response[:half] + f"\n\n... [truncated {len(response) - budget} chars] ...\n\n" + response[-half:]
+    return (
+        response[:half]
+        + f"\n\n... [truncated {len(response) - budget} chars] ...\n\n"
+        + response[-half:]
+    )
+
 
 # Output tokens per response when nothing says otherwise.  Sized for a long
 # answer on a modern long-context model; a request is still clamped down to
@@ -230,12 +247,9 @@ def _build_client_timeout(timeout, stream: bool, prompt_tokens: int = 0):
     if timeout is not None and timeout >= 0:
         return timeout
     if not stream:
-        return httpx.Timeout(connect=CONNECT_TIMEOUT, read=None,
-                             write=30.0, pool=30.0)
-    first_read = max(STREAM_STALL_TIMEOUT,
-                     min(600.0, prompt_tokens / 300.0))
-    return httpx.Timeout(connect=CONNECT_TIMEOUT, read=first_read,
-                         write=30.0, pool=30.0)
+        return httpx.Timeout(connect=CONNECT_TIMEOUT, read=None, write=30.0, pool=30.0)
+    first_read = max(STREAM_STALL_TIMEOUT, min(600.0, prompt_tokens / 300.0))
+    return httpx.Timeout(connect=CONNECT_TIMEOUT, read=first_read, write=30.0, pool=30.0)
 
 
 def _api_tool_payload(tool_items: list) -> list:
@@ -256,18 +270,19 @@ def _api_tool_payload(tool_items: list) -> list:
     """
     payload = []
     for item in tool_items:
-        if not isinstance(item, dict) or not isinstance(item.get('function'), dict):
+        if not isinstance(item, dict) or not isinstance(item.get("function"), dict):
             payload.append(item)
             continue
-        fn = item['function']
-        projected = {k: fn[k] for k in ('name', 'description', 'parameters')
-                     if k in fn}
-        payload.append({**{k: v for k, v in item.items() if k != 'function'},
-                        'function': projected})
+        fn = item["function"]
+        projected = {k: fn[k] for k in ("name", "description", "parameters") if k in fn}
+        payload.append(
+            {**{k: v for k, v in item.items() if k != "function"}, "function": projected}
+        )
     return payload
 
 
 # ── per-turn telemetry ──────────────────────────────────────────────────────
+
 
 def _as_int(value) -> int:
     """Token counts as an int, whatever the provider actually returned.
@@ -321,11 +336,21 @@ class TurnMetrics:
         self.sink = sink
         self.turns: list = []
         sink.clear()
-        sink.update(turns=self.turns, turn_count=0, tool_calls=0,
-                    model_s=0.0, tool_s=0.0, prefill_s=0.0, decode_s=0.0,
-                    compaction_s=0.0, compactions=0, api_retries=0,
-                    prompt_tokens_max=0, prompt_tokens_total=0,
-                    completion_tokens=0)
+        sink.update(
+            turns=self.turns,
+            turn_count=0,
+            tool_calls=0,
+            model_s=0.0,
+            tool_s=0.0,
+            prefill_s=0.0,
+            decode_s=0.0,
+            compaction_s=0.0,
+            compactions=0,
+            api_retries=0,
+            prompt_tokens_max=0,
+            prompt_tokens_total=0,
+            completion_tokens=0,
+        )
         self._api_start = 0.0
         self._ttft = None
 
@@ -341,8 +366,9 @@ class TurnMetrics:
         if self._ttft is None and self._api_start:
             self._ttft = time.monotonic() - self._api_start
 
-    def end_api(self, prompt_tokens=0, completion_tokens=0,
-                finish_reason=None, cached_tokens=None) -> None:
+    def end_api(
+        self, prompt_tokens=0, completion_tokens=0, finish_reason=None, cached_tokens=None
+    ) -> None:
         # The streaming paths close the turn early, so the UI's footer can read
         # a sink that already includes the stream it is reporting on.  The
         # shared call further down then arrives second, and recording the turn
@@ -353,17 +379,19 @@ class TurnMetrics:
         prompt_tokens = _as_int(prompt_tokens)
         completion_tokens = _as_int(completion_tokens)
         cached_tokens = _as_int(cached_tokens) if cached_tokens is not None else None
-        self.turns.append({
-            "n": len(self.turns) + 1,
-            "ttft_s": round(self._ttft, 3) if self._ttft is not None else None,
-            "model_s": round(elapsed, 3),
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "cached_tokens": cached_tokens,
-            "finish_reason": finish_reason,
-            "tools": [],
-            "tool_s": 0.0,
-        })
+        self.turns.append(
+            {
+                "n": len(self.turns) + 1,
+                "ttft_s": round(self._ttft, 3) if self._ttft is not None else None,
+                "model_s": round(elapsed, 3),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cached_tokens": cached_tokens,
+                "finish_reason": finish_reason,
+                "tools": [],
+                "tool_s": 0.0,
+            }
+        )
         s = self.sink
         s["turn_count"] = len(self.turns)
         s["model_s"] = round(s["model_s"] + elapsed, 3)
@@ -417,8 +445,7 @@ class TurnMetrics:
         self.sink["compactions"] += 1
         self.sink["compaction_s"] = round(self.sink["compaction_s"] + seconds, 3)
 
-    def add_verification(self, seconds: float, issues: int = 0,
-                         revised: bool = False) -> None:
+    def add_verification(self, seconds: float, issues: int = 0, revised: bool = False) -> None:
         """The fact-check that runs after the answer is written.
 
         It lands after the last token the user saw, so it is time they wait
@@ -493,10 +520,17 @@ def provider_label(host: str) -> str:
     return rest.split("/")[0] or "?"
 
 
-def format_token_footer(m: dict, *, session: str = "", model: str = "",
-                        provider: str = "", data_path: str = "",
-                        version: str = "", elapsed: float = 0.0,
-                        tok_s: float = 0.0) -> str:
+def format_token_footer(
+    m: dict,
+    *,
+    session: str = "",
+    model: str = "",
+    provider: str = "",
+    data_path: str = "",
+    version: str = "",
+    elapsed: float = 0.0,
+    tok_s: float = 0.0,
+) -> str:
     """One stats line for a finished run: session, model, endpoint, tokens, time.
 
     ``session thesis-ch3 · model qwen3-coder · provider ollama · 4,698,819 tok
@@ -530,8 +564,7 @@ def format_token_footer(m: dict, *, session: str = "", model: str = "",
     if version:
         parts.append(f"v{version}")
     if total > 0:
-        parts.append(f"{total:,} tok ({prompt_tokens:,} in / "
-                     f"{completion_tokens:,} out)")
+        parts.append(f"{total:,} tok ({prompt_tokens:,} in / {completion_tokens:,} out)")
     elif total == 0 and m and m.get("turn_count"):
         # A run that recorded turns but no usage: the provider does not report
         # it.  Saying so beats printing "0 tok", which reads as a free run.
@@ -550,8 +583,7 @@ def summarize_metrics(m: dict) -> str:
     parts = [
         f"{m['turn_count']} turn(s)",
         f"{m['tool_calls']} tool call(s)",
-        f"model {m['model_s']:.1f}s (prefill {m['prefill_s']:.1f}s, "
-        f"decode {m['decode_s']:.1f}s)",
+        f"model {m['model_s']:.1f}s (prefill {m['prefill_s']:.1f}s, decode {m['decode_s']:.1f}s)",
         f"tools {m['tool_s']:.1f}s",
     ]
     _pt, _ct = m.get("prompt_tokens_total", 0), m.get("completion_tokens", 0)
@@ -567,14 +599,20 @@ def summarize_metrics(m: dict) -> str:
     if _pt_sum > 0 and _ct_sum > 0:
         parts.append(f"cache {_ct_sum / _pt_sum:.0%} hit")
     if m.get("verify_s"):
-        _verdict = (f"{m['verify_issues']} claim(s) corrected"
-                    if m.get("verify_revisions") else "clean")
+        _verdict = (
+            f"{m['verify_issues']} claim(s) corrected" if m.get("verify_revisions") else "clean"
+        )
         parts.append(f"fact-check {m['verify_s']:.1f}s ({_verdict})")
     return " | ".join(parts)
 
 
-def _log_to_ui_or_verbose(message: str, chat_ui: Optional[ChatUIProtocol], verbose: bool, level: str = "info",
-                          notify: bool = False) -> None:
+def _log_to_ui_or_verbose(
+    message: str,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose: bool,
+    level: str = "info",
+    notify: bool = False,
+) -> None:
     """Record a run event.
 
     The UI's log panel is off by default, so anything logged there is, for most
@@ -622,9 +660,8 @@ def _normalize_openai_base_url(host: str) -> str:
     base = host.rstrip("/")
     for suffix in ("/chat/completions", "/completions"):
         if base.lower().endswith(suffix):
-            base = base[:-len(suffix)]
-            logger.warning("Host %s looks like a full endpoint URL; "
-                           "using base URL %s.", host, base)
+            base = base[: -len(suffix)]
+            logger.warning("Host %s looks like a full endpoint URL; using base URL %s.", host, base)
             break
     return base
 
@@ -669,8 +706,11 @@ def _responses_text_of(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n".join(part.get("text", "") for part in content
-                         if isinstance(part, dict) and part.get("type") == "text")
+        return "\n".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
     return str(content)
 
 
@@ -703,9 +743,10 @@ def _openai_responses_input(messages: list) -> list:
                 "role": getattr(msg, "role", "assistant"),
                 "content": getattr(msg, "content", None),
                 "tool_calls": [
-                    {"id": tc.id,
-                     "function": {"name": tc.function.name,
-                                  "arguments": tc.function.arguments}}
+                    {
+                        "id": tc.id,
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
                     for tc in (getattr(msg, "tool_calls", None) or [])
                 ],
             }
@@ -723,25 +764,30 @@ def _openai_responses_input(messages: list) -> list:
                         if url:
                             parts.append({"type": "input_image", "image_url": url})
                 output = parts
-            items.append({"type": "function_call_output",
-                          "call_id": msg.get("tool_call_id", ""),
-                          "output": output})
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "output": output,
+                }
+            )
             continue
         tool_calls = msg.get("tool_calls")
         if role == "assistant" and tool_calls:
             prose = _responses_text_of(content)
             if prose.strip():
-                items.append({"type": "message", "role": "assistant",
-                              "content": prose})
+                items.append({"type": "message", "role": "assistant", "content": prose})
             for tc in tool_calls:
                 fn = tc.get("function", {}) if isinstance(tc, dict) else {}
                 args = fn.get("arguments", "{}")
-                items.append({
-                    "type": "function_call",
-                    "call_id": tc.get("id", "") if isinstance(tc, dict) else "",
-                    "name": fn.get("name", "") if isinstance(tc, dict) else "",
-                    "arguments": args if isinstance(args, str) else json.dumps(args),
-                })
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tc.get("id", "") if isinstance(tc, dict) else "",
+                        "name": fn.get("name", "") if isinstance(tc, dict) else "",
+                        "arguments": args if isinstance(args, str) else json.dumps(args),
+                    }
+                )
             continue
         if isinstance(content, list):
             parts = []
@@ -793,14 +839,15 @@ def _openai_responses_tools(tools: list) -> list:
     for t in tools or []:
         if isinstance(t, dict) and isinstance(t.get("function"), dict):
             fn = t["function"]
-            out.append({
-                "type": "function",
-                "name": fn.get("name", ""),
-                "description": fn.get("description", ""),
-                "parameters": fn.get("parameters")
-                or {"type": "object", "properties": {}},
-                "strict": False,
-            })
+            out.append(
+                {
+                    "type": "function",
+                    "name": fn.get("name", ""),
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                    "strict": False,
+                }
+            )
         else:
             out.append(t)
     return out
@@ -841,17 +888,18 @@ def _openai_responses_result(response) -> tuple:
             for part in getattr(item, "content", None) or []:
                 reasoning += getattr(part, "text", "") or ""
         elif kind == "function_call":
-            tool_calls.append(types.SimpleNamespace(
-                id=getattr(item, "call_id", "") or f"call_{uuid.uuid4().hex[:24]}",
-                function=types.SimpleNamespace(
-                    name=getattr(item, "name", ""),
-                    arguments=getattr(item, "arguments", "") or "{}",
-                ),
-            ))
+            tool_calls.append(
+                types.SimpleNamespace(
+                    id=getattr(item, "call_id", "") or f"call_{uuid.uuid4().hex[:24]}",
+                    function=types.SimpleNamespace(
+                        name=getattr(item, "name", ""),
+                        arguments=getattr(item, "arguments", "") or "{}",
+                    ),
+                )
+            )
     status = getattr(response, "status", None)
     if status == "incomplete":
-        reason = getattr(getattr(response, "incomplete_details", None),
-                         "reason", None)
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
         finish_reason = "length" if reason == "max_output_tokens" else "stop"
     else:
         finish_reason = "tool_calls" if tool_calls else "stop"
@@ -925,15 +973,15 @@ def _normalize_ollama_base_url(host: str) -> str:
     base = host.rstrip("/")
     for suffix in ("/v1", "/api"):
         if base.lower().endswith(suffix):
-            trimmed = base[:-len(suffix)]
-            logger.warning("Ollama host %s carries an OpenAI-style path; "
-                           "using %s.", host, trimmed)
+            trimmed = base[: -len(suffix)]
+            logger.warning("Ollama host %s carries an OpenAI-style path; using %s.", host, trimmed)
             return trimmed
     return base
 
 
-def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True,
-                          prompt_tokens: int = 0):
+def _create_ollama_client(
+    host: str, api_key: str, timeout, stream: bool = True, prompt_tokens: int = 0
+):
     """Create an OllamaAsyncClient configured for the given host and API key."""
     if not OLLAMA_SDK_AVAILABLE:
         raise ImportError("The 'ollama' package is required for Ollama cloud support.")
@@ -958,10 +1006,10 @@ def _create_ollama_client(host: str, api_key: str, timeout, stream: bool = True,
 # only briefly: a host that was down or slow during one call is asked again on
 # the next, instead of a single bad moment costing context accounting until
 # the process restarts.
-_MODEL_ID_CACHE: dict = {}        # host -> model id
-_MAX_CONTEXT_CACHE: dict = {}     # (host, model) -> (value, expires_at)
+_MODEL_ID_CACHE: dict = {}  # host -> model id
+_MAX_CONTEXT_CACHE: dict = {}  # (host, model) -> (value, expires_at)
 _OLLAMA_CONTEXT_CACHE: dict = {}  # model -> (value, expires_at)
-_NEGATIVE_CACHE_TTL = 300.0       # seconds a "could not determine" answer sticks
+_NEGATIVE_CACHE_TTL = 300.0  # seconds a "could not determine" answer sticks
 
 # Hosts that rejected chat_template_kwargs (see _verify_ask).  Remembered so
 # that a server whose chat template has no thinking switch costs one failed
@@ -974,16 +1022,25 @@ _NEGATIVE_CACHE_TTL = 300.0       # seconds a "could not determine" answer stick
 # Blacklisting a host on any error at all — a timeout, a 502, a dropped
 # connection — would trade every later fact-check on that host for that, which
 # is exactly what used to happen.
-_NO_TEMPLATE_KWARGS: dict = {}      # host -> expires_at
-_NO_TEMPLATE_KWARGS_TTL = 1800.0    # seconds; a re-deploy gets a fresh hearing
+_NO_TEMPLATE_KWARGS: dict = {}  # host -> expires_at
+_NO_TEMPLATE_KWARGS_TTL = 1800.0  # seconds; a re-deploy gets a fresh hearing
 
 # What a server says when it means "I do not accept that parameter", as
 # opposed to "I am busy" or "I fell over".
 _TEMPLATE_KWARGS_REJECTED = (
-    "chat_template_kwargs", "enable_thinking", "extra_body",
-    "unexpected keyword", "unrecognized", "not permitted", "unknown field",
-    "unknown parameter", "unsupported value", "unsupported parameter",
-    "invalid parameter", "does not support", "not supported",
+    "chat_template_kwargs",
+    "enable_thinking",
+    "extra_body",
+    "unexpected keyword",
+    "unrecognized",
+    "not permitted",
+    "unknown field",
+    "unknown parameter",
+    "unsupported value",
+    "unsupported parameter",
+    "invalid parameter",
+    "does not support",
+    "not supported",
 )
 
 
@@ -1077,8 +1134,7 @@ async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
     return model_id
 
 
-async def list_models(host: str, host_key: str = "EMPTY",
-                      timeout: float = 15.0) -> list[str]:
+async def list_models(host: str, host_key: str = "EMPTY", timeout: float = 15.0) -> list[str]:
     """Every model id the endpoint at ``host`` will answer for, sorted.
 
     The auto-detection path above only ever wants the first entry, so it never
@@ -1094,14 +1150,16 @@ async def list_models(host: str, host_key: str = "EMPTY",
         client = _create_ollama_client(host, api_key, timeout, stream=False)
         resp = await client.list()
         return sorted(m.model for m in (resp.models or []) if m.model)
-    client = AsyncOpenAI(base_url=host, api_key=api_key,
-                         timeout=_build_client_timeout(timeout, stream=False))
+    client = AsyncOpenAI(
+        base_url=host, api_key=api_key, timeout=_build_client_timeout(timeout, stream=False)
+    )
     models = await client.models.list()
     return sorted(m.id for m in (models.data or []) if m.id)
 
 
-async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
-                                     host: str, current_model: str) -> Optional[str]:
+async def _autodetect_fallback_model(
+    client, ollama_client, is_ollama: bool, host: str, current_model: str
+) -> Optional[str]:
     """After a 404 for the configured model, auto-detect what the host serves.
 
     A stale ``serving.model`` (e.g. after the server was redeployed with a
@@ -1114,8 +1172,11 @@ async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
     # the current model, and report "no fallback" forever.  Ask the host again.
     _MODEL_ID_CACHE.pop(host, None)
     try:
-        detected = (await _ollama_resolve_model_id(ollama_client, host) if is_ollama
-                    else await _resolve_model_id(client, host))
+        detected = (
+            await _ollama_resolve_model_id(ollama_client, host)
+            if is_ollama
+            else await _resolve_model_id(client, host)
+        )
     except Exception as e:
         logger.error("Model fallback auto-detection failed for %s: %s", host, e)
         return None
@@ -1124,8 +1185,10 @@ async def _autodetect_fallback_model(client, ollama_client, is_ollama: bool,
         # non-chat endpoints (whisper-1, tts-1, ...); data[0] may be anything.
         # A silent fallback onto a non-chat model would fail differently and
         # more confusingly than the 404 that triggered detection.
-        logger.error("OpenAI auto-detection picked non-chat model %s; "
-                     "set an explicit chat model instead.", detected)
+        logger.error(
+            "OpenAI auto-detection picked non-chat model %s; set an explicit chat model instead.",
+            detected,
+        )
         return None
     return detected if detected != current_model else None
 
@@ -1230,17 +1293,20 @@ def _parse_commands_format(obj: dict, tool_registry, harness=None) -> Optional[l
         arguments = {}
         if len(parts) > 1:
             arguments = {"input": parts[1]}
-        results.append({
-            "name": tool_name,
-            "arguments": arguments,
-            "_timeout_sec": cmd.get("timeout_sec"),
-            "_is_blocking": cmd.get("is_blocking", True),
-        })
+        results.append(
+            {
+                "name": tool_name,
+                "arguments": arguments,
+                "_timeout_sec": cmd.get("timeout_sec"),
+                "_is_blocking": cmd.get("is_blocking", True),
+            }
+        )
     return results if results else None
 
 
-def _parse_tool_call_from_content(content: str, tool_registry,
-                                  harness=None) -> Optional[dict | list[dict]]:
+def _parse_tool_call_from_content(
+    content: str, tool_registry, harness=None
+) -> Optional[dict | list[dict]]:
     """Detect a raw JSON tool call in message content.
 
     Some models return tool calls as plain JSON in the response body instead of
@@ -1333,7 +1399,7 @@ def _parse_truncated_tool_call(text: str, tool_registry, harness=None) -> Option
         if esc:
             esc = False
             continue
-        if ch == '\\' and in_str:
+        if ch == "\\" and in_str:
             esc = True
             continue
         if ch == '"':
@@ -1341,9 +1407,9 @@ def _parse_truncated_tool_call(text: str, tool_registry, harness=None) -> Option
             continue
         if in_str:
             continue
-        if ch == '{':
+        if ch == "{":
             depth += 1
-        elif ch == '}':
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 last_valid = i + 1
@@ -1369,8 +1435,12 @@ def _looks_like_raw_tool_call(content: str) -> bool:
         return False
     text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
     # Quick heuristic: standard format or commands format
-    has_standard = bool(re.search(r'"name"\s*:\s*"[^"]+"', text) and re.search(r'"arguments"\s*:', text))
-    has_commands = bool(re.search(r'"commands"\s*:\s*\[', text) and re.search(r'"keystrokes"\s*:', text))
+    has_standard = bool(
+        re.search(r'"name"\s*:\s*"[^"]+"', text) and re.search(r'"arguments"\s*:', text)
+    )
+    has_commands = bool(
+        re.search(r'"commands"\s*:\s*\[', text) and re.search(r'"keystrokes"\s*:', text)
+    )
     return has_standard or has_commands
 
 
@@ -1390,9 +1460,9 @@ def _resolve_sandbox_download_locally(args: dict, data_path: str) -> str | None:
 
     # Resolve to a relative path under data_path
     if src_path.startswith("/workspace/"):
-        relative = src_path[len("/workspace/"):]
+        relative = src_path[len("/workspace/") :]
     elif src_path.startswith("/workspace"):
-        relative = src_path[len("/workspace"):]
+        relative = src_path[len("/workspace") :]
     elif os.path.abspath(src_path).startswith(abs_data):
         relative = os.path.relpath(os.path.abspath(src_path), abs_data)
     else:
@@ -1409,12 +1479,14 @@ def _resolve_sandbox_download_locally(args: dict, data_path: str) -> str | None:
         size_bytes = os.path.getsize(local_path)
     except OSError:
         size_bytes = None
-    return json.dumps({
-        "status": "ok",
-        "filename": os.path.basename(relative),
-        "dest": local_path,
-        "size_bytes": size_bytes,
-    })
+    return json.dumps(
+        {
+            "status": "ok",
+            "filename": os.path.basename(relative),
+            "dest": local_path,
+            "size_bytes": size_bytes,
+        }
+    )
 
 
 def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str | None, str | None]:
@@ -1441,15 +1513,19 @@ def _extract_base64_file(tool_response: str, data_path: str) -> tuple[str, str |
     # Tools are inconsistent about the key: some use 'file_name',
     # bash send_file uses 'filename'.
     file_name = data.get("file_name") or data.get("filename")
-    mime_type = data.get("mime_type") \
-        or (mimetypes.guess_type(file_name)[0] if file_name else None) \
+    mime_type = (
+        data.get("mime_type")
+        or (mimetypes.guess_type(file_name)[0] if file_name else None)
         or "application/octet-stream"
+    )
 
     if not file_name:
         # Pick a sensible extension from the mime type
         _ext_map = {
-            "image/jpeg": ".jpg", "image/png": ".png",
-            "image/gif": ".gif", "image/webp": ".webp",
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
         }
         ext = _ext_map.get(mime_type, ".bin")
         file_name = f"{uuid.uuid4()}{ext}"
@@ -1492,8 +1568,9 @@ TOOL_RESULT_DECAY_CHARS = 4000
 # (ResultStore.decay_trailer) is a local file read, which is the whole point of
 # Phase 4.  Both open with CONTINUATION_PREFIX so "already trimmed?" stays one
 # check rather than a list of known sentences.
-_DECAY_MARKER = (CONTINUATION_PREFIX
-                 + "trimmed: older tool result, call the tool again for the rest]")
+_DECAY_MARKER = (
+    CONTINUATION_PREFIX + "trimmed: older tool result, call the tool again for the rest]"
+)
 
 # What an *aged, stored* result is cut to.  Far below TOOL_RESULT_DECAY_CHARS,
 # and the handle is what makes that safe: 6,000 is the floor for a result whose
@@ -1540,6 +1617,7 @@ def _policy_refusal_reason(tool_response: str) -> str:
         return ""
     return str(payload.get("error") or "")
 
+
 # Compaction-transcript caps: the summarizer sees the newest window in full
 # (bounded by both message count and total chars) and everything older as
 # one-line mentions.  60k chars ≈ 15k tokens — comfortably inside a 128k
@@ -1550,11 +1628,13 @@ MAX_TRANSCRIPT_MESSAGES = 150
 MAX_TRANSCRIPT_MENTIONS = 30
 
 
-def _decay_old_tool_results(messages: list,
-                            keep_full: int = TOOL_RESULT_KEEP_FULL,
-                            head_chars: int = TOOL_RESULT_DECAY_CHARS,
-                            store=None,
-                            stored_head_chars: int = TOOL_RESULT_STORED_DECAY_CHARS) -> None:
+def _decay_old_tool_results(
+    messages: list,
+    keep_full: int = TOOL_RESULT_KEEP_FULL,
+    head_chars: int = TOOL_RESULT_DECAY_CHARS,
+    store=None,
+    stored_head_chars: int = TOOL_RESULT_STORED_DECAY_CHARS,
+) -> None:
     """Trim tool results the conversation has moved past.
 
     Each result may be up to MAX_TOOL_RESPONSE characters, and every one of
@@ -1580,8 +1660,10 @@ def _decay_old_tool_results(messages: list,
     whether its emergency trim actually shrank the prompt.
     """
     tool_indices = [
-        i for i, msg in enumerate(messages)
-        if isinstance(msg, dict) and msg.get("role") == "tool"
+        i
+        for i, msg in enumerate(messages)
+        if isinstance(msg, dict)
+        and msg.get("role") == "tool"
         and isinstance(msg.get("content"), str)
     ]
     trimmed_count = 0
@@ -1674,12 +1756,12 @@ def _adapt_messages_for_ollama(messages: list) -> list:
     clients that take raw base64 strings get strings.
     """
     # Rich markup pattern: [tag] or [/tag]
-    _rich_markup = re.compile(r'\[/?[a-zA-Z_][a-zA-Z0-9_-]*(\s+[a-zA-Z_]+=[^ ]+)*\]')
-    
+    _rich_markup = re.compile(r"\[/?[a-zA-Z_][a-zA-Z0-9_-]*(\s+[a-zA-Z_]+=[^ ]+)*\]")
+
     def _strip_rich_markup(text: str) -> str:
         """Remove Rich markup tags from text, keeping the content."""
-        return _rich_markup.sub('', text)
-    
+        return _rich_markup.sub("", text)
+
     adapted = []
     for msg in messages:
         if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
@@ -1759,15 +1841,19 @@ def _approval_refused(request: dict, note: str) -> str:
     different next turns: one is "find another way", the other is "try again
     in a moment". Only the first is true here.
     """
-    return json.dumps({
-        "error": f"{request.get('reason') or 'Command blocked by policy.'} {note}",
-        "command": request.get("command", ""),
-        "status": "blocked",
-        "retryable": False,
-        "guidance": ("The command was not run. Do not retry it and do not "
-                     "rewrite it to get past the check. Take a different "
-                     "approach, or tell the user what you need and why."),
-    })
+    return json.dumps(
+        {
+            "error": f"{request.get('reason') or 'Command blocked by policy.'} {note}",
+            "command": request.get("command", ""),
+            "status": "blocked",
+            "retryable": False,
+            "guidance": (
+                "The command was not run. Do not retry it and do not "
+                "rewrite it to get past the check. Take a different "
+                "approach, or tell the user what you need and why."
+            ),
+        }
+    )
 
 
 def _same_question(first: dict, second: dict) -> bool:
@@ -1785,8 +1871,7 @@ def _same_question(first: dict, second: dict) -> bool:
     return asked <= seen
 
 
-async def _run_approved(invoke, retry_args: dict, request: dict,
-                        timeout) -> str:
+async def _run_approved(invoke, retry_args: dict, request: dict, timeout) -> str:
     """Re-issue the gated call, following at most one re-ask of the question.
 
     A ticket is short-lived and lives only in the server's memory, so the one
@@ -1806,9 +1891,11 @@ async def _run_approved(invoke, retry_args: dict, request: dict,
         try:
             result = await asyncio.wait_for(invoke(retry_args), timeout=timeout)
         except asyncio.TimeoutError:
-            return (f"- tool call timed out after {timeout} seconds. "
-                    "Tool might have succeeded but no response was received. "
-                    "Check expected output.")
+            return (
+                f"- tool call timed out after {timeout} seconds. "
+                "Tool might have succeeded but no response was received. "
+                "Check expected output."
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1818,35 +1905,46 @@ async def _run_approved(invoke, retry_args: dict, request: dict,
             # against a call it cannot see, which reads as a flaky tool and is
             # answered by trying the command again — the one thing that must
             # not happen to a command a person has just approved.
-            logger.warning("re-issuing the approved %s failed: %s",
-                           request.get("command", ""), e)
-            return json.dumps({
-                "error": f"The command was approved, but re-running it failed: {e}",
-                "command": request.get("command", ""),
-                "status": "error",
-                "retryable": False,
-                "guidance": ("The approval was not the problem and the same "
-                             "command will fail the same way. Say what "
-                             "happened, or take a different approach."),
-            })
+            logger.warning("re-issuing the approved %s failed: %s", request.get("command", ""), e)
+            return json.dumps(
+                {
+                    "error": f"The command was approved, but re-running it failed: {e}",
+                    "command": request.get("command", ""),
+                    "status": "error",
+                    "retryable": False,
+                    "guidance": (
+                        "The approval was not the problem and the same "
+                        "command will fail the same way. Say what "
+                        "happened, or take a different approach."
+                    ),
+                }
+            )
         result = "" if result is None else str(result)
         again = _approval_request(result)
         if again is None:
             return result
         if attempt == 2 or not _same_question(request, again):
             break
-        logger.debug("approval ticket for %s was not recognised; redeeming the "
-                     "server's replacement with the same answer",
-                     request.get("command", ""))
+        logger.debug(
+            "approval ticket for %s was not recognised; redeeming the "
+            "server's replacement with the same answer",
+            request.get("command", ""),
+        )
         retry_args = dict(retry_args, approval_token=again["approval_id"])
     return _approval_refused(
-        request, "It was approved but the server asked again; "
-                 "treating that as a refusal.")
+        request, "It was approved but the server asked again; treating that as a refusal."
+    )
 
 
-async def _resolve_approval(function_name: str, function_arguments: dict,
-                            tool_response: str, invoke, chat_ui: Optional[ChatUIProtocol], verbose: bool,
-                            timeout) -> str:
+async def _resolve_approval(
+    function_name: str,
+    function_arguments: dict,
+    tool_response: str,
+    invoke,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose: bool,
+    timeout,
+) -> str:
     """Ask a person about a gated call, then re-issue it or refuse it.
 
     ``invoke`` re-runs the tool with the arguments given: a yes carries the
@@ -1876,7 +1974,11 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
         _log_to_ui_or_verbose(
             f"auto-approved: {str(request.get('command', '')).strip()[:200]}"
             f" ({request.get('reason', '')})",
-            chat_ui, verbose, level="warning", notify=True)
+            chat_ui,
+            verbose,
+            level="warning",
+            notify=True,
+        )
         retry_args = dict(function_arguments)
         retry_args["approval_token"] = request["approval_id"]
         retry_args["approval_scope"] = "session"
@@ -1884,12 +1986,14 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
 
     ask = getattr(chat_ui, "ask_approval", None)
     if not callable(ask):
-        return _approval_refused(
-            request, "No one is available to approve it in this session.")
+        return _approval_refused(request, "No one is available to approve it in this session.")
 
     _log_to_ui_or_verbose(
         f"{function_name} needs approval: {request.get('reason', '')}",
-        chat_ui, verbose, level="warning")
+        chat_ui,
+        verbose,
+        level="warning",
+    )
 
     try:
         answer = ask(request)
@@ -1922,15 +2026,23 @@ async def _resolve_approval(function_name: str, function_arguments: dict,
     return await _run_approved(invoke, retry_args, request, timeout)
 
 
-async def _execute_tool(function_name: str, function_arguments: dict,
-                        tool_call_id: str, tool_registry, timeout, data_path,
-                        chat_ui: Optional[ChatUIProtocol], verbose, messages: list,
-                        tool_call_history: list,
-                        max_repeated: int,
-                        is_structured: bool = False,
-                        session_id: str = "",
-                        tool_log: list | None = None,
-                        harness=None) -> Optional[str]:
+async def _execute_tool(
+    function_name: str,
+    function_arguments: dict,
+    tool_call_id: str,
+    tool_registry,
+    timeout,
+    data_path,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose,
+    messages: list,
+    tool_call_history: list,
+    max_repeated: int,
+    is_structured: bool = False,
+    session_id: str = "",
+    tool_log: list | None = None,
+    harness=None,
+) -> Optional[str]:
     """Execute a single tool call and append the result to messages.
 
     Returns a bail-out message string if repeated-call limit is hit,
@@ -1945,12 +2057,16 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     def _log(ok: bool, result_chars: int) -> None:
         if tool_log is None:
             return
-        tool_log.append(describe_tool_call(
-            function_name, function_arguments, ok=ok,
-            ms=int((time.monotonic() - _t0) * 1000),
-            result_chars=result_chars,
-            redact=redact_tool_args(),
-        ))
+        tool_log.append(
+            describe_tool_call(
+                function_name,
+                function_arguments,
+                ok=ok,
+                ms=int((time.monotonic() - _t0) * 1000),
+                result_chars=result_chars,
+                redact=redact_tool_args(),
+            )
+        )
 
     # Inject session_id / data_path into tool calls whose schema declares
     # these parameters, so callers (e.g. sandbox MCP servers) receive them
@@ -1962,9 +2078,19 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     # Injected anyway, the values arrive as parameters their schemas do not
     # declare, and their own validation refuses the call.
     _is_harness_call = harness is not None and harness.handles(function_name)
-    if session_id and not _is_harness_call and tool_registry and tool_registry.tool_accepts_param(function_name, "session_id"):
+    if (
+        session_id
+        and not _is_harness_call
+        and tool_registry
+        and tool_registry.tool_accepts_param(function_name, "session_id")
+    ):
         function_arguments["session_id"] = session_id
-    if data_path and not _is_harness_call and tool_registry and tool_registry.tool_accepts_param(function_name, "data_path"):
+    if (
+        data_path
+        and not _is_harness_call
+        and tool_registry
+        and tool_registry.tool_accepts_param(function_name, "data_path")
+    ):
         function_arguments["data_path"] = data_path
     # Approval arguments belong to the harness, never to the model. A server
     # that gates a command on a human's answer trusts these to have come from
@@ -1984,8 +2110,12 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             if chat_ui:
                 chat_ui.add_tool_call(function_name, function_arguments)
                 chat_ui.show_tool_start(function_name, function_arguments)
-            tool_message = {'role': 'tool', 'content': result, 'name': function_name,
-                            "tool_call_id": tool_call_id}
+            tool_message = {
+                "role": "tool",
+                "content": result,
+                "name": function_name,
+                "tool_call_id": tool_call_id,
+            }
             messages.append(tool_message)
             if chat_ui:
                 chat_ui.add_tool_result(function_name, result)
@@ -2063,8 +2193,12 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         # and adispatch hands them straight to dispatch.
         harness_result = await harness.adispatch(function_name, function_arguments)
         _ok = not harness_result.startswith("Error:")
-        tool_message = {'role': 'tool', 'content': harness_result, 'name': function_name,
-                        "tool_call_id": tool_call_id}
+        tool_message = {
+            "role": "tool",
+            "content": harness_result,
+            "name": function_name,
+            "tool_call_id": tool_call_id,
+        }
         messages.append(tool_message)
         if chat_ui:
             chat_ui.add_tool_result(function_name, harness_result)
@@ -2075,23 +2209,34 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             print(f"{function_name}({function_arguments}) returned: {harness_result[:500]}")
         _log(_ok, len(harness_result))
     elif not tool_registry or function_name not in tool_registry.tools:
-        tool_message = {'role': 'tool', 'content': f'Error: tool {function_name} not found',
-                        'name': function_name,
-                        "tool_call_id": tool_call_id}
+        tool_message = {
+            "role": "tool",
+            "content": f"Error: tool {function_name} not found",
+            "name": function_name,
+            "tool_call_id": tool_call_id,
+        }
         messages.append(tool_message)
         _log(False, 0)
     elif _blank_args:
         _names = ", ".join(_blank_args)
-        _error = (f"Error: {function_name} was called with no value for: {_names}. "
-                  "The call was not run. Supply a real value for each of them and "
-                  "call the tool again, or use a different tool — do not repeat "
-                  "this call unchanged and do not report this error as the answer.")
+        _error = (
+            f"Error: {function_name} was called with no value for: {_names}. "
+            "The call was not run. Supply a real value for each of them and "
+            "call the tool again, or use a different tool — do not repeat "
+            "this call unchanged and do not report this error as the answer."
+        )
         _log_to_ui_or_verbose(
             f"{function_name} called with blank required argument(s): {_names}",
-            chat_ui, verbose, level="warning",
+            chat_ui,
+            verbose,
+            level="warning",
         )
-        tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
-                        "tool_call_id": tool_call_id}
+        tool_message = {
+            "role": "tool",
+            "content": _error,
+            "name": function_name,
+            "tool_call_id": tool_call_id,
+        }
         messages.append(tool_message)
         if chat_ui:
             chat_ui.add_tool_result(function_name, _error)
@@ -2101,17 +2246,25 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         _log(False, 0)
     elif _schema_problems:
         _detail = "; ".join(_schema_problems)
-        _error = (f"Error: {function_name} was called with arguments that do not "
-                  f"match its schema: {_detail}. The call was not run. Fix the "
-                  "arguments and call the tool again, or use a different tool — "
-                  "do not repeat this call unchanged and do not report this "
-                  "error as the answer.")
+        _error = (
+            f"Error: {function_name} was called with arguments that do not "
+            f"match its schema: {_detail}. The call was not run. Fix the "
+            "arguments and call the tool again, or use a different tool — "
+            "do not repeat this call unchanged and do not report this "
+            "error as the answer."
+        )
         _log_to_ui_or_verbose(
             f"{function_name} called with invalid arguments: {_detail}",
-            chat_ui, verbose, level="warning",
+            chat_ui,
+            verbose,
+            level="warning",
         )
-        tool_message = {'role': 'tool', 'content': _error, 'name': function_name,
-                        "tool_call_id": tool_call_id}
+        tool_message = {
+            "role": "tool",
+            "content": _error,
+            "name": function_name,
+            "tool_call_id": tool_call_id,
+        }
         messages.append(tool_message)
         if chat_ui:
             chat_ui.add_tool_result(function_name, _error)
@@ -2128,6 +2281,7 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                 # to the UI in real-time (e.g. sandbox stdout/stderr).
                 _log_handler = None
                 if chat_ui:
+
                     async def _log_handler(msg):
                         chat_ui.tool_log(function_name, msg.data, level=msg.level)
 
@@ -2156,10 +2310,14 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                         pass
             except asyncio.TimeoutError:
                 _timed_out = True
-                tool_response = (f"- tool call timed out after {timeout} seconds. "
-                                 "Tool might have succeeded but no response was received. "
-                                 "Check expected output.")
-                _log_to_ui_or_verbose(f"{function_name} timed out after {timeout}s", chat_ui, verbose, level="warning")
+                tool_response = (
+                    f"- tool call timed out after {timeout} seconds. "
+                    "Tool might have succeeded but no response was received. "
+                    "Check expected output."
+                )
+                _log_to_ui_or_verbose(
+                    f"{function_name} timed out after {timeout}s", chat_ui, verbose, level="warning"
+                )
             if is_structured and chat_ui:
                 chat_ui.stop_tool_spinner()
             tool_response = "" if tool_response is None else str(tool_response)
@@ -2169,11 +2327,19 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             # question into a refusal, and only the outcome reaches the model.
             if not _timed_out:
                 tool_response = await _resolve_approval(
-                    function_name, function_arguments, tool_response,
-                    _invoke, chat_ui, verbose, timeout)
+                    function_name,
+                    function_arguments,
+                    tool_response,
+                    _invoke,
+                    chat_ui,
+                    verbose,
+                    timeout,
+                )
             _vision_b64, _vision_mime = None, None
             if data_path and "file_data_base64" in tool_response:
-                tool_response, _vision_b64, _vision_mime = _extract_base64_file(tool_response, data_path)
+                tool_response, _vision_b64, _vision_mime = _extract_base64_file(
+                    tool_response, data_path
+                )
             # Pass by reference (results.py).  The full output goes to a
             # file and a bounded preview carrying a handle goes into the
             # message, so a large result stops being a choice between paying
@@ -2182,24 +2348,36 @@ async def _execute_tool(function_name: str, function_arguments: dict,
             # data_path has nowhere to put the rest, and a hard cut is still
             # better than an unbounded message.
             _stored = harness.results.put(function_name, tool_response) if harness else None
-            tool_response = (_stored if _stored is not None
-                             else _truncate_tool_response(tool_response, function_name))
+            tool_response = (
+                _stored
+                if _stored is not None
+                else _truncate_tool_response(tool_response, function_name)
+            )
             if _vision_b64:
                 tool_content = [
                     {"type": "text", "text": tool_response},
-                    {"type": "image_url", "image_url": {"url": f"data:{_vision_mime};base64,{_vision_b64}"}},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{_vision_mime};base64,{_vision_b64}"},
+                    },
                 ]
             else:
                 tool_content = tool_response
-            tool_message = {'role': 'tool', 'content': tool_content, 'name': function_name,
-                            "tool_call_id": tool_call_id}
+            tool_message = {
+                "role": "tool",
+                "content": tool_content,
+                "name": function_name,
+                "tool_call_id": tool_call_id,
+            }
             messages.append(tool_message)
             if chat_ui:
                 chat_ui.add_tool_result(function_name, tool_response)
                 if is_structured:
                     chat_ui.show_tool_done(function_name, tool_response)
             elif verbose:
-                truncated = tool_response[:500] + "..." if len(tool_response) > 500 else tool_response
+                truncated = (
+                    tool_response[:500] + "..." if len(tool_response) > 500 else tool_response
+                )
                 print(f"{function_name}({function_arguments}) returned: {truncated}")
             # A timeout answered the call — with a message saying the tool may
             # well have succeeded — but it is not a call that went well.
@@ -2210,8 +2388,12 @@ async def _execute_tool(function_name: str, function_arguments: dict,
                     chat_ui.stop_tool_spinner()
                     chat_ui.show_tool_done(function_name, str(e), success=False)
             _log_to_ui_or_verbose(f"{function_name} error: {e}", chat_ui, verbose, level="error")
-            tool_message = {'role': 'tool', 'content': f'Error: {e}', 'name': function_name,
-                            "tool_call_id": tool_call_id}
+            tool_message = {
+                "role": "tool",
+                "content": f"Error: {e}",
+                "name": function_name,
+                "tool_call_id": tool_call_id,
+            }
             messages.append(tool_message)
             _log(False, 0)
 
@@ -2243,25 +2425,41 @@ async def _execute_tool(function_name: str, function_arguments: dict,
     # carries the policy's own reason so the next turn (a resumed session
     # reads this as its last response) starts from the cause, not from a
     # bare "stopped".
-    _refusal_reason = _policy_refusal_reason(messages[-1]["content"]
-                                             if messages and
-                                             isinstance(messages[-1], dict)
-                                             and isinstance(messages[-1].get("content"), str)
-                                             else "")
+    _refusal_reason = _policy_refusal_reason(
+        messages[-1]["content"]
+        if messages
+        and isinstance(messages[-1], dict)
+        and isinstance(messages[-1].get("content"), str)
+        else ""
+    )
     if _streak >= _REPEAT_REFUSAL_BAIL and _refusal_reason:
-        msg = (f"Stopped: {function_name} was called {_streak} time(s) in a row "
-               f"({_lifetime} in this run) and refused by policy each time. "
-               f"The command did not run and will not run: {_refusal_reason} "
-               f"Do not retry it or reword it — take a different approach, or "
-               f"tell the user what is blocked and why.")
-        _log_to_ui_or_verbose(f"Repeated policy refusal: {function_name} streak={_streak} — {_refusal_reason[:120]}", chat_ui, verbose, level="warning")
+        msg = (
+            f"Stopped: {function_name} was called {_streak} time(s) in a row "
+            f"({_lifetime} in this run) and refused by policy each time. "
+            f"The command did not run and will not run: {_refusal_reason} "
+            f"Do not retry it or reword it — take a different approach, or "
+            f"tell the user what is blocked and why."
+        )
+        _log_to_ui_or_verbose(
+            f"Repeated policy refusal: {function_name} streak={_streak} — {_refusal_reason[:120]}",
+            chat_ui,
+            verbose,
+            level="warning",
+        )
         return msg
     if _streak >= _REPEAT_STREAK_BAIL or _lifetime >= max_repeated * 2:
-        msg = (f"Stopped: {function_name} was called {_streak} time(s) in a row "
-               f"({_lifetime} in this run) with identical arguments and returned "
-               f"the same result each time. The result is already in the "
-               f"conversation — use it, or change approach.")
-        _log_to_ui_or_verbose(f"Repeated tool call loop: {function_name} streak={_streak} lifetime={_lifetime}", chat_ui, verbose, level="warning")
+        msg = (
+            f"Stopped: {function_name} was called {_streak} time(s) in a row "
+            f"({_lifetime} in this run) with identical arguments and returned "
+            f"the same result each time. The result is already in the "
+            f"conversation — use it, or change approach."
+        )
+        _log_to_ui_or_verbose(
+            f"Repeated tool call loop: {function_name} streak={_streak} lifetime={_lifetime}",
+            chat_ui,
+            verbose,
+            level="warning",
+        )
         return msg
     if _streak >= _REPEAT_STEER_AFTER or _lifetime >= max_repeated:
         # Steering, not termination: the notice rides in the tool message the
@@ -2271,19 +2469,27 @@ async def _execute_tool(function_name: str, function_arguments: dict,
         # the notice also carries the policy's reason — a model that keeps
         # re-running a blocked command is ignoring the refusal's guidance, and
         # the reason is the one thing it has not read in this shape yet.
-        _refusal_note = (f" The refusal reason: {_refusal_reason}"
-                         if _refusal_reason else "")
+        _refusal_note = f" The refusal reason: {_refusal_reason}" if _refusal_reason else ""
         _notice = (
             f"[repeated call #{_lifetime}: this exact call has run {_streak} time(s) "
             f"in a row and returned the same result. Do not call it again with the "
             f"same arguments — the result above is already in the conversation; "
             f"if part of it was trimmed, read it back with result_read/result_grep "
-            f"rather than re-running the tool.{_refusal_note}]")
+            f"rather than re-running the tool.{_refusal_note}]"
+        )
         _last = messages[-1] if messages else None
-        if isinstance(_last, dict) and _last.get("role") == "tool" \
-                and isinstance(_last.get("content"), str):
+        if (
+            isinstance(_last, dict)
+            and _last.get("role") == "tool"
+            and isinstance(_last.get("content"), str)
+        ):
             messages[-1] = {**_last, "content": _last["content"] + "\n\n" + _notice}
-        _log_to_ui_or_verbose(f"Repeated tool call (steering): {function_name} streak={_streak} lifetime={_lifetime}", chat_ui, verbose, level="info")
+        _log_to_ui_or_verbose(
+            f"Repeated tool call (steering): {function_name} streak={_streak} lifetime={_lifetime}",
+            chat_ui,
+            verbose,
+            level="info",
+        )
     return None
 
 
@@ -2312,23 +2518,35 @@ def _trim_repeat_streak(tool_call_history: list) -> int:
     return _n
 
 
-def _load_images(images: List[str] | str | None, chat_ui: Optional[ChatUIProtocol], verbose: bool) -> list[str]:
+def _load_images(
+    images: List[str] | str | None, chat_ui: Optional[ChatUIProtocol], verbose: bool
+) -> list[str]:
     """Read image files from disk and return their base64-encoded bytes."""
     images_bytes: list[str] = []
     if isinstance(images, list):
         for image_path in images:
             if os.path.exists(image_path):
-                with open(image_path, 'rb') as image_file:
-                    images_bytes.append(base64.b64encode(image_file.read()).decode('utf-8'))
+                with open(image_path, "rb") as image_file:
+                    images_bytes.append(base64.b64encode(image_file.read()).decode("utf-8"))
             else:
-                _log_to_ui_or_verbose(f"Image file {image_path} not found, proceeding without this image.", chat_ui, verbose, level="warning")
+                _log_to_ui_or_verbose(
+                    f"Image file {image_path} not found, proceeding without this image.",
+                    chat_ui,
+                    verbose,
+                    level="warning",
+                )
     elif isinstance(images, str):
         image_path = images
         if os.path.exists(image_path):
-            with open(image_path, 'rb') as image_file:
-                images_bytes = [base64.b64encode(image_file.read()).decode('utf-8')]
+            with open(image_path, "rb") as image_file:
+                images_bytes = [base64.b64encode(image_file.read()).decode("utf-8")]
         else:
-            _log_to_ui_or_verbose(f"Image file {image_path} not found, proceeding without this image.", chat_ui, verbose, level="warning")
+            _log_to_ui_or_verbose(
+                f"Image file {image_path} not found, proceeding without this image.",
+                chat_ui,
+                verbose,
+                level="warning",
+            )
     return images_bytes
 
 
@@ -2345,9 +2563,9 @@ HISTORY_KEEP_FULL = 3
 HISTORY_DECAY_CHARS = 800
 
 
-def _trim_history(session_history: list,
-                  keep_full: int = HISTORY_KEEP_FULL,
-                  head_chars: int = HISTORY_DECAY_CHARS) -> list:
+def _trim_history(
+    session_history: list, keep_full: int = HISTORY_KEEP_FULL, head_chars: int = HISTORY_DECAY_CHARS
+) -> list:
     """Replayed history with older answers cut to their opening.
 
     Questions are left whole — they are one line each, and they are what makes
@@ -2360,17 +2578,22 @@ def _trim_history(session_history: list,
     for entry in session_history[:-keep_full] if keep_full else session_history:
         response = entry.get("response") or ""
         if len(response) > head_chars:
-            response = (response[:head_chars]
-                        + f"\n... [earlier answer, {len(response) - head_chars} chars trimmed] ...")
+            response = (
+                response[:head_chars]
+                + f"\n... [earlier answer, {len(response) - head_chars} chars trimmed] ..."
+            )
         trimmed.append({**entry, "response": response})
     return trimmed + (session_history[-keep_full:] if keep_full else [])
 
 
-def _build_messages(instruction: str, images_bytes: list[str],
-                    prompt_intro: str, session_history: list | None,
-                    system_rules: str = "",
-                    learned_context: str = "") -> list:
-
+def _build_messages(
+    instruction: str,
+    images_bytes: list[str],
+    prompt_intro: str,
+    session_history: list | None,
+    system_rules: str = "",
+    learned_context: str = "",
+) -> list:
     """Assemble the initial message list for the API call.
 
     Includes the system message, session history, the current user instruction,
@@ -2431,19 +2654,22 @@ def _build_messages(instruction: str, images_bytes: list[str],
     # and not answer it, or a weak model replies about prior runs
     # instead of doing the task.
     if learned_context:
-        instruction = (learned_context + "\n"
-                       + "## Current task\n"
-                       + instruction)
+        instruction = learned_context + "\n" + "## Current task\n" + instruction
 
     # Current instruction goes last so the model responds to it
     if images_bytes:
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": instruction},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{images_bytes[0]}"}}
-            ]
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": instruction},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{images_bytes[0]}"},
+                    },
+                ],
+            }
+        )
     else:
         messages.append({"role": "user", "content": instruction})
 
@@ -2493,8 +2719,11 @@ def _reasoning_text(obj) -> str:
 
 
 async def _process_streaming_response(
-    chat_completion, safety_queue: asyncio.Queue,
-    chat_ui: Optional[ChatUIProtocol], think: bool, on_first_token=None,
+    chat_completion,
+    safety_queue: asyncio.Queue,
+    chat_ui: Optional[ChatUIProtocol],
+    think: bool,
+    on_first_token=None,
 ) -> tuple[str, str, dict, bool, Any, str | None] | None:
     """Consume a streaming chat completion and return accumulated results.
 
@@ -2535,8 +2764,7 @@ async def _process_streaming_response(
             finish_reason = choice.finish_reason
         delta = choice.delta
 
-        if on_first_token and (delta.tool_calls or delta.content
-                               or _reasoning_text(delta)):
+        if on_first_token and (delta.tool_calls or delta.content or _reasoning_text(delta)):
             on_first_token()
             on_first_token = None
 
@@ -2615,8 +2843,10 @@ _STEP_MAX_CHARS = 120
 
 
 async def _process_responses_streaming_response(
-    events, safety_queue: asyncio.Queue,
-    chat_ui: Optional[ChatUIProtocol], on_first_token=None,
+    events,
+    safety_queue: asyncio.Queue,
+    chat_ui: Optional[ChatUIProtocol],
+    on_first_token=None,
 ) -> tuple[str, str, dict, bool, Any, str | None] | None:
     """Consume a Responses-API event stream and return accumulated results.
 
@@ -2642,9 +2872,11 @@ async def _process_responses_streaming_response(
             return None
         etype = getattr(event, "type", "")
         if on_first_token and etype in (
-                "response.output_text.delta", "response.reasoning_text.delta",
-                "response.reasoning_summary_text.delta",
-                "response.function_call_arguments.delta"):
+            "response.output_text.delta",
+            "response.reasoning_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.function_call_arguments.delta",
+        ):
             on_first_token()
             on_first_token = None
         if etype == "response.output_text.delta":
@@ -2654,8 +2886,7 @@ async def _process_responses_streaming_response(
                     chat_ui.stream_start()
                     ui_streaming = True
                 chat_ui.stream_token(event.delta)
-        elif etype in ("response.reasoning_text.delta",
-                       "response.reasoning_summary_text.delta"):
+        elif etype in ("response.reasoning_text.delta", "response.reasoning_summary_text.delta"):
             if not full_tool_calls:
                 full_reasoning += event.delta
                 if chat_ui:
@@ -2673,8 +2904,7 @@ async def _process_responses_streaming_response(
                 chat_ui.stream_fold(_step_summary(full_content))
         elif etype == "response.function_call_arguments.done":
             idx = event.output_index
-            entry = full_tool_calls.setdefault(
-                idx, {"id": "", "name": "", "arguments": ""})
+            entry = full_tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
             if event.arguments:
                 entry["arguments"] = event.arguments
             if getattr(event, "name", None):
@@ -2685,8 +2915,8 @@ async def _process_responses_streaming_response(
             item = event.item
             if getattr(item, "type", "") == "function_call":
                 entry = full_tool_calls.setdefault(
-                    event.output_index,
-                    {"id": "", "name": "", "arguments": ""})
+                    event.output_index, {"id": "", "name": "", "arguments": ""}
+                )
                 if getattr(item, "call_id", None):
                     entry["id"] = item.call_id
                 if getattr(item, "name", None):
@@ -2699,8 +2929,7 @@ async def _process_responses_streaming_response(
                     prompt_tokens=int(getattr(u, "input_tokens", 0) or 0),
                     completion_tokens=int(getattr(u, "output_tokens", 0) or 0),
                 )
-            finish_reason = ("tool_calls" if full_tool_calls
-                             else _responses_finish_reason(response))
+            finish_reason = "tool_calls" if full_tool_calls else _responses_finish_reason(response)
         elif etype == "response.incomplete":
             response = event.response
             finish_reason = _responses_finish_reason(response)
@@ -2741,8 +2970,7 @@ def _responses_finish_reason(response) -> str:
     """The chat-completions stop reason a Response status maps to."""
     status = getattr(response, "status", None)
     if status == "incomplete":
-        reason = getattr(getattr(response, "incomplete_details", None),
-                         "reason", None)
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
         return "length" if reason == "max_output_tokens" else "stop"
     return "stop"
 
@@ -2809,9 +3037,11 @@ async def _ollama_process_streaming_response(
             if dr:
                 done_reason = dr
 
-            if on_first_token and (chunk.message.tool_calls
-                                   or chunk.message.content
-                                   or getattr(chunk.message, "thinking", None)):
+            if on_first_token and (
+                chunk.message.tool_calls
+                or chunk.message.content
+                or getattr(chunk.message, "thinking", None)
+            ):
                 on_first_token()
                 on_first_token = None
 
@@ -2858,8 +3088,15 @@ async def _ollama_process_streaming_response(
     except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
         logging.getLogger(__name__).warning("Ollama stream interrupted: %s", e)
 
-    return (full_content, full_thinking, tool_calls, ui_streaming,
-            prompt_eval_count, done_reason, eval_count)
+    return (
+        full_content,
+        full_thinking,
+        tool_calls,
+        ui_streaming,
+        prompt_eval_count,
+        done_reason,
+        eval_count,
+    )
 
 
 def _prose_alongside_tool_calls(full_content: str) -> str:
@@ -2879,14 +3116,14 @@ def _prose_alongside_tool_calls(full_content: str) -> str:
 
 
 def _unify_streaming_result(
-    full_content: str, full_tool_calls: dict,
+    full_content: str,
+    full_tool_calls: dict,
 ) -> tuple[str | None, list | None, dict]:
     """Convert accumulated streaming data into unified content/tool_calls/history variables."""
     if full_tool_calls:
         tool_call_objs = [
             types.SimpleNamespace(
-                id=v["id"],
-                function=types.SimpleNamespace(name=v["name"], arguments=v["arguments"])
+                id=v["id"], function=types.SimpleNamespace(name=v["name"], arguments=v["arguments"])
             )
             for v in full_tool_calls.values()
         ]
@@ -2894,18 +3131,28 @@ def _unify_streaming_result(
             "role": "assistant",
             "content": _prose_alongside_tool_calls(full_content) or None,
             "tool_calls": [
-                {"id": v["id"], "type": "function",
-                 "function": {"name": v["name"], "arguments": v["arguments"]}}
+                {
+                    "id": v["id"],
+                    "type": "function",
+                    "function": {"name": v["name"], "arguments": v["arguments"]},
+                }
                 for v in full_tool_calls.values()
-            ]
+            ],
         }
         return None, tool_call_objs, message_for_history
     return full_content, None, {"role": "assistant", "content": full_content}
 
 
 _PLANNING_PREFIXES = (
-    "let me ", "let's ", "lets ", "i will ", "i'll ", "i'm going to ",
-    "i am going to ", "i need to ", "i should ",
+    "let me ",
+    "let's ",
+    "lets ",
+    "i will ",
+    "i'll ",
+    "i'm going to ",
+    "i am going to ",
+    "i need to ",
+    "i should ",
     "the user wants me to ",
 )
 
@@ -2917,8 +3164,18 @@ _PLANNING_PREFIXES = (
 # ended the session on a sentence announcing work that never ran.  Strip the
 # connectives instead of enumerating every prefix crossed with every lead-in.
 _PLANNING_LEADINS = (
-    "now", "next", "then", "first", "finally", "so", "ok", "okay",
-    "alright", "good", "great", "perfect",
+    "now",
+    "next",
+    "then",
+    "first",
+    "finally",
+    "so",
+    "ok",
+    "okay",
+    "alright",
+    "good",
+    "great",
+    "perfect",
 )
 
 # A plan announcement is forward-looking from the outset.  Once this much prose
@@ -2941,7 +3198,7 @@ def _strip_planning_leadin(text: str) -> str:
         for w in _PLANNING_LEADINS:
             for sep in (", ", " "):
                 if text.startswith(w + sep):
-                    text = text[len(w) + len(sep):].lstrip()
+                    text = text[len(w) + len(sep) :].lstrip()
                     break
             else:
                 continue
@@ -3060,10 +3317,18 @@ def _is_acknowledgment_response(content: str) -> bool:
 
 # Session metadata the prompt states and a stuck model reads back.
 _METADATA_PHRASES = (
-    "working directory", "today's date", "todays date", "current date",
-    "agent local filesystem", "local filesystem", "sandbox filesystem",
-    "staging area for file transfers", "file operations policy",
-    "context compacted", "original instruction", "summary of prior work",
+    "working directory",
+    "today's date",
+    "todays date",
+    "current date",
+    "agent local filesystem",
+    "local filesystem",
+    "sandbox filesystem",
+    "staging area for file transfers",
+    "file operations policy",
+    "context compacted",
+    "original instruction",
+    "summary of prior work",
     "reference only",
 )
 
@@ -3074,19 +3339,43 @@ _METADATA_PHRASES = (
 # a run that finished may legitimately sign off with nothing more than "All
 # done!".  Dropping a reply on the strength of that word alone would end such a
 # run on silence, which is worse than the filler this catches.
-_STATUS_WORDS = frozenset((
-    "ready", "ok", "okay", "understood", "acknowledged", "confirmed",
-    "confirm", "noted", "sure", "certainly", "affirmative", "yes", "yep",
-))
+_STATUS_WORDS = frozenset(
+    (
+        "ready",
+        "ok",
+        "okay",
+        "understood",
+        "acknowledged",
+        "confirmed",
+        "confirm",
+        "noted",
+        "sure",
+        "certainly",
+        "affirmative",
+        "yes",
+        "yep",
+    )
+)
 
 # Stock closings that hand the turn back without saying anything.
 _HANDBACK_PHRASES = (
-    "what would you like me to do", "what would you like to do",
-    "what would you like next", "what would you like me to",
-    "how can i help", "how may i help", "anything else",
-    "let me know", "please specify", "could you specify", "please provide",
-    "awaiting", "standing by", "next instruction", "next message",
-    "waiting for", "ready when you are",
+    "what would you like me to do",
+    "what would you like to do",
+    "what would you like next",
+    "what would you like me to",
+    "how can i help",
+    "how may i help",
+    "anything else",
+    "let me know",
+    "please specify",
+    "could you specify",
+    "please provide",
+    "awaiting",
+    "standing by",
+    "next instruction",
+    "next message",
+    "waiting for",
+    "ready when you are",
 )
 
 # Claims that the plumbing worked.  Stripped rather than matched outright, so a
@@ -3110,21 +3399,88 @@ _NO_ERRORS_RE = re.compile(
 
 # A session uuid and an absolute path are the two shapes of prompt metadata no
 # static phrase list can hold: both are minted per session.
-_UUID_RE = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+_UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
 _ABS_PATH_RE = re.compile(r"(?:/[\w.\-]+){2,}/?")
 
 # Words carrying no information wherever they appear.
-_FILLER_WORDS = frozenset((
-    "the", "a", "an", "and", "or", "but", "so", "then", "now", "is", "are",
-    "was", "were", "be", "been", "am", "i", "you", "it", "its", "my", "your",
-    "me", "we", "us", "this", "that", "these", "those", "to", "of", "in", "on",
-    "at", "for", "with", "from", "as", "by", "have", "has", "had", "do", "did",
-    "does", "will", "would", "should", "can", "could", "no", "not", "any",
-    "all", "up", "out", "if", "there", "here", "what", "which", "who", "how",
-    "user", "assistant", "task", "next", "further", "instructions",
-    "instruction", "message", "please", "thanks", "thank",
-))
+_FILLER_WORDS = frozenset(
+    (
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "so",
+        "then",
+        "now",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "am",
+        "i",
+        "you",
+        "it",
+        "its",
+        "my",
+        "your",
+        "me",
+        "we",
+        "us",
+        "this",
+        "that",
+        "these",
+        "those",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "from",
+        "as",
+        "by",
+        "have",
+        "has",
+        "had",
+        "do",
+        "did",
+        "does",
+        "will",
+        "would",
+        "should",
+        "can",
+        "could",
+        "no",
+        "not",
+        "any",
+        "all",
+        "up",
+        "out",
+        "if",
+        "there",
+        "here",
+        "what",
+        "which",
+        "who",
+        "how",
+        "user",
+        "assistant",
+        "task",
+        "next",
+        "further",
+        "instructions",
+        "instruction",
+        "message",
+        "please",
+        "thanks",
+        "thank",
+    )
+)
 
 # Long enough for a short paragraph of filler, short enough that real work runs
 # past it.  Matches _META_MAX_CHARS in spirit: length is what separates a filler
@@ -3148,8 +3504,11 @@ def _content_residue(text: str, data_path: str | None = None) -> list[str]:
     lower = _NO_ERRORS_RE.sub(" ", lower)
     for phrase in _METADATA_PHRASES + _HANDBACK_PHRASES:
         lower = lower.replace(phrase, " ")
-    return [w for w in re.findall(r"[a-z0-9]+", lower)
-            if w not in _FILLER_WORDS and w not in _STATUS_WORDS]
+    return [
+        w
+        for w in re.findall(r"[a-z0-9]+", lower)
+        if w not in _FILLER_WORDS and w not in _STATUS_WORDS
+    ]
 
 
 def _is_content_free_response(content: str, data_path: str | None = None) -> bool:
@@ -3198,12 +3557,19 @@ def _is_answering_a_nudge(messages: list) -> bool:
         content = msg.get("content")
         if not isinstance(content, str):
             return False
-        return (content in (_ACK_CONTINUATION_PROMPT, _FINAL_CONTINUATION_PROMPT,
-                            _REPEAT_RECOVERY_PROMPT, _NO_THINK_RETRY_PROMPT,
-                            _NO_THINK_ACT_PROMPT,
-                            _CONTINUATION_AFTER_NUDGE_PROMPT)
-                or content.startswith("[CONTEXT COMPACTED]")
-                or "Use this exact JSON format:" in content)
+        return (
+            content
+            in (
+                _ACK_CONTINUATION_PROMPT,
+                _FINAL_CONTINUATION_PROMPT,
+                _REPEAT_RECOVERY_PROMPT,
+                _NO_THINK_RETRY_PROMPT,
+                _NO_THINK_ACT_PROMPT,
+                _CONTINUATION_AFTER_NUDGE_PROMPT,
+            )
+            or content.startswith("[CONTEXT COMPACTED]")
+            or "Use this exact JSON format:" in content
+        )
     return False
 
 
@@ -3214,8 +3580,21 @@ def _is_answering_a_nudge(messages: list) -> bool:
 _SHELL_TOOLS = ("bash", "shell", "run_command")
 _FILE_TOOLS = ("write_file", "create_file", "read_file", "list_files")
 _SHELL_TASK_HINTS = (
-    "bash", "shell", "terminal", "command", "run ", "execute", "script",
-    "install", "compile", "build", "git ", "npm", "pip ", "docker", "make ",
+    "bash",
+    "shell",
+    "terminal",
+    "command",
+    "run ",
+    "execute",
+    "script",
+    "install",
+    "compile",
+    "build",
+    "git ",
+    "npm",
+    "pip ",
+    "docker",
+    "make ",
 )
 
 
@@ -3274,7 +3653,9 @@ def _build_tool_example(tool_registry, task: str = "") -> str:
         preferred = _FILE_TOOLS + _SHELL_TOOLS
     tool_names = sorted(tool_registry.tools) if tool_registry else []
     # Pick preferred first, otherwise fall back to first alphabetically
-    chosen = next((t for t in preferred if t in tool_registry.tools), None) if tool_registry else None
+    chosen = (
+        next((t for t in preferred if t in tool_registry.tools), None) if tool_registry else None
+    )
     if not chosen:
         chosen = tool_names[0] if tool_names else "bash"
 
@@ -3349,8 +3730,9 @@ def _is_noop_tool_call(name: str, arguments: dict) -> bool:
 _CONTINUATION_TASK_MAX_CHARS = 300
 
 
-def _build_planning_continuation_prompt(tool_registry, continuation_count: int,
-                                        task: str = "") -> str:
+def _build_planning_continuation_prompt(
+    tool_registry, continuation_count: int, task: str = ""
+) -> str:
     """Build a direct continuation prompt for models stuck in planning mode.
 
     Includes a concrete JSON tool-call example (with real argument shapes) so the
@@ -3371,15 +3753,16 @@ def _build_planning_continuation_prompt(tool_registry, continuation_count: int,
         task_text = task_text[:_CONTINUATION_TASK_MAX_CHARS].rstrip() + "..."
     task_line = f"Task: {task_text}\n" if task_text else ""
     if continuation_count > 1:
-        lead = ("Your entire reply must be one JSON object: the tool call that "
-                "takes the next step on this task, and nothing else.")
+        lead = (
+            "Your entire reply must be one JSON object: the tool call that "
+            "takes the next step on this task, and nothing else."
+        )
     else:
-        lead = ("Take the next step on this task now by calling a tool. Reply "
-                "with the tool call only.")
+        lead = (
+            "Take the next step on this task now by calling a tool. Reply with the tool call only."
+        )
     return (
-        f"{task_line}{lead}\nUse this exact JSON format:\n"
-        f"{example}\n"
-        f"Available tools: {tools_list}"
+        f"{task_line}{lead}\nUse this exact JSON format:\n{example}\nAvailable tools: {tools_list}"
     )
 
 
@@ -3475,15 +3858,35 @@ _CONTINUATION_AFTER_NUDGE_PROMPT = (
 # forms below are what a declined nudge actually says.
 _PENDING_WORK_PHRASES = (
     # The model says it cannot act under the constraint the nudge named.
-    "can't call", "cannot call", "can't run", "cannot run",
-    "can't apply", "cannot apply", "can't edit", "cannot edit",
-    "no more tools", "not allowed to call", "tool calls are no longer",
-    "cannot make the changes", "can't make the changes",
+    "can't call",
+    "cannot call",
+    "can't run",
+    "cannot run",
+    "can't apply",
+    "cannot apply",
+    "can't edit",
+    "cannot edit",
+    "no more tools",
+    "not allowed to call",
+    "tool calls are no longer",
+    "cannot make the changes",
+    "can't make the changes",
     # The model says its own work is not done.
-    "i haven't", "i have not", "we haven't", "we have not",
-    "hasn't been", "has not been",
-    "not been made", "not done", "not yet", "isn't complete",
-    "not complete", "incomplete", "still need", "left to do", "yet to",
+    "i haven't",
+    "i have not",
+    "we haven't",
+    "we have not",
+    "hasn't been",
+    "has not been",
+    "not been made",
+    "not done",
+    "not yet",
+    "isn't complete",
+    "not complete",
+    "incomplete",
+    "still need",
+    "left to do",
+    "yet to",
     "before i can",
 )
 
@@ -3543,8 +3946,7 @@ def _extract_final_response(content: str | None, full_reasoning: str, full_conte
     return last_response
 
 
-def _is_reasoning_only(content: str | None, full_reasoning: str,
-                       full_content: str) -> bool:
+def _is_reasoning_only(content: str | None, full_reasoning: str, full_content: str) -> bool:
     """True when a turn produced thinking and no answer at all.
 
     A thinking model that spends its whole output budget reasoning ends the
@@ -3621,7 +4023,7 @@ def _stitch_continuation(prefix: str, partial: str) -> str:
         return prefix
     # The seam comes first: a turn that repeats the last paragraph and then
     # carries on is the good case, and trimming the seam keeps what it added.
-    trimmed = partial[_overlap_len(prefix, partial):]
+    trimmed = partial[_overlap_len(prefix, partial) :]
     if not trimmed.strip():
         return prefix  # the turn was the seam and nothing else
     if len(partial.strip()) >= _MIN_REPEAT_CHARS and partial.strip() in prefix:
@@ -3643,11 +4045,11 @@ def _stitch_continuation(prefix: str, partial: str) -> str:
 # by the window.  A period is a candidate when it repeats enough times to be
 # degenerate rather than emphatic — "very very very" is a period of 5 and is
 # left alone, while a repeated sentence is not.
-_MIN_REPEAT_UNIT = 4          # shortest period that can be a loop, in chars
-_MIN_REPEAT_COPIES = 3        # copies of a long period that make it degenerate
-_LONG_REPEAT_UNIT = 16        # a period this long needs only _MIN_REPEAT_COPIES
-_SHORT_REPEAT_COPIES = 6      # a short period needs this many to be degenerate
-_REPEAT_WINDOW = 600          # only this much of the tail is scanned
+_MIN_REPEAT_UNIT = 4  # shortest period that can be a loop, in chars
+_MIN_REPEAT_COPIES = 3  # copies of a long period that make it degenerate
+_LONG_REPEAT_UNIT = 16  # a period this long needs only _MIN_REPEAT_COPIES
+_SHORT_REPEAT_COPIES = 6  # a short period needs this many to be degenerate
+_REPEAT_WINDOW = 600  # only this much of the tail is scanned
 
 
 def _collapse_ws(text: str) -> str:
@@ -3700,8 +4102,7 @@ def _repetition_span(text: str) -> tuple:
         copies = span // period
         if span % period >= period // 2:
             copies += 1
-        if (copies >= _copies_required(period)
-                and period * copies > best[0] * best[1]):
+        if copies >= _copies_required(period) and period * copies > best[0] * best[1]:
             best = (period, copies, start)
     return best
 
@@ -3752,13 +4153,31 @@ class _ModelCaller:
     did too.
     """
 
-    def __init__(self, *, host: str, model: str, is_ollama: bool, num_ctx,
-                 client, ollama_client, tools: list, stream: bool,
-                 temperature: float, top_p: float, top_k: int, min_p: float,
-                 presence_penalty: float, repetition_penalty: float,
-                 max_tokens: int, max_context_tokens: Optional[int],
-                 max_api_retries: int, chat_ui, verbose: bool, safety_queue,
-                 metrics):
+    def __init__(
+        self,
+        *,
+        host: str,
+        model: str,
+        is_ollama: bool,
+        num_ctx,
+        client,
+        ollama_client,
+        tools: list,
+        stream: bool,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        min_p: float,
+        presence_penalty: float,
+        repetition_penalty: float,
+        max_tokens: int,
+        max_context_tokens: Optional[int],
+        max_api_retries: int,
+        chat_ui,
+        verbose: bool,
+        safety_queue,
+        metrics,
+    ):
         self.host = host
         self.model = model
         self.is_ollama = is_ollama
@@ -3781,8 +4200,9 @@ class _ModelCaller:
         self.safety_queue = safety_queue
         self.metrics = metrics
 
-    async def call_turn(self, messages: list, state: RunState,
-                        turn_think: bool) -> Optional[_TurnResult]:
+    async def call_turn(
+        self, messages: list, state: RunState, turn_think: bool
+    ) -> Optional[_TurnResult]:
         """Send one request, retrying transient failures.
 
         Returns ``None`` when the safety queue fired (chat() exits), a
@@ -3910,7 +4330,8 @@ class _ModelCaller:
                     if state.force_tool_call and tools:
                         ollama_kwargs["format"] = "json"
                     chat_completion = await _await_with_safety(
-                        ollama_client.chat(**ollama_kwargs), safety_queue)
+                        ollama_client.chat(**ollama_kwargs), safety_queue
+                    )
                     if chat_completion is _SAFETY_ABORT:
                         logger.warning("Safety queue triggered during API call, exiting chat loop.")
                         return None
@@ -3934,10 +4355,10 @@ class _ModelCaller:
                     if tools:
                         _responses_kwargs["tools"] = _openai_responses_tools(tools)
                         _responses_kwargs["tool_choice"] = (
-                            "required" if state.force_tool_call else "auto")
+                            "required" if state.force_tool_call else "auto"
+                        )
                     if stream:
-                        _responses_stream = client.responses.stream(
-                            **_responses_kwargs)
+                        _responses_stream = client.responses.stream(**_responses_kwargs)
                         _stream_entered = False
                         try:
                             # The SDK's stream() returns a manager whose
@@ -3945,12 +4366,20 @@ class _ModelCaller:
                             # the manager is not the iterator, so enter it
                             # and hand the iterator to the processor.
                             _responses_events_iter = await _await_with_safety(
-                                _responses_stream.__aenter__(), safety_queue)
+                                _responses_stream.__aenter__(), safety_queue
+                            )
                             _stream_entered = True
-                            (_full_content, _full_reasoning, _full_tool_calls,
-                             _ui_was_streaming, _stream_usage, _finish_reason
-                             ) = await _process_responses_streaming_response(
-                                _responses_events_iter, safety_queue, chat_ui,
+                            (
+                                _full_content,
+                                _full_reasoning,
+                                _full_tool_calls,
+                                _ui_was_streaming,
+                                _stream_usage,
+                                _finish_reason,
+                            ) = await _process_responses_streaming_response(
+                                _responses_events_iter,
+                                safety_queue,
+                                chat_ui,
                                 on_first_token=_m.first_token,
                             )
                         finally:
@@ -3964,12 +4393,22 @@ class _ModelCaller:
                             state.last_prompt_tokens = _stream_usage.prompt_tokens
                             _completion_tokens = _stream_usage.completion_tokens
                             if max_context_tokens and chat_ui:
-                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
-                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason,
-                                   cached_tokens=_cached_tokens_of(_stream_usage))
-                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
-                                and _looks_like_raw_tool_call(_full_content)):
+                                chat_ui.set_context_usage(
+                                    state.last_prompt_tokens / max_context_tokens * 100,
+                                    max_context_tokens,
+                                )
+                        _m.end_api(
+                            state.last_prompt_tokens,
+                            _completion_tokens,
+                            _finish_reason,
+                            cached_tokens=_cached_tokens_of(_stream_usage),
+                        )
+                        if (
+                            not _full_tool_calls
+                            and _ui_was_streaming
+                            and chat_ui
+                            and _looks_like_raw_tool_call(_full_content)
+                        ):
                             chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
@@ -3977,51 +4416,76 @@ class _ModelCaller:
                             _log_to_ui_or_verbose(
                                 "Model response truncated (finish_reason=length). "
                                 "Consider increasing max_tokens.",
-                                chat_ui, verbose, level="warning",
+                                chat_ui,
+                                verbose,
+                                level="warning",
                             )
                             state.force_compact = True
                         elif _finish_reason == "tool_calls" and not _full_tool_calls:
                             _log_to_ui_or_verbose(
                                 f"Model signaled finish_reason=tool_calls but no tool calls received "
                                 f"(model={model}). Checking content for raw tool calls.",
-                                chat_ui, verbose, level="warning",
+                                chat_ui,
+                                verbose,
+                                level="warning",
                             )
                         _content, _tool_calls, _message_for_history = _unify_streaming_result(
-                            _full_content, _full_tool_calls,
+                            _full_content,
+                            _full_tool_calls,
                         )
                         await asyncio.sleep(0)
                         if safety_queue is not None and not safety_queue.empty():
-                            logger.warning("Safety queue triggered after API call, exiting chat loop.")
+                            logger.warning(
+                                "Safety queue triggered after API call, exiting chat loop."
+                            )
                             return None
                         break  # success — exit retry loop
                     _response = await _await_with_safety(
-                        client.responses.create(**_responses_kwargs), safety_queue)
+                        client.responses.create(**_responses_kwargs), safety_queue
+                    )
                     if _response is _SAFETY_ABORT:
                         logger.warning("Safety queue triggered during API call, exiting chat loop.")
                         return None
-                    (_content, _full_reasoning, _tool_calls, _finish_reason,
-                     _usage) = _openai_responses_result(_response)
+                    (_content, _full_reasoning, _tool_calls, _finish_reason, _usage) = (
+                        _openai_responses_result(_response)
+                    )
                     _full_content = _content
-                    _message_for_history = {
-                        "role": "assistant",
-                        "content": _content or None,
-                        "tool_calls": [
-                            {"id": tc.id, "type": "function",
-                             "function": {"name": tc.function.name,
-                                          "arguments": tc.function.arguments}}
-                            for tc in (_tool_calls or [])
-                        ] if _tool_calls else None,
-                    } if _tool_calls else {"role": "assistant", "content": _content}
+                    _message_for_history = (
+                        {
+                            "role": "assistant",
+                            "content": _content or None,
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for tc in (_tool_calls or [])
+                            ]
+                            if _tool_calls
+                            else None,
+                        }
+                        if _tool_calls
+                        else {"role": "assistant", "content": _content}
+                    )
                     if _usage is not None:
                         state.last_prompt_tokens = _usage.prompt_tokens
                         _completion_tokens = _usage.completion_tokens
                         if max_context_tokens and chat_ui:
-                            chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                            chat_ui.set_context_usage(
+                                state.last_prompt_tokens / max_context_tokens * 100,
+                                max_context_tokens,
+                            )
                     if _finish_reason == "length":
                         _log_to_ui_or_verbose(
                             "Model response truncated (finish_reason=length). "
                             "Consider increasing max_tokens.",
-                            chat_ui, verbose, level="warning",
+                            chat_ui,
+                            verbose,
+                            level="warning",
                         )
                         state.force_compact = True
                     await asyncio.sleep(0)
@@ -4036,7 +4500,9 @@ class _ModelCaller:
                     # every OpenAI chat model takes (max_tokens is deprecated
                     # and reasoning models refuse it outright).
                     completion_kwargs = dict(
-                        model=model, messages=messages, stream=stream,
+                        model=model,
+                        messages=messages,
+                        stream=stream,
                         max_completion_tokens=_api_max_tokens,
                     )
                     # Reasoning and function tools don't mix on
@@ -4064,7 +4530,7 @@ class _ModelCaller:
                             completion_kwargs["presence_penalty"] = presence_penalty
                 else:
                     _extra_body = {
-                        "top_k": top_k,          # vLLM extension, important for Qwen3
+                        "top_k": top_k,  # vLLM extension, important for Qwen3
                         "min_p": min_p,
                         "presence_penalty": presence_penalty,
                         "repetition_penalty": repetition_penalty,
@@ -4074,9 +4540,11 @@ class _ModelCaller:
                         # preserve_thinking is only supported on Qwen3.6+
                         _model_lower = model.lower()
                         _qwen3_ver = next(
-                            (float(p.removeprefix("qwen"))
-                             for p in _model_lower.replace("/", "-").split("-")
-                             if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()),
+                            (
+                                float(p.removeprefix("qwen"))
+                                for p in _model_lower.replace("/", "-").split("-")
+                                if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()
+                            ),
                             None,
                         )
                         if _qwen3_ver is not None and _qwen3_ver >= 3.6:
@@ -4107,11 +4575,13 @@ class _ModelCaller:
                 # Ollama branch above already sent its own request and set
                 # chat_completion itself.
                 if not is_ollama:
-                    if tools: # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
+                    if tools:  # and not images_bytes:  # vLLM doesn't support tools + images in the same message, so only include tools if no images are present
                         completion_kwargs["tools"] = tools
                         # vLLM rejects tool_choice when tools is unset, so
                         # only send it alongside tools.
-                        completion_kwargs["tool_choice"] = "required" if state.force_tool_call else "auto"
+                        completion_kwargs["tool_choice"] = (
+                            "required" if state.force_tool_call else "auto"
+                        )
                     # A reasoning model that refused function tools under
                     # its default effort: the retry goes out with
                     # reasoning_effort "none", the only value that keeps
@@ -4124,16 +4594,20 @@ class _ModelCaller:
                     # outright, and the others refuse it alongside tools.
                     # A model that refuses the parameter itself stops
                     # being asked for it (handler below).
-                    if (_is_openai_host(host)
-                            and not _openai_strip_reasoning
-                            and (_openai_effort_400
-                                 or (not tools
-                                     and not _is_openai_reasoning_model(model)))):
+                    if (
+                        _is_openai_host(host)
+                        and not _openai_strip_reasoning
+                        and (
+                            _openai_effort_400
+                            or (not tools and not _is_openai_reasoning_model(model))
+                        )
+                    ):
                         completion_kwargs["reasoning_effort"] = "none"
                     if stream:
                         completion_kwargs["stream_options"] = {"include_usage": True}
                     chat_completion = await _await_with_safety(
-                        client.chat.completions.create(**completion_kwargs), safety_queue)
+                        client.chat.completions.create(**completion_kwargs), safety_queue
+                    )
                     if chat_completion is _SAFETY_ABORT:
                         logger.warning("Safety queue triggered during API call, exiting chat loop.")
                         return None
@@ -4143,7 +4617,10 @@ class _ModelCaller:
                     if is_ollama:
                         try:
                             stream_result = await _ollama_process_streaming_response(
-                                chat_completion, safety_queue, chat_ui, _turn_think,
+                                chat_completion,
+                                safety_queue,
+                                chat_ui,
+                                _turn_think,
                                 on_first_token=_m.first_token,
                             )
                         finally:
@@ -4158,20 +4635,28 @@ class _ModelCaller:
                             await _drain_stream(chat_completion)
                         if stream_result is None:
                             return None
-                        (_full_content, _full_reasoning, _ollama_tcs,
-                         _ui_was_streaming, _ollama_prompt_tokens, _finish_reason,
-                         _ollama_eval_count) = stream_result
+                        (
+                            _full_content,
+                            _full_reasoning,
+                            _ollama_tcs,
+                            _ui_was_streaming,
+                            _ollama_prompt_tokens,
+                            _finish_reason,
+                            _ollama_eval_count,
+                        ) = stream_result
                         _completion_tokens = _ollama_eval_count
                         if _ollama_prompt_tokens:
                             state.last_prompt_tokens = _ollama_prompt_tokens
                             if max_context_tokens and chat_ui:
-                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                                chat_ui.set_context_usage(
+                                    state.last_prompt_tokens / max_context_tokens * 100,
+                                    max_context_tokens,
+                                )
                         # Before stream_end: the footer it prints reports this
                         # turn, and reads it from the metrics sink.  Ollama's
                         # /api_chat stream carries prompt_eval_count but no
                         # cached-token field, so there is nothing to pass.
-                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason)
+                        _m.end_api(state.last_prompt_tokens, _completion_tokens, _finish_reason)
                         # A raw-JSON tool call streams as ordinary content, so
                         # its narration reached the screen as if it were the
                         # answer.  Fold it here, at the last moment before
@@ -4179,8 +4664,12 @@ class _ModelCaller:
                         # above folds on the tool-calls chunk; this is the
                         # same decision made at the only point the raw
                         # path can make it.
-                        if (not _ollama_tcs and _ui_was_streaming and chat_ui
-                                and _looks_like_raw_tool_call(_full_content)):
+                        if (
+                            not _ollama_tcs
+                            and _ui_was_streaming
+                            and chat_ui
+                            and _looks_like_raw_tool_call(_full_content)
+                        ):
                             chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
@@ -4188,7 +4677,9 @@ class _ModelCaller:
                             _log_to_ui_or_verbose(
                                 "Model response truncated (finish_reason=length). "
                                 "Consider increasing num_ctx/max_tokens.",
-                                chat_ui, verbose, level="warning",
+                                chat_ui,
+                                verbose,
+                                level="warning",
                             )
                             state.force_compact = True
                         if _ollama_tcs:
@@ -4198,9 +4689,14 @@ class _ModelCaller:
                                 "role": "assistant",
                                 "content": _prose_alongside_tool_calls(_full_content),
                                 "tool_calls": [
-                                    {"id": tc.id, "type": "function",
-                                     "function": {"name": tc.function.name,
-                                                  "arguments": json.loads(tc.function.arguments)}}
+                                    {
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": json.loads(tc.function.arguments),
+                                        },
+                                    }
                                     for tc in _tool_calls
                                 ],
                             }
@@ -4212,7 +4708,10 @@ class _ModelCaller:
                     else:
                         try:
                             stream_result = await _process_streaming_response(
-                                chat_completion, safety_queue, chat_ui, _turn_think,
+                                chat_completion,
+                                safety_queue,
+                                chat_ui,
+                                _turn_think,
                                 on_first_token=_m.first_token,
                             )
                         finally:
@@ -4222,17 +4721,30 @@ class _ModelCaller:
                             await _drain_stream(chat_completion)
                         if stream_result is None:
                             return None
-                        _full_content, _full_reasoning, _full_tool_calls, _ui_was_streaming, _stream_usage, _finish_reason = stream_result
+                        (
+                            _full_content,
+                            _full_reasoning,
+                            _full_tool_calls,
+                            _ui_was_streaming,
+                            _stream_usage,
+                            _finish_reason,
+                        ) = stream_result
                         if _stream_usage is not None:
                             state.last_prompt_tokens = _stream_usage.prompt_tokens
                             _completion_tokens = getattr(_stream_usage, "completion_tokens", 0)
                             if max_context_tokens and chat_ui:
-                                chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                                chat_ui.set_context_usage(
+                                    state.last_prompt_tokens / max_context_tokens * 100,
+                                    max_context_tokens,
+                                )
                         # Before stream_end: the footer it prints reports this
                         # turn, and reads it from the metrics sink.
-                        _m.end_api(state.last_prompt_tokens, _completion_tokens,
-                                   _finish_reason,
-                                   cached_tokens=_cached_tokens_of(_stream_usage))
+                        _m.end_api(
+                            state.last_prompt_tokens,
+                            _completion_tokens,
+                            _finish_reason,
+                            cached_tokens=_cached_tokens_of(_stream_usage),
+                        )
                         # A raw-JSON tool call streams as ordinary content, so
                         # its narration reached the screen as if it were the
                         # answer.  Fold it here, at the last moment before
@@ -4240,8 +4752,12 @@ class _ModelCaller:
                         # above folds on the first tool-call delta; this is
                         # the same decision made at the only point the raw
                         # path can make it.
-                        if (not _full_tool_calls and _ui_was_streaming and chat_ui
-                                and _looks_like_raw_tool_call(_full_content)):
+                        if (
+                            not _full_tool_calls
+                            and _ui_was_streaming
+                            and chat_ui
+                            and _looks_like_raw_tool_call(_full_content)
+                        ):
                             chat_ui.stream_fold(_step_summary(_full_content))
                         if _ui_was_streaming and chat_ui:
                             chat_ui.stream_end()
@@ -4249,17 +4765,22 @@ class _ModelCaller:
                             _log_to_ui_or_verbose(
                                 "Model response truncated (finish_reason=length). "
                                 "Consider increasing max_tokens.",
-                                chat_ui, verbose, level="warning",
+                                chat_ui,
+                                verbose,
+                                level="warning",
                             )
                             state.force_compact = True
                         elif _finish_reason == "tool_calls" and not _full_tool_calls:
                             _log_to_ui_or_verbose(
                                 f"Model signaled finish_reason=tool_calls but no tool calls received "
                                 f"(model={model}). Checking content for raw tool calls.",
-                                chat_ui, verbose, level="warning",
+                                chat_ui,
+                                verbose,
+                                level="warning",
                             )
                         _content, _tool_calls, _message_for_history = _unify_streaming_result(
-                            _full_content, _full_tool_calls,
+                            _full_content,
+                            _full_tool_calls,
                         )
 
                 await asyncio.sleep(0)
@@ -4279,7 +4800,9 @@ class _ModelCaller:
                     state.active_max_tokens = max_tokens
                     _log_to_ui_or_verbose(
                         "Dropping tool_choice=required for retry (possible guided-decoding stall).",
-                        chat_ui, verbose, level="warning",
+                        chat_ui,
+                        verbose,
+                        level="warning",
                     )
                 # A timeout is a prompt-size or server-load problem, not a
                 # transient blip: the identical prompt re-sent into the same
@@ -4296,41 +4819,61 @@ class _ModelCaller:
                 if _trimmed:
                     _log_to_ui_or_verbose(
                         "Timed out; retrying once with older tool results trimmed to their heads.",
-                        chat_ui, verbose, level="warning",
+                        chat_ui,
+                        verbose,
+                        level="warning",
                     )
             except NotFoundError as e:
                 api_error = f"Model {model!r} not found at {host}: {e}."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
                 _detected = await _autodetect_fallback_model(
-                    client, ollama_client, is_ollama, host, model)
+                    client, ollama_client, is_ollama, host, model
+                )
                 if _detected:
                     model = _detected
                     if chat_ui:
                         chat_ui.model_name = model
                     _log_to_ui_or_verbose(
                         f"Falling back to auto-detected model: {model}",
-                        chat_ui, verbose, level="warning")
+                        chat_ui,
+                        verbose,
+                        level="warning",
+                    )
             except OpenAIError as e:
                 # A host that validates chat_template_kwargs refuses the whole
                 # request over the thinking switch.  Remember that and the
                 # retry below goes out without it — the same bargain
                 # _verify_ask strikes, and the reason every turn now sends the
                 # switch rather than only the thinking ones.
-                if (not is_ollama and _is_parameter_rejection(e)
-                        and not _template_kwargs_unsupported(host)):
+                if (
+                    not is_ollama
+                    and _is_parameter_rejection(e)
+                    and not _template_kwargs_unsupported(host)
+                ):
                     _NO_TEMPLATE_KWARGS[host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
-                    logger.info("Host %s rejected chat_template_kwargs (%s); "
-                                "retrying without the thinking switch.", host, e)
+                    logger.info(
+                        "Host %s rejected chat_template_kwargs (%s); "
+                        "retrying without the thinking switch.",
+                        host,
+                        e,
+                    )
                 # OpenAI names the offending parameter in the rejection:
                 # o-series and gpt-5 take only default sampling, so drop
                 # temperature/top_p/presence_penalty for the rest of the run.
-                if (_is_openai_host(host) and _is_parameter_rejection(e)
-                        and any(p in str(e).lower() for p in
-                                ("temperature", "top_p", "presence_penalty"))):
+                if (
+                    _is_openai_host(host)
+                    and _is_parameter_rejection(e)
+                    and any(
+                        p in str(e).lower() for p in ("temperature", "top_p", "presence_penalty")
+                    )
+                ):
                     _openai_strip_sampling = True
-                    logger.info("OpenAI rejected a sampling parameter (%s); "
-                                "retrying with provider defaults.", e)
+                    logger.info(
+                        "OpenAI rejected a sampling parameter (%s); "
+                        "retrying with provider defaults.",
+                        e,
+                    )
                 # A reasoning model that refuses function tools under its
                 # default effort: remember it and let the retry above go
                 # out with reasoning_effort "none" — the only value that
@@ -4338,13 +4881,19 @@ class _ModelCaller:
                 # error's own wording ("function tools") is the evidence;
                 # `tools` is not required here, because a run whose tools
                 # list is empty this turn can still grow one next turn.
-                if (_is_openai_host(host) and _is_parameter_rejection(e)
-                        and "reasoning_effort" in str(e).lower()
-                        and "function tools" in str(e).lower()):
+                if (
+                    _is_openai_host(host)
+                    and _is_parameter_rejection(e)
+                    and "reasoning_effort" in str(e).lower()
+                    and "function tools" in str(e).lower()
+                ):
                     _openai_effort_400 = True
-                    logger.info("OpenAI refused function tools under the "
-                                "default reasoning effort (%s); retrying "
-                                "with reasoning_effort='none'.", e)
+                    logger.info(
+                        "OpenAI refused function tools under the "
+                        "default reasoning effort (%s); retrying "
+                        "with reasoning_effort='none'.",
+                        e,
+                    )
                 # And a model that takes no reasoning_effort at all (a
                 # non-reasoning model): stop sending it, for the rest of
                 # the run.  A model that takes the parameter but refuses
@@ -4353,26 +4902,31 @@ class _ModelCaller:
                 # sent again, because with tools the request would just
                 # 400 the other way ("Function tools with reasoning_effort
                 # are not supported").
-                if (_is_openai_host(host) and _is_parameter_rejection(e)
-                        and "reasoning_effort" in str(e).lower()
-                        and "function tools" not in str(e).lower()):
+                if (
+                    _is_openai_host(host)
+                    and _is_parameter_rejection(e)
+                    and "reasoning_effort" in str(e).lower()
+                    and "function tools" not in str(e).lower()
+                ):
                     _openai_strip_reasoning = True
-                    logger.info("OpenAI rejected reasoning_effort (%s); "
-                                "retrying without it.", e)
+                    logger.info("OpenAI rejected reasoning_effort (%s); retrying without it.", e)
                 # The Responses path names its effort in the error too
                 # ("Unsupported value: 'effort' ... supported values are").
                 # One step down and remember it for the rest of the run —
                 # a model that refuses "medium" is asked for "low" once and
                 # then never above what it takes.
-                if (_is_openai_host(host) and _is_openai_responses_model(model)
-                        and _is_parameter_rejection(e)
-                        and ("effort" in str(e).lower()
-                             or "reasoning" in str(e).lower())):
-                    _responses_effort = ("low"
-                                         if _responses_effort == "medium" else None)
-                    logger.info("OpenAI refused reasoning effort (%s); "
-                                "retrying with effort %s.",
-                                e, _responses_effort or "omitted")
+                if (
+                    _is_openai_host(host)
+                    and _is_openai_responses_model(model)
+                    and _is_parameter_rejection(e)
+                    and ("effort" in str(e).lower() or "reasoning" in str(e).lower())
+                ):
+                    _responses_effort = "low" if _responses_effort == "medium" else None
+                    logger.info(
+                        "OpenAI refused reasoning effort (%s); retrying with effort %s.",
+                        e,
+                        _responses_effort or "omitted",
+                    )
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)
                 _log_to_ui_or_verbose(api_error, chat_ui, verbose, level="warning")
@@ -4387,7 +4941,7 @@ class _ModelCaller:
                 retry_msg = f"Retrying API call (attempt {api_attempt + 1}/{max_api_retries})..."
                 logger.info(retry_msg)
                 _log_to_ui_or_verbose(retry_msg, chat_ui, verbose, level="info")
-                await asyncio.sleep(min(2 ** api_attempt, 10))  # exponential backoff
+                await asyncio.sleep(min(2**api_attempt, 10))  # exponential backoff
 
         if api_error is not None:
             # All retries exhausted.
@@ -4413,9 +4967,14 @@ class _ModelCaller:
                         "role": "assistant",
                         "content": None,
                         "tool_calls": [
-                            {"id": tc.id, "type": "function",
-                             "function": {"name": tc.function.name,
-                                          "arguments": json.loads(tc.function.arguments)}}
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": json.loads(tc.function.arguments),
+                                },
+                            }
                             for tc in _tool_calls
                         ],
                     }
@@ -4427,7 +4986,9 @@ class _ModelCaller:
                 if _pec is not None:
                     state.last_prompt_tokens = _pec
                     if max_context_tokens and chat_ui:
-                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        chat_ui.set_context_usage(
+                            state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens
+                        )
             else:
                 _choice = chat_completion.choices[0]
                 _msg = _choice.message
@@ -4444,39 +5005,53 @@ class _ModelCaller:
                     _log_to_ui_or_verbose(
                         "Model response truncated (finish_reason=length). "
                         "Consider increasing max_tokens.",
-                        chat_ui, verbose, level="warning",
+                        chat_ui,
+                        verbose,
+                        level="warning",
                     )
                     state.force_compact = True
                 elif _finish_reason == "tool_calls" and not _tool_calls:
                     _log_to_ui_or_verbose(
                         f"Model signaled finish_reason=tool_calls but no tool calls received "
                         f"(model={model}). Checking content for raw tool calls.",
-                        chat_ui, verbose, level="warning",
+                        chat_ui,
+                        verbose,
+                        level="warning",
                     )
                 # Capture token usage for context tracking
                 if chat_completion.usage is not None:
                     state.last_prompt_tokens = chat_completion.usage.prompt_tokens
                     _completion_tokens = getattr(chat_completion.usage, "completion_tokens", 0)
                     if max_context_tokens and chat_ui:
-                        chat_ui.set_context_usage(state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens)
+                        chat_ui.set_context_usage(
+                            state.last_prompt_tokens / max_context_tokens * 100, max_context_tokens
+                        )
 
         # Both paths have converged: the model call for this turn is done.
         # cached_tokens: the chat-completions paths carry a usage object with
         # prompt_tokens_details; the Responses path reports usage through
         # _usage instead, and the Ollama path has no such field.  Read
         # whichever exists — None, never 0, when the path does not say.
-        _usage_for_cache = (getattr(chat_completion, "usage", None)
-                            if chat_completion is not None else _usage)
-        self.metrics.end_api(state.last_prompt_tokens, _completion_tokens,
-                             _finish_reason,
-                             cached_tokens=_cached_tokens_of(_usage_for_cache))
+        _usage_for_cache = (
+            getattr(chat_completion, "usage", None) if chat_completion is not None else _usage
+        )
+        self.metrics.end_api(
+            state.last_prompt_tokens,
+            _completion_tokens,
+            _finish_reason,
+            cached_tokens=_cached_tokens_of(_usage_for_cache),
+        )
         return _TurnResult(
-            content=_content, full_reasoning=_full_reasoning,
-            full_content=_full_content, tool_calls=_tool_calls,
+            content=_content,
+            full_reasoning=_full_reasoning,
+            full_content=_full_content,
+            tool_calls=_tool_calls,
             finish_reason=_finish_reason,
             message_for_history=_message_for_history,
-            completion_tokens=_completion_tokens, usage=_usage,
-            chat_completion=chat_completion, model=model,
+            completion_tokens=_completion_tokens,
+            usage=_usage,
+            chat_completion=chat_completion,
+            model=model,
         )
 
 
@@ -4497,8 +5072,8 @@ class _ModelCaller:
 # single repeated sentence (rhetorical emphasis) stays below the window floor,
 # and a repeated block shorter than _SENT_LOOP_MIN_CHARS is too small to be a
 # degenerate loop rather than a deliberate echo.
-_SENT_LOOP_MIN_SENTENCES = 3   # shortest window that can be a loop, in sentences
-_SENT_LOOP_MIN_CHARS = 40      # a window shorter than this is an echo, not a loop
+_SENT_LOOP_MIN_SENTENCES = 3  # shortest window that can be a loop, in sentences
+_SENT_LOOP_MIN_CHARS = 40  # a window shorter than this is an echo, not a loop
 
 
 def _split_sentences(text: str) -> list:
@@ -4542,14 +5117,14 @@ def _sentence_loop_span(text: str) -> tuple:
         tail = sents[-window:]
         first = -1
         for i in range(0, n - window + 1):
-            if sents[i:i + window] == tail:
+            if sents[i : i + window] == tail:
                 first = i
                 break
         if first == -1 or first + window > n - window:
             continue
         copies = 1
         pos = first + window
-        while pos + window <= n and sents[pos:pos + window] == tail:
+        while pos + window <= n and sents[pos : pos + window] == tail:
             copies += 1
             pos += window
         if copies == 1:
@@ -4557,8 +5132,7 @@ def _sentence_loop_span(text: str) -> tuple:
             # that opens the next copy, so copy two starts one sentence early.
             for shift in (-1, 1):
                 p = first + window + shift
-                if (p >= 0 and p + window <= n
-                        and sents[p:p + window] == tail):
+                if p >= 0 and p + window <= n and sents[p : p + window] == tail:
                     copies = 2
                     break
         if sum(len(s) for s in tail) >= _SENT_LOOP_MIN_CHARS:
@@ -4577,7 +5151,7 @@ def _trim_sentence_loop(text: str) -> str:
     if not window or copies < 2:
         return text
     sents = _split_sentences(text)
-    return " ".join(sents[:first + window]).strip() or text
+    return " ".join(sents[: first + window]).strip() or text
 
 
 def _trim_repetition(text: str) -> str:
@@ -4610,7 +5184,7 @@ def _trim_repetition(text: str) -> str:
     trimmed = text[:cut].rstrip()
     # Snap back to a word boundary when one is close by, so the kept text does
     # not end on half a word.
-    if trimmed and not text[cut:cut + 1].isspace() and cut < len(text):
+    if trimmed and not text[cut : cut + 1].isspace() and cut < len(text):
         space = trimmed.rfind(" ")
         if space > len(trimmed) - 40:
             trimmed = trimmed[:space]
@@ -4658,8 +5232,7 @@ def _output_unaccounted(completion_tokens: int, *delivered: str) -> bool:
     if billed <= 0:
         return False
     arrived = sum(len(t or "") for t in delivered) // _CHARS_PER_TOKEN
-    return (billed - arrived >= _MIN_UNACCOUNTED_TOKENS
-            and billed > arrived * 2)
+    return billed - arrived >= _MIN_UNACCOUNTED_TOKENS and billed > arrived * 2
 
 
 def _looks_incomplete(text: str) -> bool:
@@ -4698,8 +5271,7 @@ def _looks_incomplete(text: str) -> bool:
         return False
     if line.count("**") % 2 or line.count("`") % 2:
         return True
-    return any(line.count(opener) > line.count(closer)
-               for opener, closer in _UNCLOSED_PAIRS)
+    return any(line.count(opener) > line.count(closer) for opener, closer in _UNCLOSED_PAIRS)
 
 
 # Prose only counts as the dropped answer if there is enough of it to be one.
@@ -4748,17 +5320,23 @@ def _recover_dropped_answer(final: str, prose: str) -> str:
     closing = (final or "").strip()
     if not closing:
         return prose
-    if (not _ACK_REFERENCE_RE.search(closing)
-            and len(closing) * _ACK_RATIO > len(prose)):
+    if not _ACK_REFERENCE_RE.search(closing) and len(closing) * _ACK_RATIO > len(prose):
         return final
     return f"{prose}\n\n{closing}"
 
 
 async def _handle_raw_tool_call(
-    last_response: str, tool_registry, timeout, data_path,
-    chat_ui: Optional[ChatUIProtocol], verbose: bool, messages: list,
-    tool_call_history: list, max_repeated: int,
-    session_id: str = "", tool_log: list | None = None,
+    last_response: str,
+    tool_registry,
+    timeout,
+    data_path,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose: bool,
+    messages: list,
+    tool_call_history: list,
+    max_repeated: int,
+    session_id: str = "",
+    tool_log: list | None = None,
     harness=None,
 ) -> tuple[bool, str | None]:
     """Handle a raw JSON tool call embedded in model content.
@@ -4777,11 +5355,21 @@ async def _handle_raw_tool_call(
             function_arguments = {k: v for k, v in tc.get("arguments", {}).items()}
             synthetic_id = f"call_{uuid.uuid4().hex[:24]}"
             bail = await _execute_tool(
-                function_name, function_arguments, synthetic_id,
-                tool_registry, timeout, data_path, chat_ui, verbose,
-                messages, tool_call_history, max_repeated,
-                is_structured=False, session_id=session_id,
-                tool_log=tool_log, harness=harness,
+                function_name,
+                function_arguments,
+                synthetic_id,
+                tool_registry,
+                timeout,
+                data_path,
+                chat_ui,
+                verbose,
+                messages,
+                tool_call_history,
+                max_repeated,
+                is_structured=False,
+                session_id=session_id,
+                tool_log=tool_log,
+                harness=harness,
             )
             if bail:
                 return False, bail
@@ -4791,9 +5379,19 @@ async def _handle_raw_tool_call(
     # If the content looks like a tool call but couldn't be parsed,
     # ask the model to retry without tools.
     if _looks_like_raw_tool_call(last_response):
-        _log_to_ui_or_verbose("Model returned unparseable raw tool-call JSON, retrying without tools.", chat_ui, verbose, level="warning")
+        _log_to_ui_or_verbose(
+            "Model returned unparseable raw tool-call JSON, retrying without tools.",
+            chat_ui,
+            verbose,
+            level="warning",
+        )
         messages.append({"role": "assistant", "content": last_response})
-        messages.append({"role": "user", "content": "Please provide your answer as plain text, not as a JSON tool call."})
+        messages.append(
+            {
+                "role": "user",
+                "content": "Please provide your answer as plain text, not as a JSON tool call.",
+            }
+        )
         return True, None
 
     return False, None
@@ -4910,17 +5508,30 @@ def _retrieve_exception(fut: asyncio.Future) -> None:
 # order the calls finish in.  Everything else — writing a file, running a
 # command, driving a sandbox — stays sequential, because a batch of those is a
 # script, and a script has an order.
-_READ_ONLY_TOOLS = frozenset({
-    "local_search", "search_document", "get_document_context",
-    "read_file", "grep", "find_files", "search_directory",
-    "search", "fetch_content", "extract_tables", "extract_pdf_images",
-    "get_weather",
-    # The harness's own read tools: all local, all side-effect-free, and the
-    # ones a model most often batches with a real read (checking what handles
-    # exist before reading one).  Excluding them serialized a batched
-    # read+status turn on tools that take microseconds.
-    "context_status", "note_read", "result_read", "result_grep",
-})
+_READ_ONLY_TOOLS = frozenset(
+    {
+        "local_search",
+        "search_document",
+        "get_document_context",
+        "read_file",
+        "grep",
+        "find_files",
+        "search_directory",
+        "search",
+        "fetch_content",
+        "extract_tables",
+        "extract_pdf_images",
+        "get_weather",
+        # The harness's own read tools: all local, all side-effect-free, and the
+        # ones a model most often batches with a real read (checking what handles
+        # exist before reading one).  Excluding them serialized a batched
+        # read+status turn on tools that take microseconds.
+        "context_status",
+        "note_read",
+        "result_read",
+        "result_grep",
+    }
+)
 
 
 def _parse_tool_arguments(tool, verbose: bool) -> dict:
@@ -4933,7 +5544,7 @@ def _parse_tool_arguments(tool, verbose: bool) -> dict:
         # Replace single quotes with double quotes
         fixed = fixed.replace("'", '"')
         # Remove trailing commas before closing braces/brackets
-        fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+        fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
         try:
             return json.loads(fixed)
         except json.JSONDecodeError as e:
@@ -4944,9 +5555,18 @@ def _parse_tool_arguments(tool, verbose: bool) -> dict:
 
 
 async def _execute_tools_in_parallel(
-    calls: list, tool_registry, timeout, data_path, chat_ui: Optional[ChatUIProtocol], verbose: bool,
-    messages: list, tool_call_history: list, max_repeated: int,
-    safety_queue: asyncio.Queue, session_id: str, tool_log: list | None = None,
+    calls: list,
+    tool_registry,
+    timeout,
+    data_path,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose: bool,
+    messages: list,
+    tool_call_history: list,
+    max_repeated: int,
+    safety_queue: asyncio.Queue,
+    session_id: str,
+    tool_log: list | None = None,
     harness=None,
 ) -> str | object | None:
     """Run a batch of read-only tool calls concurrently.
@@ -4969,16 +5589,28 @@ async def _execute_tools_in_parallel(
 
     async def _run(index: int, name: str, args: dict, call_id: str):
         return await _execute_tool(
-            name, args, call_id, tool_registry, timeout, data_path,
-            chat_ui, verbose, buffers[index], tool_call_history,
-            max_repeated, is_structured=True, session_id=session_id,
-            tool_log=tool_log, harness=harness,
+            name,
+            args,
+            call_id,
+            tool_registry,
+            timeout,
+            data_path,
+            chat_ui,
+            verbose,
+            buffers[index],
+            tool_call_history,
+            max_repeated,
+            is_structured=True,
+            session_id=session_id,
+            tool_log=tool_log,
+            harness=harness,
         )
 
     gathered = _await_with_safety(
-        asyncio.gather(*(_run(i, name, args, call_id)
-                         for i, (name, args, call_id) in enumerate(calls)),
-                       return_exceptions=True),
+        asyncio.gather(
+            *(_run(i, name, args, call_id) for i, (name, args, call_id) in enumerate(calls)),
+            return_exceptions=True,
+        ),
         safety_queue,
     )
     results = await gathered
@@ -4995,9 +5627,15 @@ async def _execute_tools_in_parallel(
             # appending).  The id still needs an answer or the next request is
             # rejected for having a tool_call nothing replied to.
             reason = result if isinstance(result, BaseException) else "no result"
-            buffer.append({'role': 'tool', 'content': f'Error: {reason}',
-                           'name': name, 'parameters': args,
-                           "tool_call_id": call_id})
+            buffer.append(
+                {
+                    "role": "tool",
+                    "content": f"Error: {reason}",
+                    "name": name,
+                    "parameters": args,
+                    "tool_call_id": call_id,
+                }
+            )
         messages.extend(buffer)
         if bail is None and isinstance(result, str):
             bail = result
@@ -5007,11 +5645,19 @@ async def _execute_tools_in_parallel(
 
 
 async def _handle_structured_tool_calls(
-    tool_calls: list, message_for_history, tool_registry,
-    timeout, data_path, chat_ui: Optional[ChatUIProtocol], verbose: bool,
-    messages: list, tool_call_history: list,
-    max_repeated: int, safety_queue: asyncio.Queue,
-    session_id: str = "", tool_log: list | None = None,
+    tool_calls: list,
+    message_for_history,
+    tool_registry,
+    timeout,
+    data_path,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose: bool,
+    messages: list,
+    tool_call_history: list,
+    max_repeated: int,
+    safety_queue: asyncio.Queue,
+    session_id: str = "",
+    tool_log: list | None = None,
     harness=None,
 ) -> str | object | None:
     """Execute structured tool calls and append results to messages.
@@ -5025,8 +5671,9 @@ async def _handle_structured_tool_calls(
       - None when all tools completed normally.
     """
     messages.append(message_for_history)
-    calls = [(tool.function.name, _parse_tool_arguments(tool, verbose), tool.id)
-             for tool in tool_calls]
+    calls = [
+        (tool.function.name, _parse_tool_arguments(tool, verbose), tool.id) for tool in tool_calls
+    ]
 
     if len(calls) > 1 and any(name in _READ_ONLY_TOOLS for name, _, _ in calls):
         # Partition a mixed batch: the read-only subset runs concurrently,
@@ -5038,9 +5685,19 @@ async def _handle_structured_tool_calls(
         readonly = [c for c in calls if c[0] in _READ_ONLY_TOOLS]
         sequential = [c for c in calls if c[0] not in _READ_ONLY_TOOLS]
         bail = await _execute_tools_in_parallel(
-            readonly, tool_registry, timeout, data_path, chat_ui, verbose,
-            messages, tool_call_history, max_repeated, safety_queue, session_id,
-            tool_log=tool_log, harness=harness,
+            readonly,
+            tool_registry,
+            timeout,
+            data_path,
+            chat_ui,
+            verbose,
+            messages,
+            tool_call_history,
+            max_repeated,
+            safety_queue,
+            session_id,
+            tool_log=tool_log,
+            harness=harness,
         )
         if bail:
             return bail
@@ -5051,11 +5708,21 @@ async def _handle_structured_tool_calls(
                     print("Safety queue triggered, exiting chat loop.")
                 return _SAFETY_ABORT
             bail = await _execute_tool(
-                function_name, function_arguments, call_id,
-                tool_registry, timeout, data_path, chat_ui, verbose,
-                messages, tool_call_history, max_repeated,
-                is_structured=True, session_id=session_id,
-                tool_log=tool_log, harness=harness,
+                function_name,
+                function_arguments,
+                call_id,
+                tool_registry,
+                timeout,
+                data_path,
+                chat_ui,
+                verbose,
+                messages,
+                tool_call_history,
+                max_repeated,
+                is_structured=True,
+                session_id=session_id,
+                tool_log=tool_log,
+                harness=harness,
             )
             if bail:
                 return bail
@@ -5071,11 +5738,21 @@ async def _handle_structured_tool_calls(
                 print("Safety queue triggered, exiting chat loop.")
             return _SAFETY_ABORT
         bail = await _execute_tool(
-            function_name, function_arguments, call_id,
-            tool_registry, timeout, data_path, chat_ui, verbose,
-            messages, tool_call_history, max_repeated,
-            is_structured=True, session_id=session_id,
-            tool_log=tool_log, harness=harness,
+            function_name,
+            function_arguments,
+            call_id,
+            tool_registry,
+            timeout,
+            data_path,
+            chat_ui,
+            verbose,
+            messages,
+            tool_call_history,
+            max_repeated,
+            is_structured=True,
+            session_id=session_id,
+            tool_log=tool_log,
+            harness=harness,
         )
         if bail:
             return bail
@@ -5083,8 +5760,12 @@ async def _handle_structured_tool_calls(
 
 
 async def _compact_context(
-    messages: list, client, model: str,
-    max_tokens: int, chat_ui: Optional[ChatUIProtocol], verbose: bool,
+    messages: list,
+    client,
+    model: str,
+    max_tokens: int,
+    chat_ui: Optional[ChatUIProtocol],
+    verbose: bool,
     is_ollama: bool = False,
     is_openai: bool = False,
     instruction: str = "",
@@ -5162,7 +5843,9 @@ async def _compact_context(
         role = _field(msg, "role", "?")
         content = _field(msg, "content") or ""
         if isinstance(content, list):
-            content = " ".join(_field(p, "text", "") for p in content if isinstance(p, dict) or hasattr(p, "text"))
+            content = " ".join(
+                _field(p, "text", "") for p in content if isinstance(p, dict) or hasattr(p, "text")
+            )
         content = str(content)
         name = _field(msg, "name", "")
         if role == "user":
@@ -5195,21 +5878,25 @@ async def _compact_context(
     parts.reverse()
     _older.reverse()
     if _older:
-        _head = (f"[{_omitted + len(_older)} earlier messages condensed]"
-                 if _omitted else
-                 f"[{len(_older)} earlier messages condensed]")
+        _head = (
+            f"[{_omitted + len(_older)} earlier messages condensed]"
+            if _omitted
+            else f"[{len(_older)} earlier messages condensed]"
+        )
         parts = [_head] + _older + parts
 
     compaction_prompt = (
-        ("Update the running summary below with everything important from the "
-         "new messages. Keep every task, key tool result, decision, and open "
-         "item from the existing summary; fold in what the new messages add; "
-         "drop nothing that still matters. Be thorough but concise — this "
-         "summary replaces the full history.\n\n"
-         "## Existing summary\n" + prior_summary + "\n\n"
-         "## New messages\n")
-        if prior_summary and _new_start > 0 else
-        "Summarize the following agent conversation. Include: the original task, "
+        (
+            "Update the running summary below with everything important from the "
+            "new messages. Keep every task, key tool result, decision, and open "
+            "item from the existing summary; fold in what the new messages add; "
+            "drop nothing that still matters. Be thorough but concise — this "
+            "summary replaces the full history.\n\n"
+            "## Existing summary\n" + prior_summary + "\n\n"
+            "## New messages\n"
+        )
+        if prior_summary and _new_start > 0
+        else "Summarize the following agent conversation. Include: the original task, "
         "key tool results and findings, decisions made, and what still needs to be "
         "done. Be thorough but concise — this summary replaces the full history.\n\n"
     )
@@ -5226,9 +5913,11 @@ async def _compact_context(
         else:
             # OpenAI takes the output budget as max_completion_tokens; the
             # reasoning models reject max_tokens outright.
-            _budget_kw = ({"max_completion_tokens": min(2048, max_tokens)}
-                          if is_openai else
-                          {"max_tokens": min(2048, max_tokens)})
+            _budget_kw = (
+                {"max_completion_tokens": min(2048, max_tokens)}
+                if is_openai
+                else {"max_tokens": min(2048, max_tokens)}
+            )
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": compaction_prompt}],
@@ -5242,11 +5931,15 @@ async def _compact_context(
 
     _log_to_ui_or_verbose(
         f"Context compacted: {len(_new_messages)} new message(s)"
-        + (f" merged into prior summary ({_new_start} already summarized)"
-           if _new_start > 0 else
-           f" ({len(messages_to_summarize)} messages)")
+        + (
+            f" merged into prior summary ({_new_start} already summarized)"
+            if _new_start > 0
+            else f" ({len(messages_to_summarize)} messages)"
+        )
         + f" → {len(summary):,} char summary",
-        chat_ui, verbose, level="info",
+        chat_ui,
+        verbose,
+        level="info",
     )
     if chat_ui:
         chat_ui.show_context_compaction(len(messages_to_summarize), len(summary))
@@ -5258,9 +5951,11 @@ async def _compact_context(
     # restates the session context — the working directory among it — and frames
     # it as rules still in effect, which is exactly the cue a weak model answers
     # with "Working directory confirmed: <uuid>" instead of resuming work.
-    _resume = ("[Resume the task now. Do not acknowledge this message, do not "
-               "restate the context or the summary — either call the next tool "
-               "you need, or give the final answer if the task is already done.]")
+    _resume = (
+        "[Resume the task now. Do not acknowledge this message, do not "
+        "restate the context or the summary — either call the next tool "
+        "you need, or give the final answer if the task is already done.]"
+    )
     # Compaction is an event the model can now do something about, so it is
     # told.  Placed before _resume and not as a message of its own: the resume
     # line is deliberately the last thing in the last message, and a notice
@@ -5277,18 +5972,22 @@ async def _compact_context(
             + instruction
             + "\n\n## Summary of prior work\n"
             + summary
-            + "\n\n" + _resume
+            + "\n\n"
+            + _resume
         )
     else:
         compacted_content = (
             "[CONTEXT COMPACTED]\nThe following is a summary of prior work:\n\n"
             + summary
-            + "\n\n" + _resume
+            + "\n\n"
+            + _resume
         )
-    new_messages.append({
-        "role": "user",
-        "content": compacted_content,
-    })
+    new_messages.append(
+        {
+            "role": "user",
+            "content": compacted_content,
+        }
+    )
     # The compacted user message is deliberately last.  Appending a synthetic
     # assistant acknowledgment here would leave the model generating a second
     # consecutive assistant turn with nothing new to respond to — it answers
@@ -5328,21 +6027,42 @@ class _FactChecker:
     was done.
     """
 
-    def __init__(self, *, tools: list, tool_registry, harness, metrics,
-                 host: str, model: str, is_ollama: bool, num_ctx,
-                 client, ollama_client, timeout, data_path: str,
-                 session_id: str, chat_ui, verbose: bool, safety_queue,
-                 max_tokens: int, max_repeated_tool_calls: int,
-                 task_instruction: str, verify_answers: bool,
-                 verify_background: bool, background_verify,
-                 verify_max_tool_turns: int, verify_timeout_s: float,
-                 verify_trusted_domains: tuple):
+    def __init__(
+        self,
+        *,
+        tools: list,
+        tool_registry,
+        harness,
+        metrics,
+        host: str,
+        model: str,
+        is_ollama: bool,
+        num_ctx,
+        client,
+        ollama_client,
+        timeout,
+        data_path: str,
+        session_id: str,
+        chat_ui,
+        verbose: bool,
+        safety_queue,
+        max_tokens: int,
+        max_repeated_tool_calls: int,
+        task_instruction: str,
+        verify_answers: bool,
+        verify_background: bool,
+        background_verify,
+        verify_max_tool_turns: int,
+        verify_timeout_s: float,
+        verify_trusted_domains: tuple,
+    ):
         # Tools the check may use: the read-only ones, and only those.
         self.tools = [
-            t for t in (tools or [])
+            t
+            for t in (tools or [])
             if isinstance(t, dict)
-            and isinstance(t.get('function'), dict)
-            and t['function'].get('name') in _READ_ONLY_TOOLS
+            and isinstance(t.get("function"), dict)
+            and t["function"].get("name") in _READ_ONLY_TOOLS
         ]
         self.tool_registry = tool_registry
         self.metrics = metrics
@@ -5368,8 +6088,9 @@ class _FactChecker:
         self.verify_timeout_s = verify_timeout_s
         self.verify_trusted_domains = verify_trusted_domains
 
-    async def ask(self, msgs: list, tools: list | None = None,
-                  max_tokens: int = VERDICT_MAX_TOKENS):
+    async def ask(
+        self, msgs: list, tools: list | None = None, max_tokens: int = VERDICT_MAX_TOKENS
+    ):
         """One non-streaming completion for the fact-check.
 
         Deliberate at temperature 0: the check is a judgment about text that
@@ -5386,21 +6107,26 @@ class _FactChecker:
         that runs behind a finished answer into a wait the user notices.
         """
         if self.is_ollama:
-            _kw: dict = dict(model=self.model,
-                             messages=_adapt_messages_for_ollama(msgs),
-                             stream=False, think=False,
-                             options={"temperature": 0.0, "num_ctx": self.num_ctx,
-                                      "num_predict": max_tokens, "stop": []})
+            _kw: dict = dict(
+                model=self.model,
+                messages=_adapt_messages_for_ollama(msgs),
+                stream=False,
+                think=False,
+                options={
+                    "temperature": 0.0,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": max_tokens,
+                    "stop": [],
+                },
+            )
             if tools:
                 _kw["tools"] = tools
-            resp = await _await_with_safety(self.ollama_client.chat(**_kw),
-                                            self.safety_queue)
+            resp = await _await_with_safety(self.ollama_client.chat(**_kw), self.safety_queue)
             if resp is _SAFETY_ABORT:
                 raise _VerifyStopped()
             _msg = resp.message
             _raw = getattr(_msg, "tool_calls", None)
-            return (_verify_content(_msg),
-                    _adapt_ollama_tool_calls(_raw) if _raw else None)
+            return (_verify_content(_msg), _adapt_ollama_tool_calls(_raw) if _raw else None)
         _kw = dict(model=self.model, messages=msgs, temperature=0.0, stream=False)
         if _is_openai_host(self.host):
             # The same OpenAI-only spelling for the output budget.  The
@@ -5433,15 +6159,19 @@ class _FactChecker:
             try:
                 resp = await _await_with_safety(
                     self.client.chat.completions.create(**_kw, extra_body=_attempt),
-                    self.safety_queue)
+                    self.safety_queue,
+                )
                 break
             except OpenAIError as e:
                 if not _attempt or not _is_parameter_rejection(e):
                     raise
-                logger.info("Host %s rejected chat_template_kwargs (%s); "
-                            "running the fact-check without it.", self.host, e)
-                _NO_TEMPLATE_KWARGS[self.host] = (time.monotonic()
-                                                  + _NO_TEMPLATE_KWARGS_TTL)
+                logger.info(
+                    "Host %s rejected chat_template_kwargs (%s); "
+                    "running the fact-check without it.",
+                    self.host,
+                    e,
+                )
+                _NO_TEMPLATE_KWARGS[self.host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
         if resp is _SAFETY_ABORT:
             raise _VerifyStopped()
         _msg = resp.choices[0].message
@@ -5454,14 +6184,19 @@ class _FactChecker:
         about the answer, and folding its detour back into the history the
         answer was written from would rewrite the evidence under it.
         """
-        _args = ((lambda a: json.loads(a)) if self.is_ollama else (lambda a: a))
+        _args = (lambda a: json.loads(a)) if self.is_ollama else (lambda a: a)
         _history = {
             "role": "assistant",
             "content": None,
             "tool_calls": [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name,
-                              "arguments": _args(tc.function.arguments)}}
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": _args(tc.function.arguments),
+                    },
+                }
                 for tc in tool_calls
             ],
         }
@@ -5471,13 +6206,23 @@ class _FactChecker:
         # task is not refused here as a repeat — checking a claim against the
         # same source the answer used is the point, not a loop.
         bail = await _handle_structured_tool_calls(
-            tool_calls, _history, self.tool_registry, self.timeout,
-            self.data_path, self.chat_ui, self.verbose, msgs, [],
+            tool_calls,
+            _history,
+            self.tool_registry,
+            self.timeout,
+            self.data_path,
+            self.chat_ui,
+            self.verbose,
+            msgs,
+            [],
             self.max_repeated_tool_calls,
-            self.safety_queue, session_id=self.session_id, tool_log=_tool_log,
+            self.safety_queue,
+            session_id=self.session_id,
+            tool_log=_tool_log,
         )
-        self.metrics.add_tools([tc.function.name for tc in tool_calls],
-                               time.monotonic() - _t0, runs=_tool_log)
+        self.metrics.add_tools(
+            [tc.function.name for tc in tool_calls], time.monotonic() - _t0, runs=_tool_log
+        )
         if bail is _SAFETY_ABORT:
             raise _VerifyStopped()
 
@@ -5489,9 +6234,11 @@ class _FactChecker:
         same verdict arrives behind a thousand tokens of reasoning and a small
         budget buys finish_reason=length instead of a shorter answer.
         """
-        ceiling = (VERDICT_MAX_TOKENS
-                   if not _template_kwargs_unsupported(self.host)
-                   else THINKING_VERDICT_MAX_TOKENS)
+        ceiling = (
+            VERDICT_MAX_TOKENS
+            if not _template_kwargs_unsupported(self.host)
+            else THINKING_VERDICT_MAX_TOKENS
+        )
         return min(self.max_tokens, ceiling)
 
     def log(self, message: str, level: str = "info") -> None:
@@ -5523,33 +6270,38 @@ class _FactChecker:
         try:
             checked, note, issues = await asyncio.wait_for(
                 verify_answer(
-                    task=self.task_instruction, answer=answer, messages=msgs,
+                    task=self.task_instruction,
+                    answer=answer,
+                    messages=msgs,
                     ask=self.ask,
                     # No tools and no rewrite: both cost more than the budget
                     # this stage has, and both are what the deep check is for.
-                    run_tools=None, tools=None, max_tool_turns=0,
+                    run_tools=None,
+                    tools=None,
+                    max_tool_turns=0,
                     allow_revision=False,
                     verdict_max_tokens=self.verdict_budget(),
                     trusted_domains=self.verify_trusted_domains,
                     log=self.log,
                 ),
-                timeout=(self.verify_timeout_s if self.verify_timeout_s > 0
-                         else None),
+                timeout=(self.verify_timeout_s if self.verify_timeout_s > 0 else None),
             )
         except asyncio.TimeoutError:
             # The ceiling exists so that a slow endpoint costs the answer
             # nothing.  The draft stands, and the deep check behind it still
             # gets to look at the same claims without a clock on it.
-            logger.info("Fact-check exceeded its %.1fs budget; keeping the draft.",
-                        self.verify_timeout_s)
-            self.log("Fact-check ran long; the answer stands while the check "
-                     "continues in the background.")
+            logger.info(
+                "Fact-check exceeded its %.1fs budget; keeping the draft.", self.verify_timeout_s
+            )
+            self.log(
+                "Fact-check ran long; the answer stands while the check "
+                "continues in the background."
+            )
             checked, note, issues = answer, "", []
         except Exception as e:
             logger.warning("Fact-check pass failed: %s", e)
             checked, note, issues = answer, "", []
-        self.metrics.add_verification(time.monotonic() - _t0, len(issues),
-                                      bool(note))
+        self.metrics.add_verification(time.monotonic() - _t0, len(issues), bool(note))
         if self.chat_ui:
             self.chat_ui.verification_end(checked, note)
         self.schedule_deep_check(checked, msgs, already_found=bool(issues))
@@ -5571,7 +6323,9 @@ class _FactChecker:
         _t0 = time.monotonic()
         try:
             checked, note, issues = await verify_answer(
-                task=self.task_instruction, answer=answer, messages=msgs,
+                task=self.task_instruction,
+                answer=answer,
+                messages=msgs,
                 ask=self.ask,
                 run_tools=self.run_tools if self.tools else None,
                 tools=self.tools,
@@ -5591,12 +6345,14 @@ class _FactChecker:
         except Exception as e:
             logger.warning("Background fact-check failed: %s", e)
             return answer, ""
-        self.metrics.add_verification(time.monotonic() - _t0, len(issues),
-                                      bool(note))
+        self.metrics.add_verification(time.monotonic() - _t0, len(issues), bool(note))
         if not note:
             return answer, ""
-        logger.info("Background fact-check corrected %d claim(s) after %.1fs",
-                    len(issues), time.monotonic() - _t0)
+        logger.info(
+            "Background fact-check corrected %d claim(s) after %.1fs",
+            len(issues),
+            time.monotonic() - _t0,
+        )
         # Told here rather than by the caller, because this is where the UI
         # contract already lives — the same object that was told the check had
         # started is the one owed the outcome.  Persisting it to the session is
@@ -5608,8 +6364,7 @@ class _FactChecker:
                 logger.warning("Could not deliver the correction: %s", e)
         return checked, note
 
-    def schedule_deep_check(self, answer: str, msgs: list,
-                            already_found: bool) -> None:
+    def schedule_deep_check(self, answer: str, msgs: list, already_found: bool) -> None:
         """Hand the deep check to whoever owns the session's background work.
 
         Handed over rather than started here: this function returns the
@@ -5619,8 +6374,7 @@ class _FactChecker:
         show a late correction simply does not take it, which is why this is
         opt-in rather than opt-out.
         """
-        if not (self.verify_answers and self.verify_background
-                and self.background_verify):
+        if not (self.verify_answers and self.verify_background and self.background_verify):
             return
         if not answer or not needs_verification(answer):
             return
@@ -5637,33 +6391,36 @@ class _FactChecker:
             logger.warning("Could not schedule the background fact-check: %s", e)
 
 
-async def chat(host: str = "http://127.0.0.1:8001/v1",
-         host_key: str = "EMPTY",
-         model: str = None,
-         instruction: str = "Tell me more about yourself.",
-         images: List[str]|str = None,
-         tool_registry: Optional[Any] = None,
-         timeout: int = None,
-         stream: bool = False,
-         think: bool = DEFAULT_THINK,
-         safety_queue: Optional[asyncio.Queue] = None,
-         **kwargs) -> Optional[str]:
+async def chat(
+    host: str = "http://127.0.0.1:8001/v1",
+    host_key: str = "EMPTY",
+    model: str = None,
+    instruction: str = "Tell me more about yourself.",
+    images: List[str] | str = None,
+    tool_registry: Optional[Any] = None,
+    timeout: int = None,
+    stream: bool = False,
+    think: bool = DEFAULT_THINK,
+    safety_queue: Optional[asyncio.Queue] = None,
+    **kwargs,
+) -> Optional[str]:
 
     tools = _api_tool_payload(tool_registry.get_tool_items()) if tool_registry else []
-    chat_ui: Optional[ChatUIProtocol] = kwargs['chat_ui'] if 'chat_ui' in kwargs else None
-    verbose = kwargs['verbose'] if 'verbose' in kwargs else False
-    data_path = kwargs.get('data_path', '')
-    session_id = kwargs.get('session_id', '')
-    max_tokens = kwargs.get('max_tokens', DEFAULT_MAX_TOKENS)
-    temperature = kwargs.get('temperature', 0.6)
-    top_p = kwargs.get('top_p', 0.95)
-    top_k = kwargs.get('top_k', 20)
-    min_p = kwargs.get('min_p', 0.0)
-    presence_penalty = kwargs.get('presence_penalty', 0.0)
-    repetition_penalty = kwargs.get('repetition_penalty', 1.0 if think else 1.05)
-    prompt_intro = kwargs.get('prompt_intro', "I am a helpful AI assistant. My name is OnIt.")
-    max_context_tokens: Optional[int] = kwargs.get('max_context_tokens', None)
-    num_ctx: Optional[int] = kwargs.get('num_ctx', None)  # Ollama context window override
+    chat_ui: Optional[ChatUIProtocol] = kwargs["chat_ui"] if "chat_ui" in kwargs else None
+    verbose = kwargs["verbose"] if "verbose" in kwargs else False
+    data_path = kwargs.get("data_path", "")
+    session_id = kwargs.get("session_id", "")
+    max_tokens = kwargs.get("max_tokens", DEFAULT_MAX_TOKENS)
+    temperature = kwargs.get("temperature", 0.6)
+    top_p = kwargs.get("top_p", 0.95)
+    top_k = kwargs.get("top_k", 20)
+    min_p = kwargs.get("min_p", 0.0)
+    presence_penalty = kwargs.get("presence_penalty", 0.0)
+    repetition_penalty = kwargs.get("repetition_penalty", 1.0 if think else 1.05)
+    prompt_intro = kwargs.get("prompt_intro", "I am a helpful AI assistant. My name is OnIt.")
+    max_context_tokens: Optional[int] = kwargs.get("max_context_tokens", None)
+    num_ctx: Optional[int] = kwargs.get("num_ctx", None)  # Ollama context window override
+
     # The harness's own tools (see harness.py).  They ride in the same tool
     # payload as the MCP ones because from the model's side there is no
     # difference — only the dispatch is local.  ``max_context_tokens`` is not
@@ -5679,32 +6436,39 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         answering the question differently.
         """
         return await _resolve_approval(
-            name, args, result, lambda a: handler(**a), chat_ui, verbose,
-            timeout if timeout and timeout > 0 else DEFAULT_TOOL_TIMEOUT)
+            name,
+            args,
+            result,
+            lambda a: handler(**a),
+            chat_ui,
+            verbose,
+            timeout if timeout and timeout > 0 else DEFAULT_TOOL_TIMEOUT,
+        )
 
-    harness = HarnessTools(data_path=data_path,
-                           max_context_tokens=max_context_tokens,
-                           enabled=bool(tools) and kwargs.get('harness_tools', True),
-                           result_store=kwargs.get('result_store', True),
-                           # Code as action: off unless a deployment asked for
-                           # it.  The registry rides along because every tool
-                           # in it becomes a Python function inside the
-                           # interpreter, dispatched back out through here.
-                           code_execution=kwargs.get('code_execution', False),
-                           session_id=session_id,
-                           tool_registry=tool_registry,
-                           tool_timeout=timeout if timeout and timeout > 0
-                           else DEFAULT_TOOL_TIMEOUT,
-                           code_timeout=_as_float(
-                               kwargs.get('code_timeout', DEFAULT_CODE_TIMEOUT),
-                               DEFAULT_CODE_TIMEOUT),
-                           approval_resolver=_harness_approval)
+    harness = HarnessTools(
+        data_path=data_path,
+        max_context_tokens=max_context_tokens,
+        enabled=bool(tools) and kwargs.get("harness_tools", True),
+        result_store=kwargs.get("result_store", True),
+        # Code as action: off unless a deployment asked for
+        # it.  The registry rides along because every tool
+        # in it becomes a Python function inside the
+        # interpreter, dispatched back out through here.
+        code_execution=kwargs.get("code_execution", False),
+        session_id=session_id,
+        tool_registry=tool_registry,
+        tool_timeout=timeout if timeout and timeout > 0 else DEFAULT_TOOL_TIMEOUT,
+        code_timeout=_as_float(
+            kwargs.get("code_timeout", DEFAULT_CODE_TIMEOUT), DEFAULT_CODE_TIMEOUT
+        ),
+        approval_resolver=_harness_approval,
+    )
     tools = tools + _api_tool_payload(harness.tool_items())
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so
     # every recording site is unconditional rather than each one remembering a
     # null guard.  The timers it wraps run either way.
-    _metrics_sink = kwargs.get('metrics', None)
+    _metrics_sink = kwargs.get("metrics", None)
     _m = TurnMetrics(_metrics_sink if _metrics_sink is not None else {})
     # The terminal prints its per-answer footer while the run is still going,
     # so it needs the live sink rather than the summary the caller reads once
@@ -5720,7 +6484,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # the cost: it trades answer deliberation for latency and a large token
     # saving, which is why it is a dial.  The default is the cheap side: a
     # deployment that wants per-tool-turn reasoning sets it explicitly.
-    think_tool_turns = kwargs.get('think_tool_turns', False)
+    think_tool_turns = kwargs.get("think_tool_turns", False)
     # Fact-checking the finished answer (see verify.py).  On by default, and
     # split in two so that being careful and being quick stop competing.
     #
@@ -5732,13 +6496,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # late correction should not be spending tokens producing one.
     # verify_max_tool_turns applies to that background stage alone; the fast
     # one never calls a tool.
-    verify_answers = kwargs.get('verify_answers', True)
-    verify_max_tool_turns = max(0, _as_int(kwargs.get('verify_max_tool_turns', 2)))
-    verify_timeout_s = max(0.0, _as_float(kwargs.get('verify_timeout_s', 2.0), 2.0))
-    verify_background = kwargs.get('verify_background', True)
-    background_verify = kwargs.get('background_verify', None)
-    verify_trusted_domains = tuple(kwargs.get('verify_trusted_domains', None)
-                                   or DEFAULT_TRUSTED_DOMAINS)
+    verify_answers = kwargs.get("verify_answers", True)
+    verify_max_tool_turns = max(0, _as_int(kwargs.get("verify_max_tool_turns", 2)))
+    verify_timeout_s = max(0.0, _as_float(kwargs.get("verify_timeout_s", 2.0), 2.0))
+    verify_background = kwargs.get("verify_background", True)
+    background_verify = kwargs.get("background_verify", None)
+    verify_trusted_domains = tuple(
+        kwargs.get("verify_trusted_domains", None) or DEFAULT_TRUSTED_DOMAINS
+    )
 
     images_bytes = _load_images(images, chat_ui, verbose)
     # The standing rules go to the system message, where they stay put across
@@ -5748,12 +6513,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # volatile half, ahead of the task.  It comes off the run state,
     # which the caller populated; chat() does not go looking for it, so
     # a run at autonomy 0 or 1 sends exactly the bytes it always did.
-    _run_state = kwargs.get('run_state', None)
-    _learned_context = getattr(_run_state, 'learned_context', '') or ''
-    messages = _build_messages(task_instruction, images_bytes, prompt_intro,
-                               kwargs.get('session_history', None),
-                               system_rules=system_rules,
-                               learned_context=_learned_context)
+    _run_state = kwargs.get("run_state", None)
+    _learned_context = getattr(_run_state, "learned_context", "") or ""
+    messages = _build_messages(
+        task_instruction,
+        images_bytes,
+        prompt_intro,
+        kwargs.get("session_history", None),
+        system_rules=system_rules,
+        learned_context=_learned_context,
+    )
 
     # Size the first read from the standing payload.  The client below is
     # built before the first API call, so this estimate — chars/4 over the
@@ -5761,8 +6530,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # the first-read budget in _build_client_timeout scales on.  It is a floor
     # for queue+prefill, deliberately generous: a false stall costs the turn.
     _standing_chars = sum(
-        len(m.get("content") or "") if isinstance(m, dict) else 0
-        for m in messages)
+        len(m.get("content") or "") if isinstance(m, dict) else 0 for m in messages
+    )
     _prompt_tokens_estimate = _standing_chars // 4 + len(tools) * 48
 
     api_key = _resolve_api_key(host, host_key)
@@ -5777,13 +6546,16 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # a false stall costs the whole turn.
     _first_read_est = _prompt_tokens_estimate
     if is_ollama:
-        ollama_client = _create_ollama_client(host, api_key, timeout, stream,
-                                              prompt_tokens=_first_read_est)
+        ollama_client = _create_ollama_client(
+            host, api_key, timeout, stream, prompt_tokens=_first_read_est
+        )
         client = None
     else:
-        client = AsyncOpenAI(base_url=host, api_key=api_key,
-                             timeout=_build_client_timeout(timeout, stream,
-                                                           prompt_tokens=_first_read_est))
+        client = AsyncOpenAI(
+            base_url=host,
+            api_key=api_key,
+            timeout=_build_client_timeout(timeout, stream, prompt_tokens=_first_read_est),
+        )
         ollama_client = None
 
     # Resolve model: use explicit name if provided, otherwise auto-detect.
@@ -5801,7 +6573,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 logger.error(_err)
                 _log_to_ui_or_verbose(_err, chat_ui, verbose, level="error")
                 if _attempt < _MODEL_RETRIES:
-                    await asyncio.sleep(min(2 ** _attempt, 10))
+                    await asyncio.sleep(min(2**_attempt, 10))
         if model is None:
             return None
 
@@ -5815,8 +6587,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
 
     # Query vLLM for the model's maximum context window if not provided in config.
     # Skip for OpenRouter and Ollama (neither exposes max_model_len via vLLM endpoint).
-    if (max_context_tokens is None and "openrouter.ai" not in host
-            and "api.openai.com" not in host and not is_ollama):
+    if (
+        max_context_tokens is None
+        and "openrouter.ai" not in host
+        and "api.openai.com" not in host
+        and not is_ollama
+    ):
         max_context_tokens = await _get_model_max_context(host, api_key, model)
         if max_context_tokens:
             _log_to_ui_or_verbose(
@@ -5870,13 +6646,18 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             f"Model context window unknown; assuming "
             f"{DEFAULT_MAX_CONTEXT_TOKENS:,} tokens. Set "
             f"serving.max_context_tokens (or --max-context-tokens) for the "
-            f"real size.", chat_ui, verbose, level="info")
+            f"real size.",
+            chat_ui,
+            verbose,
+            level="info",
+        )
 
     # Both budgets are final here — the window has been asked for, guessed at,
     # or taken from config — so this is the first point the UI can name them.
     if chat_ui:
-        chat_ui.set_token_budgets(max_output_tokens=max_tokens,
-                                  max_context_tokens=max_context_tokens)
+        chat_ui.set_token_budgets(
+            max_output_tokens=max_tokens, max_context_tokens=max_context_tokens
+        )
 
     # ── loop policy ─────────────────────────────────────────────────────────
     #
@@ -5903,46 +6684,46 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # A typo ("fifty") resolves to the same default, so it unbounds rather than
     # falling back to a cap — there is no safe cap to fall back to now.
     MAX_CHAT_ITERATIONS = _as_positive_or_disabled(
-        kwargs.get('max_chat_iterations', -1), default=-1)
-    MAX_REPEATED_TOOL_CALLS = kwargs.get('max_repeated_tool_calls', 30)
-    MAX_API_RETRIES = kwargs.get('max_api_retries', 3)
-    MAX_PLANNING_CONTINUATIONS = kwargs.get('max_planning_continuations', 2)
+        kwargs.get("max_chat_iterations", -1), default=-1
+    )
+    MAX_REPEATED_TOOL_CALLS = kwargs.get("max_repeated_tool_calls", 30)
+    MAX_API_RETRIES = kwargs.get("max_api_retries", 3)
+    MAX_PLANNING_CONTINUATIONS = kwargs.get("max_planning_continuations", 2)
     # Compaction-transcript caps live at module level (MAX_TRANSCRIPT_*); the
     # builder is a module function and the caps are _compact_context params,
     # overridable per call for tests.
     # Max times to push past a content-free acknowledgment before accepting the
     # reply as-is.  Bounded low: a model that keeps acknowledging is stuck, and
     # looping on it burns the context that compaction just freed.
-    MAX_ACK_CONTINUATIONS = kwargs.get('max_ack_continuations', 2)
+    MAX_ACK_CONTINUATIONS = kwargs.get("max_ack_continuations", 2)
     # Max times to break a verbatim repetition loop inside one turn before
     # accepting the trimmed reply.  Bounded low: a model that loops once will
     # loop again, and each attempt costs a full generation.
-    MAX_REPETITION_CONTINUATIONS = kwargs.get('max_repetition_continuations', 2)
+    MAX_REPETITION_CONTINUATIONS = kwargs.get("max_repetition_continuations", 2)
     # Max times to resume a final answer that was cut off by the output token
     # budget (finish_reason=length).  Each resume grants another max_tokens of
     # output, so this bounds a very long answer at ~(N+1)*max_tokens tokens.
-    MAX_FINAL_CONTINUATIONS = kwargs.get('max_final_continuations', 3)
+    MAX_FINAL_CONTINUATIONS = kwargs.get("max_final_continuations", 3)
     # Max *consecutive* resumes that added nothing (empty or byte-identical
     # reply) before the run stops on the stall warning instead of spending the
     # remaining resume budget on copies of text already on screen.  One stall
     # is retried — a hiccup turn must not end the answer mid-sentence — a
     # second in a row is a model that cannot continue from the prefix.
-    MAX_FINAL_STALLS = max(0, _as_int(kwargs.get('max_final_stalls', 1)))
+    MAX_FINAL_STALLS = max(0, _as_int(kwargs.get("max_final_stalls", 1)))
     # Max times to convert a repeated-call bail into a strategy-change prompt
     # instead of ending the run.  Bounded low, like every recovery budget: the
     # first bail is information ("this exact call keeps returning the same
     # thing"), the second is a warning, and a model that re-loops after both
     # has proven the recovery does not work — the run should then end on the
     # guard's own actionable message rather than burn turns restating it.
-    MAX_REPEAT_RECOVERIES = max(0, _as_int(kwargs.get('max_repeat_recoveries', 2)))
+    MAX_REPEAT_RECOVERIES = max(0, _as_int(kwargs.get("max_repeat_recoveries", 2)))
     # Max times to hand the tools back to a model that answered a harness
     # nudge by saying the task is unfinished instead of answering.  Bounded
     # low, like every recovery budget: the first argument is information ("I
     # still need to edit the file"), a model that argues again after being
     # handed its tools back has said its piece, and the reply is then returned
     # as-is rather than loop on the same argument.
-    MAX_NUDGE_DECLINE_RECOVERIES = max(
-        0, _as_int(kwargs.get('max_nudge_decline_recoveries', 1)))
+    MAX_NUDGE_DECLINE_RECOVERIES = max(0, _as_int(kwargs.get("max_nudge_decline_recoveries", 1)))
     # Continuation token budget: thinking models can emit thousands of reasoning tokens
     # before the tool-call JSON, so give them the full max_tokens when think=True.
     # Without thinking, 512 is still enough for any tool-call JSON payload.
@@ -5966,7 +6747,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # returns that report a failure — and a test can construct "twenty turns in,
     # planning budget spent" and assert on the next decision without driving the
     # twenty turns.  Absent, the loop makes its own and behaves as it always did.
-    state: RunState = kwargs.get('run_state') or RunState()
+    state: RunState = kwargs.get("run_state") or RunState()
     # The one field whose opening value the state object cannot know.  A caller
     # that set it deliberately keeps it.
     if state.active_max_tokens is None:
@@ -5984,9 +6765,14 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         """
         _t0 = time.monotonic()
         out = await _compact_context(
-            msgs, ollama_client if is_ollama else client,
-            model, max_tokens, chat_ui, verbose,
-            is_ollama=is_ollama, is_openai=_is_openai_host(host),
+            msgs,
+            ollama_client if is_ollama else client,
+            model,
+            max_tokens,
+            chat_ui,
+            verbose,
+            is_ollama=is_ollama,
+            is_openai=_is_openai_host(host),
             instruction=task_instruction,
             harness_note=COMPACTION_NOTICE if harness.enabled else "",
             prior_summary=state.compaction_summary,
@@ -6009,14 +6795,28 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         return out
 
     fact_checker = _FactChecker(
-        tools=tools, tool_registry=tool_registry, harness=harness,
-        metrics=_m, host=host, model=model, is_ollama=is_ollama,
-        num_ctx=num_ctx, client=client, ollama_client=ollama_client,
-        timeout=timeout, data_path=data_path, session_id=session_id,
-        chat_ui=chat_ui, verbose=verbose, safety_queue=safety_queue,
-        max_tokens=max_tokens, max_repeated_tool_calls=MAX_REPEATED_TOOL_CALLS,
-        task_instruction=task_instruction, verify_answers=verify_answers,
-        verify_background=verify_background, background_verify=background_verify,
+        tools=tools,
+        tool_registry=tool_registry,
+        harness=harness,
+        metrics=_m,
+        host=host,
+        model=model,
+        is_ollama=is_ollama,
+        num_ctx=num_ctx,
+        client=client,
+        ollama_client=ollama_client,
+        timeout=timeout,
+        data_path=data_path,
+        session_id=session_id,
+        chat_ui=chat_ui,
+        verbose=verbose,
+        safety_queue=safety_queue,
+        max_tokens=max_tokens,
+        max_repeated_tool_calls=MAX_REPEATED_TOOL_CALLS,
+        task_instruction=task_instruction,
+        verify_answers=verify_answers,
+        verify_background=verify_background,
+        background_verify=background_verify,
         verify_max_tool_turns=verify_max_tool_turns,
         verify_timeout_s=verify_timeout_s,
         verify_trusted_domains=verify_trusted_domains,
@@ -6029,14 +6829,27 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     _no_think_retries = 0
 
     caller = _ModelCaller(
-        host=host, model=model, is_ollama=is_ollama, num_ctx=num_ctx,
-        client=client, ollama_client=ollama_client, tools=tools,
-        stream=stream, temperature=temperature, top_p=top_p, top_k=top_k,
-        min_p=min_p, presence_penalty=presence_penalty,
-        repetition_penalty=repetition_penalty, max_tokens=max_tokens,
+        host=host,
+        model=model,
+        is_ollama=is_ollama,
+        num_ctx=num_ctx,
+        client=client,
+        ollama_client=ollama_client,
+        tools=tools,
+        stream=stream,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
+        presence_penalty=presence_penalty,
+        repetition_penalty=repetition_penalty,
+        max_tokens=max_tokens,
         max_context_tokens=max_context_tokens,
-        max_api_retries=MAX_API_RETRIES, chat_ui=chat_ui,
-        verbose=verbose, safety_queue=safety_queue, metrics=_m,
+        max_api_retries=MAX_API_RETRIES,
+        chat_ui=chat_ui,
+        verbose=verbose,
+        safety_queue=safety_queue,
+        metrics=_m,
     )
 
     while True:
@@ -6050,7 +6863,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             _log_to_ui_or_verbose(
                 f"Chat loop hit its turn limit ({MAX_CHAT_ITERATIONS} turns), stopping. "
                 f"Raise serving.max_chat_iterations if this task legitimately needs more.",
-                chat_ui, verbose, level="warning")
+                chat_ui,
+                verbose,
+                level="warning",
+            )
             # add_log only fills a panel most runs never show, so on its own the
             # run just stops mid-thought with no stated reason.  Tell the UI as
             # well, so a stop the user is watching for is one they are told about.
@@ -6069,9 +6885,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 return _partial.rstrip() + (
                     f"\n\n⚠ I stopped after {MAX_CHAT_ITERATIONS} steps without finishing — "
                     "the text above is where the work got to, not a completed answer. "
-                    "Raise serving.max_chat_iterations, or break the task into smaller pieces.")
-            return (f"I stopped after {MAX_CHAT_ITERATIONS} steps without finishing 😅. "
-                    "Could you narrow the task, or break it into smaller pieces?")
+                    "Raise serving.max_chat_iterations, or break the task into smaller pieces."
+                )
+            return (
+                f"I stopped after {MAX_CHAT_ITERATIONS} steps without finishing 😅. "
+                "Could you narrow the task, or break it into smaller pieces?"
+            )
 
         # Forced compaction: previous response was truncated (finish_reason=length).
         # Compact unconditionally so the next call fits within the context window.
@@ -6079,7 +6898,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             state.force_compact = False
             _log_to_ui_or_verbose(
                 "Compacting context after truncated response (finish_reason=length)...",
-                chat_ui, verbose, level="warning",
+                chat_ui,
+                verbose,
+                level="warning",
             )
             messages = await _compact(messages)
             state.last_prompt_tokens = 0
@@ -6092,7 +6913,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             if usage_pct >= CONTEXT_COMPACT_THRESHOLD:
                 _log_to_ui_or_verbose(
                     f"Context at {usage_pct:.0%} ({state.last_prompt_tokens:,}/{max_context_tokens:,} tokens). Compacting...",
-                    chat_ui, verbose, level="warning",
+                    chat_ui,
+                    verbose,
+                    level="warning",
                 )
                 messages = await _compact(messages)
                 state.last_prompt_tokens = 0
@@ -6103,10 +6926,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # decisions above: a turn that just compacted has no token count until
         # the next response, and reporting the pre-compaction number would tell
         # the model its context is full moments after it was emptied.
-        harness.observe(prompt_tokens=state.last_prompt_tokens,
-                        max_context_tokens=max_context_tokens,
-                        turns=state.iteration_count,
-                        tools_called=len(state.tool_call_history))
+        harness.observe(
+            prompt_tokens=state.last_prompt_tokens,
+            max_context_tokens=max_context_tokens,
+            turns=state.iteration_count,
+            tools_called=len(state.tool_call_history),
+        )
         if chat_ui:
             # Prose written on a turn that follows tool calls is the answer
             # being written; the UI shows it as such rather than as one more
@@ -6117,8 +6942,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         # deciding which tool to call next.  See think_tool_turns.  The third
         # term is the answer-or-nothing retry below, and it lasts exactly one
         # turn: it is consumed here whether or not it was set.
-        _turn_think = (think and (think_tool_turns or state.iteration_count == 1)
-                       and not _no_think_next)
+        _turn_think = (
+            think and (think_tool_turns or state.iteration_count == 1) and not _no_think_next
+        )
         _no_think_next = False
 
         # Pre-call compaction: state.last_prompt_tokens is from the previous API call and may
@@ -6133,7 +6959,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 _log_to_ui_or_verbose(
                     f"Estimated output budget ({max(_available_est, 0):,} tokens) is below "
                     f"minimum ({_min_useful_output:,}). Compacting context before API call...",
-                    chat_ui, verbose, level="warning",
+                    chat_ui,
+                    verbose,
+                    level="warning",
                 )
                 messages = await _compact(messages)
                 state.last_prompt_tokens = 0
@@ -6165,16 +6993,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             _t_tools = time.monotonic()
             _tool_log: list = []
             should_continue, bail = await _handle_raw_tool_call(
-                _content, tool_registry, timeout, data_path,
-                chat_ui, verbose, messages, state.tool_call_history,
-                MAX_REPEATED_TOOL_CALLS, session_id=session_id,
-                tool_log=_tool_log, harness=harness,
+                _content,
+                tool_registry,
+                timeout,
+                data_path,
+                chat_ui,
+                verbose,
+                messages,
+                state.tool_call_history,
+                MAX_REPEATED_TOOL_CALLS,
+                session_id=session_id,
+                tool_log=_tool_log,
+                harness=harness,
             )
             if should_continue or bail:
                 # A tool ran; its name was parsed out of the content inside the
                 # handler, so record it under the shape it arrived in.
-                _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools,
-                             runs=_tool_log)
+                _m.add_tools(["<raw tool call>"], time.monotonic() - _t_tools, runs=_tool_log)
             if bail:
                 # Same recovery as the structured path below: a bail is a
                 # verdict on the loop, not on the task, and the first one
@@ -6186,10 +7021,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                         f"Repeated tool call loop stopped; recovering "
                         f"{state.repeat_recovery_count}/{MAX_REPEAT_RECOVERIES}"
                         " — asking the model to change strategy.",
-                        chat_ui, verbose, level="warning", notify=True,
+                        chat_ui,
+                        verbose,
+                        level="warning",
+                        notify=True,
                     )
-                    messages.append({"role": "user",
-                                     "content": _REPEAT_RECOVERY_PROMPT})
+                    messages.append({"role": "user", "content": _REPEAT_RECOVERY_PROMPT})
                     continue
                 state.stop_reason = STOP_REPEATED_TOOL_CALL
                 return bail
@@ -6229,23 +7066,28 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     _sent_loop = False
             else:
                 _sent_loop = False
-            if (_repeat_period and state.repetition_continuation_count
-                    < MAX_REPETITION_CONTINUATIONS):
+            if (
+                _repeat_period
+                and state.repetition_continuation_count < MAX_REPETITION_CONTINUATIONS
+            ):
                 state.repetition_continuation_count += 1
-                _trimmed = (_trim_sentence_loop(_partial) if _sent_loop
-                            else _trim_repetition(_partial))
+                _trimmed = (
+                    _trim_sentence_loop(_partial) if _sent_loop else _trim_repetition(_partial)
+                )
                 state.force_compact = False
                 state.active_max_tokens = max_tokens
                 _log_to_ui_or_verbose(
                     f"Model repeated the same text {_repeat_copies} times "
                     f"(continuation {state.repetition_continuation_count}/"
                     f"{MAX_REPETITION_CONTINUATIONS}); asking it to continue.",
-                    chat_ui, verbose, level="info", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="info",
+                    notify=True,
                 )
                 if _trimmed.strip():
                     messages.append({"role": "assistant", "content": _trimmed})
-                messages.append({"role": "user",
-                                 "content": _REPETITION_CONTINUATION_PROMPT})
+                messages.append({"role": "user", "content": _REPETITION_CONTINUATION_PROMPT})
                 continue
             # Judged on the whole answer so far, not on this piece: a resumed
             # turn opens mid-sentence by design, and a continuation that closes
@@ -6257,7 +7099,8 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # every bracket it opened, so the arithmetic catches cuts that
             # _looks_incomplete has no evidence for.
             _swallowed = _output_unaccounted(
-                _completion_tokens, _full_content or _content or "", _full_reasoning)
+                _completion_tokens, _full_content or _content or "", _full_reasoning
+            )
             # The answer as the user would see it with this turn stitched on,
             # repeated text dropped.  Both the "is it still cut off?" question
             # and the "did resuming achieve anything?" one are asked of this.
@@ -6267,21 +7110,23 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # and no unclosed pair there is no other evidence, and without
             # this the empty turn fell through every guard and was handed
             # back as the final answer — the run "completing" with "".
-            _empty_resume = (not _partial.strip()
-                             and bool(state.final_answer_prefix))
+            _empty_resume = not _partial.strip() and bool(state.final_answer_prefix)
             # A stalled resume is evidence of its own: the model was asked to
             # continue from the prefix and came back with nothing new.  That
             # is not an answer finishing — it is the resume failing — and
             # with finish_reason="stop" and no usage it is the only evidence
             # there is.  Without it the stall fell through to the
             # final-answer return and the run ended mid-sentence.
-            _stalled = (bool(state.final_answer_prefix)
-                        and len(_stitched) <= len(state.final_answer_prefix))
-            _cut_short = (_finish_reason == "length"
-                          or _looks_incomplete(_stitched)
-                          or _swallowed
-                          or _empty_resume
-                          or _stalled)
+            _stalled = bool(state.final_answer_prefix) and len(_stitched) <= len(
+                state.final_answer_prefix
+            )
+            _cut_short = (
+                _finish_reason == "length"
+                or _looks_incomplete(_stitched)
+                or _swallowed
+                or _empty_resume
+                or _stalled
+            )
             # Two turns that look truncated but that resuming cannot mend, and
             # that resuming actively makes worse — each pass costs a full
             # generation and adds another copy of text already on screen.
@@ -6298,8 +7143,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 # Progress resets the count: the stall budget is for
                 # consecutive no-ops, not for the lifetime of the run.
                 state.final_stall_count = 0
-            if (_cut_short and not _thinking_only and not _stalled
-                    and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
+            if (
+                _cut_short
+                and not _thinking_only
+                and not _stalled
+                and state.final_continuation_count < MAX_FINAL_CONTINUATIONS
+            ):
                 state.final_continuation_count += 1
                 state.force_compact = False  # don't discard the partial answer
                 # A planning continuation earlier in the run may have capped the
@@ -6314,19 +7163,28 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if _finish_reason == "length":
                     _why = "finish_reason=length"
                 elif _swallowed:
-                    _why = (f"finish_reason={_finish_reason}, {_completion_tokens:,} "
-                            "tokens generated but never received")
+                    _why = (
+                        f"finish_reason={_finish_reason}, {_completion_tokens:,} "
+                        "tokens generated but never received"
+                    )
                 else:
                     _why = f"finish_reason={_finish_reason}, text ends mid-sentence"
                 _log_to_ui_or_verbose(
                     f"Final response truncated ({_why}); resuming "
                     f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
-                    chat_ui, verbose, level="info", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="info",
+                    notify=True,
                 )
                 continue
-            if (_cut_short and not _thinking_only and _stalled
-                    and state.final_stall_count <= MAX_FINAL_STALLS
-                    and state.final_continuation_count < MAX_FINAL_CONTINUATIONS):
+            if (
+                _cut_short
+                and not _thinking_only
+                and _stalled
+                and state.final_stall_count <= MAX_FINAL_STALLS
+                and state.final_continuation_count < MAX_FINAL_CONTINUATIONS
+            ):
                 # The resume came back empty or as a copy of the prefix.  One
                 # retry with the same continuation prompt, still inside the
                 # resume budget: a hiccup turn (a host that dropped the body,
@@ -6343,7 +7201,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"Resume added nothing (stall {state.final_stall_count}/"
                     f"{MAX_FINAL_STALLS}); asking once more "
                     f"({state.final_continuation_count}/{MAX_FINAL_CONTINUATIONS})...",
-                    chat_ui, verbose, level="info", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="info",
+                    notify=True,
                 )
                 continue
             if _thinking_only and _no_think_retries < 1:
@@ -6364,24 +7225,31 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 state.active_max_tokens = max_tokens
                 _reasoning_note = (_full_reasoning or "").strip()
                 if _reasoning_note:
-                    messages.append({"role": "assistant",
-                                     "content": _reasoning_note})
+                    messages.append({"role": "assistant", "content": _reasoning_note})
                 # Tools-aware retry: a run that has tools is mid-task, and an
                 # answer-only prompt forbids exactly the move its thinking was
                 # leading to.  The act prompt leaves both doors open — call the
                 # next tool, or answer if the work is done.  Without tools the
                 # "call a tool" half is vacuous and the plain retry is right.
-                messages.append({"role": "user",
-                                 "content": (_NO_THINK_ACT_PROMPT if tools
-                                             else _NO_THINK_RETRY_PROMPT)})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (_NO_THINK_ACT_PROMPT if tools else _NO_THINK_RETRY_PROMPT),
+                    }
+                )
                 _log_to_ui_or_verbose(
-                    ("The model reasoned but never wrote an answer; asking "
-                     "once more with thinking switched off — it may act or "
-                     "answer..."
-                     if tools else
-                     "The model reasoned but never wrote an answer; asking once "
-                     "more with thinking switched off..."),
-                    chat_ui, verbose, level="info", notify=True,
+                    (
+                        "The model reasoned but never wrote an answer; asking "
+                        "once more with thinking switched off — it may act or "
+                        "answer..."
+                        if tools
+                        else "The model reasoned but never wrote an answer; asking once "
+                        "more with thinking switched off..."
+                    ),
+                    chat_ui,
+                    verbose,
+                    level="info",
+                    notify=True,
                 )
                 continue
             if _cut_short:
@@ -6393,19 +7261,26 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 if state.final_continuation_count >= MAX_FINAL_CONTINUATIONS:
                     _stop_why = (
                         f"Answer is still incomplete after {MAX_FINAL_CONTINUATIONS} "
-                        "resume attempts — it may stop mid-sentence.")
+                        "resume attempts — it may stop mid-sentence."
+                    )
                 elif _thinking_only:
                     _stop_why = (
                         "The model spent its whole output budget thinking and never "
                         "wrote an answer; its thinking is below. Raise max_tokens, or "
-                        "turn thinking off for this task.")
+                        "turn thinking off for this task."
+                    )
                 else:
                     _stop_why = (
                         "The resumed reply added nothing the answer did not already "
                         "have, so the run stopped rather than spend more attempts "
-                        "repeating it — the answer may stop mid-sentence.")
+                        "repeating it — the answer may stop mid-sentence."
+                    )
                 _log_to_ui_or_verbose(
-                    _stop_why, chat_ui, verbose, level="warning", notify=True,
+                    _stop_why,
+                    chat_ui,
+                    verbose,
+                    level="warning",
+                    notify=True,
                 )
 
             # Detect planning responses: the model announced intent ("Let me create X")
@@ -6413,10 +7288,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # continuation prompt and cap tokens to limit time waste on stuck models.
             # Skip when finish_reason=length: a token-truncated response is not a plan —
             # "Let me" appearing mid-response would cause a false positive continuation loop.
-            if (tools and tool_registry
-                    and _finish_reason != "length"
-                    and _is_planning_response(_content)
-                    and state.planning_continuation_count < MAX_PLANNING_CONTINUATIONS):
+            if (
+                tools
+                and tool_registry
+                and _finish_reason != "length"
+                and _is_planning_response(_content)
+                and state.planning_continuation_count < MAX_PLANNING_CONTINUATIONS
+            ):
                 state.planning_continuation_count += 1
                 state.force_tool_call = True
                 state.active_max_tokens = CONTINUATION_MAX_TOKENS
@@ -6424,7 +7302,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"Model announced a plan without calling tools (continuation "
                     f"{state.planning_continuation_count}/{MAX_PLANNING_CONTINUATIONS}, "
                     f"capping tokens={CONTINUATION_MAX_TOKENS}).",
-                    chat_ui, verbose, level="info",
+                    chat_ui,
+                    verbose,
+                    level="info",
                 )
                 continuation_prompt = _build_planning_continuation_prompt(
                     tool_registry, state.planning_continuation_count, task_instruction
@@ -6434,15 +7314,20 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 continue
 
             # Continuations exhausted — model cannot call tools
-            if (tools and tool_registry
-                    and _finish_reason != "length"
-                    and _is_planning_response(_content)
-                    and state.planning_continuation_count >= MAX_PLANNING_CONTINUATIONS):
+            if (
+                tools
+                and tool_registry
+                and _finish_reason != "length"
+                and _is_planning_response(_content)
+                and state.planning_continuation_count >= MAX_PLANNING_CONTINUATIONS
+            ):
                 _log_to_ui_or_verbose(
                     f"Model ({model}) failed to call tools after "
                     f"{MAX_PLANNING_CONTINUATIONS} continuation attempts. "
                     "It may not support agentic tool use.",
-                    chat_ui, verbose, level="warning",
+                    chat_ui,
+                    verbose,
+                    level="warning",
                 )
                 state.stop_reason = STOP_PLANNING_EXHAUSTED
                 return (
@@ -6464,20 +7349,31 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # wording in advance: the reply carries nothing the prompt did not
             # already state.  data_path goes in because the session directory is
             # the metadata most often read back.
-            _is_empty = (not _is_ack and not _is_meta
-                         and _is_answering_a_nudge(messages)
-                         and _is_content_free_response(_content, data_path))
-            if (_finish_reason != "length"
-                    and (_is_ack or _is_meta or _is_empty)
-                    and state.ack_continuation_count < MAX_ACK_CONTINUATIONS):
+            _is_empty = (
+                not _is_ack
+                and not _is_meta
+                and _is_answering_a_nudge(messages)
+                and _is_content_free_response(_content, data_path)
+            )
+            if (
+                _finish_reason != "length"
+                and (_is_ack or _is_meta or _is_empty)
+                and state.ack_continuation_count < MAX_ACK_CONTINUATIONS
+            ):
                 state.ack_continuation_count += 1
-                _what = ("acknowledged" if _is_ack
-                         else "commented on the prompt" if _is_meta
-                         else "replied with nothing the prompt did not supply")
+                _what = (
+                    "acknowledged"
+                    if _is_ack
+                    else "commented on the prompt"
+                    if _is_meta
+                    else "replied with nothing the prompt did not supply"
+                )
                 _log_to_ui_or_verbose(
                     f"Model {_what} instead of resuming the task (continuation "
                     f"{state.ack_continuation_count}/{MAX_ACK_CONTINUATIONS}).",
-                    chat_ui, verbose, level="info",
+                    chat_ui,
+                    verbose,
+                    level="info",
                 )
                 messages.append({"role": "assistant", "content": _content})
                 messages.append({"role": "user", "content": _ACK_CONTINUATION_PROMPT})
@@ -6500,9 +7396,11 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
             # a second time after being handed its tools back has said its
             # piece, and the reply is then returned as-is (it is at least an
             # honest account of where the work stands).
-            if (_is_answering_a_nudge(messages)
-                    and _signals_pending_work(_final)
-                    and state.nudge_decline_count < MAX_NUDGE_DECLINE_RECOVERIES):
+            if (
+                _is_answering_a_nudge(messages)
+                and _signals_pending_work(_final)
+                and state.nudge_decline_count < MAX_NUDGE_DECLINE_RECOVERIES
+            ):
                 state.nudge_decline_count += 1
                 state.force_compact = False
                 state.active_max_tokens = max_tokens
@@ -6511,11 +7409,13 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"answering; handing the tools back "
                     f"({state.nudge_decline_count}/"
                     f"{MAX_NUDGE_DECLINE_RECOVERIES})...",
-                    chat_ui, verbose, level="info", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="info",
+                    notify=True,
                 )
                 messages.append({"role": "assistant", "content": _content})
-                messages.append({"role": "user",
-                                 "content": _CONTINUATION_AFTER_NUDGE_PROMPT})
+                messages.append({"role": "user", "content": _CONTINUATION_AFTER_NUDGE_PROMPT})
                 continue
 
             # The loop budget is spent and the model is still looping.  Hand
@@ -6537,7 +7437,10 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     "The model kept repeating the same text after "
                     f"{MAX_REPETITION_CONTINUATIONS} attempts; returning the "
                     "reply with the repetition trimmed.",
-                    chat_ui, verbose, level="warning", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="warning",
+                    notify=True,
                 )
             else:
                 state.stop_reason = STOP_ANSWERED
@@ -6548,20 +7451,26 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 # incomplete, and the prefix is answer text the user already
                 # watched stream past.  The warning travels with it.
                 _final = state.final_answer_prefix
-                state.stop_reason = (STOP_REPETITION_LOOP
-                                     if state.stop_reason == STOP_ANSWERED
-                                     else state.stop_reason)
+                state.stop_reason = (
+                    STOP_REPETITION_LOOP
+                    if state.stop_reason == STOP_ANSWERED
+                    else state.stop_reason
+                )
                 _log_to_ui_or_verbose(
                     "The final turn returned nothing; returning the answer "
                     "as written so far — it may stop mid-sentence.",
-                    chat_ui, verbose, level="warning", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="warning",
+                    notify=True,
                 )
             # The one exit that hands back an answer about the world.  Every
             # other return above is the loop reporting on itself — a limit hit,
             # a model that cannot call tools — and there is nothing in those to
             # check against evidence.
             return await fact_checker.fact_check(
-                _recover_dropped_answer(_final, state.prose_before_tools), messages)
+                _recover_dropped_answer(_final, state.prose_before_tools), messages
+            )
 
         # Keep the answer text written ahead of this tool call.  A model that
         # answers and then calls one last tool often signs off with "Done." —
@@ -6587,7 +7496,9 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                 "Tool call does nothing (no-op shell command); keeping the "
                 f"planning budget at {state.planning_continuation_count}/"
                 f"{MAX_PLANNING_CONTINUATIONS}.",
-                chat_ui, verbose, level="info",
+                chat_ui,
+                verbose,
+                level="info",
             )
         else:
             # Only a call that did something counts as progress.  The ack budget
@@ -6600,14 +7511,24 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
         _t_tools = time.monotonic()
         _tool_log = []
         bail = await _handle_structured_tool_calls(
-            tool_calls, _message_for_history, tool_registry,
-            timeout, data_path, chat_ui, verbose,
-            messages, state.tool_call_history, MAX_REPEATED_TOOL_CALLS,
-            safety_queue, session_id=session_id, tool_log=_tool_log,
+            tool_calls,
+            _message_for_history,
+            tool_registry,
+            timeout,
+            data_path,
+            chat_ui,
+            verbose,
+            messages,
+            state.tool_call_history,
+            MAX_REPEATED_TOOL_CALLS,
+            safety_queue,
+            session_id=session_id,
+            tool_log=_tool_log,
             harness=harness,
         )
-        _m.add_tools([tc.function.name for tc in tool_calls],
-                     time.monotonic() - _t_tools, runs=_tool_log)
+        _m.add_tools(
+            [tc.function.name for tc in tool_calls], time.monotonic() - _t_tools, runs=_tool_log
+        )
         if bail is _SAFETY_ABORT:
             state.stop_reason = STOP_SAFETY_ABORT
             return None
@@ -6628,10 +7549,12 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
                     f"recovering {state.repeat_recovery_count}/"
                     f"{MAX_REPEAT_RECOVERIES} — asking the model to change "
                     "strategy.",
-                    chat_ui, verbose, level="warning", notify=True,
+                    chat_ui,
+                    verbose,
+                    level="warning",
+                    notify=True,
                 )
-                messages.append({"role": "user",
-                                 "content": _REPEAT_RECOVERY_PROMPT})
+                messages.append({"role": "user", "content": _REPEAT_RECOVERY_PROMPT})
                 continue
             state.stop_reason = STOP_REPEATED_TOOL_CALL
             return bail

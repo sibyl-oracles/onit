@@ -103,10 +103,13 @@ class _NoCacheStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 
+
 # Default web UI branding. When the UI is served through a real domain name
 # the domain replaces the brand; a custom web_title still wins for the title.
 DEFAULT_TITLE = "OnIt Chat"
 DEFAULT_BRAND = "OnIt"
+
+
 def _is_local_host(host: str) -> bool:
     """True for hostnames that should keep the default OnIt branding:
     localhost and bare IP addresses (an IP is not a brand)."""
@@ -118,12 +121,13 @@ def _is_local_host(host: str) -> bool:
     except ValueError:
         return False
 
+
 # GA4 measurement IDs look like G-XXXXXXXXXX. The ID is echoed to the browser
 # and interpolated into a script URL, so anything else is dropped.
-_GA_ID_RE = re.compile(r'^G-[A-Z0-9]{4,16}$', re.IGNORECASE)
+_GA_ID_RE = re.compile(r"^G-[A-Z0-9]{4,16}$", re.IGNORECASE)
 
 # Pattern for validating session IDs (UUIDs only)
-_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 # Sentinel pushed into the event queue when a chat turn is finished
 _END = ("__end__", None)
@@ -151,22 +155,57 @@ except ValueError:
 # document that can carry script, and these files are written by tools, so it
 # stays a download rather than something the browser renders on our origin.
 _PREVIEW_IMAGE_TYPES = {
-    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
 }
 
 # Text files the UI shows in a scrollable inset beside the download, mapped to
 # the highlight.js language name. Data and binary formats stay downloads: a
 # preview of a spreadsheet or a PDF is worse than opening the real thing.
 _PREVIEW_CODE_LANGS = {
-    ".py": "python", ".js": "javascript", ".mjs": "javascript", ".ts": "typescript",
-    ".jsx": "javascript", ".tsx": "typescript", ".sh": "bash", ".bash": "bash",
-    ".zsh": "bash", ".rb": "ruby", ".go": "go", ".rs": "rust", ".java": "java",
-    ".kt": "kotlin", ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp",
-    ".hpp": "cpp", ".cs": "csharp", ".php": "php", ".swift": "swift", ".r": "r",
-    ".jl": "julia", ".lua": "lua", ".pl": "perl", ".sql": "sql", ".css": "css",
-    ".scss": "scss", ".html": "xml", ".htm": "xml", ".xml": "xml", ".json": "json",
-    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".ini": "ini", ".cfg": "ini",
-    ".md": "markdown", ".txt": "plaintext",
+    ".py": "python",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".ts": "typescript",
+    ".jsx": "javascript",
+    ".tsx": "typescript",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".rb": "ruby",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".php": "php",
+    ".swift": "swift",
+    ".r": "r",
+    ".jl": "julia",
+    ".lua": "lua",
+    ".pl": "perl",
+    ".sql": "sql",
+    ".css": "css",
+    ".scss": "scss",
+    ".html": "xml",
+    ".htm": "xml",
+    ".xml": "xml",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".md": "markdown",
+    ".txt": "plaintext",
 }
 
 # Generated pages the UI runs in a sandboxed frame, so a small web app the
@@ -182,19 +221,21 @@ _PREVIEW_WEB_EXTS = {".html", ".htm"}
 # locking those down only produced blank pages. Restricting them would not add
 # much anyway: a page that can render its own markup can already put a
 # convincing form on screen, external script or not.
-_PREVIEW_CSP = "; ".join([
-    "sandbox allow-scripts allow-modals allow-forms allow-popups "
-    "allow-pointer-lock allow-downloads",
-    "default-src 'self' data: blob: https: http:",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http:",
-    "style-src 'self' 'unsafe-inline' data: https: http:",
-    "img-src 'self' data: blob: https: http:",
-    "font-src 'self' data: https: http:",
-    "media-src 'self' data: blob: https: http:",
-    "connect-src 'self' data: blob: https: http:",
-    "object-src 'none'",          # no plugins
-    "frame-ancestors 'self'",     # only this app may frame it
-])
+_PREVIEW_CSP = "; ".join(
+    [
+        "sandbox allow-scripts allow-modals allow-forms allow-popups "
+        "allow-pointer-lock allow-downloads",
+        "default-src 'self' data: blob: https: http:",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http:",
+        "style-src 'self' 'unsafe-inline' data: https: http:",
+        "img-src 'self' data: blob: https: http:",
+        "font-src 'self' data: https: http:",
+        "media-src 'self' data: blob: https: http:",
+        "connect-src 'self' data: blob: https: http:",
+        "object-src 'none'",  # no plugins
+        "frame-ancestors 'self'",  # only this app may frame it
+    ]
+)
 
 # Injected at the top of a previewed page, and only there — the file on disk
 # and the source view keep the agent's exact bytes.
@@ -256,9 +297,9 @@ _PREVIEW_SHIM = """<script>
 
 # Where the shim goes: inside <head> when there is one, else straight after
 # <html> or the doctype, so it runs before the page's own scripts.
-_HEAD_OPEN_RE = re.compile(r'<head\b[^>]*>', re.IGNORECASE)
-_HTML_OPEN_RE = re.compile(r'<html\b[^>]*>', re.IGNORECASE)
-_DOCTYPE_RE = re.compile(r'<!doctype[^>]*>', re.IGNORECASE)
+_HEAD_OPEN_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
+_HTML_OPEN_RE = re.compile(r"<html\b[^>]*>", re.IGNORECASE)
+_DOCTYPE_RE = re.compile(r"<!doctype[^>]*>", re.IGNORECASE)
 
 # Pages past this size are served untouched rather than read into memory.
 _PREVIEW_INJECT_MAX = 8 * 1024 * 1024
@@ -286,10 +327,10 @@ _STATIC_SECURITY_HEADERS = {
 # Agents sometimes hallucinate URLs (e.g. https://ge.php, https://manual).
 # The UI keeps external links non-clickable until POST /api/verify_links
 # confirms they resolve; these limits bound that endpoint.
-_VERIFY_MAX_URLS = 20          # per request
-_VERIFY_TIMEOUT = 5            # seconds per probe
-_VERIFY_TTL = 600              # seconds a verdict stays cached
-_VERIFY_CACHE_MAX = 512        # cached verdicts kept in memory
+_VERIFY_MAX_URLS = 20  # per request
+_VERIFY_TIMEOUT = 5  # seconds per probe
+_VERIFY_TTL = 600  # seconds a verdict stays cached
+_VERIFY_CACHE_MAX = 512  # cached verdicts kept in memory
 
 # Hosts the verifier must never probe (loopback, link-local, RFC-1918) —
 # the model's output is untrusted, so don't let it steer requests inward.
@@ -310,10 +351,8 @@ from src.mcp.servers.tasks.shared import (
 # document/file reads), an uploaded file, or the user's own message. Anything
 # the model produced without that backing renders struck through, like a
 # hallucinated URL.
-_EMAIL_RE = re.compile(
-    r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}'
-)
-_EMAIL_SOURCE_MAX = 2000       # addresses remembered per session
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+_EMAIL_SOURCE_MAX = 2000  # addresses remembered per session
 _EMAIL_SCAN_MAX_BYTES = 2 << 20  # per-file cap when scanning uploads
 
 
@@ -336,9 +375,15 @@ def _email_of(mailto_url: str) -> str:
     return urllib.parse.unquote(rest).strip().lower()
 
 
-def _timing_summary(metrics: dict, elapsed: float, *, session_name: str = "",
-                    model_name: str = "", provider_name: str = "",
-                    data_path: str = "") -> dict:
+def _timing_summary(
+    metrics: dict,
+    elapsed: float,
+    *,
+    session_name: str = "",
+    model_name: str = "",
+    provider_name: str = "",
+    data_path: str = "",
+) -> dict:
     """Where the wall clock went, small enough to ride along on ``done``.
 
     The per-turn detail stays in the log: this is the shape a client can show
@@ -347,8 +392,9 @@ def _timing_summary(metrics: dict, elapsed: float, *, session_name: str = "",
     """
     if not metrics:
         return {}
-    accounted = (metrics.get("model_s", 0.0) + metrics.get("tool_s", 0.0)
-                 + metrics.get("instruction_s", 0.0))
+    accounted = (
+        metrics.get("model_s", 0.0) + metrics.get("tool_s", 0.0) + metrics.get("instruction_s", 0.0)
+    )
     try:
         from src import __version__ as _ONIT_VERSION
     except Exception:  # package metadata unavailable (e.g. standalone import)
@@ -369,9 +415,14 @@ def _timing_summary(metrics: dict, elapsed: float, *, session_name: str = "",
         # Pre-rendered so every client shows the same line the terminal does,
         # instead of each one reformatting the two counts its own way.
         "token_stats": format_token_footer(
-            metrics, session=session_name, model=model_name,
+            metrics,
+            session=session_name,
+            model=model_name,
             provider=provider_name,
-            data_path=data_path, version=_ONIT_VERSION, elapsed=elapsed),
+            data_path=data_path,
+            version=_ONIT_VERSION,
+            elapsed=elapsed,
+        ),
     }
 
 
@@ -386,7 +437,7 @@ def _inject_preview_shim(html: str) -> str:
     for pattern in (_HEAD_OPEN_RE, _HTML_OPEN_RE, _DOCTYPE_RE):
         match = pattern.search(html)
         if match:
-            return html[:match.end()] + _PREVIEW_SHIM + html[match.end():]
+            return html[: match.end()] + _PREVIEW_SHIM + html[match.end() :]
     return _PREVIEW_SHIM + html
 
 
@@ -415,7 +466,7 @@ def _code_preview(path: str) -> Optional[dict]:
     if not text.strip():
         return None
     if truncated:
-        text = text[:text.rfind("\n") + 1] or text
+        text = text[: text.rfind("\n") + 1] or text
     return {"language": lang, "text": text, "truncated": truncated}
 
 
@@ -473,6 +524,7 @@ def _remove_session_zip(data_path: str) -> None:
 @dataclass
 class ApiSession:
     """Per-browser session state for the web UI."""
+
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_path: str = ""
     data_path: str = ""
@@ -527,6 +579,7 @@ class WebApiUI:
         # Imported here, not at module scope: the bridge pulls in aiohttp, and
         # a deployment with no voice service should not need it installed.
         from .voice import VoiceConfig
+
         self.voice_config = VoiceConfig.from_config({"voice": voice or {}})
         # Running a generated page — even sandboxed — is a capability an
         # operator may not want on a shared deployment: web_html_preview: false
@@ -547,7 +600,7 @@ class WebApiUI:
         self.google_client_secret = google_client_secret
 
         # Nullify placeholder credentials so auth is cleanly disabled
-        for attr in ('google_client_id', 'google_client_secret'):
+        for attr in ("google_client_id", "google_client_secret"):
             val = getattr(self, attr, None)
             if val and "YOUR_" in str(val).upper():
                 setattr(self, attr, None)
@@ -686,7 +739,8 @@ class WebApiUI:
         # Drop idle in-memory sessions older than 24h (files stay on disk)
         now = datetime.now()
         expired = [
-            sid for sid, s in self._web_sessions.items()
+            sid
+            for sid, s in self._web_sessions.items()
             if (now - s.created) > timedelta(hours=24) and not s.processing
         ]
         for sid in expired:
@@ -719,11 +773,13 @@ class WebApiUI:
         message: str,
         level: Literal["info", "warning", "error", "debug"] = "info",
     ) -> None:
-        self.execution_logs.append({
-            "message": message,
-            "level": level,
-            "timestamp": datetime.now().strftime("%I:%M %p %d %b"),
-        })
+        self.execution_logs.append(
+            {
+                "message": message,
+                "level": level,
+                "timestamp": datetime.now().strftime("%I:%M %p %d %b"),
+            }
+        )
 
     def tool_log(self, name: str, data, level: str = "info") -> None:
         """Forward real-time log messages from MCP tools (e.g. sandbox output)
@@ -748,7 +804,9 @@ class WebApiUI:
     # File-path extraction (shared with history loading)
     # ------------------------------------------------------------------
 
-    def _extract_file_paths(self, text: str, data_path: str | None = None, session_id: str | None = None) -> tuple[str, list[str]]:
+    def _extract_file_paths(
+        self, text: str, data_path: str | None = None, session_id: str | None = None
+    ) -> tuple[str, list[str]]:
         """Extract file paths from text; replace with safe download links.
 
         Handles three cases:
@@ -761,7 +819,7 @@ class WebApiUI:
         cleaned = text
 
         # 1. Match absolute paths under data_path
-        local_pattern = re.escape(effective_data_path) + r'/[\w\-\.]+(?:\.\w+)'
+        local_pattern = re.escape(effective_data_path) + r"/[\w\-\.]+(?:\.\w+)"
         for match in re.findall(local_pattern, cleaned):
             fname = os.path.basename(match)
             fpath = os.path.join(effective_data_path, fname)
@@ -771,17 +829,17 @@ class WebApiUI:
         cleaned = re.sub(local_pattern, lambda m: os.path.basename(m.group(0)), cleaned)
 
         # 2. Match http(s) URLs pointing to /uploads/<filename>
-        url_pattern = r'https?://[^/\s]+/uploads/([\w\-\.]+(?:\.\w+))'
+        url_pattern = r"https?://[^/\s]+/uploads/([\w\-\.]+(?:\.\w+))"
         for match in re.finditer(url_pattern, cleaned):
             fname = match.group(1)
             fpath = os.path.join(effective_data_path, fname)
             if fpath not in found_files:
                 found_files.append(fpath)
         # Replace full URLs with just the filename
-        cleaned = re.sub(url_pattern, r'\1', cleaned)
+        cleaned = re.sub(url_pattern, r"\1", cleaned)
 
         # Strip any other absolute file paths, keeping only the basename
-        cleaned = re.sub(r'(?<![:\w/])/(?:[\w\.\-]+/)+(?=[\w\.\-]+)', '', cleaned)
+        cleaned = re.sub(r"(?<![:\w/])/(?:[\w\.\-]+/)+(?=[\w\.\-]+)", "", cleaned)
 
         upload_prefix = f"/uploads/{session_id}" if session_id else "/uploads"
 
@@ -802,7 +860,7 @@ class WebApiUI:
                 found_files.append(fpath)
             return f"{m.group(1)}{upload_prefix}/{urllib.parse.quote(fname)}{m.group(3)}"
 
-        cleaned = re.sub(r'(!?\[[^\]\n]*\]\()([\w\-.]+\.\w+)(\))', _retarget, cleaned)
+        cleaned = re.sub(r"(!?\[[^\]\n]*\]\()([\w\-.]+\.\w+)(\))", _retarget, cleaned)
 
         # 3. Check for bare filenames that exist in data_path
         if os.path.isdir(effective_data_path):
@@ -817,8 +875,8 @@ class WebApiUI:
         for fpath in found_files:
             fname = os.path.basename(fpath)
             if fname in linked:
-                continue        # already carries its own markdown link
-            cleaned = cleaned.replace(fname, f'[{fname}]({upload_prefix}/{fname})', 1)
+                continue  # already carries its own markdown link
+            cleaned = cleaned.replace(fname, f"[{fname}]({upload_prefix}/{fname})", 1)
 
         return cleaned, found_files
 
@@ -844,12 +902,12 @@ class WebApiUI:
                     info["preview"] = preview
                     # A generated page also runs, in a sandboxed frame — the
                     # source stays available underneath it.
-                    if (self.html_preview
-                            and os.path.splitext(fname)[1].lower() in _PREVIEW_WEB_EXTS):
+                    if (
+                        self.html_preview
+                        and os.path.splitext(fname)[1].lower() in _PREVIEW_WEB_EXTS
+                    ):
                         info["kind"] = "web"
-                        info["preview_url"] = (
-                            f"/preview/{session_id}/{urllib.parse.quote(fname)}"
-                        )
+                        info["preview_url"] = f"/preview/{session_id}/{urllib.parse.quote(fname)}"
             infos.append(info)
         return infos
 
@@ -863,8 +921,9 @@ class WebApiUI:
         # person pressed rather than an empty pair of buttons.
         ratings = {}
         try:
-            for record in _read_trajectory(session.session_id,
-                                           getattr(self._onit, "config_data", None)):
+            for record in _read_trajectory(
+                session.session_id, getattr(self._onit, "config_data", None)
+            ):
                 verdict = (record.get("signals") or {}).get("user_rating")
                 if verdict:
                     ratings[record.get("turn")] = verdict
@@ -885,8 +944,8 @@ class WebApiUI:
                         continue
                     # Replace raw absolute file paths with friendly basenames
                     task_display = re.sub(
-                        r'Relevant files:\s*/[^\s]+/([^\s/]+)',
-                        lambda m: f'📎 {m.group(1)}',
+                        r"Relevant files:\s*/[^\s]+/([^\s/]+)",
+                        lambda m: f"📎 {m.group(1)}",
                         entry["task"],
                     )
                     messages.append({"role": "user", "content": task_display})
@@ -898,13 +957,15 @@ class WebApiUI:
                     # The turn number the trajectory store uses: the answer's
                     # position in this file, counted from one.
                     turn += 1
-                    messages.append({
-                        "role": "assistant",
-                        "content": display,
-                        "files": self._file_infos(file_paths, session.session_id),
-                        "turn": turn,
-                        "rating": ratings.get(turn),
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": display,
+                            "files": self._file_infos(file_paths, session.session_id),
+                            "turn": turn,
+                            "rating": ratings.get(turn),
+                        }
+                    )
         except Exception:
             pass
         return messages
@@ -917,6 +978,7 @@ class WebApiUI:
         """Network reachability check: HEAD first, GET fallback (some
         servers reject HEAD). Any 2xx/3xx final status counts as alive."""
         import requests
+
         # Re-check after DNS resolution: a public-looking host that resolves to
         # a private/reserved address (cloud metadata, intranet) must not be
         # probed. The structural screen only catches literal private hosts.
@@ -925,12 +987,13 @@ class WebApiUI:
             return False
         headers = {"User-Agent": "Mozilla/5.0 (compatible; OnIt-LinkCheck)"}
         try:
-            resp = requests.head(url, timeout=_VERIFY_TIMEOUT,
-                                 allow_redirects=True, headers=headers)
+            resp = requests.head(
+                url, timeout=_VERIFY_TIMEOUT, allow_redirects=True, headers=headers
+            )
             if resp.status_code >= 400:
-                resp = requests.get(url, timeout=_VERIFY_TIMEOUT,
-                                    allow_redirects=True, stream=True,
-                                    headers=headers)
+                resp = requests.get(
+                    url, timeout=_VERIFY_TIMEOUT, allow_redirects=True, stream=True, headers=headers
+                )
                 resp.close()
             return resp.status_code < 400
         except requests.RequestException:
@@ -980,7 +1043,7 @@ class WebApiUI:
             return
         if len(session.sourced_emails) >= _EMAIL_SOURCE_MAX:
             return
-        session.sourced_emails |= set(list(new)[:_EMAIL_SOURCE_MAX - len(session.sourced_emails)])
+        session.sourced_emails |= set(list(new)[: _EMAIL_SOURCE_MAX - len(session.sourced_emails)])
         self._save_sourced_emails(session)
 
     def _scan_upload_for_emails(self, session: ApiSession, content: bytes) -> None:
@@ -1017,8 +1080,7 @@ class WebApiUI:
             # Drop expired verdicts; if none expired, drop the oldest half
             live = {u: v for u, v in self._link_cache.items() if v[1] > now}
             if len(live) >= _VERIFY_CACHE_MAX:
-                live = dict(sorted(live.items(), key=lambda kv: kv[1][1])
-                            [len(live) // 2:])
+                live = dict(sorted(live.items(), key=lambda kv: kv[1][1])[len(live) // 2 :])
             self._link_cache = live
         self._link_cache[url] = (ok, now + _VERIFY_TTL)
         return ok
@@ -1030,6 +1092,7 @@ class WebApiUI:
     async def _run_task(self, session: ApiSession, task: str, events: queue.Queue) -> None:
         """Run process_task on the OnIt loop, forwarding events to the SSE queue."""
         try:
+
             def _on_token(token, _full_content):
                 if token:
                     events.put_nowait(("token", {"delta": token}))
@@ -1077,35 +1140,43 @@ class WebApiUI:
                 loop = asyncio.get_running_loop()
                 future = loop.create_future()
                 session.pending_approvals[approval_id] = future
-                events.put_nowait(("approval", {
-                    "approval_id": approval_id,
-                    "command": request.get("command", ""),
-                    "reason": request.get("reason", ""),
-                    "subjects": request.get("subjects", []),
-                    "expires_in": request.get("expires_in", APPROVAL_TIMEOUT),
-                }))
+                events.put_nowait(
+                    (
+                        "approval",
+                        {
+                            "approval_id": approval_id,
+                            "command": request.get("command", ""),
+                            "reason": request.get("reason", ""),
+                            "subjects": request.get("subjects", []),
+                            "expires_in": request.get("expires_in", APPROVAL_TIMEOUT),
+                        },
+                    )
+                )
                 try:
-                    return await asyncio.wait_for(future,
-                                                  timeout=APPROVAL_TIMEOUT)
+                    return await asyncio.wait_for(future, timeout=APPROVAL_TIMEOUT)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     return "deny"
                 finally:
                     session.pending_approvals.pop(approval_id, None)
-                    events.put_nowait(("approval_closed",
-                                       {"approval_id": approval_id}))
+                    events.put_nowait(("approval_closed", {"approval_id": approval_id}))
 
             def _on_correction(answer, note):
                 # Arrives after `done` — the answer is already on screen and
                 # the composer is already unlocked.  The stream is still open
                 # for exactly this, and closes as soon as it has been sent.
                 display, paths = self._extract_file_paths(
-                    answer, data_path=session.data_path,
-                    session_id=session.session_id)
-                events.put_nowait(("correction", {
-                    "content": display,
-                    "note": note,
-                    "files": self._file_infos(paths, session.session_id),
-                }))
+                    answer, data_path=session.data_path, session_id=session.session_id
+                )
+                events.put_nowait(
+                    (
+                        "correction",
+                        {
+                            "content": display,
+                            "note": note,
+                            "files": self._file_infos(paths, session.session_id),
+                        },
+                    )
+                )
                 self._close_stream(session, events)
 
             # The user's own message counts too — an address they typed is
@@ -1138,40 +1209,50 @@ class WebApiUI:
             # the server log, and to the drawer where anyone watching a slow
             # answer is already looking.
             _summary = summarize_metrics(metrics)
-            logger.info("session %s answered in %.1fs — %s",
-                        session.session_id, elapsed, _summary)
-            logger.debug("session %s per-turn: %s",
-                         session.session_id, metrics.get("turns"))
+            logger.info("session %s answered in %.1fs — %s", session.session_id, elapsed, _summary)
+            logger.debug("session %s per-turn: %s", session.session_id, metrics.get("turns"))
             self.add_log(f"Answered in {elapsed:.1f}s — {_summary}")
 
             if not response:
-                events.put_nowait(("error", {
-                    "message": "I'm sorry, I couldn't process your request. Please try again."
-                }))
+                events.put_nowait(
+                    (
+                        "error",
+                        {
+                            "message": "I'm sorry, I couldn't process your request. Please try again."
+                        },
+                    )
+                )
                 return
 
             display, file_paths = self._extract_file_paths(
                 response, data_path=session.data_path, session_id=session.session_id
             )
-            events.put_nowait(("done", {
-                "content": display,
-                "files": self._file_infos(file_paths, session.session_id),
-                "elapsed": round(elapsed, 2),
-                "tok_s": round(tok_s, 1),
-                "timing": _timing_summary(
-                    metrics, elapsed,
-                    session_name=session_label(
-                        session.session_id, self._sessions_dir()),
-                    model_name=stats.get("model_name", ""),
-                    provider_name=stats.get("provider_name", ""),
-                    data_path=session.data_path),
-                # Which turn a rating on this answer refers to. The agent has
-                # already appended to the session file by now, so its line
-                # count is this answer's number.
-                "turn": _session_turn_count(session.session_path),
-                "rating_enabled": _recording_enabled(
-                    getattr(self._onit, "config_data", None)),
-            }))
+            events.put_nowait(
+                (
+                    "done",
+                    {
+                        "content": display,
+                        "files": self._file_infos(file_paths, session.session_id),
+                        "elapsed": round(elapsed, 2),
+                        "tok_s": round(tok_s, 1),
+                        "timing": _timing_summary(
+                            metrics,
+                            elapsed,
+                            session_name=session_label(session.session_id, self._sessions_dir()),
+                            model_name=stats.get("model_name", ""),
+                            provider_name=stats.get("provider_name", ""),
+                            data_path=session.data_path,
+                        ),
+                        # Which turn a rating on this answer refers to. The agent has
+                        # already appended to the session file by now, so its line
+                        # count is this answer's number.
+                        "turn": _session_turn_count(session.session_path),
+                        "rating_enabled": _recording_enabled(
+                            getattr(self._onit, "config_data", None)
+                        ),
+                    },
+                )
+            )
         except Exception as e:
             logger.error("Error processing task: %s", e)
             events.put_nowait(("error", {"message": f"Error: {e}"}))
@@ -1217,8 +1298,7 @@ class WebApiUI:
             await websocket.close(code=1008, reason="Not authenticated")
             return
 
-        sid = (websocket.query_params.get("session")
-               or websocket.cookies.get("onit_session"))
+        sid = websocket.query_params.get("session") or websocket.cookies.get("onit_session")
         sid, session = self._get_or_create_session(sid, owner=owner)
 
         if session.processing:
@@ -1227,10 +1307,16 @@ class WebApiUI:
 
         await websocket.accept()
         from .voice import VoiceBridge
+
         # _voice_ws_connect lets a test point the bridge at a fake container
         # instead of a GPU; unset in every real deployment.
-        bridge = VoiceBridge(self, session, websocket, self.voice_config,
-                             ws_connect=getattr(self, "_voice_ws_connect", None))
+        bridge = VoiceBridge(
+            self,
+            session,
+            websocket,
+            self.voice_config,
+            ws_connect=getattr(self, "_voice_ws_connect", None),
+        )
         try:
             await bridge.run()
         except Exception as exc:
@@ -1297,10 +1383,10 @@ class WebApiUI:
         if not auth_cookie or auth_cookie not in self._authenticated_cookies:
             return None
         cookie_data = self._authenticated_cookies[auth_cookie]
-        if datetime.now() > cookie_data['expires']:
+        if datetime.now() > cookie_data["expires"]:
             del self._authenticated_cookies[auth_cookie]
             return None
-        return cookie_data['email']
+        return cookie_data["email"]
 
     # ------------------------------------------------------------------
     # FastAPI app
@@ -1310,9 +1396,7 @@ class WebApiUI:
         # openapi_url=None removes /openapi.json (and the interactive docs,
         # already disabled) so the full API surface — every route, schema and
         # parameter — isn't published to anonymous callers in production.
-        app = FastAPI(
-            title=self.title, docs_url=None, redoc_url=None, openapi_url=None
-        )
+        app = FastAPI(title=self.title, docs_url=None, redoc_url=None, openapi_url=None)
 
         @app.middleware("http")
         async def security_headers_middleware(request: Request, call_next):
@@ -1344,7 +1428,7 @@ class WebApiUI:
                 response.set_cookie(
                     key="onit_session",
                     value=str(uuid.uuid4()),
-                    max_age=86400 * 7,   # 7 days
+                    max_age=86400 * 7,  # 7 days
                     httponly=True,
                     samesite="lax",
                     secure=request.url.scheme == "https",
@@ -1352,6 +1436,7 @@ class WebApiUI:
             return response
 
         if self.auth_enabled:
+
             @app.middleware("http")
             async def auth_middleware(request: Request, call_next):
                 path = request.url.path
@@ -1396,8 +1481,7 @@ class WebApiUI:
                 # Whether to offer the 👍/👎 buttons at all. A deployment with
                 # recording off would otherwise show a control that accepts a
                 # click and drops it.
-                "rating_enabled": _recording_enabled(
-                    getattr(self._onit, "config_data", None)),
+                "rating_enabled": _recording_enabled(getattr(self._onit, "config_data", None)),
                 # The mic button is only drawn when a VoiceChat container is
                 # configured; whether it is *reachable* is a separate question
                 # answered by /api/voice/health (a cold 11B model takes
@@ -1409,6 +1493,7 @@ class WebApiUI:
         @app.get("/api/voice/health")
         async def api_voice_health():
             from .voice import check_health
+
             return await check_health(self.voice_config)
 
         @app.websocket("/api/voice")
@@ -1436,7 +1521,9 @@ class WebApiUI:
             if not message and not files:
                 return JSONResponse({"detail": "Empty message"}, status_code=400)
             if session.processing:
-                return JSONResponse({"detail": "A task is already running for this session"}, status_code=409)
+                return JSONResponse(
+                    {"detail": "A task is already running for this session"}, status_code=409
+                )
 
             # Only accept uploaded files that live in this session's data dir
             safe_files = []
@@ -1457,9 +1544,7 @@ class WebApiUI:
 
             session.processing = True
             events: queue.Queue = queue.Queue()
-            asyncio.run_coroutine_threadsafe(
-                self._run_task(session, task, events), self._loop
-            )
+            asyncio.run_coroutine_threadsafe(self._run_task(session, task, events), self._loop)
             return StreamingResponse(
                 self._event_stream(events),
                 media_type="text/event-stream",
@@ -1503,11 +1588,9 @@ class WebApiUI:
             future = session.pending_approvals.get(approval_id)
             if future is None or future.done():
                 # Expired, already answered, or never this session's to answer.
-                return {"ok": False, "reason": "no pending approval",
-                        "session_id": sid}
+                return {"ok": False, "reason": "no pending approval", "session_id": sid}
             loop = self._loop or asyncio.get_running_loop()
-            loop.call_soon_threadsafe(
-                lambda: future.done() or future.set_result(decision))
+            loop.call_soon_threadsafe(lambda: future.done() or future.set_result(decision))
             return {"ok": True, "decision": decision, "session_id": sid}
 
         @app.post("/api/clear")
@@ -1548,8 +1631,7 @@ class WebApiUI:
             sid, session = self._resolve_session(request)
             body = await request.json()
             if "rating" not in body:
-                return JSONResponse({"detail": "rating is required"},
-                                    status_code=400)
+                return JSONResponse({"detail": "rating is required"}, status_code=400)
             raw = body["rating"]
             rating = _normalize_rating(raw)
             # None means two different things: "clear the verdict I gave
@@ -1567,20 +1649,20 @@ class WebApiUI:
             try:
                 turn = int(turn)
             except (TypeError, ValueError):
-                return JSONResponse({"detail": "turn must be an integer"},
-                                    status_code=400)
+                return JSONResponse({"detail": "turn must be an integer"}, status_code=400)
             if turn < 1:
-                return JSONResponse({"detail": "no answer to rate yet"},
-                                    status_code=400)
+                return JSONResponse({"detail": "no answer to rate yet"}, status_code=400)
             path = _append_rating(
-                session_id=sid, turn=turn, rating=rating,
-                comment=body.get("comment"), source="web",
+                session_id=sid,
+                turn=turn,
+                rating=rating,
+                comment=body.get("comment"),
+                source="web",
                 config_data=getattr(self._onit, "config_data", None),
             )
             # A rating with recording off is not an error: the UI offered a
             # button, the deployment declined to keep the answer.
-            return {"recorded": path is not None, "session_id": sid,
-                    "turn": turn, "rating": rating}
+            return {"recorded": path is not None, "session_id": sid, "turn": turn, "rating": rating}
 
         @app.post("/api/upload")
         async def api_upload(request: Request, file: UploadFile = File(...)):
@@ -1591,7 +1673,7 @@ class WebApiUI:
             content = await _read_capped(file)
             if content is None:
                 return JSONResponse(
-                    {"detail": f"File exceeds the {_MAX_UPLOAD_BYTES // (1024*1024)} MB limit"},
+                    {"detail": f"File exceeds the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit"},
                     status_code=413,
                 )
             with open(dest, "wb") as f:
@@ -1631,9 +1713,7 @@ class WebApiUI:
         @app.get("/api/sessions")
         async def api_sessions(request: Request):
             owner = self._auth_email(request) if self.auth_enabled else None
-            sessions = _list_sessions(
-                sessions_dir=self._sessions_dir(), limit=50, owner=owner
-            )
+            sessions = _list_sessions(sessions_dir=self._sessions_dir(), limit=50, owner=owner)
             for s in sessions:
                 mem = self._web_sessions.get(s["session_id"])
                 s["processing"] = bool(mem and mem.processing)
@@ -1649,7 +1729,8 @@ class WebApiUI:
         async def api_delete_all_sessions(request: Request):
             owner = self._auth_email(request) if self.auth_enabled else None
             if any(
-                s.processing for s in self._web_sessions.values()
+                s.processing
+                for s in self._web_sessions.values()
                 if self._can_access(s.session_id, owner)
             ):
                 return JSONResponse(
@@ -1657,16 +1738,19 @@ class WebApiUI:
                     status_code=409,
                 )
             sessions_dir = self._sessions_dir()
-            indexed = _list_sessions(sessions_dir=sessions_dir, limit=1_000_000,
-                                     owner=owner)
+            indexed = _list_sessions(sessions_dir=sessions_dir, limit=1_000_000, owner=owner)
             sids = {s["session_id"] for s in indexed} | {
-                sid for sid, s in self._web_sessions.items()
+                sid
+                for sid, s in self._web_sessions.items()
                 if not self.auth_enabled or s.owner == owner
             }
             for sid in sids:
                 session = self._web_sessions.pop(sid, None)
-                data_path = (session.data_path if session and session.data_path
-                             else os.path.join(self.data_path, sid))
+                data_path = (
+                    session.data_path
+                    if session and session.data_path
+                    else os.path.join(self.data_path, sid)
+                )
                 shutil.rmtree(data_path, ignore_errors=True)
                 _remove_session_zip(data_path)
                 _delete_session_index(sid, sessions_dir=sessions_dir)
@@ -1681,8 +1765,11 @@ class WebApiUI:
                 # 404, not 403 — don't confirm someone else's session exists
                 return JSONResponse({"detail": "Session not found"}, status_code=404)
             session = self._web_sessions.pop(session_id, None)
-            data_path = (session.data_path if session and session.data_path
-                         else os.path.join(self.data_path, session_id))
+            data_path = (
+                session.data_path
+                if session and session.data_path
+                else os.path.join(self.data_path, session_id)
+            )
             shutil.rmtree(data_path, ignore_errors=True)
             _remove_session_zip(data_path)
             _delete_session_index(session_id, sessions_dir=self._sessions_dir())
@@ -1766,7 +1853,7 @@ class WebApiUI:
 
             headers = {
                 "Content-Security-Policy": _PREVIEW_CSP,
-                "X-Frame-Options": "SAMEORIGIN",   # the SPA frames this, nothing else
+                "X-Frame-Options": "SAMEORIGIN",  # the SPA frames this, nothing else
                 "Cache-Control": "no-store",
             }
             is_page = os.path.splitext(target)[1].lower() in _PREVIEW_WEB_EXTS
@@ -1826,11 +1913,10 @@ class WebApiUI:
             # or an https URL); otherwise stay 404 rather than invent one.
             contact = os.environ.get("ONIT_SECURITY_CONTACT", "").strip()
             if not contact:
-                return Response(content='{"detail":"Not Found"}',
-                                media_type="application/json", status_code=404)
-            expires = (datetime.now() + timedelta(days=365)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+                return Response(
+                    content='{"detail":"Not Found"}', media_type="application/json", status_code=404
+                )
+            expires = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
             body = f"Contact: {contact}\nExpires: {expires}\n"
             return Response(content=body, media_type="text/plain")
 
@@ -1929,19 +2015,18 @@ class WebApiUI:
         async def oauth_login(request: Request):
             state, _code_verifier, code_challenge = self.oauth_flow_manager.create_flow()
             redirect_uri = self._external_base_url(request) + "/auth/callback"
-            auth_url = (
-                "https://accounts.google.com/o/oauth2/v2/auth?"
-                + urllib.parse.urlencode({
-                    'client_id': self.google_client_id,
-                    'redirect_uri': redirect_uri,
-                    'response_type': 'code',
-                    'scope': 'openid email profile',
-                    'state': state,
-                    'code_challenge': code_challenge,
-                    'code_challenge_method': 'S256',
-                    'access_type': 'online',
-                    'prompt': 'select_account',
-                })
+            auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(
+                {
+                    "client_id": self.google_client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "openid email profile",
+                    "state": state,
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "access_type": "online",
+                    "prompt": "select_account",
+                }
             )
             return RedirectResponse(auth_url)
 
@@ -1962,32 +2047,42 @@ class WebApiUI:
 
         @app.get("/auth/callback")
         async def oauth_callback(request: Request):
-            code = request.query_params.get('code')
-            state = request.query_params.get('state')
-            error = request.query_params.get('error')
+            code = request.query_params.get("code")
+            state = request.query_params.get("state")
+            error = request.query_params.get("error")
 
             if error:
                 return _error_page("Authentication Failed", f"Error: {error}", 400)
             if not code or not state:
-                return _error_page("Invalid Request", "Missing authorization code or state parameter.", 400)
+                return _error_page(
+                    "Invalid Request", "Missing authorization code or state parameter.", 400
+                )
 
             code_verifier = self.oauth_flow_manager.verify_and_get_verifier(state)
             if not code_verifier:
-                return _error_page("Invalid or Expired Session", "The authentication session has expired or is invalid.", 400)
+                return _error_page(
+                    "Invalid or Expired Session",
+                    "The authentication session has expired or is invalid.",
+                    400,
+                )
 
             # Must match the redirect_uri sent at /auth/login exactly, or
             # Google rejects the token exchange.
             redirect_uri = self._external_base_url(request) + "/auth/callback"
             email = self.authenticator.exchange_code_for_token(code, code_verifier, redirect_uri)
             if not email:
-                return _error_page("Authentication Failed", "Could not verify your Google account or you are not authorized.", 403)
+                return _error_page(
+                    "Authentication Failed",
+                    "Could not verify your Google account or you are not authorized.",
+                    403,
+                )
 
             session_id = self.session_manager.create_session(email)
             auth_cookie = secrets.token_urlsafe(32)
             self._authenticated_cookies[auth_cookie] = {
-                'email': email,
-                'session_id': session_id,
-                'expires': datetime.now() + timedelta(hours=24),
+                "email": email,
+                "session_id": session_id,
+                "expires": datetime.now() + timedelta(hours=24),
             }
 
             response = RedirectResponse("/", status_code=302)
@@ -2006,7 +2101,7 @@ class WebApiUI:
             auth_cookie = request.cookies.get("onit_auth")
             if auth_cookie and auth_cookie in self._authenticated_cookies:
                 cookie_data = self._authenticated_cookies[auth_cookie]
-                session_id = cookie_data.get('session_id')
+                session_id = cookie_data.get("session_id")
                 if session_id:
                     self.session_manager.revoke_session(session_id)
                 del self._authenticated_cookies[auth_cookie]
@@ -2033,19 +2128,22 @@ class WebApiUI:
             self.build_app()
 
         public_url = os.environ.get("ONIT_PUBLIC_URL", "").rstrip("/")
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"🚀 Launching OnIt Web UI on http://0.0.0.0:{self.server_port}")
         if public_url:
             print(f"   Public URL: {public_url}")
         if self.auth_enabled:
             print(f"   OAuth2 Authentication: ENABLED")
-            print(f"   Login URL: {public_url or f'http://localhost:{self.server_port}'}/auth/login")
+            print(
+                f"   Login URL: {public_url or f'http://localhost:{self.server_port}'}/auth/login"
+            )
         else:
             print(f"   Authentication: off (no Google OAuth credentials configured)")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
         def _run():
             import uvicorn
+
             uvicorn.run(
                 self.app,
                 host="0.0.0.0",

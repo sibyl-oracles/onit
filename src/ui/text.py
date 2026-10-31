@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,7 +19,8 @@ Text-based UI components for the application.
 If the `rich` library is available, it will be used to enhance the console output.
 If not, it will fall back to standard print statements.
 
-'''
+"""
+
 import asyncio
 import getpass
 import json
@@ -57,16 +58,7 @@ except Exception:  # package metadata unavailable (e.g. standalone import)
     ONIT_VERSION = ""
 
 
-HORIZONTAL_THICK = Box(
-    "━━━━\n"
-    "    \n"
-    "━━━━\n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "━━━━\n"
-)
+HORIZONTAL_THICK = Box("━━━━\n    \n━━━━\n    \n    \n    \n    \n━━━━\n")
 
 # How long the approval prompt may stand before the question is dropped.
 # A little under model.serving.chat.APPROVAL_TIMEOUT (300s), which cancels
@@ -75,14 +67,17 @@ HORIZONTAL_THICK = Box(
 # with a prompt on screen that has quietly stopped meaning anything.
 APPROVAL_TIMEOUT = 285.0
 
+
 @dataclass
 class Message:
     """Strongly typed message structure"""
+
     role: Literal["user", "assistant", "system", "tool_call", "tool_result"]
     content: str
     timestamp: str
     elapsed: str = ""
     name: str = ""
+
 
 class ChatUI:
     """Terminal front end; one of the ChatUIProtocol implementations chat()
@@ -99,7 +94,7 @@ class ChatUI:
         display_logs: int = 10,
         show_logs: bool = False,
         show_intermediate: bool = False,
-        banner_title: str = "OnIt Chat Interface"
+        banner_title: str = "OnIt Chat Interface",
     ) -> None:
         """
         Initialize ChatUI with bounded memory and configuration options.
@@ -138,7 +133,7 @@ class ChatUI:
         self.status = Status(
             f"[{self.theme.styles.get('prompt', 'bold dark_blue')}] 💡 {agent_cursor}...[/]",
             spinner="dots",
-            console=self.console
+            console=self.console,
         )
         self._spinner_messages = [
             "On it...",
@@ -202,35 +197,36 @@ class ChatUI:
         # thinking are inside the number it prints; this is that same clock.
         self._turn_start_time = 0.0
         self.initialize()
-        
+
     def set_theme(self, theme: str) -> None:
         """Set theme for the agent UI"""
-        
+
         if "black" in theme or "dark" in theme:
-            self.theme = Theme({
-                "info": "bold dark_cyan",
-                "warning": "bold yellow",
-                "error": "bold red",
-                "prompt": "bold white",
-                "timestamp": "white"
-            })
+            self.theme = Theme(
+                {
+                    "info": "bold dark_cyan",
+                    "warning": "bold yellow",
+                    "error": "bold red",
+                    "prompt": "bold white",
+                    "timestamp": "white",
+                }
+            )
         else:
-            self.theme = Theme({
-                "info": "bold dark_cyan",
-                "warning": "bold dark_green",
-                "error": "dark_orange3",
-                "prompt": "bold dark_blue",
-                "timestamp": "cyan"
-            })
-            
+            self.theme = Theme(
+                {
+                    "info": "bold dark_cyan",
+                    "warning": "bold dark_green",
+                    "error": "dark_orange3",
+                    "prompt": "bold dark_blue",
+                    "timestamp": "cyan",
+                }
+            )
+
     def format_timestamp(self):
         return datetime.now().strftime("%I:%M %p %d %b")
 
     def add_message(
-        self,
-        role: Literal["user", "assistant", "system"],
-        response: str,
-        elapsed: str = ""
+        self, role: Literal["user", "assistant", "system"], response: str, elapsed: str = ""
     ) -> None:
         """
         Add a message to the chat history.
@@ -242,21 +238,20 @@ class ChatUI:
         """
         try:
             msg = Message(
-                role=role,
-                content=response,
-                timestamp=self.format_timestamp(),
-                elapsed=elapsed
+                role=role, content=response, timestamp=self.format_timestamp(), elapsed=elapsed
             )
             self.messages.append(msg)
         except Exception as e:
             # Fallback: still add message even if there's an error
             # This ensures messages are never lost due to type issues
-            self.messages.append({
-                "role": role,
-                "content": response,
-                "time": self.format_timestamp(),
-                "elapsed": elapsed
-            })
+            self.messages.append(
+                {
+                    "role": role,
+                    "content": response,
+                    "time": self.format_timestamp(),
+                    "elapsed": elapsed,
+                }
+            )
 
     def update_last_message(self, additional_content: str) -> None:
         """
@@ -273,7 +268,7 @@ class ChatUI:
                     role=last_msg.role,
                     content=last_msg.content + additional_content,
                     timestamp=last_msg.timestamp,
-                    elapsed=last_msg.elapsed
+                    elapsed=last_msg.elapsed,
                 )
             else:
                 # Legacy dict support
@@ -297,29 +292,31 @@ class ChatUI:
         """Add a tool invocation message inline in the chat history."""
         if not self.show_logs:
             return
-        self.messages.append(Message(
-            role="tool_call",
-            content=json.dumps(arguments),
-            timestamp=self.format_timestamp(),
-            name=name,
-        ))
+        self.messages.append(
+            Message(
+                role="tool_call",
+                content=json.dumps(arguments),
+                timestamp=self.format_timestamp(),
+                name=name,
+            )
+        )
 
     def add_tool_result(self, name: str, result: str, truncate: int = 300) -> None:
         """Add a tool result message inline in the chat history."""
         if not self.show_logs:
             return
         display = result if len(result) <= truncate else result[:truncate] + "…"
-        self.messages.append(Message(
-            role="tool_result",
-            content=display,
-            timestamp=self.format_timestamp(),
-            name=name,
-        ))
+        self.messages.append(
+            Message(
+                role="tool_result",
+                content=display,
+                timestamp=self.format_timestamp(),
+                name=name,
+            )
+        )
 
     def add_log(
-        self,
-        message: str,
-        level: Literal["info", "warning", "error", "debug"] = "info"
+        self, message: str, level: Literal["info", "warning", "error", "debug"] = "info"
     ) -> None:
         """
         Add a log entry to the execution logs.
@@ -328,11 +325,7 @@ class ChatUI:
             message: The log message
             level: Log level - "info", "warning", "error", or "debug"
         """
-        log_entry = {
-            "message": message,
-            "level": level,
-            "timestamp": self.format_timestamp()
-        }
+        log_entry = {"message": message, "level": level, "timestamp": self.format_timestamp()}
         self.execution_logs.append(log_entry)
 
     def clear_logs(self, keep_last: int = 0) -> None:
@@ -360,20 +353,15 @@ class ChatUI:
             content = Text("No execution logs yet.", style="dim")
         else:
             content = Text()
-            display_logs = list(self.execution_logs)[-self.display_logs:]
+            display_logs = list(self.execution_logs)[-self.display_logs :]
 
             level_styles = {
                 "info": "cyan",
                 "warning": "yellow",
                 "error": "red",
-                "debug": "dim white"
+                "debug": "dim white",
             }
-            level_icons = {
-                "info": "ℹ️ ",
-                "warning": "⚠️ ",
-                "error": "❌",
-                "debug": "🔍"
-            }
+            level_icons = {"info": "ℹ️ ", "warning": "⚠️ ", "error": "❌", "debug": "🔍"}
 
             for log in display_logs:
                 level = log.get("level", "info")
@@ -393,8 +381,10 @@ class ChatUI:
             border_style="yellow",
             box=ROUNDED,
             padding=(0, 1),
-            subtitle=f"Showing last {min(len(self.execution_logs), self.display_logs)} of {len(self.execution_logs)} logs" if self.execution_logs else None,
-            subtitle_align="right"
+            subtitle=f"Showing last {min(len(self.execution_logs), self.display_logs)} of {len(self.execution_logs)} logs"
+            if self.execution_logs
+            else None,
+            subtitle_align="right",
         )
 
     def render_messages(self) -> Group:
@@ -410,7 +400,7 @@ class ChatUI:
 
             content = Text()
             # Show last N messages (configurable)
-            display_msgs = list(self.messages)[-self.display_messages:]
+            display_msgs = list(self.messages)[-self.display_messages :]
 
             for msg in display_msgs:
                 # Handle both Message dataclass and dict (for backward compatibility)
@@ -443,8 +433,7 @@ class ChatUI:
 
             header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
             footer = self._render_footer_rule(subtitle, subtitle_align)
-            return Group(header, Text(""), content, footer,
-                         *self._stats_group())
+            return Group(header, Text(""), content, footer, *self._stats_group())
 
         except Exception as e:
             # Fallback rendering on error - ensures UI doesn't crash
@@ -493,24 +482,33 @@ class ChatUI:
             if not (self.session_name or self.model_name or self.provider_name):
                 return []
             from src.model.serving.chat import format_token_footer
+
             stats = format_token_footer(
-                {}, session=self.session_name, model=self.model_name,
-                provider=self.provider_name, data_path=self.data_path,
-                version=ONIT_VERSION)
+                {},
+                session=self.session_name,
+                model=self.model_name,
+                provider=self.provider_name,
+                data_path=self.data_path,
+                version=ONIT_VERSION,
+            )
         if not stats:
             return []
         return [Align.left(Text(stats, style="dim"))]
-
 
     def _render_welcome_panel(self) -> Group:
         """Render welcome message when no messages exist."""
         welcome = Text()
         welcome.append("🤖 ", style="bold")
         welcome.append("Welcome! ", style=self.theme.styles.get("assistant", "bold magenta"))
-        welcome.append("Type a message below to start chatting.\n\n", style=self.theme.styles.get("assistant", "bold magenta"))
+        welcome.append(
+            "Type a message below to start chatting.\n\n",
+            style=self.theme.styles.get("assistant", "bold magenta"),
+        )
         welcome.append("Commands: ", style=self.theme.styles.get("user", "bold cyan"))
-        welcome.append("\\help for the list, \\bye or 'Ctl+c' to close",
-                       style=self.theme.styles.get("user", "bold cyan"))
+        welcome.append(
+            "\\help for the list, \\bye or 'Ctl+c' to close",
+            style=self.theme.styles.get("user", "bold cyan"),
+        )
 
         header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
         footer = self._render_footer_rule(f"📁 {self.data_path}" if self.data_path else "")
@@ -518,10 +516,18 @@ class ChatUI:
         # opens on this panel -- no messages yet, so nothing has been recorded
         # -- and the session it resumed is the one thing the person needs to
         # confirm before typing into it.
-        return Group(header, Text(""), Align.center(welcome, vertical="middle"),
-                     Text(""), footer, *self._stats_group())
+        return Group(
+            header,
+            Text(""),
+            Align.center(welcome, vertical="middle"),
+            Text(""),
+            footer,
+            *self._stats_group(),
+        )
 
-    def _render_tool_call_message(self, content: Text, name: str, args_str: str, msg_time: str) -> None:
+    def _render_tool_call_message(
+        self, content: Text, name: str, args_str: str, msg_time: str
+    ) -> None:
         content.append(f"┌─ ⚙️  {name} ", style="bold dark_orange3")
         content.append(f"[{msg_time}]", style=self.theme.styles.get("timestamp", "cyan"))
         if self._context_pct > 0:
@@ -530,7 +536,9 @@ class ChatUI:
         content.append(f"{args_str}\n", style="bright_white")
         content.append("└" + "─" * 40 + "\n", style="dark_orange3")
 
-    def _render_tool_result_message(self, content: Text, name: str, result_str: str, msg_time: str) -> None:
+    def _render_tool_result_message(
+        self, content: Text, name: str, result_str: str, msg_time: str
+    ) -> None:
         content.append(f"┌─ ↩  {name} ", style="bold green")
         content.append(f"[{msg_time}]\n", style=self.theme.styles.get("timestamp", "cyan"))
         content.append(f"{result_str}\n", style="bright_white")
@@ -557,7 +565,7 @@ class ChatUI:
         Handles regular URLs and data-URIs so the terminal doesn't show
         huge base64 blobs.  ``[label](url)`` → ``label``
         """
-        return re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+        return re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
 
     @staticmethod
     def _url_looks_like_url(url: str) -> bool:
@@ -578,13 +586,15 @@ class ChatUI:
         # operators, and must not be a lone identifier.
         if re.search(r'[\s(){}<>"\']', u):
             return False
-        if re.match(r'^[\w.-]+\.[a-zA-Z]{2,}(/\S*)?$', u):
+        if re.match(r"^[\w.-]+\.[a-zA-Z]{2,}(/\S*)?$", u):
             return True
-        if u.startswith(('/', './', '../')):
+        if u.startswith(("/", "./", "../")):
             return True
         return False
 
-    def _render_assistant_message(self, content: Text, msg_content: str, msg_time: str, msg_elapsed: str) -> None:
+    def _render_assistant_message(
+        self, content: Text, msg_content: str, msg_time: str, msg_elapsed: str
+    ) -> None:
         """
         Render an assistant message to the content Text object.
 
@@ -598,7 +608,9 @@ class ChatUI:
         content.append(_ai_label, style=self.theme.styles.get("assistant", "bold magenta"))
         content.append(f"[{msg_time}]", style=self.theme.styles.get("timestamp", "dim magenta"))
         if msg_elapsed:
-            content.append(f" - {msg_elapsed}", style=self.theme.styles.get("warning", "dim magenta"))
+            content.append(
+                f" - {msg_elapsed}", style=self.theme.styles.get("warning", "dim magenta")
+            )
         content.append("\n", style=self.theme.styles.get("warning", "dim magenta"))
         msg_content = self._strip_markdown_links(msg_content)
         content.append(f"{msg_content}\n", style="bright_white")
@@ -617,8 +629,7 @@ class ChatUI:
         content.append(f"[{msg_time}]", style=self.theme.styles.get("timestamp", "cyan"))
         content.append("\n", style="default")
         content.append(f"{msg_content}\n", style="bright_white")
-        content.append("└" + "─" * 40 + "\n",
-                       style=self.theme.styles.get("info", "dark_cyan"))
+        content.append("└" + "─" * 40 + "\n", style=self.theme.styles.get("info", "dark_cyan"))
 
     def render_thinking_panel(self) -> Panel:
         """Render thinking indicator in input panel"""
@@ -626,7 +637,7 @@ class ChatUI:
         thinking.append("🤖 ", style="bold")
         thinking.append("Assistant is thinking", style="bright_white")
         thinking.append("...", style="bright_white blink")
-        
+
         return Panel(
             thinking,
             title="[bold white]⌨️  Please Wait[/]",
@@ -634,9 +645,9 @@ class ChatUI:
             border_style="magenta",
             box=HEAVY,
             padding=(0, 2),
-            height=3
+            height=3,
         )
-    
+
     def start_status(self) -> None:
         """Start the status spinner with rotating messages."""
         self._spinner_step = 0
@@ -648,7 +659,7 @@ class ChatUI:
     def _update_spinner_text(self) -> None:
         """Update the spinner text to the current message."""
         msg = self._spinner_messages[self._spinner_step % len(self._spinner_messages)]
-        style = self.theme.styles.get('prompt', 'bold dark_blue')
+        style = self.theme.styles.get("prompt", "bold dark_blue")
         self.status.update(f"[{style}] 💡 {msg}[/]")
 
     def _schedule_spinner_rotation(self) -> None:
@@ -682,7 +693,7 @@ class ChatUI:
         except Exception:
             pass
         try:
-            if self.status and hasattr(self.status, 'stop'):
+            if self.status and hasattr(self.status, "stop"):
                 self.status.stop()
         except Exception:
             # Silently fail - status stopping is not critical
@@ -768,8 +779,7 @@ class ChatUI:
         if max_tokens:
             self._context_max_tokens = max_tokens
 
-    def set_token_budgets(self, max_output_tokens: int = 0,
-                          max_context_tokens: int = 0) -> None:
+    def set_token_budgets(self, max_output_tokens: int = 0, max_context_tokens: int = 0) -> None:
         """Record the two token budgets the run was given.
 
         Called once the endpoint has been asked what its window is, which is
@@ -804,8 +814,9 @@ class ChatUI:
         """No-op; the terminal labels phases from the stream itself."""
         pass
 
-    def notice(self, message: str,
-               level: Literal["info", "warning", "error", "debug"] = "info") -> None:
+    def notice(
+        self, message: str, level: Literal["info", "warning", "error", "debug"] = "info"
+    ) -> None:
         """Print a run event the user has to see to read the answer correctly.
 
         The log panel these events also go to is off by default, so a reply cut
@@ -830,14 +841,37 @@ class ChatUI:
     # narrower answer: being asked again next time is a small annoyance, while
     # a session-wide grant nobody meant to give is not.
     _APPROVAL_WORDS = {
-        "1": "once", "y": "once", "yes": "once", "yeah": "once", "yep": "once",
-        "o": "once", "once": "once", "ok": "once", "okay": "once",
-        "run": "once", "allow": "once", "approve": "once", "go": "once",
-        "2": "session", "a": "session", "all": "session", "always": "session",
-        "s": "session", "session": "session", "chat": "session",
-        "3": "deny", "n": "deny", "no": "deny", "nope": "deny",
-        "deny": "deny", "refuse": "deny", "reject": "deny", "stop": "deny",
-        "cancel": "deny", "q": "deny", "quit": "deny",
+        "1": "once",
+        "y": "once",
+        "yes": "once",
+        "yeah": "once",
+        "yep": "once",
+        "o": "once",
+        "once": "once",
+        "ok": "once",
+        "okay": "once",
+        "run": "once",
+        "allow": "once",
+        "approve": "once",
+        "go": "once",
+        "2": "session",
+        "a": "session",
+        "all": "session",
+        "always": "session",
+        "s": "session",
+        "session": "session",
+        "chat": "session",
+        "3": "deny",
+        "n": "deny",
+        "no": "deny",
+        "nope": "deny",
+        "deny": "deny",
+        "refuse": "deny",
+        "reject": "deny",
+        "stop": "deny",
+        "cancel": "deny",
+        "q": "deny",
+        "quit": "deny",
     }
 
     async def ask_approval(self, request: dict) -> str:
@@ -870,8 +904,9 @@ class ChatUI:
             self.console.print(text, style=style, markup=False, highlight=False)
 
         self.console.print()
-        _say("  ⚠  OnIt wants to run a command that policy does not allow on "
-             "its own", "bold yellow")
+        _say(
+            "  ⚠  OnIt wants to run a command that policy does not allow on its own", "bold yellow"
+        )
         for line in command.splitlines() or [""]:
             _say(f"     {line}", "bold white")
         if reason:
@@ -879,17 +914,18 @@ class ChatUI:
         # Named explicitly, because "session" grants more than the command on
         # screen and the difference should not be a surprise later.
         if subjects:
-            _say(f"     Approving for this session also allows: "
-                 f"{', '.join(subjects)}", "dim")
-        _say("     1) run once    2) allow for this session    "
-             "3) refuse  [default]", "dim")
+            _say(f"     Approving for this session also allows: {', '.join(subjects)}", "dim")
+        _say("     1) run once    2) allow for this session    3) refuse  [default]", "dim")
 
         deadline = time.monotonic() + APPROVAL_TIMEOUT
         choice = None
         expired = False
         for attempt in range(3):
-            prompt = "  ➤ approve? [1/2/3] " if attempt == 0 else \
-                     "  ➤ please answer 1 (once), 2 (session) or 3 (refuse): "
+            prompt = (
+                "  ➤ approve? [1/2/3] "
+                if attempt == 0
+                else "  ➤ please answer 1 (once), 2 (session) or 3 (refuse): "
+            )
             answer = await self._read_approval_answer(prompt, deadline)
             if answer is None:  # nobody answered in time
                 expired = True
@@ -905,15 +941,24 @@ class ChatUI:
             choice = "deny"
 
         if expired:
-            _say(f"     ✖ no answer in {int(APPROVAL_TIMEOUT / 60)} minutes "
-                 "— refused; the command will not run", "dim")
-            _say("     Ask again if you still want it — the approval it was "
-                 "waiting on has expired.", "dim")
+            _say(
+                f"     ✖ no answer in {int(APPROVAL_TIMEOUT / 60)} minutes "
+                "— refused; the command will not run",
+                "dim",
+            )
+            _say(
+                "     Ask again if you still want it — the approval it was waiting on has expired.",
+                "dim",
+            )
         else:
-            _say({"once": "     ✓ approved — running once",
-                  "session": "     ✓ approved for this session",
-                  "deny": "     ✖ refused — the command will not run"}[choice],
-                 "dim")
+            _say(
+                {
+                    "once": "     ✓ approved — running once",
+                    "session": "     ✓ approved for this session",
+                    "deny": "     ✖ refused — the command will not run",
+                }[choice],
+                "dim",
+            )
         self.console.print()
         return choice
 
@@ -929,8 +974,7 @@ class ChatUI:
     # Polling instead means every wait is at an await point: a timeout or a
     # cancelled run leaves nothing behind holding the terminal.
 
-    async def _read_approval_answer(self, prompt: str,
-                                    deadline: float) -> Optional[str]:
+    async def _read_approval_answer(self, prompt: str, deadline: float) -> Optional[str]:
         """One typed answer, or None when ``deadline`` passed with none.
 
         Returns the answer lowercased and stripped, "" for a bare Enter, and
@@ -952,8 +996,7 @@ class ChatUI:
             self.add_log(f"approval prompt could not read stdin: {e}", "debug")
             return "\x00"
 
-    async def _read_answer_tty(self, prompt: str,
-                               deadline: float) -> Optional[str]:
+    async def _read_answer_tty(self, prompt: str, deadline: float) -> Optional[str]:
         """Poll a POSIX terminal for a line, giving up at ``deadline``.
 
         The terminal is in canonical mode here — the prompt runs between
@@ -980,8 +1023,7 @@ class ChatUI:
             if "\n" in typed or "\r" in typed:
                 return typed.splitlines()[0].strip().lower()
 
-    async def _read_answer_console(self, prompt: str,
-                                   deadline: float) -> Optional[str]:
+    async def _read_answer_console(self, prompt: str, deadline: float) -> Optional[str]:
         """The same poll on a Windows console, which has no selectable fd."""
         sys.stdout.write(prompt)
         sys.stdout.flush()
@@ -1016,8 +1058,7 @@ class ChatUI:
                 sys.stdout.write(char)
                 sys.stdout.flush()
 
-    async def _read_answer_piped(self, prompt: str,
-                                 deadline: float) -> Optional[str]:
+    async def _read_answer_piped(self, prompt: str, deadline: float) -> Optional[str]:
         """Read from a non-terminal stdin, still without blocking the loop.
 
         Its own daemon thread rather than the default executor: a pipe that
@@ -1035,16 +1076,13 @@ class ChatUI:
             except Exception:
                 answer = "\x00"
             try:
-                loop.call_soon_threadsafe(
-                    lambda: future.done() or future.set_result(answer))
+                loop.call_soon_threadsafe(lambda: future.done() or future.set_result(answer))
             except RuntimeError:
                 pass  # the loop closed while we read; nobody is waiting
 
-        threading.Thread(target=_read, name="onit-approval-read",
-                         daemon=True).start()
+        threading.Thread(target=_read, name="onit-approval-read", daemon=True).start()
         try:
-            return await asyncio.wait_for(
-                future, timeout=max(0.0, deadline - time.monotonic()))
+            return await asyncio.wait_for(future, timeout=max(0.0, deadline - time.monotonic()))
         except asyncio.TimeoutError:
             return None
 
@@ -1085,12 +1123,12 @@ class ChatUI:
         # Normalized the way stream_end normalizes what it stores, so the
         # replacement is byte-identical to what onit.py will compare the
         # returned answer against and the message is not appended twice.
-        content = re.sub(r"</?(?:answer|think|stop)>", "", answer,
-                         flags=re.IGNORECASE).strip()
+        content = re.sub(r"</?(?:answer|think|stop)>", "", answer, flags=re.IGNORECASE).strip()
         for i in range(len(self.messages) - 1, -1, -1):
             if self.messages[i].role == "assistant":
                 self.messages[i] = Message(
-                    role="assistant", content=content,
+                    role="assistant",
+                    content=content,
                     timestamp=self.messages[i].timestamp,
                     elapsed=self.messages[i].elapsed,
                     name=self.messages[i].name,
@@ -1115,12 +1153,12 @@ class ChatUI:
         """
         if not note:
             return
-        content = re.sub(r"</?(?:answer|think|stop)>", "", answer,
-                         flags=re.IGNORECASE).strip()
+        content = re.sub(r"</?(?:answer|think|stop)>", "", answer, flags=re.IGNORECASE).strip()
         for i in range(len(self.messages) - 1, -1, -1):
             if self.messages[i].role == "assistant":
                 self.messages[i] = Message(
-                    role="assistant", content=content,
+                    role="assistant",
+                    content=content,
                     timestamp=self.messages[i].timestamp,
                     elapsed=self.messages[i].elapsed,
                     name=self.messages[i].name,
@@ -1131,8 +1169,9 @@ class ChatUI:
     def flush_corrections(self) -> None:
         """Show what the background check found, at the top of the next turn."""
         for note in self.pending_corrections:
-            self.console.print(f"  ↻ Correction to the previous answer: {note}",
-                               style="bold yellow")
+            self.console.print(
+                f"  ↻ Correction to the previous answer: {note}", style="bold yellow"
+            )
         self.pending_corrections.clear()
 
     def _render_revised_answer(self, answer: str) -> None:
@@ -1176,7 +1215,13 @@ class ChatUI:
         """Display real-time log messages from MCP tools (e.g. sandbox output)."""
         if not self.show_logs:
             return
-        style = "bright_yellow" if level == "warning" else "bright_red" if level == "error" else "bright_cyan"
+        style = (
+            "bright_yellow"
+            if level == "warning"
+            else "bright_red"
+            if level == "error"
+            else "bright_cyan"
+        )
         self.console.print(f"  [{name}] {data}", style=style)
 
     def tool_progress(self, name: str, elapsed_seconds: int) -> None:
@@ -1202,7 +1247,7 @@ class ChatUI:
     def _show_stream_cursor(self) -> None:
         """Hide terminal cursor and show a blinking white block."""
         if not self._stream_cursor_shown:
-            sys.stdout.write("\033[?25l")          # hide terminal cursor
+            sys.stdout.write("\033[?25l")  # hide terminal cursor
             sys.stdout.write("\033[5m\u2588\033[0m")  # blinking white block
             sys.stdout.flush()
             self._stream_cursor_shown = True
@@ -1210,8 +1255,8 @@ class ChatUI:
     def _erase_stream_cursor(self) -> None:
         """Remove the blinking block and restore the terminal cursor."""
         if self._stream_cursor_shown:
-            sys.stdout.write("\b \b")              # erase the block char
-            sys.stdout.write("\033[?25h")           # restore terminal cursor
+            sys.stdout.write("\b \b")  # erase the block char
+            sys.stdout.write("\033[?25h")  # restore terminal cursor
             sys.stdout.flush()
             self._stream_cursor_shown = False
 
@@ -1234,7 +1279,7 @@ class ChatUI:
         _emit's newline tally instead -- pure software, zero round-trips.
         """
         sys.stdout.write(f"\033[{lines_up}F")  # up n lines, column 1
-        sys.stdout.write("\033[J")             # clear to end of screen
+        sys.stdout.write("\033[J")  # clear to end of screen
         sys.stdout.flush()
 
     def stream_fold(self, summary: str = "") -> None:
@@ -1291,6 +1336,7 @@ class ChatUI:
         self._link_state = 0
         self._stream_header_printed = False
         self._block_newlines = 0
+
     # ── Turn timing ───────────────────────────────────────────────
 
     def turn_start(self) -> None:
@@ -1309,9 +1355,9 @@ class ChatUI:
         self._last_run_stats = ""
         self._last_run_metrics = None
 
-    def record_run_stats(self, metrics: dict | None = None, *,
-                         elapsed: float | None = None,
-                         token_rate: bool = True) -> str:
+    def record_run_stats(
+        self, metrics: dict | None = None, *, elapsed: float | None = None, token_rate: bool = True
+    ) -> str:
         """Build and remember the run's stats line; return it.
 
         One place renders it, so the line under a streamed answer, the line
@@ -1324,8 +1370,7 @@ class ChatUI:
         non-streamed path has its rate quoted in that meta line instead.
         """
         self._last_run_metrics = self._metrics if metrics is None else metrics
-        self._last_run_elapsed = (self._turn_elapsed() if elapsed is None
-                                  else elapsed)
+        self._last_run_elapsed = self._turn_elapsed() if elapsed is None else elapsed
         self._last_run_token_rate = token_rate
         self._last_run_stats = self._render_run_stats()
         return self._last_run_stats
@@ -1341,20 +1386,26 @@ class ChatUI:
         the confusion the session field is there to remove.
         """
         from src.model.serving.chat import decode_rate, format_token_footer
+
         m = self._last_run_metrics
         if m is None:
             return ""
         return format_token_footer(
-            m, session=self.session_name, model=self.model_name,
+            m,
+            session=self.session_name,
+            model=self.model_name,
             provider=self.provider_name,
-            data_path=self.data_path, version=ONIT_VERSION,
+            data_path=self.data_path,
+            version=ONIT_VERSION,
             elapsed=self._last_run_elapsed,
-            tok_s=decode_rate(m) if self._last_run_token_rate else 0.0)
+            tok_s=decode_rate(m) if self._last_run_token_rate else 0.0,
+        )
 
     def _stats_line(self) -> str:
         """The remembered stats line, or '' when the last run reported none."""
-        return self._render_run_stats() if self._last_run_metrics is not None \
-            else self._last_run_stats
+        return (
+            self._render_run_stats() if self._last_run_metrics is not None else self._last_run_stats
+        )
 
     def _turn_elapsed(self) -> float:
         """Seconds since the turn was submitted, or since the stream started."""
@@ -1444,7 +1495,9 @@ class ChatUI:
                 # First real answer content — print header then flush buffer
                 self._stream_header_printed = True
                 self.console.print(
-                    f"┌─ 🤖 AI ({self.model_name}) [{self.format_timestamp()}]" if self.model_name else f"┌─ 🤖 AI [{self.format_timestamp()}]",
+                    f"┌─ 🤖 AI ({self.model_name}) [{self.format_timestamp()}]"
+                    if self.model_name
+                    else f"┌─ 🤖 AI [{self.format_timestamp()}]",
                     style=self.theme.styles.get("assistant", "bold magenta"),
                 )
                 print(self._stream_pending.lstrip(), end="", flush=True)
@@ -1484,20 +1537,20 @@ class ChatUI:
         out = []
         for ch in text:
             if self._link_state == 0:
-                if ch == '[':
+                if ch == "[":
                     self._link_state = 1
                     self._link_buf = ""
                 else:
                     out.append(ch)
             elif self._link_state == 1:
-                if ch == ']':
+                if ch == "]":
                     # Peek-ahead not possible across tokens; buffer the label
                     # and move to a transition state.  We abuse _link_state=2
                     # but first need to see '('.
                     self._link_state = 2
-                elif ch == '\n':
+                elif ch == "\n":
                     # Newline inside bracket — not a link, flush as literal
-                    out.append('[')
+                    out.append("[")
                     out.append(self._link_buf)
                     out.append(ch)
                     self._link_buf = ""
@@ -1505,24 +1558,24 @@ class ChatUI:
                 else:
                     self._link_buf += ch
             elif self._link_state == 2:
-                if ch == '(':
+                if ch == "(":
                     # Confirmed markdown link — consume URL until ')'
                     self._link_state = 3
                     self._url_buf = ""
                 else:
                     # Not a markdown link — flush buffered label as literal
-                    out.append('[')
+                    out.append("[")
                     out.append(self._link_buf)
-                    out.append(']')
+                    out.append("]")
                     self._link_buf = ""
-                    if ch == '[':
+                    if ch == "[":
                         # Reference-style "[a][b]" — this bracket opens a label
                         self._link_state = 1
                     else:
                         out.append(ch)
                         self._link_state = 0
             elif self._link_state == 3:
-                if ch == ')':
+                if ch == ")":
                     # End of URL — emit only the label, but only when the
                     # "URL" actually looks like one.  Code such as
                     # d["key"](args) or f(t) reaches here too; eating it
@@ -1530,39 +1583,39 @@ class ChatUI:
                     if self._url_looks_like_url(self._url_buf):
                         out.append(self._link_buf)
                     else:
-                        out.append('[')
+                        out.append("[")
                         out.append(self._link_buf)
-                        out.append('](')
+                        out.append("](")
                         out.append(self._url_buf)
                         out.append(ch)
                     self._link_buf = ""
                     self._url_buf = ""
                     self._link_state = 0
-                elif ch == '\n':
+                elif ch == "\n":
                     # A link destination never spans a line, so this was never
                     # a link: give back every character it swallowed.  Without
                     # this an unmatched "](" eats the rest of the answer.
-                    out.append('[')
+                    out.append("[")
                     out.append(self._link_buf)
-                    out.append('](')
+                    out.append("](")
                     out.append(self._url_buf)
                     out.append(ch)
                     self._link_buf = ""
                     self._url_buf = ""
                     self._link_state = 0
-                elif ch in '([{':
+                elif ch in "([{":
                     # A URL never contains an opening bracket: this is code
                     # (e.g. d["key"](args) or f[i](t), not a link.  Give back
                     # everything swallowed so far, then re-process this char
                     # from the top — it may itself open a new label.
-                    out.append('[')
+                    out.append("[")
                     out.append(self._link_buf)
-                    out.append('](')
+                    out.append("](")
                     out.append(self._url_buf)
                     self._link_buf = ""
                     self._url_buf = ""
                     self._link_state = 0
-                    if ch == '[':
+                    if ch == "[":
                         self._link_state = 1
                     else:
                         out.append(ch)
@@ -1572,20 +1625,20 @@ class ChatUI:
         # would-be URL, the pattern never completed: what we are holding is
         # plain text and must be shown, or the answer prints short.
         if self._link_state == 1:
-            out.append('[')
+            out.append("[")
             out.append(self._link_buf)
             self._link_buf = ""
             self._link_state = 0
         elif self._link_state == 2:
-            out.append('[')
+            out.append("[")
             out.append(self._link_buf)
-            out.append(']')
+            out.append("]")
             self._link_buf = ""
             self._link_state = 0
         elif self._link_state == 3:
-            out.append('[')
+            out.append("[")
             out.append(self._link_buf)
-            out.append('](')
+            out.append("](")
             out.append(self._url_buf)
             self._link_buf = ""
             self._url_buf = ""
@@ -1602,11 +1655,11 @@ class ChatUI:
         """
         out = ""
         if self._link_state == 1:
-            out = '[' + self._link_buf
+            out = "[" + self._link_buf
         elif self._link_state == 2:
-            out = '[' + self._link_buf + ']'
+            out = "[" + self._link_buf + "]"
         elif self._link_state == 3:
-            out = '[' + self._link_buf + '](' + self._url_buf
+            out = "[" + self._link_buf + "](" + self._url_buf
         self._link_buf = ""
         self._url_buf = ""
         self._link_state = 0
@@ -1642,6 +1695,7 @@ class ChatUI:
         # stream_token(), and both of which the clock was already charging for.
         # elapsed is the whole turn, matching what the web UI reports.
         from src.model.serving.chat import decode_rate
+
         tok_s = decode_rate(self._metrics)
         # The per-run stats line, under the meta line: what was run, where, and
         # what it cost in tokens.  Built from the live sink, so it reflects the
@@ -1685,7 +1739,9 @@ class ChatUI:
             self._link_state = 0
             self._stream_header_printed = False
             return
-        content = re.sub(r"</?(?:answer|think|stop)>", "", self._streaming_content, flags=re.IGNORECASE).strip()
+        content = re.sub(
+            r"</?(?:answer|think|stop)>", "", self._streaming_content, flags=re.IGNORECASE
+        ).strip()
         if content:
             self.add_message("assistant", content)
         self._streaming_content = ""
@@ -1713,12 +1769,11 @@ class ChatUI:
             self.console.print(self.render_logs_panel())
 
         return messages_panel
-    
-    
+
     def initialize(self):
         """Initialize the chat UI"""
         self.console.clear()
-        
+
         # Show header
         header = Text()
         header.append("╔" + "═" * 50 + "╗\n", style=self.theme.styles.get("prompt", "bold blue"))
@@ -1727,12 +1782,22 @@ class ChatUI:
         padding = max(0, 50 - len(title_text))
         left_pad = padding // 2 - 2
         right_pad = padding - left_pad - 2
-        header.append(" " * left_pad + title_text + " " * right_pad, style=self.theme.styles.get("prompt", "bold white on blue"))
+        header.append(
+            " " * left_pad + title_text + " " * right_pad,
+            style=self.theme.styles.get("prompt", "bold white on blue"),
+        )
         header.append("║\n", style=self.theme.styles.get("prompt", "bold blue"))
         header.append("╚" + "═" * 50 + "╝", style=self.theme.styles.get("prompt", "bold blue"))
         self.console.print(Align.center(header))
         self.console.print()
-        self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
+        self.console.print(
+            Align.center(
+                Text(
+                    "OnIt may produce inaccurate information. Verify important details independently.",
+                    style="bright_white",
+                )
+            )
+        )
 
     def _input_with_history(self, prompt: str = "➤ ") -> str:
         """Dispatch to the platform-appropriate raw-input implementation."""
@@ -1749,12 +1814,12 @@ class ChatUI:
         """
         # Move cursor up to the first line of the current display
         if prev_lines > 1:
-            sys.stdout.write(f'\033[{prev_lines - 1}A')
+            sys.stdout.write(f"\033[{prev_lines - 1}A")
         # Clear from start of first line to end of screen
-        sys.stdout.write('\r\033[J')
+        sys.stdout.write("\r\033[J")
 
-        text = ''.join(current_input)
-        lines = text.split('\n')
+        text = "".join(current_input)
+        lines = text.split("\n")
         sys.stdout.write(f"\033[1;32m{prompt}\033[0m{lines[0]}")
         for line in lines[1:]:
             sys.stdout.write(f"\r\n\033[1;32m  \033[0m{line}")
@@ -1776,9 +1841,9 @@ class ChatUI:
         Returns:
             Updated (current_input, cursor_pos, temp_history_index, saved_input, num_display_lines).
         """
-        if code == 'A' and self.input_history:  # Up arrow
+        if code == "A" and self.input_history:  # Up arrow
             if temp_history_index == -1:
-                saved_input = ''.join(current_input)
+                saved_input = "".join(current_input)
                 temp_history_index = len(self.input_history) - 1
             elif temp_history_index > 0:
                 temp_history_index -= 1
@@ -1788,7 +1853,7 @@ class ChatUI:
                 cursor_pos = len(current_input)
                 num_display_lines = self._redraw_line(prompt, current_input, num_display_lines)
 
-        elif code == 'B' and temp_history_index != -1:  # Down arrow
+        elif code == "B" and temp_history_index != -1:  # Down arrow
             temp_history_index += 1
             if temp_history_index >= len(self.input_history):
                 temp_history_index = -1
@@ -1798,14 +1863,14 @@ class ChatUI:
             cursor_pos = len(current_input)
             num_display_lines = self._redraw_line(prompt, current_input, num_display_lines)
 
-        elif code == 'C' and cursor_pos < len(current_input):  # Right arrow
+        elif code == "C" and cursor_pos < len(current_input):  # Right arrow
             cursor_pos += 1
-            sys.stdout.write('\033[C')
+            sys.stdout.write("\033[C")
             sys.stdout.flush()
 
-        elif code == 'D' and cursor_pos > 0:  # Left arrow
+        elif code == "D" and cursor_pos > 0:  # Left arrow
             cursor_pos -= 1
-            sys.stdout.write('\033[D')
+            sys.stdout.write("\033[D")
             sys.stdout.flush()
 
         return current_input, cursor_pos, temp_history_index, saved_input, num_display_lines
@@ -1820,11 +1885,11 @@ class ChatUI:
         rlist, _, _ = _select.select([fd], [], [], 0.05)
         if not rlist:
             return current_input, cursor_pos
-        next3 = os.read(fd, 1).decode('utf-8', errors='replace')
-        if next3 == '~' and cursor_pos < len(current_input):
+        next3 = os.read(fd, 1).decode("utf-8", errors="replace")
+        if next3 == "~" and cursor_pos < len(current_input):
             del current_input[cursor_pos]
-            sys.stdout.write(''.join(current_input[cursor_pos:]) + ' ')
-            sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
+            sys.stdout.write("".join(current_input[cursor_pos:]) + " ")
+            sys.stdout.write("\033[" + str(len(current_input) - cursor_pos + 1) + "D")
             sys.stdout.flush()
         return current_input, cursor_pos
 
@@ -1841,8 +1906,8 @@ class ChatUI:
             rlist, _, _ = _select.select([fd], [], [], 0.02)
             if not rlist:
                 break
-            ch = os.read(fd, 1).decode('utf-8', errors='replace')
-            if ch == '~' or ('A' <= ch <= 'Z'):
+            ch = os.read(fd, 1).decode("utf-8", errors="replace")
+            if ch == "~" or ("A" <= ch <= "Z"):
                 break
 
     @staticmethod
@@ -1858,8 +1923,8 @@ class ChatUI:
         if cursor_pos > 0:
             cursor_pos -= 1
             del current_input[cursor_pos]
-            sys.stdout.write('\b' + ''.join(current_input[cursor_pos:]) + ' ')
-            sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
+            sys.stdout.write("\b" + "".join(current_input[cursor_pos:]) + " ")
+            sys.stdout.write("\033[" + str(len(current_input) - cursor_pos + 1) + "D")
             sys.stdout.flush()
         return current_input, cursor_pos
 
@@ -1876,9 +1941,9 @@ class ChatUI:
         """
         current_input.insert(cursor_pos, char)
         cursor_pos += 1
-        sys.stdout.write(char + ''.join(current_input[cursor_pos:]))
+        sys.stdout.write(char + "".join(current_input[cursor_pos:]))
         if cursor_pos < len(current_input):
-            sys.stdout.write('\033[' + str(len(current_input) - cursor_pos) + 'D')
+            sys.stdout.write("\033[" + str(len(current_input) - cursor_pos) + "D")
         sys.stdout.flush()
         return current_input, cursor_pos
 
@@ -1912,37 +1977,39 @@ class ChatUI:
             num_display_lines = 1
 
             while True:
-                char = os.read(fd, 1).decode('utf-8', errors='replace')
+                char = os.read(fd, 1).decode("utf-8", errors="replace")
 
-                if char in ('\r', '\n'):
+                if char in ("\r", "\n"):
                     if in_paste:
                         # Insert literal newline during paste
-                        current_input.insert(cursor_pos, '\n')
+                        current_input.insert(cursor_pos, "\n")
                         cursor_pos += 1
                         num_display_lines += 1
-                        sys.stdout.write('\r\n\033[1;32m  \033[0m')
+                        sys.stdout.write("\r\n\033[1;32m  \033[0m")
                         sys.stdout.flush()
                     else:
                         # Submit input
-                        sys.stdout.write('\r\n')
+                        sys.stdout.write("\r\n")
                         sys.stdout.flush()
-                        result = ''.join(current_input)
-                        if result.strip() and (not self.input_history or self.input_history[-1] != result):
+                        result = "".join(current_input)
+                        if result.strip() and (
+                            not self.input_history or self.input_history[-1] != result
+                        ):
                             self.input_history.append(result)
                         self.history_index = -1
                         return result
 
-                elif char == '\x03':  # Ctrl+C
-                    sys.stdout.write('\r\n')
+                elif char == "\x03":  # Ctrl+C
+                    sys.stdout.write("\r\n")
                     sys.stdout.flush()
                     raise KeyboardInterrupt
 
-                elif char == '\x04':  # Ctrl+D
-                    sys.stdout.write('\r\n')
+                elif char == "\x04":  # Ctrl+D
+                    sys.stdout.write("\r\n")
                     sys.stdout.flush()
                     raise EOFError
 
-                elif char == '\x1b':  # Escape sequence
+                elif char == "\x1b":  # Escape sequence
                     # Use select with a 50 ms timeout to distinguish a standalone
                     # ESC key from the start of a multi-byte terminal sequence.
                     # Without this, a bare ESC press would block the next read(1)
@@ -1951,52 +2018,63 @@ class ChatUI:
                     if not rlist:
                         continue  # Standalone ESC — ignore, nothing to drop
 
-                    next1 = os.read(fd, 1).decode('utf-8', errors='replace')
-                    if next1 == '[':
+                    next1 = os.read(fd, 1).decode("utf-8", errors="replace")
+                    if next1 == "[":
                         rlist, _, _ = _select.select([fd], [], [], 0.05)
                         if not rlist:
                             continue
-                        next2 = os.read(fd, 1).decode('utf-8', errors='replace')
-                        if next2 in ('A', 'B', 'C', 'D'):  # Arrow keys only
-                            current_input, cursor_pos, temp_history_index, saved_input, num_display_lines = (
-                                self._handle_arrow_keys(
-                                    next2, prompt, current_input, cursor_pos,
-                                    temp_history_index, saved_input, num_display_lines,
-                                )
+                        next2 = os.read(fd, 1).decode("utf-8", errors="replace")
+                        if next2 in ("A", "B", "C", "D"):  # Arrow keys only
+                            (
+                                current_input,
+                                cursor_pos,
+                                temp_history_index,
+                                saved_input,
+                                num_display_lines,
+                            ) = self._handle_arrow_keys(
+                                next2,
+                                prompt,
+                                current_input,
+                                cursor_pos,
+                                temp_history_index,
+                                saved_input,
+                                num_display_lines,
                             )
-                        elif next2 == '2':
+                        elif next2 == "2":
                             # \e[2~  = Insert key
                             # \e[200~ = bracketed-paste start
                             # \e[201~ = bracketed-paste end
                             rlist, _, _ = _select.select([fd], [], [], 0.05)
                             if not rlist:
                                 continue
-                            next3 = os.read(fd, 1).decode('utf-8', errors='replace')
-                            if next3 == '~':
+                            next3 = os.read(fd, 1).decode("utf-8", errors="replace")
+                            if next3 == "~":
                                 pass  # Insert key — ignore
-                            elif next3 == '0':
+                            elif next3 == "0":
                                 # Could be \e[20~  (F9) or \e[200~/\e[201~ (paste)
                                 rlist, _, _ = _select.select([fd], [], [], 0.05)
                                 if not rlist:
                                     continue
-                                next4 = os.read(fd, 1).decode('utf-8', errors='replace')
-                                if next4 == '~':
+                                next4 = os.read(fd, 1).decode("utf-8", errors="replace")
+                                if next4 == "~":
                                     pass  # \e[20~ = F9 — ignore (was the bug: previously
-                                          # read one extra byte here, dropping user input)
-                                elif next4 in ('0', '1'):
+                                    # read one extra byte here, dropping user input)
+                                elif next4 in ("0", "1"):
                                     # \e[200~ or \e[201~: one more byte expected ('~')
                                     rlist, _, _ = _select.select([fd], [], [], 0.05)
                                     if rlist:
-                                        next5 = os.read(fd, 1).decode('utf-8', errors='replace')
-                                        if next5 == '~':
-                                            in_paste = (next4 == '0')
+                                        next5 = os.read(fd, 1).decode("utf-8", errors="replace")
+                                        if next5 == "~":
+                                            in_paste = next4 == "0"
                                 else:
                                     self._drain_escape_sequence(fd)
                             else:
                                 self._drain_escape_sequence(fd)
-                        elif next2 == '3':  # Delete key: \e[3~
+                        elif next2 == "3":  # Delete key: \e[3~
                             current_input, cursor_pos = self._handle_delete_key(
-                                current_input, cursor_pos, fd,
+                                current_input,
+                                cursor_pos,
+                                fd,
                             )
                         else:
                             # Unrecognised sequence (Home \e[H/\e[1~, End \e[F/\e[4~,
@@ -2004,14 +2082,17 @@ class ChatUI:
                             # Drain any remaining bytes so they don't appear as text.
                             self._drain_escape_sequence(fd)
 
-                elif char in ('\x7f', '\b'):  # Backspace
+                elif char in ("\x7f", "\b"):  # Backspace
                     current_input, cursor_pos = self._handle_backspace(
-                        current_input, cursor_pos,
+                        current_input,
+                        cursor_pos,
                     )
 
-                elif ' ' <= char <= '~':  # Printable characters
+                elif " " <= char <= "~":  # Printable characters
                     current_input, cursor_pos = self._handle_printable(
-                        char, current_input, cursor_pos,
+                        char,
+                        current_input,
+                        cursor_pos,
                     )
 
         finally:
@@ -2047,48 +2128,50 @@ class ChatUI:
         while True:
             char = msvcrt.getwch()
 
-            if char in ('\r', '\n'):  # Enter key
-                sys.stdout.write('\r\n')
+            if char in ("\r", "\n"):  # Enter key
+                sys.stdout.write("\r\n")
                 sys.stdout.flush()
-                result = ''.join(current_input)
+                result = "".join(current_input)
                 if result.strip() and (not self.input_history or self.input_history[-1] != result):
                     self.input_history.append(result)
                 self.history_index = -1
                 return result
 
-            elif char == '\x03':  # Ctrl+C
-                sys.stdout.write('\r\n')
+            elif char == "\x03":  # Ctrl+C
+                sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 raise KeyboardInterrupt
 
-            elif char == '\x04':  # Ctrl+D
-                sys.stdout.write('\r\n')
+            elif char == "\x04":  # Ctrl+D
+                sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 raise EOFError
 
-            elif char in ('\x00', '\xe0'):  # Special key prefix (arrows, Delete, etc.)
+            elif char in ("\x00", "\xe0"):  # Special key prefix (arrows, Delete, etc.)
                 scan = msvcrt.getwch()
 
-                if scan == '\x48':  # Up arrow
+                if scan == "\x48":  # Up arrow
                     if self.input_history:
                         if temp_history_index == -1:
-                            saved_input = ''.join(current_input)
+                            saved_input = "".join(current_input)
                             temp_history_index = len(self.input_history) - 1
                         elif temp_history_index > 0:
                             temp_history_index -= 1
 
                         if temp_history_index >= 0:
-                            sys.stdout.write('\r' + ' ' * (len(prompt) + len(current_input) + 5) + '\r')
+                            sys.stdout.write(
+                                "\r" + " " * (len(prompt) + len(current_input) + 5) + "\r"
+                            )
                             sys.stdout.write(f"\033[1;32m{prompt}\033[0m")
                             current_input = list(self.input_history[temp_history_index])
                             cursor_pos = len(current_input)
-                            sys.stdout.write(''.join(current_input))
+                            sys.stdout.write("".join(current_input))
                             sys.stdout.flush()
 
-                elif scan == '\x50':  # Down arrow
+                elif scan == "\x50":  # Down arrow
                     if temp_history_index != -1:
                         temp_history_index += 1
-                        sys.stdout.write('\r' + ' ' * (len(prompt) + len(current_input) + 5) + '\r')
+                        sys.stdout.write("\r" + " " * (len(prompt) + len(current_input) + 5) + "\r")
                         sys.stdout.write(f"\033[1;32m{prompt}\033[0m")
 
                         if temp_history_index >= len(self.input_history):
@@ -2098,42 +2181,42 @@ class ChatUI:
                             current_input = list(self.input_history[temp_history_index])
 
                         cursor_pos = len(current_input)
-                        sys.stdout.write(''.join(current_input))
+                        sys.stdout.write("".join(current_input))
                         sys.stdout.flush()
 
-                elif scan == '\x4d':  # Right arrow
+                elif scan == "\x4d":  # Right arrow
                     if cursor_pos < len(current_input):
                         cursor_pos += 1
-                        sys.stdout.write('\033[C')
+                        sys.stdout.write("\033[C")
                         sys.stdout.flush()
 
-                elif scan == '\x4b':  # Left arrow
+                elif scan == "\x4b":  # Left arrow
                     if cursor_pos > 0:
                         cursor_pos -= 1
-                        sys.stdout.write('\033[D')
+                        sys.stdout.write("\033[D")
                         sys.stdout.flush()
 
-                elif scan == '\x53':  # Delete key
+                elif scan == "\x53":  # Delete key
                     if cursor_pos < len(current_input):
                         del current_input[cursor_pos]
-                        sys.stdout.write(''.join(current_input[cursor_pos:]) + ' ')
-                        sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
+                        sys.stdout.write("".join(current_input[cursor_pos:]) + " ")
+                        sys.stdout.write("\033[" + str(len(current_input) - cursor_pos + 1) + "D")
                         sys.stdout.flush()
 
-            elif char in ('\x7f', '\x08'):  # Backspace
+            elif char in ("\x7f", "\x08"):  # Backspace
                 if cursor_pos > 0:
                     cursor_pos -= 1
                     del current_input[cursor_pos]
-                    sys.stdout.write('\b' + ''.join(current_input[cursor_pos:]) + ' ')
-                    sys.stdout.write('\033[' + str(len(current_input) - cursor_pos + 1) + 'D')
+                    sys.stdout.write("\b" + "".join(current_input[cursor_pos:]) + " ")
+                    sys.stdout.write("\033[" + str(len(current_input) - cursor_pos + 1) + "D")
                     sys.stdout.flush()
 
-            elif char >= ' ' and char <= '~':  # Printable characters
+            elif char >= " " and char <= "~":  # Printable characters
                 current_input.insert(cursor_pos, char)
                 cursor_pos += 1
-                sys.stdout.write(char + ''.join(current_input[cursor_pos:]))
+                sys.stdout.write(char + "".join(current_input[cursor_pos:]))
                 if cursor_pos < len(current_input):
-                    sys.stdout.write('\033[' + str(len(current_input) - cursor_pos) + 'D')
+                    sys.stdout.write("\033[" + str(len(current_input) - cursor_pos) + "D")
                 sys.stdout.flush()
 
     def read_secret(self, prompt: str = "API key: ") -> str:
@@ -2163,7 +2246,14 @@ class ChatUI:
         while True:
             self.console.clear()
             self.console.print(self.render())
-            self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
+            self.console.print(
+                Align.center(
+                    Text(
+                        "OnIt may produce inaccurate information. Verify important details independently.",
+                        style="bright_white",
+                    )
+                )
+            )
             try:
                 self.console.print()
                 user_input = self._input_with_history("➤ ")
@@ -2173,7 +2263,14 @@ class ChatUI:
                 # Show panel with the user's message, then a plain (non-Live)
                 # thinking indicator so the console is free for streaming tokens.
                 self.console.print(self.render())
-                self.console.print(Align.center(Text("OnIt may produce inaccurate information. Verify important details independently.", style="bright_white")))
+                self.console.print(
+                    Align.center(
+                        Text(
+                            "OnIt may produce inaccurate information. Verify important details independently.",
+                            style="bright_white",
+                        )
+                    )
+                )
                 # The panel above already shows the corrected text; this says
                 # what changed, and now is when it can be said without landing
                 # on top of a line being typed.
@@ -2185,7 +2282,6 @@ class ChatUI:
                 return "\\bye"
             except KeyboardInterrupt:
                 return "\\bye"
-    
 
 
 def main():
@@ -2193,14 +2289,15 @@ def main():
     # Check for rich library
     try:
         from rich import __version__
+
         console = Console()
         console.print(f"[dim]Rich version: {__version__}[/]\n")
     except ImportError:
         print("Please install rich: pip install rich")
         return
-    
+
     chat = ChatUI()
-    #chat.run()
+    # chat.run()
 
 
 if __name__ == "__main__":

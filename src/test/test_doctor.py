@@ -33,6 +33,7 @@ from src.ui import commands, doctor
 
 # ── fakes ────────────────────────────────────────────────────────────────────
 
+
 class FakeRegistry:
     """Stands in for ToolRegistry where the checks only read membership."""
 
@@ -60,13 +61,15 @@ class FakeRegistry:
 def _agent(**over):
     """A stand-in for OnIt carrying what the checks read — the same shape
     test_commands.py's ``agent`` fixture uses."""
-    endpoints = [ServerEndpoint(host="http://localhost:8000/v1",
-                                model="Qwen3-30B", name="vllm-a")]
+    endpoints = [ServerEndpoint(host="http://localhost:8000/v1", model="Qwen3-30B", name="vllm-a")]
     base = dict(
-        config_data={"serving": {"host": "http://localhost:8000/v1"},
-                     "mcp": {"servers": [{"name": "s", "url": "http://x/sse"}]}},
-        mcp_servers=[{"name": "ToolsNetMCPServer",
-                      "url": "http://127.0.0.1:18201/sse", "enabled": True}],
+        config_data={
+            "serving": {"host": "http://localhost:8000/v1"},
+            "mcp": {"servers": [{"name": "s", "url": "http://x/sse"}]},
+        },
+        mcp_servers=[
+            {"name": "ToolsNetMCPServer", "url": "http://127.0.0.1:18201/sse", "enabled": True}
+        ],
         tool_registry=FakeRegistry(doctor.DEFAULT_TOOLS),
         load_balancer=LoadBalancer(endpoints, "sticky"),
         session_id="sess-1",
@@ -83,12 +86,15 @@ def _agent(**over):
 
 def _endpoint_up(monkeypatch):
     """Patch the endpoint's model listing with a fixed answer."""
+
     async def fake(host, host_key="EMPTY", timeout=15.0):
         return ["Qwen3-30B"]
+
     monkeypatch.setattr("src.model.serving.chat.list_models", fake)
 
 
 # ── result plumbing ──────────────────────────────────────────────────────────
+
 
 class TestCheckResult:
     def test_marks(self):
@@ -105,6 +111,7 @@ class TestCheckResult:
 
 
 # ── individual checks ────────────────────────────────────────────────────────
+
 
 class TestConfigCheck:
     async def test_a_loaded_config_passes(self):
@@ -129,10 +136,12 @@ class TestConfigCheck:
         """/doctor must not flag the documented endpoints-list config shape."""
         agent = _agent()
         agent.config_data = {
-            "serving": {"endpoints": [
-                {"host": "http://a:8000/v1", "priority": 1},
-                {"host": "https://api.ollama.com", "model": "x:cloud"},
-            ]},
+            "serving": {
+                "endpoints": [
+                    {"host": "http://a:8000/v1", "priority": 1},
+                    {"host": "https://api.ollama.com", "model": "x:cloud"},
+                ]
+            },
             "mcp": {"servers": [{}]},
         }
         r = await doctor.check_config(agent)
@@ -162,8 +171,9 @@ class TestConfigCheck:
 class TestMcpServersCheck:
     async def test_a_dead_port_fails_with_the_server_named(self):
         agent = _agent()
-        agent.mcp_servers = [{"name": "ToolsNetMCPServer",
-                              "url": "http://127.0.0.1:1/sse", "enabled": True}]
+        agent.mcp_servers = [
+            {"name": "ToolsNetMCPServer", "url": "http://127.0.0.1:1/sse", "enabled": True}
+        ]
         r = await doctor.check_mcp_servers(agent)
         assert r.state == "fail"
         assert "ToolsNetMCPServer" in r.detail
@@ -171,12 +181,12 @@ class TestMcpServersCheck:
     async def test_a_stdio_server_needs_only_its_launch_spec(self):
         """A stdio server has no port: reachable means spawnable."""
         from type.tools import _STDIO_SPECS, register_stdio_server, stdio_url
+
         url = stdio_url("DoctorFake")
         register_stdio_server(url, command="/bin/true", args=[])
         try:
             agent = _agent()
-            agent.mcp_servers = [{"name": "DoctorFake", "url": url,
-                                  "enabled": True}]
+            agent.mcp_servers = [{"name": "DoctorFake", "url": url, "enabled": True}]
             r = await doctor.check_mcp_servers(agent)
             assert r.state == "pass"
         finally:
@@ -184,8 +194,7 @@ class TestMcpServersCheck:
 
     async def test_disabled_servers_are_not_checked(self):
         agent = _agent()
-        agent.mcp_servers = [{"name": "off", "url": "http://127.0.0.1:1/sse",
-                              "enabled": False}]
+        agent.mcp_servers = [{"name": "off", "url": "http://127.0.0.1:1/sse", "enabled": False}]
         r = await doctor.check_mcp_servers(agent)
         assert r.state == "fail"  # no *enabled* servers left
 
@@ -207,14 +216,15 @@ class TestToolRegistryCheck:
         broken registry — the check names it and stays green."""
         agent = _agent()
         agent.tool_registry = FakeRegistry(
-            doctor.DEFAULT_TOOLS, collisions=[("read_file", "u2", "u1")])
+            doctor.DEFAULT_TOOLS, collisions=[("read_file", "u2", "u1")]
+        )
         r = await doctor.check_tool_registry(agent)
         assert r.state == "pass" and "read_file" in r.detail
 
 
 class TestDefaultToolsCheck:
     async def test_a_missing_tool_is_named(self):
-        reg = FakeRegistry(doctor.DEFAULT_TOOLS[:-1])   # drop github_repo
+        reg = FakeRegistry(doctor.DEFAULT_TOOLS[:-1])  # drop github_repo
         agent = _agent()
         agent.tool_registry = reg
         r = await doctor.check_default_tools(agent)
@@ -232,8 +242,9 @@ class TestToolBashCheck:
 
         async def fake_call(reg, name, **kw):
             agent.tool_registry.calls.append((name, kw))
-            return json.dumps({"returncode": 0,
-                               "stdout": kw["command"].split("echo ", 1)[1] + "\n"})
+            return json.dumps(
+                {"returncode": 0, "stdout": kw["command"].split("echo ", 1)[1] + "\n"}
+            )
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_bash(agent)
@@ -244,9 +255,9 @@ class TestToolBashCheck:
 
     async def test_a_nonzero_exit_fails_with_stderr(self):
         agent = _agent()
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"returncode": 2,
-                                                   "stderr": "boom"})):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps({"returncode": 2, "stderr": "boom"})
+        ):
             r = await doctor.check_tool_bash(agent)
         assert r.state == "fail" and "boom" in r.detail
 
@@ -313,12 +324,11 @@ class TestToolFilesCheck:
             if name == "read_file":
                 with open(os.path.join(agent.data_path, kw["path"])) as f:
                     return f.read()
-            return json.dumps({"replacements": 0})   # edit_file lies
+            return json.dumps({"replacements": 0})  # edit_file lies
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_files(agent)
         assert r.state == "fail" and "replaced nothing" in r.detail
-
 
 
 class TestToolGrepCheck:
@@ -338,20 +348,19 @@ class TestToolGrepCheck:
                         for i, line in enumerate(f, 1):
                             if kw["pattern"] in line:
                                 hits.append({"file": fn, "line_number": i})
-            return json.dumps({"results": hits, "total_matches": len(hits),
-                               "status": "success"})
+            return json.dumps({"results": hits, "total_matches": len(hits), "status": "success"})
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_grep(agent)
         assert r.state == "pass", r.detail
-        assert not list(tmp_path.iterdir())          # probe dir removed
+        assert not list(tmp_path.iterdir())  # probe dir removed
 
     async def test_zero_matches_fails(self, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"results": [],
-                                                   "total_matches": 0})):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps({"results": [], "total_matches": 0})
+        ):
             r = await doctor.check_tool_grep(agent)
         assert r.state == "fail" and "0 times" in r.detail
 
@@ -378,20 +387,20 @@ class TestToolSearchDocumentCheck:
             assert name == "search_document" and kw["mode"] == "pattern"
             with open(kw["path"]) as f:
                 text = f.read()
-            hits = [{"line": i} for i, line in enumerate(text.splitlines(), 1)
-                    if kw["pattern"] in line]
+            hits = [
+                {"line": i} for i, line in enumerate(text.splitlines(), 1) if kw["pattern"] in line
+            ]
             return json.dumps({"matches": hits, "total_matches": len(hits)})
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_search_document(agent)
         assert r.state == "pass", r.detail
-        assert not list(tmp_path.iterdir())          # probe file removed
+        assert not list(tmp_path.iterdir())  # probe file removed
 
     async def test_a_miss_fails(self, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"total_matches": 0})):
+        with patch.object(doctor, "_call_tool", return_value=json.dumps({"total_matches": 0})):
             r = await doctor.check_tool_search_document(agent)
         assert r.state == "fail" and "missed" in r.detail
 
@@ -407,9 +416,14 @@ class TestToolLocalSearchCheck:
             if name == "index_documents":
                 corpus = kw["path"]
                 docs = [f for f in os.listdir(corpus) if f.endswith(".md")]
-                return json.dumps({"status": "success", "scope": "session",
-                                   "total_documents": len(docs),
-                                   "total_chunks": len(docs)})
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "scope": "session",
+                        "total_documents": len(docs),
+                        "total_chunks": len(docs),
+                    }
+                )
             # local_search: a working engine retrieves what was indexed —
             # the probe file's text, whatever marker the check planted in it
             with open(os.path.join(kw["path"], "probe.md")) as f:
@@ -422,16 +436,17 @@ class TestToolLocalSearchCheck:
         assert r.state == "pass", r.detail
         # probe corpus removed and a cleanup re-index ran (3 calls: index,
         # search, re-index of the emptied corpus)
-        assert [c[0] for c in calls] == ["index_documents", "local_search",
-                                         "index_documents"]
+        assert [c[0] for c in calls] == ["index_documents", "local_search", "index_documents"]
         assert not list(tmp_path.iterdir())
 
     async def test_indexing_nothing_fails(self, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"status": "success",
-                                                   "total_documents": 0})):
+        with patch.object(
+            doctor,
+            "_call_tool",
+            return_value=json.dumps({"status": "success", "total_documents": 0}),
+        ):
             r = await doctor.check_tool_index_and_search(agent)
         assert r.state == "fail" and "indexed nothing" in r.detail
 
@@ -452,6 +467,7 @@ class TestToolLocalSearchCheck:
 class TestToolSendFileCheck:
     async def test_base64_round_trip_passes_and_cleans_up(self, tmp_path):
         import base64
+
         agent = _agent()
         agent.data_path = str(tmp_path)
         payload = "DOCTOR-SEND-TEST"
@@ -460,8 +476,9 @@ class TestToolSendFileCheck:
             assert name == "send_file"
             with open(os.path.join(agent.data_path, kw["path"]), "rb") as f:
                 data = f.read()
-            return json.dumps({"status": "success",
-                               "file_data_base64": base64.b64encode(data).decode()})
+            return json.dumps(
+                {"status": "success", "file_data_base64": base64.b64encode(data).decode()}
+            )
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_send_file(agent)
@@ -470,21 +487,26 @@ class TestToolSendFileCheck:
 
     async def test_a_corrupted_payload_fails(self, tmp_path):
         import base64
+
         agent = _agent()
         agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"status": "success",
-                               "file_data_base64": base64.b64encode(
-                                   b"something else").decode()})):
+        with patch.object(
+            doctor,
+            "_call_tool",
+            return_value=json.dumps(
+                {
+                    "status": "success",
+                    "file_data_base64": base64.b64encode(b"something else").decode(),
+                }
+            ),
+        ):
             r = await doctor.check_tool_send_file(agent)
         assert r.state == "fail" and "does not decode" in r.detail
 
     async def test_a_failed_status_fails(self, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"status": "failed"})):
+        with patch.object(doctor, "_call_tool", return_value=json.dumps({"status": "failed"})):
             r = await doctor.check_tool_send_file(agent)
         assert r.state == "fail" and "failed" in r.detail
 
@@ -499,11 +521,14 @@ class TestToolServeCheck:
             calls.append((tool, kw))
             action = kw["action"]
             if action in ("start", "status"):
-                return json.dumps({"name": kw["name"], "pid": 4242,
-                                   "status": "started" if action == "start"
-                                   else "running"})
-            return json.dumps({"name": kw["name"], "pid": 4242,
-                               "status": "stopped"})
+                return json.dumps(
+                    {
+                        "name": kw["name"],
+                        "pid": 4242,
+                        "status": "started" if action == "start" else "running",
+                    }
+                )
+            return json.dumps({"name": kw["name"], "pid": 4242, "status": "stopped"})
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_serve(agent)
@@ -519,10 +544,8 @@ class TestToolServeCheck:
 
         async def fake_call(reg, tool, **kw):
             if kw["action"] in ("start", "status"):
-                return json.dumps({"name": kw["name"], "pid": 4242,
-                                   "status": "already_running"})
-            return json.dumps({"name": kw["name"], "pid": 4242,
-                               "status": "stopped"})
+                return json.dumps({"name": kw["name"], "pid": 4242, "status": "already_running"})
+            return json.dumps({"name": kw["name"], "pid": 4242, "status": "stopped"})
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_serve(agent)
@@ -531,8 +554,7 @@ class TestToolServeCheck:
     async def test_start_that_never_runs_fails(self, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"status": "failed"})):
+        with patch.object(doctor, "_call_tool", return_value=json.dumps({"status": "failed"})):
             r = await doctor.check_tool_serve(agent)
         assert r.state == "fail" and "did not report started" in r.detail
 
@@ -542,10 +564,8 @@ class TestToolServeCheck:
 
         async def fake_call(reg, tool, **kw):
             if kw["action"] == "start":
-                return json.dumps({"name": kw["name"], "pid": 4242,
-                                   "status": "running"})
-            return json.dumps({"error": "No managed process found",
-                               "status": "error"})
+                return json.dumps({"name": kw["name"], "pid": 4242, "status": "running"})
+            return json.dumps({"error": "No managed process found", "status": "error"})
 
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             r = await doctor.check_tool_serve(agent)
@@ -554,50 +574,54 @@ class TestToolServeCheck:
 
 class TestToolSearchCheck:
     async def test_results_pass(self):
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              [{"title": "x", "url": "u"}])):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps([{"title": "x", "url": "u"}])
+        ):
             r = await doctor.check_tool_search(_agent())
         assert r.state == "pass", r.detail
 
     async def test_no_results_fails(self):
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps([])):
+        with patch.object(doctor, "_call_tool", return_value=json.dumps([])):
             r = await doctor.check_tool_search(_agent())
         assert r.state == "fail" and "no results" in r.detail
 
     async def test_an_error_object_fails(self):
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"error": "Search failed - no results from any "
-                                        "provider"})):
+        with patch.object(
+            doctor,
+            "_call_tool",
+            return_value=json.dumps({"error": "Search failed - no results from any provider"}),
+        ):
             r = await doctor.check_tool_search(_agent())
         assert r.state == "fail" and "no results from any" in r.detail
 
 
 class TestToolFetchContentCheck:
     async def test_the_known_page_passes(self):
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"title": "Example Domain",
-                               "url": "https://example.com",
-                               "content": "Example Domain\nThis domain is "
-                                          "for use in illustrative "
-                                          "examples."})):
+        with patch.object(
+            doctor,
+            "_call_tool",
+            return_value=json.dumps(
+                {
+                    "title": "Example Domain",
+                    "url": "https://example.com",
+                    "content": "Example Domain\nThis domain is for use in illustrative examples.",
+                }
+            ),
+        ):
             r = await doctor.check_tool_fetch_content(_agent())
         assert r.state == "pass", r.detail
 
     async def test_wrong_content_fails(self):
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"title": "404", "content": "not found"})):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps({"title": "404", "content": "not found"})
+        ):
             r = await doctor.check_tool_fetch_content(_agent())
         assert r.state == "fail" and "did not come back" in r.detail
 
     async def test_an_error_object_fails(self):
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"error": "connection refused"})):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps({"error": "connection refused"})
+        ):
             r = await doctor.check_tool_fetch_content(_agent())
         assert r.state == "fail" and "connection refused" in r.detail
 
@@ -624,41 +648,43 @@ class TestKeyedToolChecks:
 
     async def test_weather_with_a_key_and_conditions_passes(self, monkeypatch):
         monkeypatch.setenv("OPENWEATHER_API_KEY", "k")
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"location": "Tokyo",
-                               "current": {"description": "clear sky"}})):
+        with patch.object(
+            doctor,
+            "_call_tool",
+            return_value=json.dumps({"location": "Tokyo", "current": {"description": "clear sky"}}),
+        ):
             r = await doctor.check_tool_weather(_agent())
         assert r.state == "pass", r.detail
 
     async def test_weather_without_conditions_fails(self, monkeypatch):
         monkeypatch.setenv("OPENWEATHER_API_KEY", "k")
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps({"current": {}})):
+        with patch.object(doctor, "_call_tool", return_value=json.dumps({"current": {}})):
             r = await doctor.check_tool_weather(_agent())
         assert r.state == "fail" and "no current conditions" in r.detail
 
     async def test_an_error_object_fails(self, monkeypatch):
         monkeypatch.setenv("OPENWEATHER_API_KEY", "k")
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"error": "city not found"})):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps({"error": "city not found"})
+        ):
             r = await doctor.check_tool_weather(_agent())
         assert r.state == "fail" and "city not found" in r.detail
 
     async def test_github_listing_passes(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "t")
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"repos": [], "count": 0, "status": "ok"})):
+        with patch.object(
+            doctor, "_call_tool", return_value=json.dumps({"repos": [], "count": 0, "status": "ok"})
+        ):
             r = await doctor.check_tool_github(_agent())
         assert r.state == "pass", r.detail
 
     async def test_github_failure_fails(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "t")
-        with patch.object(doctor, "_call_tool",
-                          return_value=json.dumps(
-                              {"status": "error", "error": "Bad credentials"})):
+        with patch.object(
+            doctor,
+            "_call_tool",
+            return_value=json.dumps({"status": "error", "error": "Bad credentials"}),
+        ):
             r = await doctor.check_tool_github(_agent())
         assert r.state == "fail" and "Bad credentials" in r.detail
 
@@ -710,16 +736,16 @@ class TestLoadBalancerCheck:
         agent = _agent()
         # LoadBalancer itself refuses an empty list, so the shape that reaches
         # the check is a balancer whose endpoints were lost some other way.
-        agent.load_balancer = SimpleNamespace(endpoints=[],
-                                              assigned=lambda key=None: None)
+        agent.load_balancer = SimpleNamespace(endpoints=[], assigned=lambda key=None: None)
         r = await doctor.check_load_balancer(agent)
         assert r.state == "fail"
 
     async def test_all_cooling_down_fails(self):
         import time as _time
+
         agent = _agent()
         ep = agent.load_balancer.endpoints[0]
-        ep.failed_at = _time.monotonic() - 1   # inside the cooldown window
+        ep.failed_at = _time.monotonic() - 1  # inside the cooldown window
         r = await doctor.check_load_balancer(agent)
         assert r.state == "fail" and "cooling down" in r.detail
 
@@ -734,6 +760,7 @@ class TestEndpointCheck:
     async def test_an_unlisted_model_fails_by_name(self, monkeypatch):
         async def fake(host, host_key="EMPTY", timeout=15.0):
             return ["other-model"]
+
         monkeypatch.setattr("src.model.serving.chat.list_models", fake)
         r = await doctor.check_endpoint(_agent())
         assert r.state == "fail" and "Qwen3-30B" in r.detail
@@ -741,27 +768,36 @@ class TestEndpointCheck:
     async def test_a_dead_endpoint_fails_with_the_error(self, monkeypatch):
         async def fake(host, host_key="EMPTY", timeout=15.0):
             raise ConnectionError("refused")
+
         monkeypatch.setattr("src.model.serving.chat.list_models", fake)
         r = await doctor.check_endpoint(_agent())
         assert r.state == "fail" and "ConnectionError" in r.detail
 
     async def test_ollama_cloud_suffix_passes_when_base_name_is_listed(self, monkeypatch):
         """Ollama cloud lists 'x' but serves 'x:cloud' in a chat request."""
+
         async def fake(host, host_key="EMPTY", timeout=15.0):
             return ["glm-5.3-flash", "gemma4:31b"]
+
         monkeypatch.setattr("src.model.serving.chat.list_models", fake)
         agent = _agent()
         agent.load_balancer = LoadBalancer(
-            [ServerEndpoint(host="https://api.ollama.com",
-                            model="glm-5.3-flash:cloud", name="ollama")],
-            "sticky")
+            [
+                ServerEndpoint(
+                    host="https://api.ollama.com", model="glm-5.3-flash:cloud", name="ollama"
+                )
+            ],
+            "sticky",
+        )
         r = await doctor.check_endpoint(agent)
         assert r.state == "pass", r.detail
 
     async def test_an_unknown_model_still_fails(self, monkeypatch):
         """The :cloud equivalence must not loosen the check into a no-op."""
+
         async def fake(host, host_key="EMPTY", timeout=15.0):
             return ["other-model"]
+
         monkeypatch.setattr("src.model.serving.chat.list_models", fake)
         r = await doctor.check_endpoint(_agent())
         assert r.state == "fail" and "Qwen3-30B" in r.detail
@@ -783,35 +819,39 @@ class TestCommandsCheck:
 class TestLearnCheck:
     async def test_recording_on_and_writable(self, tmp_path, monkeypatch):
         from src.learn import config as learn_config
-        monkeypatch.setattr(learn_config, "trajectory_dir",
-                            lambda cfg: str(tmp_path / "learned"))
+
+        monkeypatch.setattr(learn_config, "trajectory_dir", lambda cfg: str(tmp_path / "learned"))
         agent = _agent()
         r = await doctor.check_learn(agent)
         assert r.state == "pass", r.detail
 
     async def test_recording_off_skips(self, monkeypatch):
         from src.learn import config as learn_config
+
         monkeypatch.setattr(learn_config, "autonomy", lambda cfg: 0)
         r = await doctor.check_learn(_agent())
         assert r.state == "skip"
 
     async def test_an_unwritable_dir_fails(self, tmp_path, monkeypatch):
         from src.learn import config as learn_config
+
         blocked = tmp_path / "file-not-dir"
         blocked.write_text("x")
-        monkeypatch.setattr(learn_config, "trajectory_dir",
-                            lambda cfg: str(blocked / "learned"))
+        monkeypatch.setattr(learn_config, "trajectory_dir", lambda cfg: str(blocked / "learned"))
         r = await doctor.check_learn(_agent())
         assert r.state == "fail"
 
 
 # ── the deep checks ──────────────────────────────────────────────────────────
 
+
 class TestModelReplyCheck:
     async def test_an_echoing_model_passes(self, monkeypatch):
         _endpoint_up(monkeypatch)
+
         async def fake_chat(**kw):
             return "DOCTOR-OK"
+
         monkeypatch.setattr("src.model.serving.chat.chat", fake_chat)
         r = await doctor.check_model_reply(_agent())
         assert r.state == "pass"
@@ -819,6 +859,7 @@ class TestModelReplyCheck:
     async def test_a_silent_model_fails_with_what_came_back(self, monkeypatch):
         async def fake_chat(**kw):
             return "I am sorry 😊. Could you rephrase?"
+
         monkeypatch.setattr("src.model.serving.chat.chat", fake_chat)
         r = await doctor.check_model_reply(_agent())
         assert r.state == "fail" and "rephrase" in r.detail
@@ -841,6 +882,7 @@ class TestModelToolTurnCheck:
     async def test_a_tool_calling_turn_passes(self, monkeypatch):
         async def fake_chat(**kw):
             return "DOCTOR-TOOL-OK"
+
         monkeypatch.setattr("src.model.serving.chat.chat", fake_chat)
         r = await doctor.check_model_tool_turn(_agent())
         assert r.state == "pass"
@@ -853,8 +895,7 @@ class TestModelToolTurnCheck:
 
 
 class TestModelFileTurnCheck:
-    async def test_a_file_reading_turn_passes_and_cleans_up(self, monkeypatch,
-                                                            tmp_path):
+    async def test_a_file_reading_turn_passes_and_cleans_up(self, monkeypatch, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
         seen = {}
@@ -878,10 +919,9 @@ class TestModelFileTurnCheck:
         # the turn carried the registry (the model must call read_file itself)
         assert seen["tool_registry"] is agent.tool_registry
         assert "doctor-read-" in seen["instruction"]
-        assert not list(tmp_path.iterdir())          # probe file removed
+        assert not list(tmp_path.iterdir())  # probe file removed
 
-    async def test_a_model_that_ignores_the_file_fails(self, monkeypatch,
-                                                       tmp_path):
+    async def test_a_model_that_ignores_the_file_fails(self, monkeypatch, tmp_path):
         agent = _agent()
         agent.data_path = str(tmp_path)
 
@@ -911,17 +951,27 @@ class TestModelFileTurnCheck:
 
 # ── the runner ───────────────────────────────────────────────────────────────
 
+
 class TestRunChecks:
     async def test_every_check_reports_and_none_raise(self, monkeypatch):
         """The whole battery runs hermetically: the network-bound probes are
         stood in for at the module's own seam, so the suite never touches
         the web, the weather, or GitHub."""
+
         async def fake_call(reg, name, **kw):
-            return json.dumps({"status": "success", "results": [],
-                               "total_matches": 0, "total_documents": 0,
-                               "content": "", "current": {}, "repos": []})
-        monkeypatch.setattr("src.model.serving.chat.chat",
-                            lambda **kw: _async("DOCTOR-OK"))
+            return json.dumps(
+                {
+                    "status": "success",
+                    "results": [],
+                    "total_matches": 0,
+                    "total_documents": 0,
+                    "content": "",
+                    "current": {},
+                    "repos": [],
+                }
+            )
+
+        monkeypatch.setattr("src.model.serving.chat.chat", lambda **kw: _async("DOCTOR-OK"))
         with patch.object(doctor, "_call_tool", side_effect=fake_call):
             results = await doctor.run_checks(_agent(), deep=False)
         names = [r.name for r in results]
@@ -949,23 +999,25 @@ class TestRunChecks:
             "get_weather": "tool-weather",
             "github_repo": "tool-github",
         }
-        assert set(covered) == set(doctor.DEFAULT_TOOLS)   # mapping is complete
+        assert set(covered) == set(doctor.DEFAULT_TOOLS)  # mapping is complete
         check_names = {name for name, _, _ in doctor.CHECKS}
         for tool, check in covered.items():
-            assert check in check_names, \
+            assert check in check_names, (
                 f"no check exercises the {tool!r} tool (expected {check!r})"
+            )
 
     async def test_deep_adds_the_model_checks(self, monkeypatch):
         async def fake_chat(**kw):
             return "DOCTOR-OK"
+
         monkeypatch.setattr("src.model.serving.chat.chat", fake_chat)
         results = await doctor.run_checks(_agent(), deep=True)
-        assert [r.name for r in results] == \
-            [c[0] for c in doctor.CHECKS + doctor.DEEP_CHECKS]
+        assert [r.name for r in results] == [c[0] for c in doctor.CHECKS + doctor.DEEP_CHECKS]
 
     async def test_a_raising_check_becomes_a_failure(self):
         async def boom(agent):
             raise RuntimeError("exploded")
+
         with patch.object(doctor, "CHECKS", (("boom", boom, 5.0),)):
             results = await doctor.run_checks(_agent())
         assert results[0].state == "fail" and "exploded" in results[0].detail
@@ -973,6 +1025,7 @@ class TestRunChecks:
     async def test_a_hung_check_times_out_instead_of_hanging(self):
         async def stall(agent):
             await asyncio.sleep(60)
+
         with patch.object(doctor, "CHECKS", (("stall", stall, 0.1),)):
             results = await doctor.run_checks(_agent(), deep=False)
         assert results[0].state == "fail" and "timed out" in results[0].detail
@@ -1024,6 +1077,7 @@ class TestRenderReport:
 
 # ── the command wiring ───────────────────────────────────────────────────────
 
+
 class TestDoctorCommand:
     def test_listed_in_help(self):
         text = commands.render_help()
@@ -1055,8 +1109,7 @@ class TestDoctorCommand:
 
     @pytest.mark.asyncio
     async def test_a_crashing_battery_costs_a_message_not_the_session(self):
-        with patch("src.ui.doctor.run_checks",
-                   side_effect=RuntimeError("no event loop")):
+        with patch("src.ui.doctor.run_checks", side_effect=RuntimeError("no event loop")):
             out = await commands.dispatch(_agent(), "\\doctor")
         assert "\\doctor failed" in out
 
@@ -1064,4 +1117,5 @@ class TestDoctorCommand:
 def fake_run_checks():
     async def _run(agent, deep=False, on_start=None):
         return [doctor.CheckResult("config", "pass", "ok", 0.1)]
+
     return _run

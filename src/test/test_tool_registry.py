@@ -15,6 +15,7 @@ from type.tools import ToolRegistry, ToolHandler, RequestHandler
 
 # ── RequestHandler (abstract) ───────────────────────────────────────────────
 
+
 class TestRequestHandler:
     def test_cannot_instantiate_directly(self):
         with pytest.raises(TypeError):
@@ -23,8 +24,8 @@ class TestRequestHandler:
 
 # ── ToolRegistry ────────────────────────────────────────────────────────────
 
-def _make_handler(name="tool", url="http://localhost:9000/x", properties=None,
-                  description=None):
+
+def _make_handler(name="tool", url="http://localhost:9000/x", properties=None, description=None):
     item = {
         "type": "function",
         "function": {
@@ -57,13 +58,17 @@ class TestToolRegistry:
 
 # ── replicas vs. name collisions ────────────────────────────────────────────
 
+
 class TestNameCollisions:
     """OnIt ships one real collision: `read_file` is a text reader on the bash
     server and a text/tables/images reader on the consolidated Tools server."""
 
     _TEXT_ONLY = {"path": {"type": "string"}, "encoding": {"type": "string"}}
-    _WITH_MODE = {"path": {"type": "string"}, "mode": {"type": "string"},
-                  "encoding": {"type": "string"}}
+    _WITH_MODE = {
+        "path": {"type": "string"},
+        "mode": {"type": "string"},
+        "encoding": {"type": "string"},
+    }
 
     def _colliding_registry(self):
         reg = ToolRegistry()
@@ -82,10 +87,16 @@ class TestNameCollisions:
     def test_description_differences_are_not_a_collision(self):
         """Two servers may word a tool differently and still be the same tool."""
         reg = ToolRegistry()
-        reg.register(_make_handler("search", "http://h1", {"q": {"type": "string"}},
-                                   description="Search the web"))
-        reg.register(_make_handler("search", "http://h2", {"q": {"type": "string"}},
-                                   description="Web search"))
+        reg.register(
+            _make_handler(
+                "search", "http://h1", {"q": {"type": "string"}}, description="Search the web"
+            )
+        )
+        reg.register(
+            _make_handler(
+                "search", "http://h2", {"q": {"type": "string"}}, description="Web search"
+            )
+        )
         assert reg.collisions == []
         assert len(reg.urls["search"]) == 2
 
@@ -101,8 +112,12 @@ class TestNameCollisions:
         reg = self._colliding_registry()
         assert reg.urls["read_file"] == ["http://tools"]
         for _ in range(20):
-            assert reg[  # never resolves to the bash copy
-                "read_file"].url == "http://tools"
+            assert (
+                reg[  # never resolves to the bash copy
+                    "read_file"
+                ].url
+                == "http://tools"
+            )
 
     def test_the_model_is_shown_exactly_one_schema(self):
         """Regression: both schemas were advertised under one name, which is an
@@ -142,8 +157,12 @@ class TestNameCollisions:
         reg = ToolRegistry()
         for name in ("zebra", "apple", "mango", "kiwi"):
             reg.register(_make_handler(name, f"http://{name}"))
-        assert [i["function"]["name"] for i in reg.get_tool_items()] == \
-            ["zebra", "apple", "mango", "kiwi"]
+        assert [i["function"]["name"] for i in reg.get_tool_items()] == [
+            "zebra",
+            "apple",
+            "mango",
+            "kiwi",
+        ]
         assert list(reg) == ["zebra", "apple", "mango", "kiwi"]
 
     def test_get_url_returns_url(self):
@@ -173,18 +192,19 @@ class TestNameCollisions:
 
 # ── parameters_schema ───────────────────────────────────────────────────────
 
+
 class TestParametersSchema:
     def _reg_with_schema(self, params):
         reg = ToolRegistry()
-        item = {"type": "function",
-                "function": {"name": "search", "description": "d",
-                             "parameters": params, "returns": {}}}
+        item = {
+            "type": "function",
+            "function": {"name": "search", "description": "d", "parameters": params, "returns": {}},
+        }
         reg.register(ToolHandler(url="http://h", tool_item=item))
         return reg
 
     def test_returns_the_declared_schema(self):
-        params = {"type": "object", "properties": {"q": {"type": "string"}},
-                  "required": ["q"]}
+        params = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
         assert self._reg_with_schema(params).parameters_schema("search") == params
 
     def test_unknown_tool_returns_empty(self):
@@ -220,6 +240,7 @@ class TestParametersSchema:
 
 
 # ── ToolHandler ─────────────────────────────────────────────────────────────
+
 
 class TestToolHandler:
     def test_get_tool(self):
@@ -258,8 +279,7 @@ class TestToolHandler:
         # ``mime_type`` is the SDK v2 spelling; ``mimeType`` is the v1 alias the
         # code used to read, which still works on 2.x but raises a deprecation
         # warning and is gone from an object built with the new name only.
-        mock_response.content = [ImageContent(type="image", data=b64,
-                                              mime_type="image/png")]
+        mock_response.content = [ImageContent(type="image", data=b64, mime_type="image/png")]
 
         mock_client = AsyncMock()
         mock_client.call_tool = AsyncMock(return_value=mock_response)
@@ -286,8 +306,7 @@ class TestToolHandler:
 
         b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 8).decode()
         mock_response = MagicMock()
-        mock_response.content = [ImageContent(type="image", data=b64,
-                                              mime_type="image/jpeg")]
+        mock_response.content = [ImageContent(type="image", data=b64, mime_type="image/jpeg")]
 
         mock_client = AsyncMock()
         mock_client.call_tool = AsyncMock(return_value=mock_response)
@@ -317,9 +336,11 @@ class TestToolHandler:
 
         payload = struct.pack("<8h", *range(8))
         audio = AudioContent(
-            type="audio", data=base64.b64encode(payload).decode(),
+            type="audio",
+            data=base64.b64encode(payload).decode(),
             mime_type="audio/wav",
-            _meta={"channels": 2, "sample_width": 2, "frame_rate": 44100})
+            _meta={"channels": 2, "sample_width": 2, "frame_rate": 44100},
+        )
 
         mock_response = MagicMock()
         mock_response.content = [audio]
@@ -345,8 +366,11 @@ class TestToolHandler:
         import base64
         from mcp.types import AudioContent
 
-        audio = AudioContent(type="audio", data=base64.b64encode(b"ID3" + b"\x00" * 8).decode(),
-                             mime_type="audio/mpeg")
+        audio = AudioContent(
+            type="audio",
+            data=base64.b64encode(b"ID3" + b"\x00" * 8).decode(),
+            mime_type="audio/mpeg",
+        )
         mock_response = MagicMock()
         mock_response.content = [audio]
         mock_client = AsyncMock()
@@ -381,6 +405,7 @@ class TestToolHandler:
 
 
 # ── pooled session recovery ─────────────────────────────────────────────────
+
 
 class TestPooledClient:
     """A pooled MCP session that stops working must fail, then heal."""
@@ -459,8 +484,14 @@ _REQUEST_TIMEOUT_STANDIN = 30
 
 def _fake_stdio_spec():
     """A launch spec for a server no test ever starts."""
-    return {"command": sys.executable, "args": ["-c", "pass"],
-            "env": {}, "cwd": None, "log_file": None}
+    return {
+        "command": sys.executable,
+        "args": ["-c", "pass"],
+        "env": {},
+        "cwd": None,
+        "log_file": None,
+    }
+
 
 class TestConnectionHygiene:
     """The client must not POST into a connection the server is closing.
@@ -612,8 +643,7 @@ class TestConnectionHygiene:
         client.transport = MagicMock()
         client.transport.close = AsyncMock()
 
-        pooled = _PooledClient("http://127.0.0.1:18201/sse",
-                               asyncio.get_running_loop())
+        pooled = _PooledClient("http://127.0.0.1:18201/sse", asyncio.get_running_loop())
         pooled._client = client
         await pooled._discard()
 
@@ -626,8 +656,14 @@ class TestConnectionHygiene:
 
         def record(msg):
             return logging.LogRecord(
-                "mcp.client.sse", logging.ERROR, __file__, 1, msg, None,
-                (RuntimeError, RuntimeError("read error"), None))
+                "mcp.client.sse",
+                logging.ERROR,
+                __file__,
+                1,
+                msg,
+                None,
+                (RuntimeError, RuntimeError("read error"), None),
+            )
 
         # Both halves of the transport report a dead session this way.
         assert _TransportNoise().filter(record("Error in post_writer")) is False
@@ -647,8 +683,7 @@ class TestConnectionHygiene:
         from mcp.client.sse import sse_client  # for its default read timeout
         from type.tools import _HTTPX, _http_client_factory, _STREAM_READ_TIMEOUT
 
-        sdk_default = inspect.signature(sse_client).parameters[
-            "sse_read_timeout"].default
+        sdk_default = inspect.signature(sse_client).parameters["sse_read_timeout"].default
         assert _STREAM_READ_TIMEOUT > sdk_default
 
         client = _http_client_factory(timeout=_HTTPX.Timeout(30.0, read=300.0))
@@ -693,8 +728,10 @@ class TestSessionWatchdog:
         live.__aexit__ = AsyncMock(return_value=False)
 
         h = _make_handler("t")
-        with patch("type.tools.Client", side_effect=[dead, live]), \
-             patch("type.tools._HEALTH_INTERVAL", 0.01):
+        with (
+            patch("type.tools.Client", side_effect=[dead, live]),
+            patch("type.tools._HEALTH_INTERVAL", 0.01),
+        ):
             result = await asyncio.wait_for(h(query="test"), timeout=5)
 
         assert result == "recovered"
@@ -723,10 +760,11 @@ class TestSessionWatchdog:
         busy.__aexit__ = AsyncMock(return_value=False)
 
         h = _make_handler("t")
-        with patch("type.tools.Client", return_value=busy), \
-             patch("type.tools._HEALTH_INTERVAL", 0.01):
+        with (
+            patch("type.tools.Client", return_value=busy),
+            patch("type.tools._HEALTH_INTERVAL", 0.01),
+        ):
             result = await asyncio.wait_for(h(query="test"), timeout=5)
 
         assert result == "slow but fine"
         assert busy.__aexit__.await_count == 0  # session kept
-

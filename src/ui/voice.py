@@ -71,24 +71,24 @@ logger = logging.getLogger(__name__)
 # a rename upstream should be a one-line change down here.
 EV = {
     # client -> server
-    "audio_append":   "input_audio_buffer.append",
+    "audio_append": "input_audio_buffer.append",
     "session_update": "session.update",
-    "item_create":    "conversation.item.create",
-    "session_close":  "session.close",
+    "item_create": "conversation.item.create",
+    "session_close": "session.close",
     # server -> client
-    "session_created":   "session.created",
-    "session_updated":   "session.updated",
-    "session_end":       "session.end",
-    "speech_started":    "input_audio_buffer.speech_started",
-    "speech_stopped":    "input_audio_buffer.speech_stopped",
-    "response_created":  "response.created",
-    "audio_delta":       "response.output_audio.delta",
-    "audio_done":        "response.output_audio.done",
-    "agent_text_delta":  "response.output_audio_transcript.delta",
-    "user_text_delta":   "conversation.item.input_audio_transcription.delta",
-    "user_text_done":    "conversation.item.input_audio_transcription.completed",
-    "tool_call":         "response.function_call_arguments.done",
-    "error":             "error",
+    "session_created": "session.created",
+    "session_updated": "session.updated",
+    "session_end": "session.end",
+    "speech_started": "input_audio_buffer.speech_started",
+    "speech_stopped": "input_audio_buffer.speech_stopped",
+    "response_created": "response.created",
+    "audio_delta": "response.output_audio.delta",
+    "audio_done": "response.output_audio.done",
+    "agent_text_delta": "response.output_audio_transcript.delta",
+    "user_text_delta": "conversation.item.input_audio_transcription.delta",
+    "user_text_done": "conversation.item.input_audio_transcription.completed",
+    "tool_call": "response.function_call_arguments.done",
+    "error": "error",
 }
 
 DEFAULT_URL = "ws://localhost:9100/v1/realtime"
@@ -146,10 +146,21 @@ _WS_RE = re.compile(r"\s+")
 
 # Characters NFKD leaves alone but that still fall outside ASCII.
 _PUNCT_MAP = {
-    "‘": "'", "’": "'", "“": '"', "”": '"',
-    "–": "-", "—": " - ", "…": "...", "•": " ",
-    " ": " ", "·": " ", "→": " to ", "×": " x ",
-    "™": "", "®": "", "©": "",
+    "‘": "'",
+    "’": "'",
+    "“": '"',
+    "”": '"',
+    "–": "-",
+    "—": " - ",
+    "…": "...",
+    "•": " ",
+    " ": " ",
+    "·": " ",
+    "→": " to ",
+    "×": " x ",
+    "™": "",
+    "®": "",
+    "©": "",
 }
 
 _CODE_STANDIN = " I put the code in the transcript. "
@@ -207,10 +218,10 @@ def _truncate_spoken(text: str, limit: int) -> str:
     window = text[:limit]
     cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
     if cut > limit * 0.5:
-        return window[:cut + 1]
+        return window[: cut + 1]
     # No usable sentence end: break on a word and mark the cut. The ellipsis
     # has to fit inside the limit too — the caller's budget is the budget.
-    window = text[:max(limit - 3, 0)]
+    window = text[: max(limit - 3, 0)]
     cut = window.rfind(" ")
     return (window[:cut] if cut > 0 else window).rstrip() + "..."
 
@@ -225,7 +236,7 @@ def rms_pcm16(raw: bytes) -> float:
     if len(raw) < 2:
         return 0.0
     samples = array.array("h")
-    samples.frombytes(raw[:len(raw) - (len(raw) % 2)])
+    samples.frombytes(raw[: len(raw) - (len(raw) % 2)])
     if not samples:
         return 0.0
     total = 0
@@ -236,9 +247,11 @@ def rms_pcm16(raw: bytes) -> float:
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class VoiceConfig:
     """Everything the `voice:` block in the config controls."""
+
     enabled: bool = False
     url: str = DEFAULT_URL
     sample_rate: int = SAMPLE_RATE
@@ -321,6 +334,7 @@ def tool_specs(on_hold: str = DEFAULT_ON_HOLD) -> list[dict]:
 
 # ── The bridge ──────────────────────────────────────────────────────────────
 
+
 class VoiceBridge:
     """One live call: a browser socket, a container socket, and OnIt between.
 
@@ -330,8 +344,9 @@ class VoiceBridge:
     text share history, files and the stop button.
     """
 
-    def __init__(self, ui, session, client_ws, config: VoiceConfig,
-                 ws_connect: Optional[Callable] = None) -> None:
+    def __init__(
+        self, ui, session, client_ws, config: VoiceConfig, ws_connect: Optional[Callable] = None
+    ) -> None:
         self.ui = ui
         self.session = session
         self.client = client_ws
@@ -374,22 +389,28 @@ class VoiceBridge:
             await self._connect_upstream()
         except Exception as exc:
             logger.error("voice: cannot reach %s: %s", self.cfg.url, exc)
-            await self._send_client("error", {
-                "message": "The voice service is not reachable. "
-                           "Check that the VoiceChat container is running."
-            })
+            await self._send_client(
+                "error",
+                {
+                    "message": "The voice service is not reachable. "
+                    "Check that the VoiceChat container is running."
+                },
+            )
             self._closing = True
             await self._drain(writer)
             return
 
         try:
             await self._send_session_update()
-            await self._send_client("ready", {"sample_rate": self.cfg.sample_rate,
-                                              "frame_bytes": FRAME_BYTES})
+            await self._send_client(
+                "ready", {"sample_rate": self.cfg.sample_rate, "frame_bytes": FRAME_BYTES}
+            )
             self.ui.add_log("Voice call started")
             done, pending = await asyncio.wait(
-                {asyncio.create_task(self._pump_client()),
-                 asyncio.create_task(self._pump_server())},
+                {
+                    asyncio.create_task(self._pump_client()),
+                    asyncio.create_task(self._pump_server()),
+                },
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
@@ -414,8 +435,7 @@ class VoiceBridge:
             import aiohttp
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise RuntimeError(
-                "The voice bridge needs aiohttp. Install it with: "
-                "pip install 'onit[voice]'"
+                "The voice bridge needs aiohttp. Install it with: pip install 'onit[voice]'"
             ) from exc
         self._http = aiohttp.ClientSession()
         # max_msg_size=0 lifts the 4 MB cap: audio frames are small, but a
@@ -466,9 +486,12 @@ class VoiceBridge:
                 if not b64:
                     continue
                 self._watch_for_barge_in(b64)
-                await self._send_upstream({
-                    "type": EV["audio_append"], "audio": b64,
-                })
+                await self._send_upstream(
+                    {
+                        "type": EV["audio_append"],
+                        "audio": b64,
+                    }
+                )
             elif mtype == "stop":
                 # The composer's stop button, pressed mid-call.
                 await self._cancel_running_task()
@@ -517,22 +540,37 @@ class VoiceBridge:
             elif etype == EV["agent_text_delta"]:
                 delta = payload.get("delta") or ""
                 self._agent_text.append(delta)
-                await self._send_client("transcript", {
-                    "role": "assistant", "delta": delta, "final": False,
-                })
+                await self._send_client(
+                    "transcript",
+                    {
+                        "role": "assistant",
+                        "delta": delta,
+                        "final": False,
+                    },
+                )
 
             elif etype == EV["user_text_delta"]:
-                await self._send_client("transcript", {
-                    "role": "user", "delta": payload.get("delta") or "", "final": False,
-                })
+                await self._send_client(
+                    "transcript",
+                    {
+                        "role": "user",
+                        "delta": payload.get("delta") or "",
+                        "final": False,
+                    },
+                )
 
             elif etype == EV["user_text_done"]:
                 text = payload.get("transcript") or "".join(self._user_text)
                 self._user_text = [text]
                 self._unprompted_turns = 0
-                await self._send_client("transcript", {
-                    "role": "user", "text": text, "final": True,
-                })
+                await self._send_client(
+                    "transcript",
+                    {
+                        "role": "user",
+                        "text": text,
+                        "final": True,
+                    },
+                )
 
             elif etype == EV["speech_started"]:
                 # The browser is holding up to a second of queued playback.
@@ -553,15 +591,21 @@ class VoiceBridge:
                         # Documented failure mode: the model can keep starting
                         # turns with no user input and talk to itself.
                         logger.warning("voice: runaway continuation, ending call")
-                        await self._send_client("error", {
-                            "message": "Ending the call — the agent kept talking "
-                                       "without input."})
+                        await self._send_client(
+                            "error",
+                            {"message": "Ending the call — the agent kept talking without input."},
+                        )
                         return
 
             elif etype == EV["audio_done"]:
-                await self._send_client("transcript", {
-                    "role": "assistant", "text": "".join(self._agent_text), "final": True,
-                })
+                await self._send_client(
+                    "transcript",
+                    {
+                        "role": "assistant",
+                        "text": "".join(self._agent_text),
+                        "final": True,
+                    },
+                )
                 self._record_turn()
 
             elif etype == EV["tool_call"]:
@@ -628,14 +672,16 @@ class VoiceBridge:
             logger.error("voice: tool %s failed: %s", name, exc)
             output = "That did not work. Please try asking a different way."
 
-        await self._send_upstream({
-            "type": EV["item_create"],
-            "item": {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": speakable(output, self.cfg.max_spoken_chars),
-            },
-        })
+        await self._send_upstream(
+            {
+                "type": EV["item_create"],
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": speakable(output, self.cfg.max_spoken_chars),
+                },
+            }
+        )
 
     async def _ask_onit(self, request: str) -> str:
         """Run the full agent loop for one spoken request.
@@ -699,14 +745,18 @@ class VoiceBridge:
         # The spoken form is a summary; the transcript gets the real answer,
         # links and generated files included, exactly as typed chat would.
         display, file_paths = self.ui._extract_file_paths(
-            response, data_path=self.session.data_path,
+            response,
+            data_path=self.session.data_path,
             session_id=self.session.session_id,
         )
-        await self._send_client("answer", {
-            "content": display,
-            "files": self.ui._file_infos(file_paths, self.session.session_id),
-            "elapsed": round(elapsed, 1),
-        })
+        await self._send_client(
+            "answer",
+            {
+                "content": display,
+                "files": self.ui._file_infos(file_paths, self.session.session_id),
+                "elapsed": round(elapsed, 1),
+            },
+        )
         return response
 
     def _on_tool_status(self, text: str) -> None:
@@ -751,12 +801,19 @@ class VoiceBridge:
             return
         try:
             with open(self.session.session_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "task": user, "response": agent, "timestamp": time.time(),
-                }) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "task": user,
+                            "response": agent,
+                            "timestamp": time.time(),
+                        }
+                    )
+                    + "\n"
+                )
             from src.sessions import update_session
-            update_session(self.session.session_id, task=user,
-                           sessions_dir=self.ui._sessions_dir())
+
+            update_session(self.session.session_id, task=user, sessions_dir=self.ui._sessions_dir())
         except Exception as exc:
             logger.debug("voice: could not record turn: %s", exc)
 
@@ -771,15 +828,17 @@ class VoiceBridge:
         on_hold = speakable(self.cfg.on_hold_message, limit=0)
         if on_hold:
             prompt = f'{prompt} When you call ask_onit, first say: "{on_hold}"'
-        await self._send_upstream({
-            "type": EV["session_update"],
-            "audio": {
-                "input": {"format": {"type": "audio/pcm", "rate": self.cfg.sample_rate}},
-                "output": {"format": {"type": "audio/pcm", "rate": self.cfg.sample_rate}},
-            },
-            "instructions": prompt,
-            "tools": tool_specs(self.cfg.on_hold_message),
-        })
+        await self._send_upstream(
+            {
+                "type": EV["session_update"],
+                "audio": {
+                    "input": {"format": {"type": "audio/pcm", "rate": self.cfg.sample_rate}},
+                    "output": {"format": {"type": "audio/pcm", "rate": self.cfg.sample_rate}},
+                },
+                "instructions": prompt,
+                "tools": tool_specs(self.cfg.on_hold_message),
+            }
+        )
 
     async def _send_upstream(self, message: dict) -> None:
         if self.upstream is None:
@@ -804,8 +863,7 @@ class VoiceBridge:
         if loop is None or loop.is_closed():
             return
         try:
-            loop.call_soon_threadsafe(
-                lambda: self._send_client_nowait(etype, payload))
+            loop.call_soon_threadsafe(lambda: self._send_client_nowait(etype, payload))
         except RuntimeError:
             pass
 
@@ -843,8 +901,9 @@ async def check_health(cfg: VoiceConfig, timeout: float = 5.0) -> dict:
         return {"ok": False, "status": "aiohttp is not installed"}
     try:
         async with aiohttp.ClientSession() as http:
-            async with http.get(cfg.health_url(),
-                                timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            async with http.get(
+                cfg.health_url(), timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
                 body: Any = {}
                 try:
                     body = await resp.json(content_type=None)
@@ -854,7 +913,7 @@ async def check_health(cfg: VoiceConfig, timeout: float = 5.0) -> dict:
                 return {
                     "ok": ok,
                     "status": (body or {}).get("triton_status")
-                              or ("ready" if ok else f"http {resp.status}"),
+                    or ("ready" if ok else f"http {resp.status}"),
                     "url": cfg.url,
                 }
     except Exception as exc:

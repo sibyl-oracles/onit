@@ -1,4 +1,4 @@
-'''
+"""
 # Copyright 2025 Rowel Atienza. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,7 +32,7 @@ process, under the same policy the rest of the server runs under.
 
 Optional environment variables:
     ONIT_LEARN_PATH  - the learned store to read skills and the pin from
-'''
+"""
 
 import importlib.util
 import inspect
@@ -43,16 +43,14 @@ import sys
 
 from fastmcp import FastMCP
 
-logging.basicConfig(level=logging.ERROR,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("Skills MCP Server")
 
 # The learned store.  Read from the environment so the server finds the
 # same store the agent writes to, without a config file of its own.
-LEARN_PATH = os.path.expanduser(os.environ.get('ONIT_LEARN_PATH',
-                                                '~/.onit/learned'))
+LEARN_PATH = os.path.expanduser(os.environ.get("ONIT_LEARN_PATH", "~/.onit/learned"))
 
 # The loaded skills, by name.  Populated at startup from the pin.
 _SKILLS: dict = {}
@@ -119,8 +117,7 @@ def _schema_for(manifest: dict) -> dict:
     return out
 
 
-def _gate_problem(directory: str, name: str,
-                  config_data: dict | None) -> str:
+def _gate_problem(directory: str, name: str, config_data: dict | None) -> str:
     """Why this skill must not be served, or "" when it may be.
 
     The gate is imported here rather than at module scope so that a
@@ -131,8 +128,7 @@ def _gate_problem(directory: str, name: str,
     try:
         from src.learn.skills_gate import check_source, read_skill_sources
     except Exception as e:  # pragma: no cover - import of our own module
-        return "the gate is unavailable (%s), so the skill cannot be " \
-               "checked" % e
+        return "the gate is unavailable (%s), so the skill cannot be checked" % e
     try:
         source, _tests, _ = read_skill_sources(directory)
     except Exception as e:
@@ -175,8 +171,13 @@ def load_skills(config_data: dict | None = None) -> dict:
             logger.warning(
                 "Not serving %d pinned skill(s) at autonomy %s (%d): serving "
                 "a skill needs %s (%d). Skills: %s",
-                len(pinned), level_name(level), level, level_name(EXTEND),
-                EXTEND, ", ".join(pinned))
+                len(pinned),
+                level_name(level),
+                level,
+                level_name(EXTEND),
+                EXTEND,
+                ", ".join(pinned),
+            )
         return {}
 
     loaded = {}
@@ -200,8 +201,9 @@ def load_skills(config_data: dict | None = None) -> dict:
             # costs the agent that skill, not the server.
             problem = _gate_problem(directory, name, config_data)
             if problem:
-                logger.error("Skill %r not served: it no longer passes the "
-                             "gate -- %s", name, problem)
+                logger.error(
+                    "Skill %r not served: it no longer passes the gate -- %s", name, problem
+                )
                 continue
             module = _load_module(os.path.join(directory, "tool.py"), name)
             run = getattr(module, "run", None)
@@ -210,10 +212,9 @@ def load_skills(config_data: dict | None = None) -> dict:
             manifest = getattr(module, "MANIFEST", None)
             if not isinstance(manifest, dict):
                 from src.learn.skills import read_manifest
-                manifest = read_manifest(os.path.join(directory,
-                                                      "manifest.yaml")) or {}
-            loaded[name] = {"module": module, "run": run, "manifest": manifest,
-                            "dir": directory}
+
+                manifest = read_manifest(os.path.join(directory, "manifest.yaml")) or {}
+            loaded[name] = {"module": module, "run": run, "manifest": manifest, "dir": directory}
         except Exception as e:
             logger.error("Skill %r not loaded: %s", name, e)
     return loaded
@@ -282,9 +283,11 @@ def _make_handler(skill_run, schema: dict):
             default = spec.get("default")
             if default is None and ptype is str:
                 default = ""
-        params.append(inspect.Parameter(
-            pname, inspect.Parameter.KEYWORD_ONLY,
-            default=default, annotation=ptype))
+        params.append(
+            inspect.Parameter(
+                pname, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=ptype
+            )
+        )
 
     return _compile_handler(handler, params, skill_run)
 
@@ -302,6 +305,7 @@ def _compile_handler(handler, params, skill_run):
         # No declared parameters: a plain zero-argument function.
         def wrapper():
             return handler()
+
         wrapper.__name__ = handler.__name__
         return wrapper
 
@@ -334,9 +338,7 @@ def _compile_handler(handler, params, skill_run):
             pieces.append("%s: %s = %s" % (p.name, annotation, default))
     signature = ", ".join(pieces)
     calls = ", ".join("%s=%s" % (n, n) for n in names)
-    source = (
-        "def _skill_tool(%s):\n"
-        "    return _handler(%s)\n" % (signature, calls))
+    source = "def _skill_tool(%s):\n    return _handler(%s)\n" % (signature, calls)
 
     namespace = {"_handler": handler}
     exec(compile(source, "<skill:%s>" % handler.__name__, "exec"), namespace)
@@ -381,19 +383,19 @@ def run(
     host: str = "0.0.0.0",
     port: int = 18203,
     path: str = "/sse",
-    options: dict = None
+    options: dict = None,
 ) -> None:
     """Run the Skills MCP server."""
     options = options or {}
     global LEARN_PATH
 
-    verbose = 'verbose' in options
+    verbose = "verbose" in options
     logger.setLevel(logging.INFO if verbose else logging.ERROR)
 
-    if 'learn_path' in options:
-        LEARN_PATH = options['learn_path']
-    elif os.environ.get('ONIT_LEARN_PATH'):
-        LEARN_PATH = os.environ['ONIT_LEARN_PATH']
+    if "learn_path" in options:
+        LEARN_PATH = options["learn_path"]
+    elif os.environ.get("ONIT_LEARN_PATH"):
+        LEARN_PATH = os.environ["ONIT_LEARN_PATH"]
     LEARN_PATH = os.path.abspath(os.path.expanduser(LEARN_PATH))
 
     loaded = load_skills(_config_data())
@@ -402,22 +404,19 @@ def run(
     _SKILLS.update(loaded)
 
     if registered:
-        logger.info("Serving %d skill(s): %s", len(registered),
-                    ", ".join(registered))
+        logger.info("Serving %d skill(s): %s", len(registered), ", ".join(registered))
     else:
-        logger.info("No pinned skills to serve. Pin one with "
-                    "'onit learn --skills --pin NAME'.")
+        logger.info("No pinned skills to serve. Pin one with 'onit learn --skills --pin NAME'.")
 
-    if transport == 'stdio':
+    if transport == "stdio":
         logger.info("Starting Skills MCP Server on stdio")
     else:
         logger.info("Starting Skills MCP Server at %s:%s%s", host, port, path)
 
-    run_kwargs = {'show_banner': False}
-    if 'show_banner' not in inspect.signature(mcp.run).parameters:
-        run_kwargs.pop('show_banner')
-    if transport == 'stdio':
-        mcp.run(transport='stdio', **run_kwargs)
+    run_kwargs = {"show_banner": False}
+    if "show_banner" not in inspect.signature(mcp.run).parameters:
+        run_kwargs.pop("show_banner")
+    if transport == "stdio":
+        mcp.run(transport="stdio", **run_kwargs)
     else:
-        mcp.run(transport=transport, host=host, port=port, path=path,
-                **run_kwargs)
+        mcp.run(transport=transport, host=host, port=port, path=path, **run_kwargs)

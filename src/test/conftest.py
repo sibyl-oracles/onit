@@ -70,6 +70,7 @@ def _clean_mode_env(monkeypatch, tmp_path):
 # The developer's keychain
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _no_real_secrets(monkeypatch, tmp_path):
     """No test reads a secret the machine running it happens to hold.
@@ -86,14 +87,15 @@ def _no_real_secrets(monkeypatch, tmp_path):
     ``_fake_keystore`` replaces ``get_secret`` itself and is unaffected.
     """
     import src.setup as setup_mod
+
     monkeypatch.setattr(setup_mod, "KEYRING_AVAILABLE", False)
-    monkeypatch.setattr(setup_mod, "_SECRETS_PATH",
-                        str(tmp_path / "secrets.yaml"))
+    monkeypatch.setattr(setup_mod, "_SECRETS_PATH", str(tmp_path / "secrets.yaml"))
 
 
 # ---------------------------------------------------------------------------
 # The developer's session store
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _no_real_session_store(monkeypatch, tmp_path_factory):
@@ -136,8 +138,7 @@ def _no_real_session_store(monkeypatch, tmp_path_factory):
 
     old = sessions_mod.DEFAULT_SESSIONS_DIR
     new = str(home / ".onit" / "sessions")
-    monkeypatch.setattr(sessions_mod, "DEFAULT_SESSIONS_DIR", new,
-                        raising=False)
+    monkeypatch.setattr(sessions_mod, "DEFAULT_SESSIONS_DIR", new, raising=False)
     for fn in list(vars(sessions_mod).values()):
         defaults = getattr(fn, "__defaults__", None)
         if defaults and old in defaults:
@@ -147,13 +148,13 @@ def _no_real_session_store(monkeypatch, tmp_path_factory):
     for mod_name in ("src.onit", "src.cli"):
         mod = sys.modules.get(mod_name)
         if mod is not None and hasattr(mod, "DEFAULT_SESSIONS_DIR"):
-            monkeypatch.setattr(mod, "DEFAULT_SESSIONS_DIR", new,
-                                raising=False)
+            monkeypatch.setattr(mod, "DEFAULT_SESSIONS_DIR", new, raising=False)
 
 
 # ---------------------------------------------------------------------------
 # Minimal valid config dict (avoids real MCP / network calls)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def sample_config_dict(tmp_path):
@@ -188,9 +189,11 @@ def sample_config_dict(tmp_path):
 # Tool helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def make_tool_item():
     """Factory to build a tool_item dict."""
+
     def _make(name="test_tool", description="A test tool", url="http://127.0.0.1:18201/sse"):
         return {
             "type": "function",
@@ -201,6 +204,7 @@ def make_tool_item():
                 "returns": {},
             },
         }
+
     return _make
 
 
@@ -210,8 +214,10 @@ def mock_tool_registry(make_tool_item):
     from type.tools import ToolRegistry, ToolHandler
 
     registry = ToolRegistry()
-    for name, url in [("search", "http://127.0.0.1:18201/sse"),
-                      ("bash", "http://127.0.0.1:18201/sse")]:
+    for name, url in [
+        ("search", "http://127.0.0.1:18201/sse"),
+        ("bash", "http://127.0.0.1:18201/sse"),
+    ]:
         handler = ToolHandler(url=url, tool_item=make_tool_item(name=name, url=url))
         registry.register(handler)
     return registry
@@ -221,6 +227,7 @@ def mock_tool_registry(make_tool_item):
 # Async helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def safety_queue():
     return asyncio.Queue(maxsize=10)
@@ -229,6 +236,7 @@ def safety_queue():
 # ---------------------------------------------------------------------------
 # Temp session file
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def tmp_session_file(tmp_path):

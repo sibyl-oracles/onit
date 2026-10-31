@@ -79,8 +79,9 @@ def _session(tmp_path, name):
 
 class TestDecision:
     def test_unlisted_executable_is_a_question(self):
-        d = evaluate_command("mytool run x.ts", DEFAULT_ALLOWED_COMMANDS,
-                             ask_scope=frozenset({"command"}))
+        d = evaluate_command(
+            "mytool run x.ts", DEFAULT_ALLOWED_COMMANDS, ask_scope=frozenset({"command"})
+        )
         assert d.verdict == "ask"
         assert d.subjects == ("mytool",)
 
@@ -90,8 +91,9 @@ class TestDecision:
         A refusal the model can only interpret by knowing which deployment it
         is running in is a refusal it cannot learn anything from.
         """
-        asked = evaluate_command("mytool run x.ts", DEFAULT_ALLOWED_COMMANDS,
-                                 ask_scope=frozenset({"command"}))
+        asked = evaluate_command(
+            "mytool run x.ts", DEFAULT_ALLOWED_COMMANDS, ask_scope=frozenset({"command"})
+        )
         denied = evaluate_command("mytool run x.ts", DEFAULT_ALLOWED_COMMANDS)
         assert denied.verdict == "deny"
         assert denied.reason == asked.reason
@@ -104,33 +106,46 @@ class TestDecision:
         would run; putting that string in front of a person and asking them to
         vouch for it would launder the uncertainty rather than resolve it.
         """
-        d = evaluate_command("case $x in a) ls;; esac", DEFAULT_ALLOWED_COMMANDS,
-                             ask_scope=frozenset({"command", "install"}))
+        d = evaluate_command(
+            "case $x in a) ls;; esac",
+            DEFAULT_ALLOWED_COMMANDS,
+            ask_scope=frozenset({"command", "install"}),
+        )
         assert d.verdict == "deny"
 
     def test_a_deny_beats_an_ask_in_the_same_command(self):
-        d = evaluate_command("mytool run x.ts; case $y in b) ls;; esac",
-                             DEFAULT_ALLOWED_COMMANDS,
-                             ask_scope=frozenset({"command"}))
+        d = evaluate_command(
+            "mytool run x.ts; case $y in b) ls;; esac",
+            DEFAULT_ALLOWED_COMMANDS,
+            ask_scope=frozenset({"command"}),
+        )
         assert d.verdict == "deny"
 
     def test_one_prompt_covers_every_unlisted_executable(self):
-        d = evaluate_command("mytool run x.ts | othertool run y.ts",
-                             DEFAULT_ALLOWED_COMMANDS,
-                             ask_scope=frozenset({"command"}))
+        d = evaluate_command(
+            "mytool run x.ts | othertool run y.ts",
+            DEFAULT_ALLOWED_COMMANDS,
+            ask_scope=frozenset({"command"}),
+        )
         assert d.verdict == "ask"
         assert set(d.subjects) == {"mytool", "othertool"}
 
     def test_an_unpinned_install_is_a_question(self):
-        d = evaluate_command("pip install requests", DEFAULT_ALLOWED_COMMANDS,
-                             allow_installs=True,
-                             ask_scope=frozenset({"install"}))
+        d = evaluate_command(
+            "pip install requests",
+            DEFAULT_ALLOWED_COMMANDS,
+            allow_installs=True,
+            ask_scope=frozenset({"install"}),
+        )
         assert d.verdict == "ask"
 
     def test_a_pinned_install_needs_no_one(self):
-        d = evaluate_command("pip install requests==2.31.0",
-                             DEFAULT_ALLOWED_COMMANDS, allow_installs=True,
-                             ask_scope=frozenset({"install"}))
+        d = evaluate_command(
+            "pip install requests==2.31.0",
+            DEFAULT_ALLOWED_COMMANDS,
+            allow_installs=True,
+            ask_scope=frozenset({"install"}),
+        )
         assert d.verdict == "allow"
 
 
@@ -138,51 +153,55 @@ class TestDecision:
 
 
 class TestAskingThroughTheTool:
-    async def test_no_channel_means_the_old_refusal(self, enforced, tmp_path,
-                                                    bash_tool, monkeypatch):
+    async def test_no_channel_means_the_old_refusal(
+        self, enforced, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.delenv("ONIT_APPROVAL_CHANNEL", raising=False)
-        r = json.loads(await bash_tool(command="mytool run x.ts",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(
+            await bash_tool(command="mytool run x.ts", data_path=_session(tmp_path, "s"))
+        )
         assert r["status"] == "blocked"
 
-    async def test_a_channel_turns_it_into_a_ticket(self, enforced, with_human,
-                                                    tmp_path, bash_tool):
-        r = json.loads(await bash_tool(command="mytool run x.ts",
-                                       data_path=_session(tmp_path, "s")))
+    async def test_a_channel_turns_it_into_a_ticket(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
+        r = json.loads(
+            await bash_tool(command="mytool run x.ts", data_path=_session(tmp_path, "s"))
+        )
         assert r["status"] == "needs_approval"
         assert r["approval_id"]
         assert r["subjects"] == ["mytool"]
 
-    async def test_the_command_did_not_run(self, enforced, with_human,
-                                           tmp_path, bash_tool):
+    async def test_the_command_did_not_run(self, enforced, with_human, tmp_path, bash_tool):
         base = _session(tmp_path, "s")
         await bash_tool(command=f"mytool run {base}/marker.txt", data_path=base)
         assert not os.path.exists(os.path.join(base, "marker.txt"))
 
-    async def test_a_ticket_lets_it_through(self, enforced, with_human,
-                                            tmp_path, bash_tool):
+    async def test_a_ticket_lets_it_through(self, enforced, with_human, tmp_path, bash_tool):
         base = _session(tmp_path, "s")
-        ticket = json.loads(await bash_tool(command="echo hi; mytool --version",
-                                            data_path=base))["approval_id"]
-        r = json.loads(await bash_tool(command="echo hi; mytool --version",
-                                       data_path=base,
-                                       approval_token=ticket))
+        ticket = json.loads(await bash_tool(command="echo hi; mytool --version", data_path=base))[
+            "approval_id"
+        ]
+        r = json.loads(
+            await bash_tool(
+                command="echo hi; mytool --version", data_path=base, approval_token=ticket
+            )
+        )
         # mytool does not exist here; what matters is that policy let go of it.
         assert r["status"] != "needs_approval"
         assert "allowlist" not in json.dumps(r)
 
-    async def test_a_ticket_is_single_use(self, enforced, with_human,
-                                          tmp_path, bash_tool):
+    async def test_a_ticket_is_single_use(self, enforced, with_human, tmp_path, bash_tool):
         base = _session(tmp_path, "s")
         cmd = "mytool run x.ts"
         ticket = json.loads(await bash_tool(command=cmd, data_path=base))["approval_id"]
         await bash_tool(command=cmd, data_path=base, approval_token=ticket)
-        again = json.loads(await bash_tool(command=cmd, data_path=base,
-                                           approval_token=ticket))
+        again = json.loads(await bash_tool(command=cmd, data_path=base, approval_token=ticket))
         assert again["status"] == "needs_approval"
 
-    async def test_a_ticket_is_bound_to_its_command(self, enforced, with_human,
-                                                    tmp_path, bash_tool):
+    async def test_a_ticket_is_bound_to_its_command(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         """Approving one command must not approve the next one.
 
         This is the whole reason the ticket carries a digest: a person who
@@ -191,67 +210,85 @@ class TestAskingThroughTheTool:
         rather than an answer.
         """
         base = _session(tmp_path, "s")
-        ticket = json.loads(await bash_tool(command="mytool --version",
-                                            data_path=base))["approval_id"]
-        r = json.loads(await bash_tool(command="mytool run untrusted.ts",
-                                       data_path=base,
-                                       approval_token=ticket))
+        ticket = json.loads(await bash_tool(command="mytool --version", data_path=base))[
+            "approval_id"
+        ]
+        r = json.loads(
+            await bash_tool(
+                command="mytool run untrusted.ts", data_path=base, approval_token=ticket
+            )
+        )
         assert r["status"] == "needs_approval"
         assert r["approval_id"] != ticket
 
-    async def test_a_ticket_is_bound_to_its_session(self, enforced, with_human,
-                                                    tmp_path, bash_tool):
+    async def test_a_ticket_is_bound_to_its_session(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         alice = _session(tmp_path, "alice")
         bob = _session(tmp_path, "bob")
-        ticket = json.loads(await bash_tool(command="mytool run x.ts",
-                                            data_path=alice))["approval_id"]
-        r = json.loads(await bash_tool(command="mytool run x.ts", data_path=bob,
-                                       approval_token=ticket))
+        ticket = json.loads(await bash_tool(command="mytool run x.ts", data_path=alice))[
+            "approval_id"
+        ]
+        r = json.loads(
+            await bash_tool(command="mytool run x.ts", data_path=bob, approval_token=ticket)
+        )
         assert r["status"] == "needs_approval"
 
-    async def test_an_invented_ticket_is_worth_nothing(self, enforced,
-                                                       with_human, tmp_path,
-                                                       bash_tool):
+    async def test_an_invented_ticket_is_worth_nothing(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         """The harness strips this argument, but the server does not rely on
         that: a guessed token has to fail on its own merits too."""
         base = _session(tmp_path, "s")
-        r = json.loads(await bash_tool(command="mytool run x.ts", data_path=base,
-                                       approval_token="not-a-real-token"))
+        r = json.loads(
+            await bash_tool(
+                command="mytool run x.ts", data_path=base, approval_token="not-a-real-token"
+            )
+        )
         assert r["status"] == "needs_approval"
 
-    async def test_session_scope_stops_the_asking(self, enforced, with_human,
-                                                  tmp_path, bash_tool):
+    async def test_session_scope_stops_the_asking(self, enforced, with_human, tmp_path, bash_tool):
         base = _session(tmp_path, "s")
-        ticket = json.loads(await bash_tool(command="mytool --version",
-                                            data_path=base))["approval_id"]
-        await bash_tool(command="mytool --version", data_path=base,
-                        approval_token=ticket, approval_scope="session")
-        r = json.loads(await bash_tool(command="mytool run other.ts",
-                                       data_path=base))
+        ticket = json.loads(await bash_tool(command="mytool --version", data_path=base))[
+            "approval_id"
+        ]
+        await bash_tool(
+            command="mytool --version",
+            data_path=base,
+            approval_token=ticket,
+            approval_scope="session",
+        )
+        r = json.loads(await bash_tool(command="mytool run other.ts", data_path=base))
         assert r["status"] != "needs_approval"
 
-    async def test_a_session_grant_stays_in_its_session(self, enforced,
-                                                        with_human, tmp_path,
-                                                        bash_tool):
+    async def test_a_session_grant_stays_in_its_session(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         alice = _session(tmp_path, "alice")
         bob = _session(tmp_path, "bob")
-        ticket = json.loads(await bash_tool(command="mytool --version",
-                                            data_path=alice))["approval_id"]
-        await bash_tool(command="mytool --version", data_path=alice,
-                        approval_token=ticket, approval_scope="session")
+        ticket = json.loads(await bash_tool(command="mytool --version", data_path=alice))[
+            "approval_id"
+        ]
+        await bash_tool(
+            command="mytool --version",
+            data_path=alice,
+            approval_token=ticket,
+            approval_scope="session",
+        )
         r = json.loads(await bash_tool(command="mytool --version", data_path=bob))
         assert r["status"] == "needs_approval"
 
 
 class TestSayingNo:
-    async def test_a_refusal_is_remembered(self, enforced, with_human,
-                                           tmp_path, bash_tool):
+    async def test_a_refusal_is_remembered(self, enforced, with_human, tmp_path, bash_tool):
         base = _session(tmp_path, "s")
         cmd = "mytool run x.ts"
         ticket = json.loads(await bash_tool(command=cmd, data_path=base))["approval_id"]
-        refused = json.loads(await bash_tool(command=cmd, data_path=base,
-                                             approval_token=ticket,
-                                             approval_scope="deny"))
+        refused = json.loads(
+            await bash_tool(
+                command=cmd, data_path=base, approval_token=ticket, approval_scope="deny"
+            )
+        )
         assert refused["status"] == "blocked"
         # The same command must not raise a second prompt: asking again after
         # a no is how a model turns one decision into a war of attrition.
@@ -259,23 +296,25 @@ class TestSayingNo:
         assert again["status"] == "blocked"
 
     async def test_pressing_on_after_a_no_is_what_containment_is_for(
-            self, enforced, with_human, tmp_path, bash_tool, monkeypatch):
+        self, enforced, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
         base = _session(tmp_path, "s")
         cmd = "mytool run x.ts"
         ticket = json.loads(await bash_tool(command=cmd, data_path=base))["approval_id"]
-        await bash_tool(command=cmd, data_path=base, approval_token=ticket,
-                        approval_scope="deny")
+        await bash_tool(command=cmd, data_path=base, approval_token=ticket, approval_scope="deny")
         for _ in range(2):
             await bash_tool(command=cmd, data_path=base)
         r = json.loads(await bash_tool(command="ls .", data_path=base))
         assert r["status"] == "contained"
 
-    async def test_a_refusal_tells_the_model_to_stop(self, enforced, tmp_path,
-                                                     bash_tool, monkeypatch):
+    async def test_a_refusal_tells_the_model_to_stop(
+        self, enforced, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.delenv("ONIT_APPROVAL_CHANNEL", raising=False)
-        r = json.loads(await bash_tool(command="mytool run x.ts",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(
+            await bash_tool(command="mytool run x.ts", data_path=_session(tmp_path, "s"))
+        )
         assert r["retryable"] is False
         assert "different approach" in r["guidance"]
 
@@ -284,29 +323,32 @@ class TestSayingNo:
 
 
 class TestNonNegotiable:
-    async def test_privilege_escalation_is_never_asked(self, enforced,
-                                                       with_human, tmp_path,
-                                                       bash_tool):
-        r = json.loads(await bash_tool(command="sudo ls /",
-                                       data_path=_session(tmp_path, "s")))
+    async def test_privilege_escalation_is_never_asked(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
+        r = json.loads(await bash_tool(command="sudo ls /", data_path=_session(tmp_path, "s")))
         assert r["status"] == "blocked"
         assert "Do not look for another route" in r["guidance"]
 
-    async def test_sealed_installs_are_never_asked(self, enforced, with_human,
-                                                   tmp_path, bash_tool,
-                                                   monkeypatch):
+    async def test_sealed_installs_are_never_asked(
+        self, enforced, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         """In the containerized web UI there is no override, so there is
         nothing to offer: a prompt here would be asking someone to authorize
         something that will not happen either way."""
         monkeypatch.setenv("ONIT_WEB_UI", "1")
         monkeypatch.setenv("ONIT_CONTAINER", "1")
         monkeypatch.setenv("ONIT_ALLOW_PACKAGE_INSTALL", "1")
-        r = json.loads(await bash_tool(command="pip install requests==2.31.0",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(
+            await bash_tool(
+                command="pip install requests==2.31.0", data_path=_session(tmp_path, "s")
+            )
+        )
         assert r["status"] == "blocked"
 
     async def test_the_jail_holds_on_a_multi_tenant_deployment(
-            self, with_human, tmp_path, bash_tool, monkeypatch):
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         """One logged-in user cannot approve their way out of the jail.
 
         The web UI runs many people's sessions in one process under one OS
@@ -315,39 +357,38 @@ class TestNonNegotiable:
         """
         monkeypatch.setenv("ONIT_WEB_UI", "1")
         monkeypatch.setattr(bash_mod, "_PERMISSIONS_CACHE", None)
-        r = json.loads(await bash_tool(command="cat /etc/hosts",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(await bash_tool(command="cat /etc/hosts", data_path=_session(tmp_path, "s")))
         assert r["status"] == "blocked"
 
     async def test_the_same_slip_is_a_question_on_a_single_user_host(
-            self, with_human, tmp_path, bash_tool, monkeypatch):
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
-        r = json.loads(await bash_tool(command="cat /etc/hosts",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(await bash_tool(command="cat /etc/hosts", data_path=_session(tmp_path, "s")))
         assert r["status"] == "needs_approval"
         assert r["subjects"] == ["path:/etc"]
 
     async def test_secrets_in_the_environment_stay_put_on_the_web(
-            self, with_human, tmp_path, bash_tool, monkeypatch):
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         """`env` prints the operator's GITHUB_TOKEN, not the asker's."""
         monkeypatch.setenv("ONIT_WEB_UI", "1")
         monkeypatch.setattr(bash_mod, "_PERMISSIONS_CACHE", None)
-        r = json.loads(await bash_tool(command="printenv",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(await bash_tool(command="printenv", data_path=_session(tmp_path, "s")))
         assert r["status"] == "blocked"
 
-    async def test_an_operator_deny_rule_is_never_asked(self, with_human,
-                                                        tmp_path, bash_tool,
-                                                        monkeypatch):
+    async def test_an_operator_deny_rule_is_never_asked(
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         settings = tmp_path / "settings.json"
-        settings.write_text(json.dumps(
-            {"permissions": {"deny": ["Bash(curl *)"]}}))
+        settings.write_text(json.dumps({"permissions": {"deny": ["Bash(curl *)"]}}))
         monkeypatch.setenv("ONIT_SETTINGS", str(settings))
         monkeypatch.setattr(bash_mod, "SETTINGS_PATH", None)
         monkeypatch.setattr(bash_mod, "_PERMISSIONS_CACHE", None)
-        r = json.loads(await bash_tool(command="curl https://example.com",
-                                       data_path=_session(tmp_path, "s")))
+        r = json.loads(
+            await bash_tool(command="curl https://example.com", data_path=_session(tmp_path, "s"))
+        )
         assert r["status"] == "blocked"
 
 
@@ -360,8 +401,9 @@ class TestOneQuestionPerCommand:
     being told no is worse than never being asked.
     """
 
-    async def test_two_stray_paths_are_one_prompt(self, with_human, tmp_path,
-                                                  bash_tool, monkeypatch):
+    async def test_two_stray_paths_are_one_prompt(
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
         outside_a = tmp_path / "elsewhere"
@@ -373,15 +415,16 @@ class TestOneQuestionPerCommand:
 
         asked = json.loads(await bash_tool(command=command, data_path=base))
         assert asked["status"] == "needs_approval"
-        assert set(asked["subjects"]) == {f"path:{outside_a}",
-                                          f"path:{outside_b}"}
+        assert set(asked["subjects"]) == {f"path:{outside_a}", f"path:{outside_b}"}
 
-        ran = json.loads(await bash_tool(command=command, data_path=base,
-                                         approval_token=asked["approval_id"]))
+        ran = json.loads(
+            await bash_tool(command=command, data_path=base, approval_token=asked["approval_id"])
+        )
         assert ran["status"] == "success", ran
 
     async def test_a_stray_path_and_an_unlisted_tool_are_one_prompt(
-            self, enforced, with_human, tmp_path, bash_tool, monkeypatch):
+        self, enforced, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
         outside = tmp_path / "elsewhere"
@@ -393,14 +436,14 @@ class TestOneQuestionPerCommand:
         assert asked["status"] == "needs_approval"
         assert set(asked["subjects"]) == {"mytool", f"path:{outside}"}
 
-        ran = json.loads(await bash_tool(command=command, data_path=base,
-                                         approval_token=asked["approval_id"]))
+        ran = json.loads(
+            await bash_tool(command=command, data_path=base, approval_token=asked["approval_id"])
+        )
         assert ran["status"] != "needs_approval"
         assert "allowlist" not in json.dumps(ran)
         assert "outside allowed directories" not in json.dumps(ran)
 
-    async def test_once_really_is_once(self, with_human, tmp_path, bash_tool,
-                                       monkeypatch):
+    async def test_once_really_is_once(self, with_human, tmp_path, bash_tool, monkeypatch):
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
         outside = tmp_path / "elsewhere"
@@ -408,14 +451,18 @@ class TestOneQuestionPerCommand:
         base = _session(tmp_path, "s")
         command = f"ls {outside}"
         asked = json.loads(await bash_tool(command=command, data_path=base))
-        await bash_tool(command=command, data_path=base,
-                        approval_token=asked["approval_id"],
-                        approval_scope="once")
+        await bash_tool(
+            command=command,
+            data_path=base,
+            approval_token=asked["approval_id"],
+            approval_scope="once",
+        )
         again = json.loads(await bash_tool(command=command, data_path=base))
         assert again["status"] == "needs_approval"
 
     async def test_a_session_path_grant_covers_what_is_under_it(
-            self, with_human, tmp_path, bash_tool, monkeypatch):
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
         outside = tmp_path / "elsewhere"
@@ -423,14 +470,15 @@ class TestOneQuestionPerCommand:
         (outside / "deep" / "note.txt").write_text("hello\n")
         base = _session(tmp_path, "s")
 
-        asked = json.loads(await bash_tool(command=f"ls {outside}",
-                                           data_path=base))
-        await bash_tool(command=f"ls {outside}", data_path=base,
-                        approval_token=asked["approval_id"],
-                        approval_scope="session")
+        asked = json.loads(await bash_tool(command=f"ls {outside}", data_path=base))
+        await bash_tool(
+            command=f"ls {outside}",
+            data_path=base,
+            approval_token=asked["approval_id"],
+            approval_scope="session",
+        )
         # A different file under the approved directory does not ask again.
-        r = json.loads(await bash_tool(
-            command=f"cat {outside}/deep/note.txt", data_path=base))
+        r = json.loads(await bash_tool(command=f"cat {outside}/deep/note.txt", data_path=base))
         assert r["status"] == "success"
         assert "hello" in r["stdout"]
 
@@ -451,10 +499,12 @@ class TestASlowAnswer:
         as "blocked" moments after the person approved it.
         """
         from src.model.serving import chat
+
         assert approvals.PENDING_TTL > chat.APPROVAL_TIMEOUT
 
     async def test_a_yes_after_the_ticket_expired_still_runs(
-            self, with_human, tmp_path, bash_tool, monkeypatch):
+        self, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         """And if it does expire anyway, the server's re-ask is not a refusal."""
         monkeypatch.delenv("ONIT_WEB_UI", raising=False)
         monkeypatch.delenv("ONIT_CONTAINER", raising=False)
@@ -473,13 +523,17 @@ class TestASlowAnswer:
 
         registry = _ReaskingRegistry(bash_tool, base)
         result = await chat_module._resolve_approval(
-            "bash", {"command": command, "data_path": base},
-            json.dumps(asked), registry, _UI(answer="session"),
-            verbose=False, timeout=10)
+            "bash",
+            {"command": command, "data_path": base},
+            json.dumps(asked),
+            registry,
+            _UI(answer="session"),
+            verbose=False,
+            timeout=10,
+        )
         assert json.loads(result)["status"] == "success"
         # The person was asked once, not twice.
         assert registry.tickets == 2
-
 
     async def test_a_new_question_is_not_answered_on_their_behalf(self):
         """The guard that makes following a re-ask safe.
@@ -490,16 +544,16 @@ class TestASlowAnswer:
         answering it for them would grant reach nobody agreed to.
         """
         first = {"command": "ls /a", "subjects": ["path:/a"]}
-        assert chat_module._same_question(
-            first, {"command": "ls /a", "subjects": ["path:/a"]})
-        assert chat_module._same_question(
-            first, {"command": "ls /a", "subjects": []})
+        assert chat_module._same_question(first, {"command": "ls /a", "subjects": ["path:/a"]})
+        assert chat_module._same_question(first, {"command": "ls /a", "subjects": []})
         # A subject they never saw named.
         assert not chat_module._same_question(
-            first, {"command": "ls /a", "subjects": ["path:/a", "path:/b"]})
+            first, {"command": "ls /a", "subjects": ["path:/a", "path:/b"]}
+        )
         # A different command behind the same answer.
         assert not chat_module._same_question(
-            first, {"command": "rm -rf /a", "subjects": ["path:/a"]})
+            first, {"command": "rm -rf /a", "subjects": ["path:/a"]}
+        )
 
 
 class _ReaskingRegistry:
@@ -551,24 +605,25 @@ class _GatedRegistry:
         self.expect_token = expect_token
 
     def tool_accepts_param(self, tool_name, param_name):
-        return param_name in ("data_path", "session_id", "approval_token",
-                              "approval_scope")
+        return param_name in ("data_path", "session_id", "approval_token", "approval_scope")
 
     def __getitem__(self, name):
         async def handler(log_handler=None, **kwargs):
             self.calls.append(dict(kwargs))
             if kwargs.get("approval_token") == self.expect_token:
                 if kwargs.get("approval_scope") == "deny":
-                    return json.dumps({"status": "blocked",
-                                       "error": "declined"})
+                    return json.dumps({"status": "blocked", "error": "declined"})
                 return json.dumps({"status": "success", "stdout": "ran"})
-            return json.dumps({
-                "status": "needs_approval",
-                "approval_id": self.expect_token,
-                "command": kwargs.get("command", ""),
-                "reason": "'mytool' is not in the command allowlist.",
-                "subjects": ["mytool"],
-            })
+            return json.dumps(
+                {
+                    "status": "needs_approval",
+                    "approval_id": self.expect_token,
+                    "command": kwargs.get("command", ""),
+                    "reason": "'mytool' is not in the command allowlist.",
+                    "subjects": ["mytool"],
+                }
+            )
+
         return handler
 
 
@@ -580,13 +635,26 @@ class _UI:
         self.asked = []
         self.logs = []
 
-    def add_tool_call(self, *a, **k): pass
-    def show_tool_start(self, *a, **k): pass
-    def start_tool_spinner(self, *a, **k): pass
-    def stop_tool_spinner(self, *a, **k): pass
-    def show_tool_done(self, *a, **k): pass
-    def add_tool_result(self, *a, **k): pass
-    def add_log(self, message, level="info"): self.logs.append(message)
+    def add_tool_call(self, *a, **k):
+        pass
+
+    def show_tool_start(self, *a, **k):
+        pass
+
+    def start_tool_spinner(self, *a, **k):
+        pass
+
+    def stop_tool_spinner(self, *a, **k):
+        pass
+
+    def show_tool_done(self, *a, **k):
+        pass
+
+    def add_tool_result(self, *a, **k):
+        pass
+
+    def add_log(self, message, level="info"):
+        self.logs.append(message)
 
     def ask_approval(self, request):
         self.asked.append(request)
@@ -595,12 +663,21 @@ class _UI:
 
 async def _run(registry, ui, args=None):
     from src.model.serving.chat import _execute_tool
+
     messages = []
     await _execute_tool(
-        "bash", args if args is not None else {"command": "mytool run x.ts"},
-        "call-1", registry, timeout=5, data_path="/tmp/session",
-        chat_ui=ui, verbose=False, messages=messages,
-        tool_call_history=[], max_repeated=5, session_id="session",
+        "bash",
+        args if args is not None else {"command": "mytool run x.ts"},
+        "call-1",
+        registry,
+        timeout=5,
+        data_path="/tmp/session",
+        chat_ui=ui,
+        verbose=False,
+        messages=messages,
+        tool_call_history=[],
+        max_repeated=5,
+        session_id="session",
     )
     return messages
 
@@ -616,10 +693,15 @@ class TestHarnessApproval:
         it.
         """
         registry = _GatedRegistry()
-        await _run(registry, _UI(answer="deny"),
-                   args={"command": "mytool run x.ts",
-                         "approval_token": "ticket-1",
-                         "approval_scope": "session"})
+        await _run(
+            registry,
+            _UI(answer="deny"),
+            args={
+                "command": "mytool run x.ts",
+                "approval_token": "ticket-1",
+                "approval_scope": "session",
+            },
+        )
         assert registry.calls[0].get("approval_token") in (None, "")
         assert registry.calls[0].get("approval_scope") in (None, "")
 
@@ -685,26 +767,28 @@ class TestNeverAskCommands:
     of every other user of the host.
     """
 
-    @pytest.mark.parametrize("command", [
-        "docker run -v /:/host alpine sh",
-        "kubectl get secrets -A",
-        "ssh user@other-host",
-        "rsync -a /data user@host:/tmp",
-        "systemctl restart nginx",
-        "crontab -e",
-        "useradd backdoor",
-    ])
-    async def test_refused_even_with_a_human_present(self, enforced, with_human,
-                                                     tmp_path, bash_tool,
-                                                     command):
-        r = json.loads(await bash_tool(command=command,
-                                       data_path=_session(tmp_path, "s")))
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "docker run -v /:/host alpine sh",
+            "kubectl get secrets -A",
+            "ssh user@other-host",
+            "rsync -a /data user@host:/tmp",
+            "systemctl restart nginx",
+            "crontab -e",
+            "useradd backdoor",
+        ],
+    )
+    async def test_refused_even_with_a_human_present(
+        self, enforced, with_human, tmp_path, bash_tool, command
+    ):
+        r = json.loads(await bash_tool(command=command, data_path=_session(tmp_path, "s")))
         assert r["status"] == "blocked"
         assert "Do not look for another route" in r["guidance"]
 
-    async def test_it_counts_toward_containment(self, enforced, with_human,
-                                                tmp_path, bash_tool,
-                                                monkeypatch):
+    async def test_it_counts_toward_containment(
+        self, enforced, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         monkeypatch.setenv("ONIT_CONTAIN_THRESHOLD", "2")
         base = _session(tmp_path, "s")
         for _ in range(2):
@@ -712,8 +796,9 @@ class TestNeverAskCommands:
         r = json.loads(await bash_tool(command="ls .", data_path=base))
         assert r["status"] == "contained"
 
-    async def test_the_toolchain_additions_just_run(self, enforced, with_human,
-                                                    tmp_path, bash_tool):
+    async def test_the_toolchain_additions_just_run(
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         """A linter nobody listed is not a security question.
 
         `deno`, `bun`, `gh` and the rest were added outright rather than left
@@ -723,8 +808,13 @@ class TestNeverAskCommands:
         on nothing.
         """
         base = _session(tmp_path, "s")
-        for command in ("deno --version", "bun --version", "gh --version",
-                        "tree .", "bc --version"):
+        for command in (
+            "deno --version",
+            "bun --version",
+            "gh --version",
+            "tree .",
+            "bc --version",
+        ):
             r = json.loads(await bash_tool(command=command, data_path=base))
             assert r["status"] != "needs_approval", command
             assert "allowlist" not in json.dumps(r), command
@@ -785,6 +875,7 @@ class TestAutoApprove:
         arguments the model cannot see, which reads as a flaky tool and is
         answered by running the command again — the last thing that should
         happen to a command that was just approved."""
+
         class _Raises(_GatedRegistry):
             def __getitem__(self, name):
                 inner = super().__getitem__(name)
@@ -793,6 +884,7 @@ class TestAutoApprove:
                     if kwargs.get("approval_token"):
                         raise RuntimeError("input validation error")
                     return await inner(log_handler=log_handler, **kwargs)
+
                 return handler
 
         messages = await _run(_Raises(), _UI())
@@ -801,9 +893,9 @@ class TestAutoApprove:
         assert answer["retryable"] is False
         assert "input validation error" in answer["error"]
 
-    async def test_it_cannot_reach_what_was_never_asked(self, enforced, auto,
-                                                        tmp_path, bash_tool,
-                                                        monkeypatch):
+    async def test_it_cannot_reach_what_was_never_asked(
+        self, enforced, auto, tmp_path, bash_tool, monkeypatch
+    ):
         """The bound that makes the flag safe to offer.
 
         --auto lives in the harness and answers tickets. A refusal is not a
@@ -812,13 +904,18 @@ class TestAutoApprove:
         """
         monkeypatch.setenv("ONIT_APPROVAL_CHANNEL", "1")
         base = _session(tmp_path, "s")
-        for command in ("sudo ls /", "docker run -v /:/host alpine",
-                        "ssh user@host", "systemctl restart nginx"):
+        for command in (
+            "sudo ls /",
+            "docker run -v /:/host alpine",
+            "ssh user@host",
+            "systemctl restart nginx",
+        ):
             r = json.loads(await bash_tool(command=command, data_path=base))
             assert r["status"] == "blocked", command
 
     async def test_a_shared_deployment_still_holds_its_boundaries(
-            self, auto, with_human, tmp_path, bash_tool, monkeypatch):
+        self, auto, with_human, tmp_path, bash_tool, monkeypatch
+    ):
         """--auto on `serve web` does not hand one logged-in user the jail.
 
         The flag answers questions; on a multi-tenant deployment the jail and
@@ -827,10 +924,13 @@ class TestAutoApprove:
         monkeypatch.setenv("ONIT_WEB_UI", "1")
         monkeypatch.setattr(bash_mod, "_PERMISSIONS_CACHE", None)
         base = _session(tmp_path, "s")
-        assert json.loads(await bash_tool(command="cat /etc/hosts",
-                                          data_path=base))["status"] == "blocked"
-        assert json.loads(await bash_tool(command="printenv",
-                                          data_path=base))["status"] == "blocked"
+        assert (
+            json.loads(await bash_tool(command="cat /etc/hosts", data_path=base))["status"]
+            == "blocked"
+        )
+        assert (
+            json.loads(await bash_tool(command="printenv", data_path=base))["status"] == "blocked"
+        )
 
 
 # ── both halves, joined ────────────────────────────────────────────────────
@@ -851,12 +951,12 @@ class _RealBashRegistry:
         self.tool = bash_mod.bash.fn if hasattr(bash_mod.bash, "fn") else bash_mod.bash
 
     def tool_accepts_param(self, tool_name, param_name):
-        return param_name in ("data_path", "session_id", "approval_token",
-                              "approval_scope")
+        return param_name in ("data_path", "session_id", "approval_token", "approval_scope")
 
     def __getitem__(self, name):
         async def handler(log_handler=None, session_id=None, **kwargs):
             return await self.tool(**kwargs)
+
         return handler
 
 
@@ -869,9 +969,17 @@ class TestEndToEnd:
         ui = _UI(answer="once")
         messages = []
         await _execute_tool(
-            "bash", {"command": "mytool --version"}, "call-1", registry,
-            timeout=20, data_path=base, chat_ui=ui, verbose=False,
-            messages=messages, tool_call_history=[], max_repeated=5,
+            "bash",
+            {"command": "mytool --version"},
+            "call-1",
+            registry,
+            timeout=20,
+            data_path=base,
+            chat_ui=ui,
+            verbose=False,
+            messages=messages,
+            tool_call_history=[],
+            max_repeated=5,
             session_id="s",
         )
         assert len(ui.asked) == 1
@@ -882,8 +990,7 @@ class TestEndToEnd:
         assert result["status"] != "needs_approval"
         assert "allowlist" not in json.dumps(result)
 
-    async def test_a_no_stops_at_the_policy(self, enforced, with_human,
-                                            tmp_path):
+    async def test_a_no_stops_at_the_policy(self, enforced, with_human, tmp_path):
         from src.model.serving.chat import _execute_tool
 
         base = _session(tmp_path, "s")
@@ -892,17 +999,24 @@ class TestEndToEnd:
         messages = []
         marker = os.path.join(base, "ran.txt")
         await _execute_tool(
-            "bash", {"command": f"mytool > {marker}"}, "call-1", registry,
-            timeout=20, data_path=base, chat_ui=ui, verbose=False,
-            messages=messages, tool_call_history=[], max_repeated=5,
+            "bash",
+            {"command": f"mytool > {marker}"},
+            "call-1",
+            registry,
+            timeout=20,
+            data_path=base,
+            chat_ui=ui,
+            verbose=False,
+            messages=messages,
+            tool_call_history=[],
+            max_repeated=5,
             session_id="s",
         )
         assert not os.path.exists(marker)
         assert json.loads(messages[-1]["content"])["status"] == "blocked"
         # And the server remembers, so the model asking again gets the answer
         # rather than another prompt.
-        assert bash_mod._APPROVALS.was_refused(f"mytool > {marker}",
-                                               bash_mod._session_base(base))
+        assert bash_mod._APPROVALS.was_refused(f"mytool > {marker}", bash_mod._session_base(base))
 
 
 # ── the code-as-action path ────────────────────────────────────────────────
@@ -928,18 +1042,24 @@ class TestInterpreterCannotApproveItself:
         def __getitem__(self, name):
             async def handler(**kwargs):
                 return await self._tool(**kwargs)
+
             return handler
 
     def _harness(self, tmp_path, bash_tool, **kw):
         from src.model.serving.harness import HarnessTools
 
         base = _session(tmp_path, "s")
-        return base, HarnessTools(data_path=base, session_id="s",
-                                  tool_registry=self._Registry(bash_tool),
-                                  code_execution=True, **kw)
+        return base, HarnessTools(
+            data_path=base,
+            session_id="s",
+            tool_registry=self._Registry(bash_tool),
+            code_execution=True,
+            **kw,
+        )
 
     async def test_a_ticket_read_from_a_result_cannot_be_redeemed(
-            self, enforced, with_human, tmp_path, bash_tool):
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         base, harness = self._harness(tmp_path, bash_tool)
         command = "mytool --version"
 
@@ -947,11 +1067,16 @@ class TestInterpreterCannotApproveItself:
         assert asked["status"] == "needs_approval"
 
         # The attack: hand the ticket straight back.
-        forged = json.loads(await harness._run_tool("bash", {
-            "command": command,
-            "approval_token": asked["approval_id"],
-            "approval_scope": "session",
-        }))
+        forged = json.loads(
+            await harness._run_tool(
+                "bash",
+                {
+                    "command": command,
+                    "approval_token": asked["approval_id"],
+                    "approval_scope": "session",
+                },
+            )
+        )
         assert forged["status"] == "needs_approval"
 
     async def test_the_parameters_are_not_in_the_generated_signatures(self):
@@ -959,18 +1084,30 @@ class TestInterpreterCannotApproveItself:
         that would fill it in."""
         from src.model.serving.interpreter import bindings_for
 
-        binds = bindings_for([{"function": {
-            "name": "bash",
-            "description": "run a command",
-            "parameters": {
-                "properties": {"command": {}, "data_path": {},
-                               "approval_token": {}, "approval_scope": {}},
-                "required": ["command"]},
-        }}])
+        binds = bindings_for(
+            [
+                {
+                    "function": {
+                        "name": "bash",
+                        "description": "run a command",
+                        "parameters": {
+                            "properties": {
+                                "command": {},
+                                "data_path": {},
+                                "approval_token": {},
+                                "approval_scope": {},
+                            },
+                            "required": ["command"],
+                        },
+                    }
+                }
+            ]
+        )
         assert [p["name"] for p in binds[0]["params"]] == ["command"]
 
     async def test_a_gated_call_from_code_still_reaches_a_person(
-            self, enforced, with_human, tmp_path, bash_tool):
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         """Closing the bypass must not turn code-as-action into a dead end:
         the call goes through the same prompt the direct path uses."""
         answers = []
@@ -982,18 +1119,16 @@ class TestInterpreterCannotApproveItself:
             retry["approval_scope"] = "once"
             return await handler(**retry)
 
-        base, harness = self._harness(tmp_path, bash_tool,
-                                      approval_resolver=_resolver)
-        result = json.loads(await harness._run_tool(
-            "bash", {"command": "mytool --version"}))
+        base, harness = self._harness(tmp_path, bash_tool, approval_resolver=_resolver)
+        result = json.loads(await harness._run_tool("bash", {"command": "mytool --version"}))
         assert answers == ["mytool --version"]
         assert result["status"] != "needs_approval"
 
     async def test_with_no_resolver_it_is_refused_rather_than_run(
-            self, enforced, with_human, tmp_path, bash_tool):
+        self, enforced, with_human, tmp_path, bash_tool
+    ):
         base, harness = self._harness(tmp_path, bash_tool)
-        result = json.loads(await harness._run_tool(
-            "bash", {"command": "mytool --version"}))
+        result = json.loads(await harness._run_tool("bash", {"command": "mytool --version"}))
         assert result["status"] == "needs_approval"
 
 
@@ -1010,21 +1145,26 @@ class TestApprovalParamsAreHiddenFromTheModel:
         from types import SimpleNamespace
         from src.lib.tools import _build_parameters
 
-        tool = SimpleNamespace(inputSchema={
-            "type": "object",
-            "properties": properties,
-            "required": required or [],
-            "additionalProperties": False,
-        })
+        tool = SimpleNamespace(
+            inputSchema={
+                "type": "object",
+                "properties": properties,
+                "required": required or [],
+                "additionalProperties": False,
+            }
+        )
         return _build_parameters(tool)
 
     def test_they_are_not_described(self):
-        params = self._schema({
-            "command": {"type": "string"},
-            "data_path": {"type": "string"},
-            "approval_token": {"type": "string"},
-            "approval_scope": {"type": "string"},
-        }, required=["command"])
+        params = self._schema(
+            {
+                "command": {"type": "string"},
+                "data_path": {"type": "string"},
+                "approval_token": {"type": "string"},
+                "approval_scope": {"type": "string"},
+            },
+            required=["command"],
+        )
         assert sorted(params["properties"]) == ["command", "data_path"]
 
     def test_a_tool_without_them_is_untouched(self):
@@ -1038,9 +1178,11 @@ class TestApprovalParamsAreHiddenFromTheModel:
         from types import SimpleNamespace
         from src.lib.tools import _build_parameters
 
-        schema = {"type": "object",
-                  "properties": {"command": {}, "approval_token": {}},
-                  "required": ["command"]}
+        schema = {
+            "type": "object",
+            "properties": {"command": {}, "approval_token": {}},
+            "required": ["command"],
+        }
         _build_parameters(SimpleNamespace(inputSchema=schema))
         assert "approval_token" in schema["properties"]
 
@@ -1090,7 +1232,8 @@ class TestPassThroughWrappersCarryTheTicket:
         assert "approval_scope" in params
 
     async def test_an_approved_bash_call_runs_through_the_wrapper(
-            self, enforced, with_human, tmp_path):
+        self, enforced, with_human, tmp_path
+    ):
         """The exact path that used to fail: ticket in, command out.
 
         The wrapper must forward the pair to the os/bash server, whose
@@ -1103,18 +1246,20 @@ class TestPassThroughWrappersCarryTheTicket:
         wrapper = tools_mod.bash
         inner = getattr(wrapper, "fn", wrapper)
         base = _session(tmp_path, "s")
-        first = json.loads(await inner(command="mytool --version",
-                                       data_path=base))
+        first = json.loads(await inner(command="mytool --version", data_path=base))
         assert first["status"] == "needs_approval"
-        second = json.loads(await inner(command="mytool --version",
-                                        data_path=base,
-                                        approval_token=first["approval_id"],
-                                        approval_scope="once"))
+        second = json.loads(
+            await inner(
+                command="mytool --version",
+                data_path=base,
+                approval_token=first["approval_id"],
+                approval_scope="once",
+            )
+        )
         assert second["status"] != "needs_approval"
         assert "Unexpected keyword" not in json.dumps(second)
 
-    async def test_the_wrapper_strips_nothing_the_model_sent(
-            self, enforced, with_human, tmp_path):
+    async def test_the_wrapper_strips_nothing_the_model_sent(self, enforced, with_human, tmp_path):
         """The boundary that drops model-supplied tickets is chat.py's, not
         the wrapper's: here the pair arrives from the harness side, and the
         wrapper passing it on untouched is the whole point."""
@@ -1123,15 +1268,18 @@ class TestPassThroughWrappersCarryTheTicket:
         wrapper = tools_mod.bash
         inner = getattr(wrapper, "fn", wrapper)
         base = _session(tmp_path, "s")
-        first = json.loads(await inner(command="mytool --version",
-                                       data_path=base))
+        first = json.loads(await inner(command="mytool --version", data_path=base))
         # A ticket bound to another command must not open this one: the
         # wrapper forwards verbatim and the server's binding check refuses —
         # which here means a fresh ticket and a fresh question, never the
         # command's output.
-        second = json.loads(await inner(command="mytool --version",
-                                        data_path=base,
-                                        approval_token="not-a-real-token",
-                                        approval_scope="once"))
+        second = json.loads(
+            await inner(
+                command="mytool --version",
+                data_path=base,
+                approval_token="not-a-real-token",
+                approval_scope="once",
+            )
+        )
         assert second["status"] == "needs_approval"
         assert second["approval_id"] != first["approval_id"]

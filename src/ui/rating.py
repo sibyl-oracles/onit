@@ -86,16 +86,24 @@ def _parse_arg(arg: str) -> tuple:
             seen_verdict = True
         elif part.isdigit():
             if turn is not None:
-                return None, None, ("\\rate takes one turn number. Run "
-                                    "\\help for the form.")
+                return None, None, ("\\rate takes one turn number. Run \\help for the form.")
             turn = int(part)
         else:
-            return None, None, ("\\rate understands 'up', 'down' and "
-                                "'clear', optionally with a turn number "
-                                "(\\rate 3 down). Got '%s'." % part)
+            return (
+                None,
+                None,
+                (
+                    "\\rate understands 'up', 'down' and "
+                    "'clear', optionally with a turn number "
+                    "(\\rate 3 down). Got '%s'." % part
+                ),
+            )
     if not seen_verdict:
-        return turn, None, ("\\rate needs a verdict: 'up', 'down' or "
-                            "'clear'. Run \\help for the form.")
+        return (
+            turn,
+            None,
+            ("\\rate needs a verdict: 'up', 'down' or 'clear'. Run \\help for the form."),
+        )
     return turn, rating, ""
 
 
@@ -110,14 +118,18 @@ def cmd_rate(agent, arg: str) -> str:
     session_path = getattr(agent, "session_path", None)
     session_id = getattr(agent, "session_id", None)
     if not session_path or not session_id:
-        return ("This session has no store to rate against — the agent was "
-                "started without a session file.")
+        return (
+            "This session has no store to rate against — the agent was "
+            "started without a session file."
+        )
 
     config_data = getattr(agent, "config_data", None) or {}
     if not recording_enabled(config_data):
-        return ("Ratings are not being recorded: this deployment has the "
-                "learn level at 'off'. Set 'learn.autonomy' to 'observe' or "
-                "higher to keep them.")
+        return (
+            "Ratings are not being recorded: this deployment has the "
+            "learn level at 'off'. Set 'learn.autonomy' to 'observe' or "
+            "higher to keep them."
+        )
 
     total = _session_turn_count(session_path)
     if total == 0:
@@ -125,28 +137,35 @@ def cmd_rate(agent, arg: str) -> str:
     if turn is None:
         turn = total
     if turn < 1 or turn > total:
-        return ("There is no answer %d in this session — it has %d."
-                % (turn, total))
+        return "There is no answer %d in this session — it has %d." % (turn, total)
 
-    path = append_rating(session_id=session_id, turn=turn, rating=rating,
-                         comment=None, source="text",
-                         config_data=config_data)
+    path = append_rating(
+        session_id=session_id,
+        turn=turn,
+        rating=rating,
+        comment=None,
+        source="text",
+        config_data=config_data,
+    )
     if path is None:
-        return ("The rating could not be written — the learned path is not "
-                "writable.")
+        return "The rating could not be written — the learned path is not writable."
 
     if rating is None:
         return "Cleared the verdict on answer %d." % turn
     word = "good" if rating > 0 else "wrong"
-    return ("Recorded: answer %d was %s. It is in the trajectory store, so "
-            "the loops can learn from it." % (turn, word))
+    return (
+        "Recorded: answer %d was %s. It is in the trajectory store, so "
+        "the loops can learn from it." % (turn, word)
+    )
 
 
 def render_rate_help() -> str:
     """The ``\\rate`` entry for the help listing."""
-    return ("  \\rate [up|down|clear] [n]  Rate an answer: the newest one, "
-            "or number n.\n"
-            "                                A verdict is the strongest outcome "
-            "signal there is —\n"
-            "                                it is the one thing the implicit "
-            "signals cannot infer.")
+    return (
+        "  \\rate [up|down|clear] [n]  Rate an answer: the newest one, "
+        "or number n.\n"
+        "                                A verdict is the strongest outcome "
+        "signal there is —\n"
+        "                                it is the one thing the implicit "
+        "signals cannot infer."
+    )

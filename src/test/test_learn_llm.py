@@ -20,8 +20,6 @@ server.  What is tested is the resolution, which is where the two
 properties above are decided.
 """
 
-
-
 from src.learn import llm
 
 
@@ -29,8 +27,7 @@ class TestResolveEndpoint:
     """Where the background loops talk to."""
 
     def test_the_config_serving_block_wins(self):
-        config = {"serving": {"host": "http://config/v1",
-                              "model": "config-model"}}
+        config = {"serving": {"host": "http://config/v1", "model": "config-model"}}
         endpoint = llm.resolve_endpoint(config)
         assert endpoint["host"] == "http://config/v1"
         assert endpoint["model"] == "config-model"
@@ -59,8 +56,7 @@ class TestResolveEndpoint:
         assert endpoint["model"] is None
 
     def test_the_host_key_is_carried(self):
-        endpoint = llm.resolve_endpoint(
-            {"serving": {"host": "http://x/v1", "host_key": "secret"}})
+        endpoint = llm.resolve_endpoint({"serving": {"host": "http://x/v1", "host_key": "secret"}})
         assert endpoint["host_key"] == "secret"
 
     def test_the_default_host_key_is_empty(self):
@@ -78,6 +74,7 @@ class TestTheClientCarriesNoTools:
         get in.
         """
         import inspect
+
         params = list(inspect.signature(llm._build_client).parameters)
         assert params == ["host", "host_key", "timeout"]
 
@@ -88,6 +85,7 @@ class TestTheClientCarriesNoTools:
         judge: the request would grow a "tools" key.
         """
         import inspect
+
         source = inspect.getsource(llm.make_ask)
         assert '"tools"' not in source
         assert "'tools'" not in source
@@ -126,9 +124,10 @@ class TestTheClientTupleOrder:
         # a machine that has an ``ollama_api_key`` stored and fails on one
         # that does not.
         import src.setup as setup_mod
+
         monkeypatch.setattr(
-            setup_mod, "get_secret",
-            lambda key: "sk-test" if key == "ollama_api_key" else None)
+            setup_mod, "get_secret", lambda key: "sk-test" if key == "ollama_api_key" else None
+        )
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
 
         sentinel = object()
@@ -138,21 +137,23 @@ class TestTheClientTupleOrder:
         chat_module._create_ollama_client = lambda *a, **k: sentinel
         try:
             client, ollama_client, is_ollama = llm_module._build_client(
-                "https://ollama.com", "EMPTY", 30.0)
+                "https://ollama.com", "EMPTY", 30.0
+            )
         finally:
             chat_module._create_ollama_client = real
 
         assert is_ollama is True
         assert ollama_client is sentinel, (
-            "the Ollama client must be the second value; make_ask calls "
-            ".chat() on that slot")
+            "the Ollama client must be the second value; make_ask calls .chat() on that slot"
+        )
         assert client is None
 
     def test_an_openai_host_puts_the_client_in_the_first_slot(self):
         from src.learn import llm as llm_module
 
         client, ollama_client, is_ollama = llm_module._build_client(
-            "http://127.0.0.1:9999/v1", "EMPTY", 5.0)
+            "http://127.0.0.1:9999/v1", "EMPTY", 5.0
+        )
 
         assert is_ollama is False
         assert client is not None

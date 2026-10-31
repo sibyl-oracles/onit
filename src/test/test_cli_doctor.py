@@ -23,8 +23,13 @@ from src.cli import main
 # which monkeypatch cannot see and so cannot undo.  _run_doctor sets them
 # too.  Snapshot and put back by hand, for the whole file — same reason as
 # test_cli.py, which this pattern is copied from.
-_APPROVAL_ENV_VARS = ("ONIT_APPROVAL_CHANNEL", "ONIT_AUTO_APPROVE",
-                      "ONIT_ASK_APPROVAL", "ONIT_WEB_UI", "ONIT_UNRESTRICTED")
+_APPROVAL_ENV_VARS = (
+    "ONIT_APPROVAL_CHANNEL",
+    "ONIT_AUTO_APPROVE",
+    "ONIT_ASK_APPROVAL",
+    "ONIT_WEB_UI",
+    "ONIT_UNRESTRICTED",
+)
 
 # Same hazard, same place: credential resolution with nothing to find leaves
 # the tool-disable switches in the environment, and a stdio server spawned by
@@ -34,8 +39,7 @@ _TOOL_DISABLE_VARS = ("ONIT_DISABLE_WEB_SEARCH", "ONIT_DISABLE_WEATHER")
 
 @pytest.fixture(autouse=True)
 def _restore_approval_env():
-    saved = {var: os.environ.get(var)
-             for var in _APPROVAL_ENV_VARS + _TOOL_DISABLE_VARS}
+    saved = {var: os.environ.get(var) for var in _APPROVAL_ENV_VARS + _TOOL_DISABLE_VARS}
     yield
     for var, value in saved.items():
         if value is None:
@@ -57,10 +61,14 @@ def doctor_env(tmp_path, monkeypatch):
     from src import setup as setup_mod
 
     cfg = tmp_path / "config.yaml"
-    cfg.write_text(yaml.safe_dump({
-        "session_path": str(tmp_path / "sessions"),
-        "serving": {"host": "http://localhost:8000/v1"},
-    }))
+    cfg.write_text(
+        yaml.safe_dump(
+            {
+                "session_path": str(tmp_path / "sessions"),
+                "serving": {"host": "http://localhost:8000/v1"},
+            }
+        )
+    )
     monkeypatch.setattr("src.cli._find_default_config", lambda: str(cfg))
     monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
     monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
@@ -68,8 +76,7 @@ def doctor_env(tmp_path, monkeypatch):
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     (sessions_dir / "preexisting.jsonl").write_text("")
-    (sessions_dir / "index.json").write_text(json.dumps(
-        {"preexisting": {"tag": "preexisting"}}))
+    (sessions_dir / "index.json").write_text(json.dumps({"preexisting": {"tag": "preexisting"}}))
 
     agent = MagicMock()
     agent.session_id = "doctor-session-id"
@@ -104,6 +111,7 @@ def _run(argv, run_checks=None):
     captured = {}
 
     if run_checks is None:
+
         async def run_checks(agent, deep=False, on_start=None):
             return []
 
@@ -113,11 +121,13 @@ def _run(argv, run_checks=None):
         calls.append({"deep": deep})
         return await run_checks(agent, deep=deep, on_start=on_start)
 
-    with patch.object(sys, "argv", ["onit"] + argv), \
-            patch("src.cli._setup_servers") as setup_servers, \
-            patch("src.ui.doctor.run_checks", recording), \
-            patch("src.ui.doctor.render_report", return_value="REPORT") as render, \
-            patch("src.sessions.delete_session") as delete:
+    with (
+        patch.object(sys, "argv", ["onit"] + argv),
+        patch("src.cli._setup_servers") as setup_servers,
+        patch("src.ui.doctor.run_checks", recording),
+        patch("src.ui.doctor.render_report", return_value="REPORT") as render,
+        patch("src.sessions.delete_session") as delete,
+    ):
         # The doctor branch calls sys.exit with _run_doctor's return value.
         # A battery that raises propagates out of main() — that is a crash,
         # not a check result — and is recorded rather than suppressed.
@@ -167,8 +177,7 @@ class TestDoctorWiring:
         cfg.write_text(yaml.safe_dump(data))
         _run(["doctor"])
         for key in ("web", "loop", "resume_session_id"):
-            assert key not in doctor_env["created"], \
-                f"{key} survived: the doctor would {key}"
+            assert key not in doctor_env["created"], f"{key} survived: the doctor would {key}"
 
     def test_deep_flag_reaches_the_battery(self, doctor_env):
         out = _run(["doctor", "--deep"])
@@ -184,11 +193,15 @@ class TestDoctorWiring:
 
     def test_json_report(self, doctor_env, capsys):
         from src.ui.doctor import CheckResult
-        results = [CheckResult("config", "pass", "ok", 0.1),
-                   CheckResult("mcp-servers", "fail", "down", 0.2)]
+
+        results = [
+            CheckResult("config", "pass", "ok", 0.1),
+            CheckResult("mcp-servers", "fail", "down", 0.2),
+        ]
 
         async def run_checks(agent, deep=False, on_start=None):
             return results
+
         _run(["doctor", "--json"], run_checks=run_checks)
         payload = json.loads(capsys.readouterr().out)
         assert payload["deep"] is False
@@ -207,8 +220,8 @@ class TestDoctorWiring:
 class TestDoctorExitCodes:
     def _results(self, *states):
         from src.ui.doctor import CheckResult
-        return [CheckResult(f"check-{i}", state, "", 0.1)
-                for i, state in enumerate(states)]
+
+        return [CheckResult(f"check-{i}", state, "", 0.1) for i, state in enumerate(states)]
 
     def _battery(self, states):
         """A coroutine function returning the given results, as run_checks must be."""
@@ -216,6 +229,7 @@ class TestDoctorExitCodes:
 
         async def run_checks(agent, deep=False, on_start=None):
             return results
+
         return run_checks
 
     def test_zero_when_all_pass(self, doctor_env):
@@ -242,8 +256,7 @@ class TestDoctorExitCodes:
 class TestDoctorSessionCleanup:
     def test_throwaway_session_is_deleted(self, doctor_env):
         out = _run(["doctor"])
-        out["delete"].assert_called_once_with("doctor-session-id",
-                                              str(doctor_env["sessions"]))
+        out["delete"].assert_called_once_with("doctor-session-id", str(doctor_env["sessions"]))
 
     def test_keep_session_spares_it(self, doctor_env):
         out = _run(["doctor", "--keep-session"])
@@ -255,10 +268,10 @@ class TestDoctorSessionCleanup:
         # propagates: a crash is a crash, the test only pins the cleanup.
         async def run_checks(agent, deep=False, on_start=None):
             raise RuntimeError("boom")
+
         out = _run(["doctor"], run_checks=run_checks)
         assert isinstance(out["captured"].get("raised"), RuntimeError)
-        out["delete"].assert_called_once_with("doctor-session-id",
-                                              str(doctor_env["sessions"]))
+        out["delete"].assert_called_once_with("doctor-session-id", str(doctor_env["sessions"]))
 
     def test_preexisting_sessions_are_untouched(self, doctor_env):
         _run(["doctor"])
@@ -275,8 +288,8 @@ class TestDoctorOnUnconfiguredMachine:
         # gets a diagnosis, not a stack trace.  Resolution exits; the doctor
         # catches that and runs the battery on an empty config.
         from src import setup as setup_mod
-        monkeypatch.setattr("src.cli._find_default_config",
-                            lambda: str(tmp_path / "nope.yaml"))
+
+        monkeypatch.setattr("src.cli._find_default_config", lambda: str(tmp_path / "nope.yaml"))
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         calls = []
@@ -284,36 +297,49 @@ class TestDoctorOnUnconfiguredMachine:
         async def battery(agent, deep=False, on_start=None):
             calls.append(deep)
             return []
-        with patch.object(sys, "argv", ["onit", "doctor"]), \
-                patch("src.cli._setup_servers"), \
-                patch("src.ui.doctor.run_checks", battery), \
-                patch("src.ui.doctor.render_report", return_value="REPORT"), \
-                patch("src.sessions.delete_session"), \
-                patch("src.cli.OnIt") as fake_onit:
+
+        with (
+            patch.object(sys, "argv", ["onit", "doctor"]),
+            patch("src.cli._setup_servers"),
+            patch("src.ui.doctor.run_checks", battery),
+            patch("src.ui.doctor.render_report", return_value="REPORT"),
+            patch("src.sessions.delete_session"),
+            patch("src.cli.OnIt") as fake_onit,
+        ):
             fake_onit.return_value = MagicMock(session_id="sid")
             with pytest.raises(SystemExit) as excinfo:
                 main()
         assert excinfo.value.code == 0
         assert len(calls) == 1
         # The agent was built with the empty config, not the resolved one.
-        handed = fake_onit.call_args.args[0] if fake_onit.call_args.args \
+        handed = (
+            fake_onit.call_args.args[0]
+            if fake_onit.call_args.args
             else fake_onit.call_args.kwargs.get("config")
+        )
         assert handed == {}
 
     def test_unstartable_agent_exits_one(self, tmp_path, monkeypatch, capsys):
         from src import setup as setup_mod
+
         cfg = tmp_path / "config.yaml"
-        cfg.write_text(yaml.safe_dump({
-            "session_path": str(tmp_path / "sessions"),
-            "serving": {"host": "http://localhost:8000/v1"},
-        }))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "session_path": str(tmp_path / "sessions"),
+                    "serving": {"host": "http://localhost:8000/v1"},
+                }
+            )
+        )
         monkeypatch.setattr("src.cli._find_default_config", lambda: str(cfg))
         monkeypatch.setattr(setup_mod, "CONFIG_PATH", str(tmp_path / "no-setup.yaml"))
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
-        with patch.object(sys, "argv", ["onit", "doctor"]), \
-                patch("src.cli._setup_servers"), \
-                patch("src.cli.OnIt", side_effect=RuntimeError("no prompts server")), \
-                patch("src.sessions.delete_session"):
+        with (
+            patch.object(sys, "argv", ["onit", "doctor"]),
+            patch("src.cli._setup_servers"),
+            patch("src.cli.OnIt", side_effect=RuntimeError("no prompts server")),
+            patch("src.sessions.delete_session"),
+        ):
             with pytest.raises(SystemExit) as excinfo:
                 main()
         assert excinfo.value.code == 1
@@ -334,20 +360,25 @@ class TestDoctorAgentContract:
     def test_run_checks_signature_matches_the_cli_call(self):
         import inspect
         from src.ui import doctor
+
         params = inspect.signature(doctor.run_checks).parameters
-        assert list(params) == ["agent", "deep", "on_start"], \
+        assert list(params) == ["agent", "deep", "on_start"], (
             "_run_doctor calls run_checks(agent, deep=...) positionally by name"
+        )
 
     def test_check_result_states_are_the_three_the_cli_counts(self):
         from src.ui.doctor import CheckResult
+
         for state in ("pass", "fail", "skip"):
             assert CheckResult("x", state).state == state
 
     def test_delete_session_takes_id_and_dir(self):
         import inspect
         from src.sessions import delete_session
+
         params = list(inspect.signature(delete_session).parameters)
         assert params[:2] == ["session_id", "sessions_dir"]
+
 
 # ── doctor --endpoints: the smoke test over every known endpoint ─────────────
 
@@ -357,8 +388,13 @@ class TestDoctorEndpoints:
     the battery is assigned, and a failed probe fails the run."""
 
     def _ep(self, host, configured=True, preset=None):
-        return {"host": host, "model": "", "key": "endpoint",
-                "configured": configured, "preset": preset}
+        return {
+            "host": host,
+            "model": "",
+            "key": "endpoint",
+            "configured": configured,
+            "preset": preset,
+        }
 
     def test_flag_is_accepted(self, doctor_env):
         import src.setup as setup_mod
@@ -366,43 +402,54 @@ class TestDoctorEndpoints:
 
         async def fake_list(host, timeout=15.0):
             return ["m1"]
-        with patch.object(setup_mod, "known_endpoints",
-                          return_value=[self._ep("http://a:8000/v1")]), \
-                patch.object(chat_mod, "list_models", fake_list):
+
+        with (
+            patch.object(setup_mod, "known_endpoints", return_value=[self._ep("http://a:8000/v1")]),
+            patch.object(chat_mod, "list_models", fake_list),
+        ):
             out = _run(["doctor", "--endpoints"])
         assert out["code"] == 0
 
     def test_probes_every_known_endpoint(self, doctor_env):
         import src.setup as setup_mod
         import src.model.serving.chat as chat_mod
-        eps = [self._ep("http://a:8000/v1"),
-               self._ep("https://openrouter.ai/api/v1",
-                        configured=False, preset="openrouter")]
+
+        eps = [
+            self._ep("http://a:8000/v1"),
+            self._ep("https://openrouter.ai/api/v1", configured=False, preset="openrouter"),
+        ]
         probed = []
 
         async def fake_list(host, timeout=15.0):
             probed.append(host)
             return ["m1"]
-        with patch.object(setup_mod, "known_endpoints", return_value=eps), \
-                patch.object(chat_mod, "list_models", fake_list):
+
+        with (
+            patch.object(setup_mod, "known_endpoints", return_value=eps),
+            patch.object(chat_mod, "list_models", fake_list),
+        ):
             out = _run(["doctor", "--endpoints"])
         assert out["code"] == 0
-        assert sorted(probed) == ["http://a:8000/v1",
-                                  "https://openrouter.ai/api/v1"]
+        assert sorted(probed) == ["http://a:8000/v1", "https://openrouter.ai/api/v1"]
 
     def test_a_failed_probe_fails_the_run(self, doctor_env, capsys):
         import src.setup as setup_mod
         import src.model.serving.chat as chat_mod
-        eps = [self._ep("http://ok:8000/v1"),
-               self._ep("http://dead:8000/v1", configured=False,
-                        preset="vllm")]
+
+        eps = [
+            self._ep("http://ok:8000/v1"),
+            self._ep("http://dead:8000/v1", configured=False, preset="vllm"),
+        ]
 
         async def fake_list(host, timeout=15.0):
             if "dead" in host:
                 raise ConnectionError("refused")
             return ["m1"]
-        with patch.object(setup_mod, "known_endpoints", return_value=eps), \
-                patch.object(chat_mod, "list_models", fake_list):
+
+        with (
+            patch.object(setup_mod, "known_endpoints", return_value=eps),
+            patch.object(chat_mod, "list_models", fake_list),
+        ):
             out = _run(["doctor", "--endpoints"])
         assert out["code"] == 1
         out_text = capsys.readouterr().out
@@ -412,19 +459,22 @@ class TestDoctorEndpoints:
     def test_all_probes_pass_keeps_the_run_green(self, doctor_env):
         import src.setup as setup_mod
         import src.model.serving.chat as chat_mod
-        eps = [self._ep("http://a:8000/v1"),
-               self._ep("http://b:8000/v1")]
+
+        eps = [self._ep("http://a:8000/v1"), self._ep("http://b:8000/v1")]
 
         async def fake_list(host, timeout=15.0):
             return ["m1", "m2"]
-        with patch.object(setup_mod, "known_endpoints", return_value=eps), \
-                patch.object(chat_mod, "list_models", fake_list):
+
+        with (
+            patch.object(setup_mod, "known_endpoints", return_value=eps),
+            patch.object(chat_mod, "list_models", fake_list),
+        ):
             out = _run(["doctor", "--endpoints"])
         assert out["code"] == 0
 
-    def test_no_known_endpoints_is_a_skip_not_a_failure(self, doctor_env,
-                                                        capsys):
+    def test_no_known_endpoints_is_a_skip_not_a_failure(self, doctor_env, capsys):
         import src.setup as setup_mod
+
         with patch.object(setup_mod, "known_endpoints", return_value=[]):
             out = _run(["doctor", "--endpoints"])
         assert out["code"] == 0
@@ -432,11 +482,13 @@ class TestDoctorEndpoints:
 
     def test_without_the_flag_nothing_is_probed(self, doctor_env):
         import src.model.serving.chat as chat_mod
+
         probed = []
 
         async def fake_list(host, timeout=15.0):
             probed.append(host)
             return ["m1"]
+
         with patch.object(chat_mod, "list_models", fake_list):
             out = _run(["doctor"])
         assert out["code"] == 0

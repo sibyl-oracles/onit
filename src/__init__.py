@@ -26,5 +26,6 @@ def __getattr__(name: str):
     # by normal means, i.e. only for OnIt — __version__ resolves directly.
     if name == "OnIt":
         from .onit import OnIt
+
         return OnIt
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
