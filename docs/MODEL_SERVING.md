@@ -140,8 +140,9 @@ being read from disk.
 Any other OpenAI-compatible local server (LM Studio, llama.cpp's
 `llama-server`, mlx-omni-server) works the same way: give OnIt the `/v1` base
 URL, name the model, and set `max_context_tokens` if the server doesn't publish
-`max_model_len` — an unpublished window falls back to an assumed 262144, which
-is wrong (and will eventually overflow) on a smaller model.
+`max_model_len` — an unpublished window falls back to an assumed 1M, which
+is optimistic on a smaller model: the run will not compact until the prompt
+really is large, and the server will refuse the request long before that.
 
 ## OpenRouter.ai
 
@@ -195,7 +196,7 @@ What is different from a vLLM host:
   OnIt does not speak.
 - **Set `serving.max_context_tokens` yourself** — OpenAI publishes no
   `max_model_len` to probe (128000 is a safe value for gpt-4o-class models,
-  400000 for gpt-5). Without it the assumed fallback of 262,144 applies.
+  400000 for gpt-5). Without it the assumed fallback of 1,000,000 applies.
 
 ## Ollama Cloud
 
@@ -360,9 +361,12 @@ Sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty
 
 Set `repetition_penalty: 1.0` in all cases.
 
-The web UI serves with the instruct-mode row regardless of what is set here —
-one turn in a browser is not where reasoning pays for itself. See
-[Thinking in the browser](CONFIGURATION.md#thinking-in-the-browser).
+`think` is on by default, so the thinking rows are what apply. The web UI no
+longer serves with the instruct row on its own — a browser run inherits
+`serving:` exactly as the terminal does. To get the instruct rows, turn
+reasoning off: `--no-think`, `serving.think: false`, or `serving.web.think:
+false` for the browser alone. See
+[Thinking, and turning it off](CONFIGURATION.md#thinking-and-turning-it-off).
 
 
 ## Per-run token statistics

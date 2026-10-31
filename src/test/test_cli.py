@@ -456,13 +456,19 @@ class TestTokenLimitOverrides:
 # ── web-only serving defaults ───────────────────────────────────────────────
 
 class TestWebServingDefaults:
-    """One config serves both UIs, and they want different latency trades.
+    """One config serves both UIs, and now serves them the same way.
 
-    A browser turn is a single iteration with no tool loop behind it, so a
-    reasoning pass is the entire wait; a terminal run is long enough for the
-    deliberation to pay for itself. The split has to beat a plain
-    ``serving.think`` rather than fill in for it — anyone who turned thinking
-    on at all would otherwise never see it.
+    There used to be a split: a browser turn was one iteration with no tool
+    loop behind it, so reasoning was "the whole wait" and the web UI defaulted
+    ``think`` off, moving the sampling to the instruct-mode numbers to match.
+    Reasoning is on by default everywhere now, so that trade has no two sides
+    left to choose between, and the instruct sampling that came with it would
+    be the wrong half of a pair left on a model that thinks.  A browser run
+    inherits ``serving:`` exactly as the terminal does.
+
+    ``serving.web`` survives as the per-UI *override* block, which is a
+    different thing from a default — that is what most of these tests are
+    about now.
     """
 
     _CFG = {"serving": {"host": "http://vllm:8000/v1",
@@ -481,18 +487,26 @@ class TestWebServingDefaults:
         args = _build_parser().parse_args(["--config", str(path)] + cli_args)
         return _parse_and_resolve_config(args)
 
-    def test_web_run_drops_thinking_and_moves_sampling(self, tmp_path, monkeypatch):
+    def test_a_web_run_keeps_the_configured_values(self, tmp_path, monkeypatch):
+        """The split is gone: no thinking-off, no sampling swap."""
         serving = self._resolve(tmp_path, monkeypatch, self._CFG,
                                 ["serve", "web"])["serving"]
-        assert serving["think"] is False
-        assert serving["temperature"] == 0.7
-        assert serving["top_p"] == 0.8
+        assert serving["think"] is True
+        assert serving["temperature"] == 0.6
+        assert serving["top_p"] == 0.95
 
     def test_terminal_run_keeps_the_configured_values(self, tmp_path, monkeypatch):
         serving = self._resolve(tmp_path, monkeypatch, self._CFG, [])["serving"]
         assert serving["think"] is True
         assert serving["temperature"] == 0.6
         assert serving["top_p"] == 0.95
+
+    def test_the_two_uis_resolve_identically(self, tmp_path, monkeypatch):
+        """Stated as one assertion, so a web-only default reintroduced later
+        has to fail here rather than quietly disagree with the terminal."""
+        web = self._resolve(tmp_path, monkeypatch, self._CFG, ["serve", "web"])
+        term = self._resolve(tmp_path, monkeypatch, self._CFG, [])
+        assert web["serving"] == term["serving"]
 
     def test_other_serve_modes_are_not_web(self, tmp_path, monkeypatch):
         """The loop mode is not someone watching a composer."""
@@ -505,41 +519,36 @@ class TestWebServingDefaults:
         """``web: true`` in the file launches the same UI as the subcommand."""
         cfg = dict(self._CFG, web=True)
         serving = self._resolve(tmp_path, monkeypatch, cfg, [])["serving"]
-        assert serving["think"] is False
-        assert serving["temperature"] == 0.7
+        assert serving["think"] is True
+        assert serving["temperature"] == 0.6
 
-    def test_serving_web_block_overrides_the_default(self, tmp_path, monkeypatch):
+    def test_a_bare_serving_block_gets_no_web_values(self, tmp_path, monkeypatch):
+        """Nothing to inherit and nothing invented: a bare block stays bare,
+        so chat()'s own defaults (not the CLI's) are what apply."""
+        cfg = {"serving": {"host": "http://vllm:8000/v1"}}
+        serving = self._resolve(tmp_path, monkeypatch, cfg,
+                                ["serve", "web"])["serving"]
+        assert "think" not in serving
+        assert "top_p" not in serving
+        assert "temperature" not in serving
+
+    def test_serving_web_block_overrides_for_the_web_run(self, tmp_path, monkeypatch):
         cfg = {"serving": dict(self._CFG["serving"], web={"top_p": 0.9})}
         serving = self._resolve(tmp_path, monkeypatch, cfg,
                                 ["serve", "web"])["serving"]
         assert serving["top_p"] == 0.9
-        # Keys it does not name still take the built-in web value.
-        assert serving["think"] is False
-        assert serving["temperature"] == 0.7
-
-    def test_reasoning_back_on_takes_its_sampling_with_it(self, tmp_path, monkeypatch):
-        """The default is one trade, not three settings.
-
-        A browser session told to think wants the thinking-mode sampling, and
-        that is what ``serving:`` already holds — the instruct numbers are
-        half of a default that no longer applies.
-        """
-        cfg = {"serving": dict(self._CFG["serving"], web={"think": True})}
-        serving = self._resolve(tmp_path, monkeypatch, cfg,
-                                ["serve", "web"])["serving"]
+        # Keys it does not name are inherited from ``serving:``, unchanged.
         assert serving["think"] is True
         assert serving["temperature"] == 0.6
-        assert serving["top_p"] == 0.95
 
-    def test_sampling_named_under_web_survives_thinking(self, tmp_path, monkeypatch):
-        """Stated explicitly, it is a preference rather than half a default."""
-        cfg = {"serving": dict(self._CFG["serving"],
-                               web={"think": True, "temperature": 1.0})}
-        serving = self._resolve(tmp_path, monkeypatch, cfg,
-                                ["serve", "web"])["serving"]
-        assert serving["think"] is True
-        assert serving["temperature"] == 1.0
-        assert serving["top_p"] == 0.95
+    def test_web_can_turn_reasoning_off_alone(self, tmp_path, monkeypatch):
+        """The per-UI override is the reason the block still exists: one
+        config, two UIs, reasoning off in the browser only."""
+        cfg = {"serving": dict(self._CFG["serving"], web={"think": False})}
+        web = self._resolve(tmp_path, monkeypatch, cfg, ["serve", "web"])["serving"]
+        term = self._resolve(tmp_path, monkeypatch, cfg, [])["serving"]
+        assert web["think"] is False
+        assert term["think"] is True
 
     def test_serving_web_block_never_reaches_chat(self, tmp_path, monkeypatch):
         """It is a config layer, not a serving parameter."""
@@ -548,22 +557,17 @@ class TestWebServingDefaults:
             serving = self._resolve(tmp_path, monkeypatch, cfg, cli_args)["serving"]
             assert "web" not in serving
 
-    def test_explicit_think_flag_wins_over_the_web_default(self, tmp_path, monkeypatch):
-        """Asking for reasoning by hand is not a default to be overridden —
-        and it brings the configured sampling back with it."""
+    def test_explicit_think_flag_wins(self, tmp_path, monkeypatch):
         serving = self._resolve(tmp_path, monkeypatch, self._CFG,
                                 ["--think", "serve", "web"])["serving"]
         assert serving["think"] is True
-        assert serving["temperature"] == 0.6
-        assert serving["top_p"] == 0.95
 
-    def test_web_defaults_apply_to_a_bare_serving_block(self, tmp_path, monkeypatch):
-        """Nothing to override — the web values are still the ones that apply."""
-        cfg = {"serving": {"host": "http://vllm:8000/v1"}}
-        serving = self._resolve(tmp_path, monkeypatch, cfg,
-                                ["serve", "web"])["serving"]
+    def test_explicit_no_think_flag_wins(self, tmp_path, monkeypatch):
+        """``--no-think`` has to reach the config as a value: the default is
+        on, so the flag that turns it off is the one that has to be honoured."""
+        serving = self._resolve(tmp_path, monkeypatch, self._CFG,
+                                ["--no-think", "serve", "web"])["serving"]
         assert serving["think"] is False
-        assert serving["top_p"] == 0.8
 
 
 # ── onit learn ──────────────────────────────────────────────────────────────

@@ -19,9 +19,9 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--host URL` | LLM serving host URL. Overrides config and `ONIT_HOST` | — |
 | `--model NAME` | Model name. Skips auto-detection from endpoint | — |
 | `--max-tokens N` | Max output tokens per model response. Accepts `32768`, `128k`, `1M`. Each request is still clamped to what is left of the context window. Overrides `serving.max_tokens` | `32768` |
-| `--max-context-tokens N` | Context window size in tokens (`128k`, `1M`). Set it when the server does not report its own, or to hold the agent to a smaller window. On Ollama it also sizes `num_ctx` unless `serving.num_ctx` is set. Overrides `serving.max_context_tokens` | detected from endpoint, else `262144` |
+| `--max-context-tokens N` | Context window size in tokens (`128k`, `1M`). Set it when the server does not report its own, or to hold the agent to a smaller window. On Ollama it also sizes `num_ctx` unless `serving.num_ctx` is set. Overrides `serving.max_context_tokens` | detected from endpoint, else `1M` |
 | `--verbose` | Enable verbose logging | `false` |
-| `--think` | Enable thinking/reasoning mode (CoT) | `false` |
+| `--think` / `--no-think` | Thinking/reasoning mode (CoT). On by default; `--no-think` turns it off for one run. Overrides `serving.think` | `true` |
 | `--show-logs` | Show tool execution logs | `false` |
 | `--new-session [NAME]` | Start a fresh session instead of continuing the last one. With a name, the session is called that; without one, OnIt names it from the first message | continue last session |
 | `--resume-session NAME_OR_ID` | Continue a particular session: its name, a UUID, a `#` from the listing, or `last` (alias: `--resume`) | last session |

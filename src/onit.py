@@ -50,7 +50,7 @@ from .ui import ChatUI
 from .ui.protocol import ChatUIProtocol
 from .ui.commands import dispatch as dispatch_command
 from .model.serving.chat import (chat, decode_rate, summarize_metrics,
-                                DEFAULT_MAX_TOKENS)
+                                DEFAULT_MAX_TOKENS, DEFAULT_THINK)
 from .model.serving.state import RunState, state_path_for
 from .model.serving.balancer import (DEFAULT_PRIORITY, LoadBalancer,
                                      ServerEndpoint)
@@ -168,7 +168,7 @@ async def _chat_with_failover(onit, *, instruction: str, kwargs: dict,
                 images=images,
                 tool_registry=onit.tool_registry,
                 safety_queue=safety_queue,
-                think=onit.model_serving.get("think", False),
+                think=onit.model_serving.get("think", DEFAULT_THINK),
                 timeout=onit.timeout,
                 **kwargs)
             # Treat empty/whitespace-only responses as failures too.
@@ -2169,7 +2169,7 @@ class OnIt(BaseModel):
                                                 instruction=instruction,
                                                 tool_registry=self.tool_registry,
                                                 safety_queue=self.safety_queue,
-                                                think=self.model_serving.get("think", False),
+                                                think=self.model_serving.get("think", DEFAULT_THINK),
                                                 timeout=self.timeout,
                                                 **kwargs)
                 finally:

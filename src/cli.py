@@ -134,39 +134,30 @@ def _ensure_mcp_servers(config_data: dict, log_level='ERROR'):
 
 
 # What the web UI serves with, over and above the shared ``serving:`` block.
-# A browser turn is a chat: one iteration, no tool loop to amortise a reasoning
-# pass over, and someone watching the composer while a 27B model deliberates —
-# so the reasoning is the whole wait.  The terminal is where runs are long
-# enough for thinking to earn its latency, and it keeps it.  Sampling moves
-# with the switch because thinking and instruct mode want different numbers
-# (see the table in docs/MODEL_SERVING.md); leaving the thinking-mode values on
-# a model told not to think is the wrong half of the pair.
-WEB_SERVING_DEFAULTS = {
-    'think': False,
-    'temperature': 0.7,
-    'top_p': 0.8,
-}
+#
+# There are no web-only *values* any more, and that is the point.  There used
+# to be: a browser turn was said to be one iteration with no tool loop behind
+# it, so reasoning was "the whole wait" and the web UI defaulted ``think`` off
+# and moved the sampling to the instruct-mode numbers.  Reasoning is now on by
+# default everywhere, so that trade no longer has two sides to choose between —
+# and the sampling that came with it (0.7 / 0.8, tuned for a model that does
+# not think) would be the wrong half of a pair left on a model that does.  A
+# browser run now inherits ``serving:`` exactly as the terminal does.
+#
+# ``serving.web`` survives as the per-UI override block, which is a different
+# thing from a default: anything named there applies to the web run only, so
+# ``serving.web.think: false`` is how a config turns reasoning off in the
+# browser while the terminal keeps it.
+WEB_SERVING_DEFAULTS: dict = {}
 
 
-def _apply_web_serving_defaults(config_data: dict, is_web: bool,
-                                force_think: bool = False):
-    """Layer :data:`WEB_SERVING_DEFAULTS` over ``serving:`` for a web run.
+def _apply_web_serving_defaults(config_data: dict, is_web: bool):
+    """Apply :data:`WEB_SERVING_DEFAULTS`, then ``serving.web``, to a web run.
 
-    These beat a plain ``serving.think`` rather than filling in for it: one
-    config serves both UIs, so a ``serving:`` block that turns reasoning on
-    for the terminal would otherwise turn it on for the browser too, and the
-    split would never take effect for anyone who had asked for thinking at
-    all.  ``serving.web`` is the way back — any key set there wins over the
-    default beside it, so ``serving.web.think: true`` restores reasoning in
-    the browser and leaves the terminal alone.
-
-    The defaults land as one trade rather than three independent settings:
-    thinking off, and the sampling an instruct-mode turn wants.  Put the
-    reasoning back — through ``serving.web`` or a ``--think`` on the command
-    line, which *force_think* reports — and the sampling half goes with it,
-    falling through to ``serving:``, which is already tuned for a model that
-    thinks.  Sampling named explicitly under ``serving.web`` applies either
-    way; it is a stated preference, not half of a default.
+    It no longer takes the ``--think`` flag.  It used to, to decide whether to
+    suppress the reasoning-off default; with no such default there is nothing
+    to suppress, and the flag is applied after this runs anyway, so it wins
+    over anything set here.
 
     The ``serving.web`` block is consumed here on every run, web or not, so
     that a terminal session never carries it into chat().
@@ -177,8 +168,7 @@ def _apply_web_serving_defaults(config_data: dict, is_web: bool,
     if not is_web:
         return
     web_cfg = dict(web_cfg) if isinstance(web_cfg, dict) else {}
-    overrides = ({} if (force_think or web_cfg.get('think'))
-                 else dict(WEB_SERVING_DEFAULTS))
+    overrides = dict(WEB_SERVING_DEFAULTS)
     overrides.update(web_cfg)
     config_data.setdefault('serving', {}).update(overrides)
 
@@ -1075,11 +1065,14 @@ def _build_parser() -> argparse.ArgumentParser:
                              "serving.num_ctx says otherwise. Overrides "
                              "serving.max_context_tokens in the config YAML "
                              "(default: whatever the endpoint reports, else "
-                             "262144).")
+                             "1M).")
     parser.add_argument("--verbose", action="store_true", default=None,
                         help="Enable verbose logging.")
-    parser.add_argument("--think", action="store_true", default=None,
-                        help="Enable thinking/reasoning mode (CoT).")
+    parser.add_argument("--think", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="Thinking/reasoning mode (CoT). On by default; "
+                             "--no-think turns it off for this run. "
+                             "Overrides serving.think in the config YAML.")
     parser.add_argument("--show-logs", action="store_true", default=None,
                         help="Show tool execution logs.")
 
@@ -1476,10 +1469,9 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
 
     # Keyed off the resolved flag, not the subcommand, so a config file that
     # says ``web: true`` gets the same treatment as ``onit serve web``.  The
-    # --think flag is only read here to keep the sampling consistent with it;
-    # the flag itself is applied below, so it still wins outright.
-    _apply_web_serving_defaults(config_data, bool(config_data.get('web')),
-                                bool(getattr(args, 'think', False)))
+    # --think flag is applied below and is not read here: there is no web-only
+    # default for it to suppress any more.
+    _apply_web_serving_defaults(config_data, bool(config_data.get('web')))
 
     # --host, --model, --think override serving config
     if args.host:
@@ -1507,8 +1499,11 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         # reach that knob too — unless the config names num_ctx itself, which is
         # the more specific setting and keeps precedence.
         serving_cfg.setdefault('num_ctx', args.max_context_tokens)
-    if args.think:
-        config_data.setdefault('serving', {})['think'] = True
+    # The resolved flag, so --no-think is a value rather than an absence.
+    # ``None`` means the option was not given at all, and then the config (or
+    # chat()'s DEFAULT_THINK) decides.
+    if args.think is not None:
+        config_data.setdefault('serving', {})['think'] = args.think
     if args.data_path:
         config_data['data_path'] = args.data_path
 

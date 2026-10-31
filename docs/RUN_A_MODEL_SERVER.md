@@ -146,7 +146,7 @@ Two MLX-specific quirks:
   it is why you should always pass `--model` on the OnIt side rather than let
   auto-detection pick the first cache entry.
 - The server does not report `max_model_len`, so OnIt cannot discover the context
-  window and falls back to an assumed 262144. Set `max_context_tokens` yourself
+  window and falls back to an assumed 1M. Set `max_context_tokens` yourself
   (see [below](#tell-onit-about-it)), or long sessions compact against the wrong
   budget.
 

@@ -950,14 +950,15 @@ async def check_model_reply(agent) -> CheckResult:
     ep = lb.assigned(getattr(agent, "session_id", None)) if lb is not None else None
     if ep is None:
         return _result("model-reply", False, "no endpoint assigned", start)
-    from ..model.serving.chat import chat
+    from ..model.serving.chat import chat, DEFAULT_THINK
     out = await chat(
         host=ep.host, host_key=ep.host_key, model=ep.model,
         instruction=REPLY_PROBE,
         tool_registry=None,                      # no tools: one plain turn
         safety_queue=asyncio.Queue(),
         chat_ui=None, verbose=False, stream=False,
-        think=bool((getattr(agent, "model_serving", {}) or {}).get("think", False)),
+        think=bool((getattr(agent, "model_serving", {}) or {}).get(
+            "think", DEFAULT_THINK)),
         max_tokens=256,
         verify_answers=False,                    # a probe has nothing to fact-check
         session_history=[],
@@ -982,7 +983,7 @@ async def check_model_tool_turn(agent) -> CheckResult:
     ep = lb.assigned(getattr(agent, "session_id", None)) if lb is not None else None
     if ep is None:
         return _result("model-tool-turn", False, "no endpoint assigned", start)
-    from ..model.serving.chat import chat
+    from ..model.serving.chat import chat, DEFAULT_THINK
     # The session's own data_path, exactly as a real task passes it — the MCP
     # server jails data_path inside its own data directory, so a temp-dir
     # stand-in here would make the model's bash call fail for a reason that
@@ -995,7 +996,8 @@ async def check_model_tool_turn(agent) -> CheckResult:
         tool_registry=reg,
         safety_queue=asyncio.Queue(),
         chat_ui=None, verbose=False, stream=False,
-        think=bool((getattr(agent, "model_serving", {}) or {}).get("think", False)),
+        think=bool((getattr(agent, "model_serving", {}) or {}).get(
+            "think", DEFAULT_THINK)),
         max_tokens=1024,
         data_path=data_path,
         verify_answers=False,
@@ -1027,7 +1029,7 @@ async def check_model_file_turn(agent) -> CheckResult:
     ep = lb.assigned(getattr(agent, "session_id", None)) if lb is not None else None
     if ep is None:
         return _result("model-file-turn", False, "no endpoint assigned", start)
-    from ..model.serving.chat import chat
+    from ..model.serving.chat import chat, DEFAULT_THINK
     data_path = getattr(agent, "data_path", "") or ""
     if not data_path:
         return _result("model-file-turn", False,
@@ -1051,7 +1053,8 @@ async def check_model_file_turn(agent) -> CheckResult:
             tool_registry=reg,
             safety_queue=asyncio.Queue(),
             chat_ui=None, verbose=False, stream=False,
-            think=bool((getattr(agent, "model_serving", {}) or {}).get("think", False)),
+            think=bool((getattr(agent, "model_serving", {}) or {}).get(
+            "think", DEFAULT_THINK)),
             max_tokens=1024,
             data_path=data_path,
             verify_answers=False,

@@ -153,12 +153,34 @@ def _truncate_tool_response(response: str, tool: str = "") -> str:
 # explicitly.
 DEFAULT_MAX_TOKENS = 32768
 
+# Whether the model reasons before it answers, when nothing says otherwise.
+# On, for every entry point: the terminal and the browser, a chat turn and a
+# tool loop.  Reasoning is the difference between a model that plans and one
+# that reacts, and the models worth running locally now all ship with it — a
+# default that silently turned it off made a reasoning model answer like a
+# smaller one and left the user to discover the flag.  The cost is latency on
+# the turns that do not need it, which is why ``think_tool_turns`` exists (it
+# keeps reasoning for the opening turn and drops it for the tool-call JSONs)
+# and why ``--no-think`` / ``serving.think: false`` turn it off outright.
+DEFAULT_THINK = True
+
 # Context window assumed when the size of the real one cannot be established:
 # the endpoint does not publish it (OpenRouter) or the query for it failed.
 # Only a fallback — a window reported by the server, configured in
 # ``serving.max_context_tokens``, or passed with ``--max-context-tokens`` wins
 # over it, because those are the real number and this is a guess.
-DEFAULT_MAX_CONTEXT_TOKENS = 262144
+#
+# One million, matching the largest window current long-context models ship
+# with.  The number is not what makes a 1M run work: compaction keeps the
+# prompt under CONTEXT_COMPACT_THRESHOLD of whatever window is in force, so a
+# model that really holds 128k still compacts at 128k when the server reports
+# it.  What the default decides is the case where nobody knows — and there,
+# assuming 262144 turned a 1M model into a quarter of itself, compacting a run
+# that had room to keep going.  A guess that is too large costs nothing until
+# the prompt actually grows; a guess that is too small costs the context the
+# user paid for.  ``serving.max_context_tokens`` sets it for an endpoint that
+# genuinely reports nothing and genuinely holds less.
+DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000
 
 # Stall detection for the "no timeout" (-1) configuration.  Even with no
 # overall request timeout, the connect phase and the gap between streamed
@@ -5623,7 +5645,7 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
          tool_registry: Optional[Any] = None,
          timeout: int = None,
          stream: bool = False,
-         think: bool = False,
+         think: bool = DEFAULT_THINK,
          safety_queue: Optional[asyncio.Queue] = None,
          **kwargs) -> Optional[str]:
 
@@ -5808,13 +5830,29 @@ async def chat(host: str = "http://127.0.0.1:8001/v1",
     # doesn't try to allocate a giant KV cache and fail to load.
     if is_ollama:
         if num_ctx is None:
-            _native_ctx = await _get_ollama_max_context(ollama_client, model)
-            # Ceiling keeps auto-sizing safe; raise serving.num_ctx to go higher.
-            _ctx_ceiling = max(max_tokens * 2, 262144)
-            if _native_ctx:
-                num_ctx = min(_native_ctx, _ctx_ceiling)
+            # A window the caller named is a window Ollama has to be asked
+            # for.  --max-context-tokens sets both keys in the config for
+            # exactly this reason, but a caller that passes only
+            # max_context_tokens (the API, a test, a script) would otherwise
+            # have its prompts measured against 1M while Ollama allocated its
+            # own default of 2048 — compaction accounting and the KV cache
+            # would then describe two different servers.  num_ctx still wins
+            # when it is set: it is the more specific knob.
+            if max_context_tokens:
+                num_ctx = max_context_tokens
             else:
-                num_ctx = _ctx_ceiling
+                _native_ctx = await _get_ollama_max_context(ollama_client, model)
+                # Ceiling keeps auto-sizing safe; raise serving.num_ctx to go
+                # higher.  It follows DEFAULT_MAX_CONTEXT_TOKENS rather than a
+                # number of its own: the window a run is accounted against and
+                # the window Ollama is asked to allocate have to be the same
+                # size, or a 1M default measures prompts against a window
+                # Ollama never allocated.
+                _ctx_ceiling = max(max_tokens * 2, DEFAULT_MAX_CONTEXT_TOKENS)
+                if _native_ctx:
+                    num_ctx = min(_native_ctx, _ctx_ceiling)
+                else:
+                    num_ctx = _ctx_ceiling
         _log_to_ui_or_verbose(
             f"Ollama context window (num_ctx): {num_ctx:,} tokens", chat_ui, verbose, level="info"
         )

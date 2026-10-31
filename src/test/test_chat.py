@@ -1805,7 +1805,15 @@ class TestPlanningContinuation:
     @pytest.mark.asyncio
     async def test_planning_response_triggers_continuation(self):
         """When tools are available and the model returns planning text, a continuation
-        prompt is injected and the model is called again."""
+        prompt is injected and the model is called again.
+
+        ``think=False`` is stated here, not inherited: this test is about the
+        512-token cap, which is the *non-thinking* branch (a thinking model
+        needs the full budget for the reasoning it emits before the JSON, so
+        the cap follows ``think``).  Leaving it out made the test depend on
+        what the default happened to be, and it read as a cap regression the
+        day the default became True.
+        """
         planning_text = "Let me create the files and push them to the repo."
         final_answer = "All done!"
 
@@ -1826,6 +1834,7 @@ class TestPlanningContinuation:
                 instruction="Create a README and push it.",
                 tool_registry=mock_registry,
                 safety_queue=asyncio.Queue(),
+                think=False,
             )
 
         assert result == final_answer
@@ -3859,12 +3868,15 @@ class TestDefaultTokenBudgets:
 
     @pytest.mark.asyncio
     async def test_unreported_window_falls_back_to_the_default(self, tmp_path):
-        """262144 assumed; the 32768 output default reserves ~17% of it, so the
-        compaction threshold sits at 0.825 rather than clamping to 0.50."""
+        """1M assumed; the 32768 output default reserves ~8% of it, so the
+        compaction threshold sits at the 0.90 ceiling rather than clamping to
+        0.50.  The window is a guess either way — what the default decides is
+        how much of a long-context model a run gets to use when nobody can
+        say, and 262144 turned a 1M model into a quarter of itself."""
         from model.serving.chat import (DEFAULT_MAX_TOKENS,
                                         DEFAULT_MAX_CONTEXT_TOKENS)
         assert DEFAULT_MAX_TOKENS == 32768
-        assert DEFAULT_MAX_CONTEXT_TOKENS == 262144
+        assert DEFAULT_MAX_CONTEXT_TOKENS == 1_000_000
         kwargs = await self._first_call_kwargs(tmp_path, detected=None)
         assert kwargs["max_tokens"] == DEFAULT_MAX_TOKENS
 

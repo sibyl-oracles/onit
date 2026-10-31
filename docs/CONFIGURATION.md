@@ -12,7 +12,7 @@ serving:
   host: http://localhost:11434/v1
   model: qwen3:30b
   max_context_tokens: 131072   # set it when the server doesn't report its own
-                               # (unreported and unset falls back to 262144)
+                               # (unreported and unset falls back to 1000000)
   think: true                  # reasoning mode; off by default
   max_tokens: 32768
 
@@ -54,12 +54,12 @@ serving:
   # host_key: sk-or-v1-your-key-here   # ('api_key' in an endpoints list)
   # model: auto-detected from endpoint. Set explicitly for OpenRouter:
   # model: google/gemini-2.5-pro
-  think: true
-  # What the web UI serves with instead. See "Thinking in the browser" below.
+  think: true          # reasoning before answering; --no-think turns it off
+  # Per-UI overrides. A web run inherits everything above, exactly as the
+  # terminal does; anything named here applies to the browser only.
   # web:
-  #   think: false
-  #   temperature: 0.7
-  #   top_p: 0.8
+  #   think: false       # reasoning off in the browser alone
+  #   temperature: 0.7   # and different sampling, if you want it
   max_tokens: 32768   # max output tokens per response (shipped default;
                       # clamped to whatever is left of the context window
                       # per request). 32768 fits any single answer and keeps
@@ -141,60 +141,55 @@ mcp:
 ```
 
 
-## Thinking in the browser
+## Thinking, and turning it off
 
-The two UIs want different trades, and one config file serves both.
+Reasoning is on by default, in the terminal and in the browser. The models
+worth running locally reason before they answer, and a reasoning model told not
+to behaves like a smaller one — the deliberation is the capability, not an
+extra. It costs latency, and `--no-think` (or `serving.think: false`) is how
+you trade that back:
 
-A terminal run is long: tools, a plan, dozens of turns. Reasoning has somewhere
-to amortise, and `think: true` earns its latency there. A browser turn is
-usually the opposite — one iteration, no tool loop, and someone watching the
-composer while the model deliberates. There the reasoning *is* the wait, and on
-a 27B-class model it is most of the time to first useful token.
-
-So the web UI serves with its own values, applied over whatever `serving:` says:
-
-| | terminal | web UI |
-|---|:---:|:---:|
-| `think` | as configured | **`false`** |
-| `temperature` | as configured | **`0.7`** |
-| `top_p` | as configured | **`0.8`** |
-
-The sampling numbers move with the switch on purpose. Thinking and instruct
-mode want different ones — see the table in
-[MODEL_SERVING.md](MODEL_SERVING.md#sampling-parameters) — and leaving the
-thinking-mode values on a model that has been told not to think is the wrong
-half of the pair.
-
-These **override** `serving.think` rather than filling in for it. They have to:
-a single `serving:` block that turns reasoning on for the terminal would
-otherwise turn it on for the browser too, and the split would never take effect
-for anyone who had asked for thinking in the first place.
-
-`serving.web` is the way back. Any key set there wins over the built-in value
-beside it, and the terminal is untouched either way:
+```bash
+onit --no-think                          # one run, no reasoning
+```
 
 ```yaml
 serving:
-  think: true          # the terminal reasons
-  temperature: 0.6     # …with thinking-mode sampling
-  web:
-    think: true        # …and so does the browser, at temperature 0.6
+  think: false        # every run, no reasoning
 ```
 
-The three land as one trade, not as three settings. Put the reasoning back and
-the instruct sampling goes with it, falling through to `serving:` — which is
-already tuned for a model that thinks. Sampling you name under `serving.web`
-yourself applies either way; that is a stated preference, not half of a default.
+The two UIs no longer default differently. There used to be a web-only set of
+values — reasoning off, and the instruct-mode sampling to match — on the theory
+that a browser turn is one iteration with no tool loop behind it, so the
+reasoning *is* the wait. With reasoning on by default everywhere that trade has
+no second side, and the instruct sampling would be the wrong half of a pair left
+on a model that thinks. A browser run now inherits `serving:` exactly as the
+terminal does.
 
-An explicit `--think` on the command line does the same thing for one run, so
-`onit --think serve web` gets reasoning in a browser session, at the configured
-sampling, without editing anything. The `serving.web` block is consumed while
-the config is resolved and never reaches the model server.
+`serving.web` remains as a **per-UI override**, which is a different thing from
+a default. Anything named there applies to the web run only, so one config can
+still serve the two UIs differently:
 
-`think_tool_turns` is the other half of this, and it applies to both UIs: with
-it `false` (the default), a thinking model reasons on the opening turn — where
-the approach is decided — and not before each tool call after it. A loop of N
-tool calls otherwise pays for N full reasoning passes.
+```yaml
+serving:
+  think: true          # both UIs reason…
+  temperature: 0.6     # …at thinking-mode sampling
+  web:
+    think: false       # …except the browser, which does not
+```
+
+A key you name under `serving.web` is a stated preference and is applied as
+written; keys you leave out are inherited from `serving:` unchanged. The block
+is consumed while the config is resolved and never reaches the model server.
+
+An explicit `--think` / `--no-think` on the command line wins over both, for one
+run: `onit --no-think serve web` starts a browser session that does not reason,
+without editing anything.
+
+`think_tool_turns` is a separate, narrower switch, and it applies to both UIs:
+with it `false` (the default), a thinking model reasons on the opening turn —
+where the approach is decided — and not before each tool call after it. A loop
+of N tool calls otherwise pays for N full reasoning passes.
 
 
 ## Fact-checking the answer
