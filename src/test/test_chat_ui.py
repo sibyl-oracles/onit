@@ -794,3 +794,66 @@ class TestRunStatsLine:
         chat_ui.stream_end()
         out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", buf.getvalue())
         assert "tok (" not in out
+
+
+# ── the session named in the stats line ──────────────────────────────────────
+
+class TestTheLineSaysWhichSession:
+    """A bare ``onit`` resumes the last session, so the footer has to say
+    which one that was.  Before this the line named the model, the endpoint,
+    the directory and the build, and left the conversation anonymous -- the
+    one field that answers "am I in the session I think I am?".
+    """
+
+    @staticmethod
+    def _last_line(ui) -> str:
+        buf = io.StringIO()
+        ui.console = Console(file=buf, width=200)
+        ui.console.print(ui.render_messages())
+        return re.sub(r"\x1b\[[0-9;?]*", "", buf.getvalue()).strip().splitlines()[-1]
+
+    def test_the_panel_names_the_session_before_any_turn(self, chat_ui):
+        """A resumed session opens with no messages, so the welcome panel is
+        the only thing on screen when the question gets asked."""
+        chat_ui.session_name = "thesis ch3"
+        chat_ui.model_name = "qwen3-coder"
+        chat_ui.provider_name = "ollama"
+        assert self._last_line(chat_ui).startswith("session thesis ch3 · ")
+
+    def test_the_line_under_an_answer_names_the_session(self, chat_ui):
+        chat_ui.session_name = "thesis ch3"
+        chat_ui.model_name = "qwen3-coder"
+        chat_ui.set_metrics({"prompt_tokens_total": 100, "completion_tokens": 5})
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end()
+        assert self._last_line(chat_ui).startswith("session thesis ch3 · ")
+
+    def test_a_rename_reaches_the_next_redraw(self, chat_ui):
+        """The name is not frozen into the line the run printed: the session
+        gets its name from its first message, so a cached string would keep
+        saying '(unnamed)' for the rest of the session."""
+        chat_ui.session_name = "(unnamed) 5ea03e3c"
+        chat_ui.set_metrics({"completion_tokens": 5})
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end()
+        assert "(unnamed) 5ea03e3c" in self._last_line(chat_ui)
+        chat_ui.session_name = "review-onit-codebase-bugs"
+        assert self._last_line(chat_ui).startswith("session review-onit-codebase-bugs")
+
+    def test_no_session_field_when_the_ui_was_never_told(self, chat_ui):
+        """A UI built without a session (the tests' own fixture, an embedder
+        with no store) prints no session field rather than an empty one."""
+        chat_ui.set_metrics({"completion_tokens": 5})
+        chat_ui.turn_start()
+        chat_ui.stream_start()
+        chat_ui.stream_token("hello")
+        chat_ui.stream_end()
+        assert "session " not in self._last_line(chat_ui)
+
+    def test_the_welcome_panel_stays_empty_with_nothing_to_say(self, chat_ui):
+        """No session, no model: the row is omitted, not printed blank."""
+        assert chat_ui._stats_group() == []

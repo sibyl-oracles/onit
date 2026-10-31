@@ -1266,6 +1266,28 @@ class TestTokenFooter:
             "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
             "(4,665,239 in / 33,580 out) · 316.6s")
 
+    def test_the_session_leads_the_line(self):
+        """Which conversation the numbers belong to comes before which model
+        answered: a bare ``onit`` resumes the last session, and the line used
+        to name the model without ever saying which session it was."""
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5},
+            session="thesis ch3", model="qwen3-coder", provider="ollama",
+            data_path="/Users/rowel/sandbox", version="0.1.5a", elapsed=2.0)
+        assert line.startswith("session thesis ch3 · model qwen3-coder")
+        assert line.count("session ") == 1
+
+    def test_an_unnamed_session_still_names_its_row(self):
+        line = format_token_footer({}, session="(unnamed) 5ea03e3c")
+        assert line == "session (unnamed) 5ea03e3c"
+
+    def test_no_session_field_when_there_is_no_session(self):
+        """A caller with no session (a bare format test, a web run) is
+        unchanged: the field drops out rather than printing an empty label."""
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0)
+        assert "session" not in line
+
     def test_version_drops_out_when_unknown(self):
         """A build without readable package metadata still gets a line."""
         line = format_token_footer(

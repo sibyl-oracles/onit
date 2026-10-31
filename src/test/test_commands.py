@@ -1068,6 +1068,28 @@ class TestRenameCommand:
         a, _ = named
         assert "onit --resume-session" in commands.cmd_rename(a, "Auth Work")
 
+    def test_the_footer_learns_the_new_name(self, named):
+        """The stats line under the next answer names the session, so a rename
+        has to reach it here -- otherwise the panel keeps printing the name the
+        session had a moment ago, which is the confusion the field removes."""
+        a, _ = named
+        ui = SimpleNamespace(session_name="fix-login-bug")
+        a.chat_ui = ui
+        commands.cmd_rename(a, "Auth Work")
+        assert ui.session_name == "Auth Work"
+
+    def test_a_refused_rename_leaves_the_footer_alone(self, named):
+        a, _ = named
+        ui = SimpleNamespace(session_name="fix-login-bug")
+        a.chat_ui = ui
+        commands.cmd_rename(a, "debug-cuda-kernel")  # taken by sess-2
+        assert ui.session_name == "fix-login-bug"
+
+    def test_a_rename_with_no_ui_does_not_raise(self, named):
+        """Loop and web runs have no terminal ChatUI to tell."""
+        a, _ = named
+        assert "Auth Work" in commands.cmd_rename(a, "Auth Work")
+
     def test_another_sessions_name_is_refused(self, named):
         a, d = named
         out = commands.cmd_rename(a, "debug-cuda-kernel")
@@ -1097,3 +1119,46 @@ class TestRenameCommand:
 
     def test_a_typo_of_it_suggests_it(self):
         assert commands.suggest("renam") == "rename"
+
+
+# ── the footer follows \host and \model ──────────────────────────────────────
+
+class TestTheFooterFollowsTheSwitch:
+    """The stats line is on screen before the next answer, so it has to name
+    the endpoint that will answer next -- not the one the session was moved
+    off.  These pin the two commands that change it mid-session."""
+
+    @staticmethod
+    def _agent(tmp_path):
+        from src.model.serving.balancer import LoadBalancer, ServerEndpoint
+        from src.ui.text import ChatUI
+        from unittest.mock import patch
+        with patch.object(ChatUI, "initialize"):
+            ui = ChatUI(theme="white")
+        ui.provider_name = "ollama"
+        ui.model_name = ""
+        return SimpleNamespace(
+            chat_ui=ui,
+            model_serving={"host": "http://localhost:11434/v1"},
+            load_balancer=LoadBalancer(
+                [ServerEndpoint(host="http://localhost:11434/v1",
+                                model="qwen3-coder")], "sticky"),
+            config_data={}, data_path=str(tmp_path),
+        )
+
+    def test_host_switch_relabels_the_endpoint(self, tmp_path):
+        from src.model.serving.balancer import ServerEndpoint
+        a = self._agent(tmp_path)
+        commands._rebuild(a, [ServerEndpoint(
+            host="https://api.anthropic.com/v1", model="claude-sonnet-4")])
+        assert a.chat_ui.provider_name == "claude"
+
+    def test_an_agent_with_no_ui_is_not_a_crash(self, tmp_path):
+        from src.model.serving.balancer import LoadBalancer, ServerEndpoint
+        a = SimpleNamespace(
+            chat_ui=None,
+            model_serving={"host": "http://localhost:11434/v1"},
+            load_balancer=LoadBalancer(
+                [ServerEndpoint(host="http://localhost:11434/v1")], "sticky"))
+        commands._rebuild(a, [ServerEndpoint(host="http://localhost:11434/v1")])
+        assert a.model_serving["host"] == "http://localhost:11434/v1"

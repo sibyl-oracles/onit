@@ -2024,11 +2024,19 @@ def main():
                 sys.exit(1)
         else:
             config_data['resume_session_id'] = sid
+            # Which session, by name when it has one.  The id alone told the
+            # person a session was resumed without telling them which: a bare
+            # `onit` continues the last one, and "the last one" is exactly what
+            # they need to see confirmed before typing into it.  The id stays
+            # as well -- it is what `--resume-session` accepts.
+            from .sessions import session_label
+            label = session_label(sid, sessions_dir)
+            where = f"{label} ({sid[:8]})" if label else sid[:8]
             if auto_resume:
-                print(f"Resuming last session: {sid[:8]}... "
+                print(f"Resuming last session: {where} "
                       "(use --new-session to start a new one)")
             else:
-                print(f"Resuming session: {sid[:8]}...")
+                print(f"Resuming session: {where}")
 
     # A name given on the command line belongs to a session being created.  It
     # is carried in the config dict rather than passed as an argument because

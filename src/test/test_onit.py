@@ -1839,3 +1839,134 @@ class TestProcessTaskWithoutAnInstanceQueue:
              patch("src.onit.chat", new_callable=AsyncMock,
                    return_value="ok"):
             assert await onit.process_task("q", safety_queue=None) == "ok"
+
+
+# ── the session named in the UI ──────────────────────────────────────────────
+
+class TestTheUiIsToldWhichSession:
+    """A bare ``onit`` resumes the last session.  The footer under every answer
+    has to name it, and this is where the UI learns the name: the agent knows
+    it from the index, the UI prints it, and neither can work it out alone.
+    """
+
+    @staticmethod
+    def _config(tmp_path, **overrides):
+        return _make_config(tmp_path, overrides)
+
+    def test_a_new_session_is_labelled_by_its_short_id(self, tmp_path):
+        """It has no name yet -- it gets one from its first message -- and an
+        unnamed session is still the row the person is typing into."""
+        with _mock_discover():
+            onit = OnIt(config=self._config(tmp_path))
+        assert onit.session_name == f"(unnamed) {onit.session_id[:8]}"
+        assert onit.chat_ui.session_name == onit.session_name
+
+    def test_a_resumed_session_is_labelled_by_its_name(self, tmp_path):
+        from src import sessions
+
+        cfg = self._config(tmp_path)
+        with _mock_discover():
+            first = OnIt(config=cfg)
+        sessions.tag_session(first.session_id, "thesis ch3",
+                             str(tmp_path / "sessions"))
+
+        with _mock_discover():
+            second = OnIt(config={**cfg, "resume_session_id": first.session_id})
+        assert second.session_name == "thesis ch3"
+        assert second.chat_ui.session_name == "thesis ch3"
+
+    def test_a_resumed_session_with_a_name_is_labelled_even_unnamed(self, tmp_path):
+        """A session named from its first message is resumed under that name,
+        not under its id: the auto-name is a name."""
+        from src import sessions
+
+        cfg = self._config(tmp_path)
+        with _mock_discover():
+            first = OnIt(config=cfg)
+        sessions.update_session(first.session_id,
+                                task="debug the cuda kernel",
+                                sessions_dir=str(tmp_path / "sessions"))
+
+        with _mock_discover():
+            second = OnIt(config={**cfg, "resume_session_id": first.session_id})
+        assert second.chat_ui.session_name == "debug-cuda-kernel"
+
+    def test_the_ui_starts_knowing_the_model_and_endpoint(self, tmp_path):
+        """Before the first task there is no resolved model to report, and a
+        footer with neither field leaves the person unable to tell whether
+        they are pointed where they meant to be."""
+        with _mock_discover():
+            onit = OnIt(config=self._config(
+                tmp_path, serving={"host": "http://localhost:11434/v1",
+                                   "model": "qwen3-coder:30b"}))
+        assert onit.chat_ui.model_name == "qwen3-coder:30b"
+        assert onit.chat_ui.provider_name == "ollama"
+
+    def test_a_name_given_at_launch_is_the_one_the_footer_shows(self, tmp_path):
+        cfg = self._config(tmp_path)
+        cfg["session_name"] = "Auth Work"
+        with _mock_discover():
+            onit = OnIt(config=cfg)
+        assert onit.chat_ui.session_name == "Auth Work"
+
+    def test_an_auto_named_session_renames_the_footer(self, tmp_path):
+        """The name arrives *during* a task, from its first message, so the
+        label read at setup is stale for exactly the sessions that get named.
+        Without the refresh the footer said '(unnamed) 5ea03e3c' for the rest
+        of a session the listing already showed under its new name."""
+        with _mock_discover():
+            onit = OnIt(config=self._config(tmp_path))
+        assert onit.chat_ui.session_name.startswith("(unnamed) ")
+
+        onit._refresh_session_label(
+            onit.session_id, os.path.dirname(onit.session_path))
+        # No turn yet, so still unnamed -- the index has nothing new to say.
+        assert onit.chat_ui.session_name.startswith("(unnamed) ")
+
+        from src.sessions import update_session
+        update_session(onit.session_id, task="review the onit codebase",
+                       sessions_dir=os.path.dirname(onit.session_path))
+        onit._refresh_session_label(
+            onit.session_id, os.path.dirname(onit.session_path))
+        assert onit.chat_ui.session_name == "review-onit-codebase"
+
+    def test_another_sessions_label_does_not_overwrite_this_one(self, tmp_path):
+        """The terminal UI is one session.  A web UI serves many, and its line
+        is built per answer from the index -- so a task run for a different
+        session must not relabel the panel."""
+        with _mock_discover():
+            onit = OnIt(config=self._config(tmp_path))
+        before = onit.chat_ui.session_name
+        onit._refresh_session_label("some-other-session", 
+                                    os.path.dirname(onit.session_path))
+        assert onit.chat_ui.session_name == before
+
+
+class TestTheFooterIsRenamedByTheFirstAnswer:
+    """Drives the real ``process_task`` path: the session is named *during* the
+    task, from its first message, and the footer has to pick that up.  The
+    direct test above proves the refresh works; this proves it is called.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_footer_is_renamed_by_the_first_answer(self, tmp_path):
+        onit = _make_onit_for_async(tmp_path)
+        onit.safety_queue = asyncio.Queue()
+        assert onit.chat_ui.session_name.startswith("(unnamed) ")
+
+        prompt_msg = MagicMock()
+        prompt_msg.content.text = "Instruction"
+        prompt_result = MagicMock()
+        prompt_result.messages = [prompt_msg]
+        client = AsyncMock()
+        client.get_prompt = AsyncMock(return_value=prompt_result)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.onit.Client", return_value=client), \
+             patch("src.onit.chat", new_callable=AsyncMock,
+                   return_value="The answer"):
+            await onit.process_task("review the onit codebase")
+
+        assert onit.chat_ui.session_name == "review-onit-codebase"
+        assert onit.session_name == "review-onit-codebase"

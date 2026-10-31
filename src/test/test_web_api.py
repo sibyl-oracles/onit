@@ -1608,17 +1608,33 @@ class TestTokenStatsOnDone:
                    "prompt_tokens_max": 500_000,
                    "prompt_tokens_total": 4_665_239,
                    "completion_tokens": 33_580}
-        out = _timing_summary(metrics, 316.6, model_name="space-bunny-alpha",
+        out = _timing_summary(metrics, 316.6, session_name="thesis ch3",
+                              model_name="space-bunny-alpha",
                               provider_name="ollama",
                               data_path="/Users/rowel/sandbox")
         assert out["token_stats"] == (
-            "model space-bunny-alpha · provider ollama · "
+            "session thesis ch3 · model space-bunny-alpha · "
+            "provider ollama · "
             "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
             "(4,665,239 in / 33,580 out) · 316.6s")
         # The counts ship raw too, so a client that wants its own presentation
         # is not forced to parse the sentence.
         assert out["prompt_tokens_total"] == 4_665_239
         assert out["completion_tokens"] == 33_580
+
+    def test_the_browser_is_told_which_session_too(self):
+        """The terminal and the browser show the same line, so the browser's
+        copy names the session as well -- a bare `onit` resumes the last one,
+        and the web footer answers the same question."""
+        from ui.api import _timing_summary
+        out = _timing_summary({"completion_tokens": 5}, 1.0,
+                              session_name="(unnamed) 5ea03e3c")
+        assert out["token_stats"].startswith("session (unnamed) 5ea03e3c · ")
+
+    def test_no_session_in_the_line_when_the_caller_has_none(self):
+        from ui.api import _timing_summary
+        out = _timing_summary({"completion_tokens": 5}, 1.0)
+        assert "session " not in out["token_stats"]
 
     def test_a_run_with_no_metrics_sends_no_line(self):
         from ui.api import _timing_summary

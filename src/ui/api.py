@@ -62,6 +62,7 @@ from src.sessions import _turn_count_from_jsonl as _session_turn_count
 from src.sessions import delete_session as _delete_session_index
 from src.sessions import get_session_owner as _get_session_owner
 from src.sessions import list_sessions as _list_sessions
+from src.sessions import session_label
 from src.sessions import set_session_owner as _set_session_owner
 from src.sessions import tag_session as _tag_session
 from .auth import (
@@ -335,8 +336,9 @@ def _email_of(mailto_url: str) -> str:
     return urllib.parse.unquote(rest).strip().lower()
 
 
-def _timing_summary(metrics: dict, elapsed: float, *, model_name: str = "",
-                    provider_name: str = "", data_path: str = "") -> dict:
+def _timing_summary(metrics: dict, elapsed: float, *, session_name: str = "",
+                    model_name: str = "", provider_name: str = "",
+                    data_path: str = "") -> dict:
     """Where the wall clock went, small enough to ride along on ``done``.
 
     The per-turn detail stays in the log: this is the shape a client can show
@@ -367,7 +369,8 @@ def _timing_summary(metrics: dict, elapsed: float, *, model_name: str = "",
         # Pre-rendered so every client shows the same line the terminal does,
         # instead of each one reformatting the two counts its own way.
         "token_stats": format_token_footer(
-            metrics, model=model_name, provider=provider_name,
+            metrics, session=session_name, model=model_name,
+            provider=provider_name,
             data_path=data_path, version=_ONIT_VERSION, elapsed=elapsed),
     }
 
@@ -1157,6 +1160,8 @@ class WebApiUI:
                 "tok_s": round(tok_s, 1),
                 "timing": _timing_summary(
                     metrics, elapsed,
+                    session_name=session_label(
+                        session.session_id, self._sessions_dir()),
                     model_name=stats.get("model_name", ""),
                     provider_name=stats.get("provider_name", ""),
                     data_path=session.data_path),

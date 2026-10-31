@@ -674,6 +674,30 @@ class TestSessionSelection:
         assert config["resume_session_id"] == "new-session-id"
         assert "Resuming last session" in capsys.readouterr().out
 
+    def test_the_resume_message_names_the_session(self, sessions, capsys):
+        """Which session was resumed is the one thing the person needs to
+        confirm before typing into it -- a bare `onit` continues the last one,
+        and the id alone does not say which conversation that was."""
+        from src.sessions import tag_session
+        tag_session("new-session-id", "thesis ch3", str(sessions))
+        self._run([])
+        out = capsys.readouterr().out
+        assert "thesis ch3" in out
+        # The id stays too: it is what --resume-session accepts.
+        assert "new-sess" in out
+
+    def test_an_unnamed_resumed_session_is_named_by_its_short_id(self, sessions, capsys):
+        self._run([])
+        out = capsys.readouterr().out
+        assert "new-sess" in out
+
+    def test_the_explicit_resume_message_names_it_too(self, sessions, capsys):
+        from src.sessions import tag_session
+        tag_session("old-session-id", "old work", str(sessions))
+        self._run(["--resume", "old-session-id"])
+        out = capsys.readouterr().out
+        assert "Resuming session: old work (old-sess" in out
+
     def test_restart_session_starts_fresh(self, sessions):
         assert "resume_session_id" not in self._run(["--restart-session"])
 

@@ -586,3 +586,56 @@ class TestNoTestWritesTheRealStore:
         assert written.startswith(os.environ["HOME"])
         assert not os.path.exists(os.path.join(
             self._real_home(), ".onit", "sessions", "no-dir-probe.jsonl"))
+
+
+# ── session_label ────────────────────────────────────────────────────────────
+
+class TestNamingASessionInOneLine:
+    """What the footer prints in the ``session`` field.
+
+    The footer under every answer names the session the run belonged to,
+    because a bare ``onit`` resumes the last one and nothing on screen said
+    which.  The name is the address a person recognises; a session that has
+    none still has to be identifiable, so it falls back to the same short id
+    the listing and the resume message print.
+    """
+
+    def test_a_named_session_is_named_by_its_name(self, tmp_path):
+        from sessions import session_label
+
+        d = str(tmp_path)
+        register_session("sid-1", sessions_dir=d, tag="thesis ch3")
+        assert session_label("sid-1", d) == "thesis ch3"
+
+    def test_an_unnamed_session_falls_back_to_the_short_id(self, tmp_path):
+        """Not '' -- an unnamed session is still the row you are typing into."""
+        from sessions import session_label
+
+        d = str(tmp_path)
+        register_session("5ea03e3c-1111-2222-3333-444455556666", sessions_dir=d)
+        assert session_label("5ea03e3c-1111-2222-3333-444455556666", d) == \
+            "(unnamed) 5ea03e3c"
+
+    def test_the_auto_name_is_what_gets_shown(self, tmp_path):
+        """A session named from its first message is named, not unnamed."""
+        from sessions import session_label
+
+        d = str(tmp_path)
+        register_session("sid-2", sessions_dir=d)
+        update_session("sid-2", task="review the onit codebase for bugs",
+                       sessions_dir=d)
+        assert session_label("sid-2", d) == "review-onit-codebase-bugs"
+
+    def test_no_id_names_nothing(self, tmp_path):
+        """No session at all is a blank field, not a label reading '(unnamed)'."""
+        from sessions import session_label
+
+        assert session_label("", str(tmp_path)) == ""
+        assert session_label(None, str(tmp_path)) == ""
+
+    def test_an_id_the_index_does_not_know_is_still_identifiable(self, tmp_path):
+        """The index can be rebuilt from the JSONL files; the id survives it."""
+        from sessions import session_label
+
+        assert session_label("deadbeef-0000", str(tmp_path)) == \
+            "(unnamed) deadbeef"

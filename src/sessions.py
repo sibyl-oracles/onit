@@ -723,6 +723,26 @@ def get_last_session(sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str | None:
     return ranked[0][0] if ranked else None
 
 
+def session_label(session_id: str,
+                  sessions_dir: str = DEFAULT_SESSIONS_DIR) -> str:
+    """How to name a session in one line of text: its name, else its short id.
+
+    A name is the address a person recognises, so it is what the UI says when
+    there is one.  An unnamed session is not nothing, though: it is the row
+    you are in right now, and a short id at least says *which* row, which is
+    what the footer has to do -- the alternative, printing nothing, leaves a
+    resumed session looking exactly like a fresh one.
+
+    The id is the same eight characters ``onit sessions`` and the resume
+    message print, so the line and the listing name the same thing.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return ""
+    tag = (_load_index(sessions_dir).get(sid, {}).get("tag") or "").strip()
+    return tag or f"(unnamed) {sid[:8]}"
+
+
 def list_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
                   limit: int | None = 20, owner: str | None = None,
                   include_empty: bool = True) -> list:

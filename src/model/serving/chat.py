@@ -471,18 +471,24 @@ def provider_label(host: str) -> str:
     return rest.split("/")[0] or "?"
 
 
-def format_token_footer(m: dict, *, model: str = "", provider: str = "",
-                        data_path: str = "", version: str = "",
-                        elapsed: float = 0.0, tok_s: float = 0.0) -> str:
-    """One stats line for a finished run: model, endpoint, tokens, time.
+def format_token_footer(m: dict, *, session: str = "", model: str = "",
+                        provider: str = "", data_path: str = "",
+                        version: str = "", elapsed: float = 0.0,
+                        tok_s: float = 0.0) -> str:
+    """One stats line for a finished run: session, model, endpoint, tokens, time.
 
-    ``4,698,819 tok (4,665,239 in / 33,580 out) · 316.6s`` — the in/out split
-    is the point of it.  A single total cannot distinguish a run that thought
-    hard from one that re-read the same tool results forty times: the first is
-    expensive in generation, the second in prefill, and only the split says
-    which.  Everything except the tokens is optional and drops out when
-    unknown, so a caller with nothing but a sink still gets a useful line.
+    ``session thesis-ch3 · model qwen3-coder · provider ollama · 4,698,819 tok
+    (4,665,239 in / 33,580 out) · 316.6s`` — the in/out split is the point of
+    it.  A single total cannot distinguish a run that thought hard from one
+    that re-read the same tool results forty times: the first is expensive in
+    generation, the second in prefill, and only the split says which.
+    Everything is optional and drops out when unknown, so a caller with
+    nothing but a sink still gets a useful line.
 
+    ``session`` comes first because it is the one field that answers a
+    question about *this* run rather than about the machine: a bare ``onit``
+    continues the last session, and without this the line said which model
+    answered without ever saying which conversation it was answering in.
     ``version`` sits after the directory: which build produced the run is part
     of what the run was, and it is the one field that is constant for a given
     install, so it anchors the line without crowding the per-run numbers.
@@ -491,6 +497,8 @@ def format_token_footer(m: dict, *, model: str = "", provider: str = "",
     completion_tokens = _as_int((m or {}).get("completion_tokens"))
     total = prompt_tokens + completion_tokens
     parts = []
+    if session:
+        parts.append(f"session {session}")
     if model:
         parts.append(f"model {model}")
     if provider:

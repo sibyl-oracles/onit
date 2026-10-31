@@ -977,6 +977,7 @@ class OnIt(BaseModel):
                 self.chat_ui = ChatUI(self.theme, show_logs=self.show_logs,
                                      show_intermediate=self.show_intermediate,
                                      banner_title=banner)
+                self._describe_session_to_ui()
                 # When resuming a session, pre-populate input history for arrow-key nav
                 if self.config_data.get('resume_session_id'):
                     history = self.load_session_history(max_turns=100)
@@ -985,6 +986,63 @@ class OnIt(BaseModel):
                         if task and (not self.chat_ui.input_history
                                      or self.chat_ui.input_history[-1] != task):
                             self.chat_ui.input_history.append(task)
+
+    def _describe_session_to_ui(self) -> None:
+        """Tell the terminal UI which session it is reporting into.
+
+        The footer under every answer names the session, and this is where it
+        learns the name.  Done here rather than in ``_setup_session`` because
+        the UI does not exist yet at that point -- ``initialize`` runs first,
+        and the UI is built from what it left behind.
+
+        The model and endpoint are filled in here too, for the one case chat()
+        never reaches: before the first task there is no resolved model to
+        report, and a footer that omits both leaves the person unable to tell
+        whether they are pointed where they meant to be.  chat() overwrites
+        both the moment an answer actually arrives, so this is a starting
+        point, not a second source of truth.
+        """
+        ui = getattr(self, "chat_ui", None)
+        if ui is None:
+            return
+        ui.session_name = getattr(self, "session_name", "") or ""
+        if not ui.model_name:
+            ui.model_name = self.model_serving.get("model") or ""
+        if not ui.provider_name:
+            lb = getattr(self, "load_balancer", None)
+            if lb is not None:
+                from .model.serving.chat import provider_label
+                try:
+                    ui.provider_name = provider_label(lb.preferred.host)
+                except Exception:
+                    ui.provider_name = ""
+
+    def _refresh_session_label(self, session_id: str, sessions_dir: str) -> None:
+        """Re-read the session's name after the index may have named it.
+
+        A session is named from its first real message, which happens *during*
+        a task -- so the label read at setup is ``(unnamed)`` for exactly the
+        sessions that will soon have a name.  Without this the footer kept
+        saying ``(unnamed) 5ea03e3c`` for the rest of a session that
+        ``onit sessions`` was already listing under its new name.
+
+        Only the terminal UI is told: the web footer renders its own line per
+        answer, straight from the index.
+        """
+        from .sessions import session_label
+        label = session_label(session_id, sessions_dir)
+        if not label:
+            return
+        # The instance field is what a resumed session reads; the UI field is
+        # what the line prints.  Both, so they cannot disagree.  The UI is only
+        # told about *its own* session: a terminal UI is one session, while a
+        # web UI serves many and builds its line per answer from the index.
+        if session_id != self.session_id:
+            return
+        self.session_name = label
+        ui = getattr(self, "chat_ui", None)
+        if ui is not None and hasattr(ui, "session_name"):
+            ui.session_name = label
 
     def initialize(self):
         self._setup_mcp_servers()
@@ -1228,7 +1286,7 @@ class OnIt(BaseModel):
         If ``config_data['resume_session_id']`` is set, resume that session
         instead of creating a new one.
         """
-        from .sessions import register_session
+        from .sessions import register_session, session_label
 
         sessions_base = self.config_data.get('session_path', '~/.onit/sessions')
         sessions_base = os.path.expanduser(sessions_base)
@@ -1243,6 +1301,11 @@ class OnIt(BaseModel):
                     f"Session file not found: {self.session_path}\n"
                     f"Cannot resume session '{resume_id}'."
                 )
+            # What this session is called, for the line under every answer.
+            # The id alone does not identify a session to the person reading
+            # it; the name is the address they gave it, and an unnamed one
+            # falls back to the same short id `onit sessions` prints.
+            self.session_name = session_label(self.session_id, sessions_base)
         else:
             # Create a new session
             self.session_id = str(uuid.uuid4())
@@ -1262,6 +1325,12 @@ class OnIt(BaseModel):
             self.session_name = register_session(
                 self.session_id, sessions_base,
                 tag=self.config_data.pop('session_name', None))
+
+        # A session created with no name has none in the index either, and the
+        # footer still has to say which row this is: fall back to the short id,
+        # the same one `onit sessions` prints next to the row.
+        if not self.session_name:
+            self.session_name = session_label(self.session_id, sessions_base)
 
         # The other half of the session: what was done, not what was said.  A
         # new session gets an empty one rather than None, so every path below
@@ -1786,6 +1855,7 @@ class OnIt(BaseModel):
             effective_sid = session_id or self.session_id
             sessions_dir = os.path.dirname(effective_session_path)
             update_session(effective_sid, task=task, sessions_dir=sessions_dir)
+            self._refresh_session_label(effective_sid, sessions_dir)
         except Exception:
             pass
         self._persist_run_state(_run_state, effective_session_path)
@@ -2331,8 +2401,9 @@ class OnIt(BaseModel):
             pass
         try:
             from .sessions import update_session
-            update_session(self.session_id, task=task,
-                           sessions_dir=os.path.dirname(self.session_path))
+            _dir = os.path.dirname(self.session_path)
+            update_session(self.session_id, task=task, sessions_dir=_dir)
+            self._refresh_session_label(self.session_id, _dir)
         except Exception:
             pass
         self._persist_run_state(self.last_run_state, self.session_path)

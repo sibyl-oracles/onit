@@ -371,8 +371,22 @@ Every finished task prints one line of accounting underneath the answer — in
 the terminal and in the browser, with the same text:
 
 ```
-model stealth/space-bunny-alpha · provider ollama · dir /Users/rowel/sandbox · 4,698,819 tok (4,665,239 in / 33,580 out) · 316.6s
+session thesis-ch3 · model stealth/space-bunny-alpha · provider ollama · dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok (4,665,239 in / 33,580 out) · 316.6s
 ```
+
+**The session comes first, because it answers a question about this run rather
+than about the machine.** A bare `onit` resumes the last session — the most
+recently updated one that has a name, a preview or a turn — and until this
+field existed the line said which model answered without ever saying which
+conversation it answered in. A session with no name yet (it gets one from its
+first message) prints as `(unnamed) 5ea03e3c`, the same eight characters
+`onit sessions` and the resume message use. The field follows a `\rename`, and
+it fills in as soon as the first message names the session.
+
+The line also shows before the first turn, on the panel a resumed session
+opens on, with the session, model and endpoint but no token counts — the
+numbers arrive with the answer. `v0.1.5a` is the build; it drops out of the
+line when package metadata is unreadable.
 
 **The in/out split is the point of the line.** A total alone cannot tell a run
 that thought hard from one that re-read the same tool results forty times: the

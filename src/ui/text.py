@@ -162,6 +162,12 @@ class ChatUI:
         self._thinking_thread: Optional[threading.Thread] = None
         self.model_name = ""  # auto-detected model name, set by chat()
         self.provider_name = ""  # short endpoint label for the stats footer
+        # The session this UI is reporting into: its name, or its short id when
+        # it has none.  Set by OnIt once the session exists, because the footer
+        # has to say *which* conversation the numbers belong to -- a bare
+        # `onit` resumes the last one, so "which" is a question the line was
+        # not answering.  Empty until then, and then the line omits the field.
+        self.session_name = ""
         self.data_path = ""  # set when code files are saved to a data directory
         self._context_pct: float = 0.0  # context window usage 0-100, updated after each LLM call
         self._context_max_tokens: int = 0  # max context window size in tokens
@@ -184,6 +190,12 @@ class ChatUI:
         # the durable place, and without this the numbers were gone the moment
         # the user pressed Enter for the next task.
         self._last_run_stats: str = ""
+        # What that line was built from, kept so it can be rebuilt against the
+        # session as it stands when the panel is next drawn: the name arrives
+        # with the first message, and the model can be changed mid-session.
+        self._last_run_metrics: dict | None = None
+        self._last_run_elapsed: float = 0.0
+        self._last_run_token_rate: bool = True
         self._stream_start_time = 0.0  # monotonic time when streaming started
         # Monotonic time the current turn was submitted.  The web UI times a
         # turn from the request, not from the first token, so tool calls and
@@ -466,8 +478,25 @@ class ChatUI:
         endpoint and dropped the token counts, and an 80-column terminal would
         have lost the model as well.  A plain Text row wraps instead of
         vanishing, so the numbers stay readable at any width.
+
+        Before the first run has recorded anything -- and again for the span of
+        every later turn, which clears the numbers so they cannot be quoted
+        against the wrong answer -- the row is rebuilt from the fields that are
+        still true: which session this is, which model and endpoint it is
+        pointed at, where it writes, which build.  Those do not change because
+        a turn is in flight, and naming the session is the whole reason the
+        row exists: a bare ``onit`` resumes the last one, so the person needs
+        to be able to see which one they are typing into.
         """
         stats = self._stats_line()
+        if not stats:
+            if not (self.session_name or self.model_name or self.provider_name):
+                return []
+            from src.model.serving.chat import format_token_footer
+            stats = format_token_footer(
+                {}, session=self.session_name, model=self.model_name,
+                provider=self.provider_name, data_path=self.data_path,
+                version=ONIT_VERSION)
         if not stats:
             return []
         return [Align.left(Text(stats, style="dim"))]
@@ -485,7 +514,12 @@ class ChatUI:
 
         header = Rule("[bold white]💬 Chat History[/]", characters="━", style="blue")
         footer = self._render_footer_rule(f"📁 {self.data_path}" if self.data_path else "")
-        return Group(header, Text(""), Align.center(welcome, vertical="middle"), Text(""), footer)
+        # The same stats row the answered panel carries.  A resumed session
+        # opens on this panel -- no messages yet, so nothing has been recorded
+        # -- and the session it resumed is the one thing the person needs to
+        # confirm before typing into it.
+        return Group(header, Text(""), Align.center(welcome, vertical="middle"),
+                     Text(""), footer, *self._stats_group())
 
     def _render_tool_call_message(self, content: Text, name: str, args_str: str, msg_time: str) -> None:
         content.append(f"┌─ ⚙️  {name} ", style="bold dark_orange3")
@@ -1273,6 +1307,7 @@ class ChatUI:
         """
         self._turn_start_time = time.monotonic()
         self._last_run_stats = ""
+        self._last_run_metrics = None
 
     def record_run_stats(self, metrics: dict | None = None, *,
                          elapsed: float | None = None,
@@ -1288,20 +1323,38 @@ class ChatUI:
         above it already carries one, and a run that reaches here through the
         non-streamed path has its rate quoted in that meta line instead.
         """
-        from src.model.serving.chat import decode_rate, format_token_footer
-        m = self._metrics if metrics is None else metrics
-        if elapsed is None:
-            elapsed = self._turn_elapsed()
-        self._last_run_stats = format_token_footer(
-            m, model=self.model_name, provider=self.provider_name,
-            data_path=self.data_path, version=ONIT_VERSION,
-            elapsed=elapsed,
-            tok_s=decode_rate(m) if token_rate else 0.0)
+        self._last_run_metrics = self._metrics if metrics is None else metrics
+        self._last_run_elapsed = (self._turn_elapsed() if elapsed is None
+                                  else elapsed)
+        self._last_run_token_rate = token_rate
+        self._last_run_stats = self._render_run_stats()
         return self._last_run_stats
+
+    def _render_run_stats(self) -> str:
+        """Render the remembered run against the session as it is *now*.
+
+        Re-rendered rather than cached as a finished string, because two of
+        its fields outlive the run that printed it: the session gets its name
+        from its first message (or from ``\\rename``), and the model changes
+        when ``\\model`` does.  A cached string would keep the footer saying
+        ``(unnamed) 5ea03e3c`` for the rest of the session, which is exactly
+        the confusion the session field is there to remove.
+        """
+        from src.model.serving.chat import decode_rate, format_token_footer
+        m = self._last_run_metrics
+        if m is None:
+            return ""
+        return format_token_footer(
+            m, session=self.session_name, model=self.model_name,
+            provider=self.provider_name,
+            data_path=self.data_path, version=ONIT_VERSION,
+            elapsed=self._last_run_elapsed,
+            tok_s=decode_rate(m) if self._last_run_token_rate else 0.0)
 
     def _stats_line(self) -> str:
         """The remembered stats line, or '' when the last run reported none."""
-        return self._last_run_stats
+        return self._render_run_stats() if self._last_run_metrics is not None \
+            else self._last_run_stats
 
     def _turn_elapsed(self) -> float:
         """Seconds since the turn was submitted, or since the stream started."""

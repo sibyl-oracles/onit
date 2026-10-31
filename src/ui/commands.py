@@ -381,6 +381,13 @@ def _rebuild(agent, endpoints: list,
         agent.model_serving["model"] = preferred.model
     else:
         agent.model_serving.pop("model", None)
+    # The footer names the endpoint that will answer next, and it is on screen
+    # before that answer arrives.  Leaving the old label there would have the
+    # panel naming the server the session was moved off.
+    ui = getattr(agent, "chat_ui", None)
+    if ui is not None and hasattr(ui, "provider_name"):
+        from ..model.serving.chat import provider_label
+        ui.provider_name = provider_label(preferred.host)
 
 
 def _resolve_endpoint(lb, token: str):
@@ -866,6 +873,11 @@ def cmd_rename(agent, arg: str) -> str:
     result = tag_session(sid, new_name, sessions_dir)
     if result is True:
         stored = _load_index(sessions_dir).get(sid, {}).get("tag") or new_name
+        # The footer under the next answer names the session, so it has to
+        # learn the new name here rather than at the next launch.
+        ui = getattr(agent, "chat_ui", None)
+        if ui is not None and hasattr(ui, "session_name"):
+            ui.session_name = stored
         return (f"Renamed this session to '{stored}'.\n"
                 f"Come back to it with: onit --resume-session '{stored}'")
     return f"Could not rename: {result}"

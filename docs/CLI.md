@@ -178,6 +178,21 @@ onit resume              # continue the most recent session (same as bare `onit`
 
 Equivalent to `onit --resume-session NAME_OR_ID`.
 
+**Which session a bare `onit` resumes:** the most recently updated one that has
+something in it — a name, a preview, or at least one turn. A session that was
+opened and never used is skipped, even when it is the newest, because it is not
+a conversation to continue. It is still a row in `onit sessions`, so it can be
+deleted by its `#` or with `--delete-empty`. When every session is empty, the
+newest empty one is resumed rather than none.
+
+The startup line names it, and so does the stats line under every answer:
+
+```
+Resuming last session: thesis ch3 (5ea03e3c) (use --new-session to start a new one)
+```
+
+An unnamed session prints as its short id, `(unnamed) 5ea03e3c`.
+
 To start from scratch instead, use `onit --new-session`. Server modes
 (`serve web`, `serve loop`) manage their own
 sessions and never auto-resume.
