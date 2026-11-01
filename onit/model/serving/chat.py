@@ -4396,6 +4396,37 @@ async def _build_ollama_request(
     return ollama_kwargs
 
 
+def _build_responses_request(
+    *,
+    model: str,
+    messages: list,
+    api_max_tokens: int,
+    responses_effort: str | None,
+    tools,
+    force_tool_call: bool,
+) -> dict:
+    """Build the kwargs for ``client.responses`` for one turn.
+
+    Extracted verbatim from ``_ModelCaller.call_turn``.  The gpt-6 family
+    is served by /v1/responses -- /v1/chat/completions refuses every
+    reasoning_effort a tool-carrying request can name (see
+    ``_is_openai_responses_model``).  The history stays in
+    chat-completions shape and is converted per request.
+    """
+    _responses_kwargs: dict = dict(
+        model=model,
+        input=_openai_responses_input(messages),
+        max_output_tokens=api_max_tokens,
+        store=False,
+    )
+    if responses_effort:
+        _responses_kwargs["reasoning"] = {"effort": responses_effort}
+    if tools:
+        _responses_kwargs["tools"] = _openai_responses_tools(tools)
+        _responses_kwargs["tool_choice"] = "required" if force_tool_call else "auto"
+    return _responses_kwargs
+
+
 class _ModelCaller:
     """One turn's model call: kwargs build, send, retry, response unify.
 
@@ -4584,19 +4615,14 @@ class _ModelCaller:
                     # the reply is flattened back into the same variables
                     # the chat-completions paths fill, so the rest of the
                     # loop reads one shape.
-                    _responses_kwargs: dict = dict(
+                    _responses_kwargs: dict = _build_responses_request(
                         model=model,
-                        input=_openai_responses_input(messages),
-                        max_output_tokens=_api_max_tokens,
-                        store=False,
+                        messages=messages,
+                        api_max_tokens=_api_max_tokens,
+                        responses_effort=_responses_effort,
+                        tools=tools,
+                        force_tool_call=state.force_tool_call,
                     )
-                    if _responses_effort:
-                        _responses_kwargs["reasoning"] = {"effort": _responses_effort}
-                    if tools:
-                        _responses_kwargs["tools"] = _openai_responses_tools(tools)
-                        _responses_kwargs["tool_choice"] = (
-                            "required" if state.force_tool_call else "auto"
-                        )
                     if stream:
                         _responses_stream = client.responses.stream(**_responses_kwargs)
                         _stream_entered = False
