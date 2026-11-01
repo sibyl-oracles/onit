@@ -46,6 +46,13 @@ jobs:
         # CI readability choice, not part of the gate.
         run: pytest onit/test/ -v --tb=short
 
+      - name: Per-module coverage floors (MCP)
+        # The suite-wide floor is a ratchet on the total, so one badly covered
+        # module costs it almost nothing -- that is how web/search sat at 17%
+        # while the build stayed green.  This reads the .coverage file the step
+        # above wrote and fails if any MCP module fell below its own floor.
+        run: python scripts/check_mcp_coverage.py
+
   benchmarks:
     # The bench extras are heavy (inspect-ai, datasets, numpy, scikit-learn)
     # and the tests are offline, so this runs once rather than on all three
