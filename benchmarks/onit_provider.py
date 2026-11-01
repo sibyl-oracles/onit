@@ -14,8 +14,8 @@ Integration notes:
       thread (no running loop there) the first time it is needed.
     * The eval target (host/model) comes from the environment via
       :func:`benchmarks.config.resolve_serving`.
-    * The local ``src/mcp`` package shadows the PyPI ``mcp`` SDK whenever
-      ``src/`` is on sys.path, which breaks fastmcp's lazy imports (its
+    * The local ``onit/mcp`` package shadows the PyPI ``mcp`` SDK whenever
+      ``onit/`` is on sys.path, which breaks fastmcp's lazy imports (its
       ``import mcp.types`` resolves to the local package and fails).  The
       pre-imports below pin the real SDK modules in sys.modules before the
       agent stack is loaded, so the shadow cannot bite.
@@ -32,28 +32,27 @@ from pathlib import Path
 from typing import Any
 
 # Must precede any import of the agent stack (see module docstring).
-# The PyPI mcp SDK and fastmcp must be imported BEFORE src/ is put on
-# sys.path: once "src" is on the path, the local src/mcp package shadows the
+# The PyPI mcp SDK and fastmcp must be imported BEFORE onit/ is put on
+# sys.path: once "onit" is on the path, the local onit/mcp package shadows the
 # SDK, and fastmcp's lazy "import mcp.types" then resolves to the shadow
 # (which has no types module) and raises "FastMCP server support is not
 # installed".  Importing the SDK first pins the real modules in sys.modules,
 # so the shadow cannot bite anything imported afterwards.  This is safe for
 # the agent stack: it reaches the local package only through relative imports
 # (e.g. "from .mcp.prompts.prompts import ..."), which do not consult
-# sys.path, and its one bare SDK import (src/type/tools.py) wants the real
-# SDK anyway.
+# sys.path.
 #
 # The SDK-first import alone is not enough in multiprocessing spawn children:
 # they re-import this module with the parent's sys.path *already* containing
-# "src" (it was inserted before the servers were spawned), so the very
-# `import mcp.types` below would resolve to the shadow and every MCP server
-# child crash-loops (observed 2026-09-05). Demote the src entry to the tail
-# first: absolute `src.*` imports still resolve (the entry is present, just
+# the package directory (it was inserted before the servers were spawned), so
+# the very `import mcp.types` below would resolve to the shadow and every MCP
+# server child crash-loops (observed 2026-09-05). Demote that entry to the tail
+# first: absolute `onit.*` imports still resolve (the entry is present, just
 # not first), and the bare-SDK import below then finds the PyPI package.
 import os as _os
 
-_src_dir = _os.path.realpath(_os.path.join(_os.path.dirname(__file__), _os.pardir, "src"))
-_demoted = [p for p in sys.path if p and _os.path.realpath(p) == _src_dir]
+_pkg_dir = _os.path.realpath(_os.path.join(_os.path.dirname(__file__), _os.pardir, "onit"))
+_demoted = [p for p in sys.path if p and _os.path.realpath(p) == _pkg_dir]
 for _p in _demoted:
     sys.path.remove(_p)
 sys.path.extend(_demoted)
@@ -63,8 +62,14 @@ import fastmcp.server.context  # noqa: F401
 import fastmcp.server  # noqa: F401
 import fastmcp.client  # noqa: F401
 
+# The repo root, so "import onit.<x>" resolves the package from the working
+# tree.  Do NOT also insert the package directory itself: that makes
+# "onit/cli.py" importable as a top-level module, and its relative imports
+# ("from . import __version__") then fail with "attempted relative import with
+# no known parent package" -- and its bare "import mcp" resolves to the local
+# onit/mcp shadow rather than the SDK.  (The pre-rename code inserted the
+# package dir to reach "src.cli"; the rename turned that into a hard failure.)
 sys.path.insert(0, ".")
-sys.path.insert(0, "src")
 
 from inspect_ai.model import (
     ChatMessage,
@@ -111,7 +116,7 @@ def base_config_data() -> dict[str, Any]:
         "session_path": str(sessions_dir),
         "data_path": str(data_dir),
         "mcp": {
-            # Names must match the split defaults in src/lib/tools.py
+            # Names must match the split defaults in onit/lib/tools.py
             # (DEFAULT_MCP_SERVERS): apply_default_mcp_servers() adds any
             # missing default server, and _ensure_mcp_servers() registers a
             # stdio launch spec for every server. A name the agent no longer
@@ -121,7 +126,7 @@ def base_config_data() -> dict[str, Any]:
                 {
                     "name": "PromptsMCPServer",
                     "transport": "stdio",
-                    "module": "src.mcp.prompts.prompts",
+                    "module": "onit.mcp.prompts.prompts",
                     "enabled": True,
                 },
                 # The current split tools servers (with real modules), not the
@@ -160,8 +165,8 @@ def _build_agent_blocking(config_overrides: dict[str, Any] | None = None) -> Any
     """
     # Imported lazily so importing this module never pulls in the whole agent
     # stack (keeps the provider unit-testable with a stub).
-    from src.cli import _ensure_mcp_servers
-    from src.onit import OnIt
+    from onit.cli import _ensure_mcp_servers
+    from onit.onit import OnIt
 
     config_data = base_config_data()
     if config_overrides:

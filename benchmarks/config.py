@@ -145,7 +145,7 @@ def _agent_config_serving() -> dict:
         return _AGENT_SERVING_CACHE
     serving: dict = {}
     try:
-        from src.setup import CONFIG_PATH, _load_config
+        from onit.setup import CONFIG_PATH, _load_config
 
         config = _load_config() if os.path.isfile(CONFIG_PATH) else {}
         block = config.get("serving") or {}
@@ -180,11 +180,11 @@ _AGENT_SERVING_CACHE: dict | None = None
 def _preferred_endpoint(entries: list, serving: dict) -> dict | None:
     """The endpoint entry the agent's LoadBalancer would prefer.
 
-    Mirrors LoadBalancer.preferred (src/model/serving/balancer.py): explicit
+    Mirrors LoadBalancer.preferred (onit/model/serving/balancer.py): explicit
     priority (lower wins), else the first non-Ollama endpoint while the
     implicit fallback-only rule is in effect, else the first entry. Reuses the
     balancer itself where it is importable so the rule cannot drift; falls
-    back to a local copy of the rule only when src is not importable.
+    back to a local copy of the rule only when onit is not importable.
     """
     normalized: list[tuple[int, bool, dict]] = []
     for entry in entries:
@@ -204,7 +204,7 @@ def _preferred_endpoint(entries: list, serving: dict) -> dict | None:
     if not normalized:
         return None
     try:
-        from src.model.serving.balancer import LoadBalancer, ServerEndpoint
+        from onit.model.serving.balancer import LoadBalancer, ServerEndpoint
 
         endpoints = [ServerEndpoint(host=h, priority=p) for p, _, h in normalized]
         fallback_only = bool(serving.get("ollama_fallback_only", True))
@@ -216,7 +216,7 @@ def _preferred_endpoint(entries: list, serving: dict) -> dict | None:
                 return entry
     except Exception:
         pass
-    # Local copy of the rule (src not importable): explicit priority first,
+    # Local copy of the rule (onit not importable): explicit priority first,
     # else non-Ollama while fallback-only, else first listed.
     if any(p != 0 for p, _, _ in normalized):
         return min(normalized, key=lambda t: t[0])[2]
@@ -319,7 +319,7 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
       first model, mirroring the agent's own auto-detection.
 
     Authentication mirrors the agent's own request path
-    (``src/model/serving/chat.py::_resolve_api_key``): the explicit benchmark
+    (``onit/model/serving/chat.py::_resolve_api_key``): the explicit benchmark
     key, then the key stored for this endpoint's URL by ``onit setup`` (OS
     keychain), then the provider-named legacy secret. A local vLLM started
     without ``--api-key`` needs none of these.
@@ -385,7 +385,7 @@ def preflight_endpoint(timeout: float = 10.0) -> None:
 def _endpoint_api_key(host: str, serving: dict) -> str:
     """The key the agent itself would authenticate this endpoint with.
 
-    Mirrors ``src/model/serving/chat.py::_resolve_api_key``: explicit key,
+    Mirrors ``onit/model/serving/chat.py::_resolve_api_key``: explicit key,
     then the per-endpoint key stored by ``onit setup`` (env-injected slug or
     OS keychain), then the provider-named legacy secret its URL selects.
     Returns "EMPTY" when nothing is stored — correct for a local vLLM started
@@ -395,15 +395,15 @@ def _endpoint_api_key(host: str, serving: dict) -> str:
     if explicit:
         return explicit
     try:
-        from src.model.serving.chat import _resolve_api_key
+        from onit.model.serving.chat import _resolve_api_key
 
         return _resolve_api_key(host, "EMPTY")
     except Exception:
         pass
-    # Local copy of the rule (src not importable): per-endpoint key, then the
+    # Local copy of the rule (onit not importable): per-endpoint key, then the
     # provider-named secret. Order matches LEGACY_ENDPOINT_KEYS.
     try:
-        from src.setup import get_endpoint_key, get_secret, legacy_key_for
+        from onit.setup import get_endpoint_key, get_secret, legacy_key_for
 
         key = get_endpoint_key(host)
         if key:

@@ -95,9 +95,9 @@ def _cleanup():
 
 def check_escapes():
     """Every payload must be refused by the gate and never served."""
-    from src.learn import skills
-    from src.learn.skills_gate import run_gate
-    from src.mcp.servers.tasks.skills.mcp_server import load_skills
+    from onit.learn import skills
+    from onit.learn.skills_gate import run_gate
+    from onit.mcp.servers.tasks.skills.mcp_server import load_skills
 
     reached = 0
     for name, source in PAYLOADS.items():
@@ -152,7 +152,7 @@ def check_escapes():
 
 def check_legitimate():
     """Skills that compute must still pass, or the gate is useless."""
-    from src.learn.skills_gate import run_gate
+    from onit.learn.skills_gate import run_gate
 
     refused = 0
     for name, source in LEGITIMATE.items():

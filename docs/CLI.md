@@ -212,7 +212,7 @@ Prints the version and exits:
 onit --version        # onit 0.1.5a
 ```
 
-The number comes from `src/__init__.py` (`__version__`), the same attribute
+The number comes from `onit/__init__.py` (`__version__`), the same attribute
 the web UI and the terminal banner read, and it is answered during argument
 parsing — no config load, no server setup, no agent import. It works on a
 machine whose serving host is unreachable, which is often why someone asks.
@@ -220,7 +220,7 @@ machine whose serving host is unreachable, which is often why someone asks.
 ## The A2A client (removed)
 
 `onit ask` and the A2A client/server pair were removed in 0.1.5 along with the
-`legacy/` directory that held them. Nothing in `src/` referenced them. The
+`legacy/` directory that held them. Nothing in `onit/` referenced them. The
 code is still reachable in git history if you need it:
 
 ```bash

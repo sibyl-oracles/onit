@@ -275,7 +275,7 @@ web_google_client_secret: "YOUR_CLIENT_SECRET"
 
 ### Code Snippet: Custom OAuth Handler
 
-If you want to customize the OAuth flow, you can modify the `_setup_oauth_routes` method in `src/ui/web.py`.
+If you want to customize the OAuth flow, you can modify the `_setup_oauth_routes` method in `onit/ui/web.py`.
 
 Example - Add custom success page:
 

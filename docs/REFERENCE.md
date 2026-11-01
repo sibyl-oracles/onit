@@ -52,7 +52,7 @@ signal and the numbers as journalism until the primary NVIDIA publication is ava
 
 | Source | Use in OnIt |
 |---|---|
-| [Model Context Protocol](https://modelcontextprotocol.io/) | Every tool server (`src/mcp/`) |
+| [Model Context Protocol](https://modelcontextprotocol.io/) | Every tool server (`onit/mcp/`) |
 | [A2A Protocol](https://a2a-protocol.org/) | not used — the client and server were removed with `legacy/` in 0.1.5 |
 
 ## Model serving

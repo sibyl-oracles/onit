@@ -144,8 +144,8 @@ def _no_agent_config(monkeypatch):
     import benchmarks.config as bench_config
 
     monkeypatch.setattr(bench_config, "_AGENT_SERVING_CACHE", None)
-    monkeypatch.setattr("src.setup._load_config", lambda: {})
-    monkeypatch.setattr("src.setup.CONFIG_PATH", "/nonexistent/config.yaml")
+    monkeypatch.setattr("onit.setup._load_config", lambda: {})
+    monkeypatch.setattr("onit.setup.CONFIG_PATH", "/nonexistent/config.yaml")
     yield
     bench_config._AGENT_SERVING_CACHE = None
 
@@ -258,7 +258,7 @@ def test_preflight_uses_agent_keychain_key(monkeypatch):
         {"host": "http://agent-host:8000/v1", "model": "Qwen/Qwen3.8-27B"},
     )
     monkeypatch.setattr(
-        "src.model.serving.chat._resolve_api_key", lambda host, key: "sk-from-keychain"
+        "onit.model.serving.chat._resolve_api_key", lambda host, key: "sk-from-keychain"
     )
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     bench_config.preflight_endpoint()

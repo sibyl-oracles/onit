@@ -1,0 +1,3193 @@
+"""
+# Copyright 2025 Rowel Atienza. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+Bash MCP Server - System and Document Operations
+
+Execute shell commands, read/write files, and search documents on the local system.
+
+Requires:
+    pip install fastmcp pypdf pdfplumber
+
+12 Core Tools:
+1. bash - Execute bash/shell commands, up to 300s (longer work goes to serve)
+2. read_file - Read files (text, PDF returns content; binary files return metadata only)
+3. write_file - Write content to files (supports write/append modes)
+4. edit_file - Edit a file by replacing an exact string (targeted in-place edit)
+5. serve - Run anything slower than 300s in the background: builds, installs,
+   test suites, training runs, plus web servers and daemons
+6. send_file - Send a file to a remote client via callback URL
+7. search_document - Search for patterns in a document (text, PDF, markdown)
+8. search_directory - Search for patterns across files in a directory
+9. extract_tables - Extract tables from documents (PDF, markdown)
+10. find_files - Find files matching patterns
+11. transform_text - Transform text using sed/awk/tr operations
+12. get_document_context - Extract relevant context from a document
+"""
+
+import asyncio
+import base64
+import fnmatch
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any
+from fastmcp import FastMCP, Context
+
+from onit.mcp.servers.tasks.shared import (
+    uvicorn_config,
+    truncate_output as _truncate_output,
+    secure_makedirs as _secure_makedirs,
+    validate_required as _validate_required,
+    assert_public_url,
+    safe_fetch,
+    search_document_impl,
+    search_directory_impl,
+    extract_tables_impl,
+    extract_pdf_images_impl,
+    find_files_impl,
+    transform_text_impl,
+    get_document_context_impl,
+    read_file_impl,
+    search_document_dispatch_impl,
+    READ_FILE_DESCRIPTION,
+    SEARCH_DOCUMENT_DESCRIPTION,
+    SERVE_DESCRIPTION,
+)
+from onit.mcp.servers.tasks.os.bash.command_policy import (
+    ALLOW,
+    ASK,
+    CRITICAL,
+    DENY,
+    DEFAULT_ALLOWED_COMMANDS,
+    INSTALL_DENIED_MSG,
+    INSTALL_SEALED_MSG,
+    SINGLE_TENANT_COMMANDS,
+    Decision,
+    ask_or_deny as _ask_or_deny,
+    evaluate_command as _evaluate_command_policy,
+    installs_sealed as _installs_sealed,
+)
+from onit.mcp.servers.tasks.os.bash.approvals import (
+    BROKER as _APPROVALS,
+    DENY as _SCOPE_DENY,
+    ONCE as _SCOPE_ONCE,
+    ask_scope as _ask_scope,
+    multi_tenant as _multi_tenant,
+)
+
+import logging
+
+logging.basicConfig(level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+IS_WINDOWS = platform.system() == "Windows"
+
+# Locate a usable bash executable on Windows (Git Bash, WSL, etc.)
+_BASH_EXE = None
+if IS_WINDOWS:
+    _BASH_EXE = shutil.which("bash")
+    if not _BASH_EXE:
+        # Common Git Bash locations
+        for candidate in (
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Windows\System32\bash.exe",
+        ):
+            if os.path.isfile(candidate):
+                _BASH_EXE = candidate
+                break
+
+mcp = FastMCP("Bash MCP Server")
+
+# Constants
+DEFAULT_TIMEOUT = 300
+# 32k chars ≈ 8k tokens: past this the result store holds the whole
+# output behind a handle, and the head is what the model reads first.
+MAX_OUTPUT_SIZE = 32000
+
+# Data path for file creation (set via options['data_path'] in run())
+# All file writes are confined to this directory. Never use home folder.
+DATA_PATH = os.path.join(tempfile.gettempdir(), "onit", "data")
+
+# Optional read-only documents directory (set via options or env var in run())
+DOCUMENTS_PATH = None
+
+# Cached sandbox environment for subprocess calls (reset when globals change)
+_SANDBOX_ENV = None
+
+# Binary file extensions (return description only, not content)
+BINARY_EXTENSIONS = {
+    # Images
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".ico",
+    ".tiff",
+    ".tif",
+    ".svg",
+    # Audio
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".flac",
+    ".aac",
+    ".m4a",
+    ".wma",
+    # Video
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".wmv",
+    ".flv",
+    ".webm",
+    # Archives
+    ".zip",
+    ".tar",
+    ".gz",
+    ".rar",
+    ".7z",
+    ".bz2",
+    # Executables/binaries
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".bin",
+    ".o",
+    ".a",
+    # Documents (binary)
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    # Other
+    ".pyc",
+    ".class",
+    ".wasm",
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+}
+
+
+def _in_container() -> bool:
+    """True when running inside the onit container (Dockerfile sets ONIT_CONTAINER=1).
+
+    In that case the container itself is the filesystem boundary, so MCP path
+    allowlists are relaxed — the agent can read/write any path the container
+    can see (including directories mapped via ``--container-mount``).
+    """
+    return os.environ.get("ONIT_CONTAINER") == "1"
+
+
+def _in_unrestricted() -> bool:
+    """True when the user passed ``--unrestricted`` (sets ONIT_UNRESTRICTED=1)."""
+    return os.environ.get("ONIT_UNRESTRICTED") == "1"
+
+
+def _path_restrictions_relaxed() -> bool:
+    """True when filesystem path allowlisting should be skipped.
+
+    Container mode: the container itself is the isolation boundary.
+    Unrestricted mode: user explicitly opted into full host access.
+    """
+    return _in_container() or _in_unrestricted()
+
+
+def _session_base(data_path: str | None = None) -> str:
+    """Resolve the jail root for a tool call.
+
+    ``data_path`` is the session working directory injected by the OnIt
+    harness (it overwrites any model-supplied value, so it is trusted). It
+    must live inside the server-wide DATA_PATH; the returned path becomes the
+    boundary for all read/write validation, so one session cannot reach a
+    sibling session's folder. Falls back to the server-wide DATA_PATH when
+    absent (single-user text UI, direct server use)."""
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not data_path:
+        return abs_data
+    base = os.path.realpath(os.path.expanduser(data_path))
+    if _path_restrictions_relaxed():
+        return base
+    if base != abs_data and not base.startswith(abs_data + os.sep):
+        raise ValueError(
+            f"data_path must be within the server data directory {abs_data}. Got: {base}"
+        )
+    return base
+
+
+def _validate_write_path(file_path: str, base: str | None = None) -> str:
+    """Validate that the write path is within the jail root (the per-session
+    ``base`` when given, else DATA_PATH). Returns absolute path.
+    Relative paths are resolved against the jail root (not CWD)."""
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not os.path.isabs(os.path.expanduser(file_path)):
+        file_path = os.path.join(abs_data, file_path)
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    if _path_restrictions_relaxed():
+        return abs_path
+    if not abs_path.startswith(abs_data + os.sep) and abs_path != abs_data:
+        raise ValueError(
+            f"Write path must be within the designated data directory: {abs_data}. Got: {abs_path}"
+        )
+    return abs_path
+
+
+def _validate_read_path(file_path: str, base: str | None = None) -> str:
+    """Validate that the read path is within the jail root (the per-session
+    ``base`` when given, else DATA_PATH) or DOCUMENTS_PATH.
+    Relative paths are resolved against the jail root (not CWD).
+    Returns the resolved absolute path. Raises ValueError if outside allowed directories."""
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not os.path.isabs(os.path.expanduser(file_path)):
+        file_path = os.path.join(abs_data, file_path)
+    abs_path = os.path.realpath(os.path.expanduser(file_path))
+    if _path_restrictions_relaxed():
+        return abs_path
+
+    if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
+        return abs_path
+
+    if DOCUMENTS_PATH:
+        abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
+        if abs_path.startswith(abs_docs + os.sep) or abs_path == abs_docs:
+            return abs_path
+
+    allowed = abs_data
+    if DOCUMENTS_PATH:
+        allowed += f" or {os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))}"
+    raise ValueError(f"Read access denied. Path must be within: {allowed}. Got: {abs_path}")
+
+
+def _validate_dir_path(dir_path: str, base: str | None = None) -> str:
+    """Validate a directory path is within allowed directories (the
+    per-session ``base`` when given, else DATA_PATH; plus DOCUMENTS_PATH).
+    Relative paths are resolved against the jail root (not CWD).
+    Returns resolved absolute path."""
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
+    if not os.path.isabs(os.path.expanduser(dir_path)):
+        dir_path = os.path.join(abs_data, dir_path)
+    abs_path = os.path.realpath(os.path.expanduser(dir_path))
+    if _path_restrictions_relaxed():
+        return abs_path
+
+    if abs_path.startswith(abs_data + os.sep) or abs_path == abs_data:
+        return abs_path
+
+    if DOCUMENTS_PATH:
+        abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
+        if abs_path.startswith(abs_docs + os.sep) or abs_path == abs_docs:
+            return abs_path
+
+    allowed = abs_data
+    if DOCUMENTS_PATH:
+        allowed += f" or {os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))}"
+    raise ValueError(f"Directory access denied. Path must be within: {allowed}. Got: {abs_path}")
+
+
+def _inject_github_credentials(env: dict, tmp_dir: str) -> None:
+    """Load GITHUB_TOKEN from keyring when absent, then set up GIT_ASKPASS.
+
+    Git will call GIT_ASKPASS for each credential prompt; the script echoes
+    'x-access-token' for username prompts and the token for all others.
+    GIT_TERMINAL_PROMPT=0 prevents git from falling back to an interactive tty.
+
+    The script reads the token from the process environment at git's call
+    time, so the token itself never sits in a file — the askpass path holds
+    only the lookup logic.  (It used to embed the token verbatim, leaving it
+    at rest in the session tmp dir for the session's lifetime.)
+    """
+    if "GITHUB_TOKEN" not in env:
+        try:
+            from onit.setup import get_secret
+
+            token = get_secret("github_token")
+            if token:
+                env["GITHUB_TOKEN"] = token
+                env.setdefault("GH_TOKEN", token)
+        except Exception:
+            pass
+
+    if env.get("GITHUB_TOKEN") and "GIT_ASKPASS" not in env:
+        askpass = os.path.join(tmp_dir, "git_askpass.sh")
+        if not os.path.isfile(askpass):
+            with open(askpass, "w") as f:
+                f.write(
+                    "#!/bin/sh\n"
+                    'case "$1" in\n'
+                    '  *[Uu]sername*) echo "x-access-token" ;;\n'
+                    '  *) cat "${ONIT_GITHUB_TOKEN_FILE:?token file not set}" ;;\n'
+                    "esac\n"
+                )
+            os.chmod(askpass, 0o700)
+        # The token lives in a 0o600 file inside the same tmp dir, not in the
+        # script body: the script is world-readable by git's exec requirement
+        # path and is easy to cat; the token file is not.  Still not a secret
+        # store — the file is deleted on serve stop (see _cleanup_askpass) —
+        # but the window and the readers are smaller.
+        token_file = os.path.join(tmp_dir, "git_token")
+        if not os.path.isfile(token_file):
+            with open(token_file, "w") as f:
+                f.write(env["GITHUB_TOKEN"])
+            os.chmod(token_file, 0o600)
+        env["ONIT_GITHUB_TOKEN_FILE"] = token_file
+        env["GIT_ASKPASS"] = askpass
+        env["GIT_TERMINAL_PROMPT"] = "0"
+
+
+def _cleanup_askpass(tmp_dir: str) -> None:
+    """Delete the askpass script and token file from a tmp dir.
+
+    Called on serve stop and session teardown so the token does not sit at
+    rest on disk for the session's lifetime."""
+    for name in ("git_askpass.sh", "git_token"):
+        p = os.path.join(tmp_dir, name)
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def _get_sandbox_env(base: str | None = None) -> dict:
+    """Build a minimal environment dict for sandboxed shell execution.
+    Strips most inherited env vars but preserves HOME and credential-related
+    variables so that keyring/keychain tools and credential helpers work.
+
+    When ``base`` (the per-session jail root) is given, TMPDIR and DATA_PATH
+    point inside it so commands scratch in the session's own folder.
+
+    In container mode (``ONIT_CONTAINER=1``, set by the Dockerfile) the full
+    container env is forwarded — the Dockerfile curates that env (PIP_TARGET,
+    HF_HOME, MPLCONFIGDIR, XDG_*, …) and the container itself is the boundary,
+    so the allowlist-style stripping that makes sense on the host is just an
+    obstacle here.
+    """
+    global _SANDBOX_ENV
+    if _SANDBOX_ENV is not None:
+        return _apply_session_env(dict(_SANDBOX_ENV), base)
+
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    tmp_dir = os.path.join(abs_data, "tmp")
+    _secure_makedirs(tmp_dir)
+
+    # Use the real HOME so credential helpers (osxkeychain, gh, git config) work.
+    real_home = os.path.expanduser("~")
+
+    if _path_restrictions_relaxed():
+        env = dict(os.environ)
+        env.update(
+            {
+                "TERM": "dumb",
+                "LANG": env.get("LANG", "en_US.UTF-8"),
+                "LC_ALL": env.get("LC_ALL", "en_US.UTF-8"),
+                "HOME": real_home,
+                "TMPDIR": tmp_dir,
+                "DATA_PATH": abs_data,
+            }
+        )
+        target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
+        if target_env_bin and os.path.isdir(target_env_bin):
+            env["PATH"] = target_env_bin + os.pathsep + env.get("PATH", "")
+        _inject_github_credentials(env, tmp_dir)
+        _SANDBOX_ENV = env
+        return _apply_session_env(dict(env), base)
+
+    env = {
+        "TERM": "dumb",
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+        "HOME": real_home,
+        "TMPDIR": tmp_dir,
+        "DATA_PATH": abs_data,
+    }
+
+    # Pass through credential-related env vars if set in the parent environment.
+    for var in (
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GH_CONFIG_DIR",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GIT_ASKPASS",
+        "GIT_CREDENTIAL_HELPER",
+        "ONIT_TARGET_ENV_BIN",
+    ):
+        val = os.environ.get(var)
+        if val:
+            env[var] = val
+
+    if IS_WINDOWS:
+        # Build PATH that includes Git Bash Unix tools + essential Windows paths
+        path_parts = []
+        # Git Bash provides Unix coreutils (wc, grep, sed, awk, etc.)
+        if _BASH_EXE:
+            git_root = os.path.dirname(os.path.dirname(_BASH_EXE))
+            for subdir in ("usr/bin", "bin", "mingw64/bin"):
+                d = os.path.join(git_root, subdir)
+                if os.path.isdir(d):
+                    path_parts.append(d)
+        # Essential Windows system paths (for python, pip, etc.)
+        sys_root = os.environ.get("SystemRoot", r"C:\Windows")
+        path_parts.extend(
+            [
+                os.path.join(sys_root, "System32"),
+                sys_root,
+            ]
+        )
+        env.update(
+            {
+                "TEMP": tmp_dir,
+                "TMP": tmp_dir,
+                "PATH": os.pathsep.join(path_parts),
+                "SystemRoot": sys_root,
+                "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
+            }
+        )
+    else:
+        # Include conda, container venv, and Homebrew paths so python/pip resolve
+        # to the environment where onit installed torch et al. /opt/venv is the
+        # venv created by our Dockerfile for --container runs; missing paths are
+        # filtered out below, so it's harmless on hosts without it.
+        path_parts = [
+            "/opt/venv/bin",
+            "/opt/miniconda3/bin",
+            "/opt/miniconda3/condabin",
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        base_path = ":".join(p for p in path_parts if os.path.isdir(p))
+        target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
+        if target_env_bin and os.path.isdir(target_env_bin):
+            env["PATH"] = target_env_bin + ":" + base_path
+        else:
+            env["PATH"] = base_path
+
+    if DOCUMENTS_PATH:
+        env["DOCUMENTS_PATH"] = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH))
+
+    _inject_github_credentials(env, tmp_dir)
+    _SANDBOX_ENV = env
+    return _apply_session_env(dict(env), base)
+
+
+def _apply_session_env(env: dict, base: str | None) -> dict:
+    """Point TMPDIR/DATA_PATH (and Windows TEMP/TMP) at the session jail root
+    so shell scratch files land in the session's own folder."""
+    if not base:
+        return env
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    if base == abs_data:
+        return env
+    tmp_dir = os.path.join(base, "tmp")
+    _secure_makedirs(tmp_dir)
+    env["TMPDIR"] = tmp_dir
+    env["DATA_PATH"] = base
+    if IS_WINDOWS:
+        env["TEMP"] = tmp_dir
+        env["TMP"] = tmp_dir
+    return env
+
+
+# Patterns blocked even in unrestricted/container modes (catastrophic ops only).
+_ALWAYS_BLOCKED_PATTERNS = [
+    # Destructive filesystem operations. "On root" means the root directory
+    # itself, not any absolute path: the trailing / here is followed by a
+    # boundary (end, whitespace, or the /* glob), so `rm -rf /tmp/onit/...`
+    # — an in-jail cleanup, the normal case — passes while `rm -rf /` and
+    # `rm -rf /*` are refused. Unanchored, the slash matched the first
+    # character of every absolute target and no session could ever delete
+    # its own scratch files.
+    # The root token ("/" or "/*", optionally quoted, trailing slashes and //
+    # included) may sit anywhere in the argument list, so `rm -rf /tmp /` and
+    # `rm -rf /tmp /*` are caught too, not just a leading root argument.
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?(?:[\x22\x27]?/\*?[\x22\x27]?|//)(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?[\x22\x27]?/(?:\.\./)*\.\.(?:/+)?(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (re.compile(r">\s*/dev/(sd|hd|nvme|vd|xvd)", re.IGNORECASE), "write to block device"),
+    (re.compile(r">\s*/dev/mem", re.IGNORECASE), "write to /dev/mem"),
+    (re.compile(r"\bdd\b.*\bof\s*=\s*/dev/", re.IGNORECASE), "dd to device"),
+    (re.compile(r"\bmkfs\b", re.IGNORECASE), "mkfs command"),
+    (re.compile(r"\bfdisk\b", re.IGNORECASE), "fdisk command"),
+    (re.compile(r"\bparted\b", re.IGNORECASE), "parted command"),
+    # System shutdown / state
+    (re.compile(r"\bshutdown\b", re.IGNORECASE), "shutdown command"),
+    (re.compile(r"\breboot\b", re.IGNORECASE), "reboot command"),
+    (re.compile(r"\bpoweroff\b", re.IGNORECASE), "poweroff command"),
+    (re.compile(r"\bhalt\b", re.IGNORECASE), "halt command"),
+    (re.compile(r"\binit\s+[06]\b", re.IGNORECASE), "init runlevel change"),
+    # Kernel / boot
+    (re.compile(r"\binsmod\b", re.IGNORECASE), "insmod command"),
+    (re.compile(r"\brmmod\b", re.IGNORECASE), "rmmod command"),
+    (re.compile(r"\bmodprobe\b", re.IGNORECASE), "modprobe command"),
+    (re.compile(r"\bsysctl\s+-w\b", re.IGNORECASE), "sysctl write"),
+    # Windows-specific catastrophic ops
+    (re.compile(r"\bformat\b\s+[A-Za-z]:", re.IGNORECASE), "format drive"),
+    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "diskpart command"),
+    (re.compile(r"\bbcdedit\b", re.IGNORECASE), "bcdedit command"),
+]
+
+# Blocked command patterns for the bash tool.
+#
+# Two lists, because "blocked" covered two very different things. The first is
+# non-negotiable: privilege escalation, host-wide state, kernel and firewall
+# changes, disk destruction. Nobody using OnIt is entitled to authorize those,
+# and on a shared host the person at the prompt is not the only person they
+# would affect.
+#
+# The second is discretionary — refusals that exist because *this* machine may
+# not want them, not because they are attacks. Listing processes, reading the
+# environment, reading /etc/passwd, installing something with the system
+# package manager: a developer does these hourly, and Claude Code runs them
+# after a one-line confirmation. Those become questions for a human rather
+# than dead ends, and only where a human answering is the whole story: each
+# carries the scope key that decides where it may be asked (see
+# approvals.ask_scope, which withholds "system" and "path" on a multi-tenant
+# deployment).
+_BLOCKED_PATTERNS = [
+    # Sensitive system files that no answer makes safe to hand over
+    (re.compile(r"/etc/shadow", re.IGNORECASE), "/etc/shadow"),
+    (re.compile(r"/etc/sudoers", re.IGNORECASE), "/etc/sudoers"),
+    # Destructive filesystem operations — anchored to the root directory
+    # itself, same as _ALWAYS_BLOCKED_PATTERNS above (see the comment there).
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?(?:[\x22\x27]?/\*?[\x22\x27]?|//)(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:\S+\s+)*?[\x22\x27]?/(?:\.\./)*\.\.(?:/+)?(?:\s|;|\||&|\Z)",
+            re.IGNORECASE,
+        ),
+        "rm -rf on root",
+    ),
+    (re.compile(r">\s*/dev/(sd|hd|nvme|vd|xvd)", re.IGNORECASE), "write to block device"),
+    (re.compile(r">\s*/dev/mem", re.IGNORECASE), "write to /dev/mem"),
+    (re.compile(r"\bdd\b.*\bof\s*=\s*/dev/", re.IGNORECASE), "dd to device"),
+    (re.compile(r"\bmkfs\b", re.IGNORECASE), "mkfs command"),
+    (re.compile(r"\bfdisk\b", re.IGNORECASE), "fdisk command"),
+    (re.compile(r"\bparted\b", re.IGNORECASE), "parted command"),
+    # Privilege escalation
+    (re.compile(r"\bsudo\b", re.IGNORECASE), "sudo command"),
+    (re.compile(r"\bsu\b\s", re.IGNORECASE), "su command"),
+    (re.compile(r"\bdoas\b", re.IGNORECASE), "doas command"),
+    (re.compile(r"\bchmod\s+[0-7]*s", re.IGNORECASE), "setuid/setgid chmod"),
+    (re.compile(r"\bchown\b", re.IGNORECASE), "chown command"),
+    # System state / shutdown
+    (re.compile(r"\bshutdown\b", re.IGNORECASE), "shutdown command"),
+    (re.compile(r"\breboot\b", re.IGNORECASE), "reboot command"),
+    (re.compile(r"\bpoweroff\b", re.IGNORECASE), "poweroff command"),
+    (re.compile(r"\bhalt\b", re.IGNORECASE), "halt command"),
+    (re.compile(r"\binit\s+[06]\b", re.IGNORECASE), "init runlevel change"),
+    (
+        re.compile(
+            r"\bsystemctl\s+(start|stop|restart|disable|enable|mask|reboot|poweroff|halt)",
+            re.IGNORECASE,
+        ),
+        "systemctl service control",
+    ),
+    # Network / exfiltration
+    (re.compile(r"\bnc\b\s+-[el]", re.IGNORECASE), "netcat listener"),
+    (re.compile(r"\bncat\b", re.IGNORECASE), "ncat command"),
+    (re.compile(r"\bsocat\b", re.IGNORECASE), "socat command"),
+    (re.compile(r"\biptables\b", re.IGNORECASE), "iptables command"),
+    (re.compile(r"\bufw\b", re.IGNORECASE), "ufw command"),
+    # Kernel / boot
+    (re.compile(r"\binsmod\b", re.IGNORECASE), "insmod command"),
+    (re.compile(r"\brmmod\b", re.IGNORECASE), "rmmod command"),
+    (re.compile(r"\bmodprobe\b", re.IGNORECASE), "modprobe command"),
+    (re.compile(r"\bsysctl\s+-w\b", re.IGNORECASE), "sysctl write"),
+    # Windows-specific dangerous commands
+    (re.compile(r"\bformat\b\s+[A-Za-z]:", re.IGNORECASE), "format drive"),
+    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "diskpart command"),
+    (re.compile(r"\breg\s+(add|delete|import)\b", re.IGNORECASE), "registry modification"),
+    (
+        re.compile(r"\bnet\s+(user|localgroup|stop|start)\b", re.IGNORECASE),
+        "net service/user command",
+    ),
+    (re.compile(r"\bsc\s+(delete|stop|config)\b", re.IGNORECASE), "sc service command"),
+    (re.compile(r"\bbcdedit\b", re.IGNORECASE), "bcdedit command"),
+    (re.compile(r"\bschtasks\s+/(create|delete)\b", re.IGNORECASE), "scheduled task modification"),
+]
+
+# (pattern, description, scope key). Refused unless the scope key is in
+# approvals.ask_scope(); when it is, a person is asked instead.
+_ASKABLE_PATTERNS = [
+    # Environment inspection. Blocked because the tool environment carries
+    # GITHUB_TOKEN and whatever else the keychain handed the process — which
+    # is the operator's secret on a shared deployment, and the reader's own on
+    # a personal one. Hence "system": askable in a terminal, never on the web.
+    # The lookbehind keeps filenames out of the match: ".env" has a word
+    # boundary before "env" (the dot is not a word character), so a plain \benv\b
+    # refused every deploy command that mentioned a dotenv file — cat .env,
+    # scp .env, docker compose --env-file — and the retry loop that follows
+    # ate five turns before the repeated-call guard ended the task. A command
+    # still has to run the env *binary* to be blocked: bare `env`, `env | grep`,
+    # `FOO=1 env cmd`, /usr/bin/env.
+    (re.compile(r"(?<![\w.\-])env\b", re.IGNORECASE), "env command", "system"),
+    (re.compile(r"(?<![\w.\-])printenv\b", re.IGNORECASE), "printenv command", "system"),
+    (re.compile(r"(?<![\w.\-])export\s", re.IGNORECASE), "export command", "system"),
+    (re.compile(r"/proc/self/environ", re.IGNORECASE), "/proc/self/environ", "system"),
+    # Process listings: what the OS already shows this account, no more.
+    # Same lookbehind as env: ".ps" and ".top" are file extensions, not
+    # process inspection.
+    (re.compile(r"(?<![\w.\-])ps\b", re.IGNORECASE), "ps command", "system"),
+    (re.compile(r"(?<![\w.\-])top\b", re.IGNORECASE), "top command", "system"),
+    (re.compile(r"(?<![\w.\-])htop\b", re.IGNORECASE), "htop command", "system"),
+    (re.compile(r"/proc/\d+", re.IGNORECASE), "/proc access", "system"),
+    (re.compile(r"/proc/self\b", re.IGNORECASE), "/proc/self access", "system"),
+    # World-readable on every Unix; kept behind a prompt because asking for it
+    # by name is worth a look, not because the contents are secret.
+    (re.compile(r"/etc/passwd", re.IGNORECASE), "/etc/passwd", "system"),
+    # Piping a download into a shell. The canonical install one-liner and the
+    # canonical way to run unreviewed code; on a personal machine that is the
+    # user's own call to make, and it is exactly the call they came to make.
+    (re.compile(r"\bcurl\b.*\|\s*(ba)?sh", re.IGNORECASE), "curl piped to shell", "system"),
+    (re.compile(r"\bwget\b.*\|\s*(ba)?sh", re.IGNORECASE), "wget piped to shell", "system"),
+    # System package managers. The AST policy gates these too when the
+    # allowlist is enforced; here they are caught in host mode as well.
+    (
+        re.compile(r"\bapt(-get)?\s+(install|remove|purge|dist-upgrade)", re.IGNORECASE),
+        "apt package modification",
+        "install",
+    ),
+    (
+        re.compile(r"\byum\s+(install|remove|erase|update)", re.IGNORECASE),
+        "yum package modification",
+        "install",
+    ),
+    (
+        re.compile(r"\bdnf\s+(install|remove|erase|upgrade)", re.IGNORECASE),
+        "dnf package modification",
+        "install",
+    ),
+    (re.compile(r"\bpacman\s+-[SRU]", re.IGNORECASE), "pacman package modification", "install"),
+    (
+        re.compile(r"\bbrew\s+(install|uninstall|remove)", re.IGNORECASE),
+        "brew package modification",
+        "install",
+    ),
+]
+
+# Matches a heredoc construct and its body for stripping before security checks.
+# Uses [^\n]*\n per-line matching instead of .*? with DOTALL to avoid ReDoS.
+_HEREDOC_RE = re.compile(r"""<<-?\s*['"]?(\w+)['"]?\n(?:[^\n]*\n)*?\1\b""")
+
+
+def _exec_shell(
+    command: str, cwd: str, timeout: int, base: str | None = None
+) -> subprocess.CompletedProcess:
+    """Run a command in a sandboxed shell, routing through Git Bash on Windows."""
+    if IS_WINDOWS and _BASH_EXE:
+        return subprocess.run(
+            [_BASH_EXE, "-c", command],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=timeout,
+            env=_get_sandbox_env(base),
+        )
+    return subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        timeout=timeout,
+        env=_get_sandbox_env(base),
+    )
+
+
+async def _exec_shell_streaming(
+    command: str, cwd: str, timeout: int, ctx: Context | None = None, base: str | None = None
+) -> dict:
+    """Run a command asynchronously, streaming stdout/stderr lines via ctx.log().
+
+    Returns a dict with stdout, stderr, and returncode.
+    Falls back to synchronous _exec_shell if ctx is None.
+    """
+    if ctx is None:
+        result = _exec_shell(command, cwd, timeout, base=base)
+        return {
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode,
+        }
+
+    env = _get_sandbox_env(base)
+    if IS_WINDOWS and _BASH_EXE:
+        proc = await asyncio.create_subprocess_exec(
+            _BASH_EXE,
+            "-c",
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+    else:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+
+    stdout_lines = []
+    stderr_lines = []
+    _MAX_LINES = 10_000  # Cap collected lines to prevent OOM on verbose commands
+
+    async def _read_stream(stream, collector, level):
+        async for raw_line in stream:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+            if len(collector) < _MAX_LINES:
+                collector.append(line)
+            await ctx.log(level=level, message=line)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                _read_stream(proc.stdout, stdout_lines, "info"),
+                _read_stream(proc.stderr, stderr_lines, "warning"),
+            ),
+            timeout=timeout,
+        )
+        await proc.wait()
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass  # Process didn't respond to SIGKILL; nothing more we can do
+        return {
+            "stdout": "\n".join(stdout_lines),
+            "stderr": "\n".join(stderr_lines),
+            "returncode": -1,
+            "timeout": True,
+        }
+
+    return {
+        "stdout": "\n".join(stdout_lines),
+        "stderr": "\n".join(stderr_lines),
+        "returncode": proc.returncode,
+    }
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc body text from a command string before security checking.
+
+    Heredoc bodies are written to files as data, not executed as shell code.
+    Scanning them for blocked patterns produces false positives (e.g. the word
+    'env' in document content triggering the env-command block).
+
+    Handles all three quoting styles: << 'DELIM', << "DELIM", << DELIM.
+    The delimiter word (without quotes) is used to find the closing marker.
+    """
+    return _HEREDOC_RE.sub(r"<< '\1'", command)
+
+
+# User-configured permission rules (Claude Code-style settings file).
+# Default location is ~/.onit/settings.json (same directory as config.yaml and
+# secrets.yaml); override with options['settings_path'] in run() or the
+# ONIT_SETTINGS env var. Format:
+#   {"permissions": {"allow": ["Bash(*)"], "deny": ["Bash(sudo *)", "Bash(pip install*)"]}}
+# Rules use glob patterns matched against the command. Deny always wins.
+# When the allow list is non-empty, every command must match an allow rule.
+# The default settings file is enforced only for the web UI ('onit serve web'
+# sets ONIT_WEB_UI=1): web sessions are reachable by other users, so the
+# configured restrictions must hold there. The local text UI is a trusted
+# terminal session and ignores the default file — it runs with full
+# privileges under the built-in policy. Explicitly pointing at a settings
+# file (ONIT_SETTINGS env var or options['settings_path']) opts in to
+# enforcement in every mode, including --unrestricted and container mode.
+DEFAULT_SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".onit", "settings.json")
+SETTINGS_PATH = None  # set via run() options; falls back to env var / default
+
+# Only upload destination send_file may POST to. Set via run() options
+# ('file_server_url') or the ONIT_FILE_SERVER_URL env var; it is the host's
+# own file server, which the prompt's upload instructions already name.
+# A model-supplied callback_url to anywhere else is refused: one injected
+# instruction in any read document would otherwise turn this tool into an
+# exfiltration channel for session files.
+FILE_SERVER_URL = os.environ.get("ONIT_FILE_SERVER_URL", "")
+
+# Cache: ((path, mtime), allow_patterns, deny_patterns, allowed_commands)
+_PERMISSIONS_CACHE = None
+
+_PERMISSION_RULE_RE = re.compile(r"^Bash\((.*)\)$", re.DOTALL)
+
+# Splits compound commands on shell sequencing operators so a denied command
+# embedded in a chain (e.g. "ls && sudo rm") is still caught. Naive with
+# respect to quoting — a quoted "&&" splits too — which can only over-block,
+# never under-block a deny rule.
+_SHELL_SEQUENCE_RE = re.compile(r"\|\||&&|[;|\n]")
+
+
+def _settings_path() -> str:
+    return SETTINGS_PATH or os.environ.get("ONIT_SETTINGS") or DEFAULT_SETTINGS_PATH
+
+
+def _settings_rules_active() -> bool:
+    """True when settings-file permission rules should be enforced.
+
+    The default ~/.onit/settings.json applies only to the web UI (ONIT_WEB_UI=1,
+    set by 'onit serve web'). The text UI runs privileged and ignores it.
+    An explicit ONIT_SETTINGS env var or settings_path option enforces the
+    rules in any mode.
+    """
+    if os.environ.get("ONIT_WEB_UI") == "1":
+        return True
+    return bool(SETTINGS_PATH or os.environ.get("ONIT_SETTINGS"))
+
+
+def _load_permissions() -> tuple[list[str], list[str], list[str]]:
+    """Load Bash(...) allow/deny glob patterns and the allowedCommands list
+    from the settings file.
+
+    Returns ([], [], []) when settings rules are inactive for this mode (see
+    _settings_rules_active) or the file is absent; an unreadable/malformed
+    file logs an error and disables rule enforcement rather than blocking all
+    commands (the built-in _BLOCKED_PATTERNS still apply).
+    Cached by (path, mtime) so edits take effect without a server restart.
+    Non-Bash rules (e.g. "WebFetch(...)") are ignored.
+    """
+    global _PERMISSIONS_CACHE
+    if not _settings_rules_active():
+        return [], [], []
+    path = _settings_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return [], [], []
+    if _PERMISSIONS_CACHE and _PERMISSIONS_CACHE[0] == (path, mtime):
+        return _PERMISSIONS_CACHE[1], _PERMISSIONS_CACHE[2], _PERMISSIONS_CACHE[3]
+
+    allow: list[str] = []
+    deny: list[str] = []
+    allowed_commands: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+        perms = settings.get("permissions", {})
+        for key, patterns in (("allow", allow), ("deny", deny)):
+            rules = perms.get(key, [])
+            if not isinstance(rules, list):
+                raise ValueError(f"permissions.{key} must be a list")
+            for rule in rules:
+                m = _PERMISSION_RULE_RE.match(str(rule).strip())
+                if m:
+                    patterns.append(m.group(1))
+        extra = perms.get("allowedCommands", [])
+        if not isinstance(extra, list):
+            raise ValueError("permissions.allowedCommands must be a list")
+        allowed_commands = [str(c).strip() for c in extra if str(c).strip()]
+    except Exception as e:
+        logger.error(f"Ignoring permission rules — failed to parse {path}: {e}")
+        return [], [], []
+
+    _PERMISSIONS_CACHE = ((path, mtime), allow, deny, allowed_commands)
+    return allow, deny, allowed_commands
+
+
+# Leading environment-variable assignments (FOO=bar cmd) and transparent
+# wrappers that would otherwise defeat prefix-style rules
+# ("PIP_TIMEOUT=60 pip install x", "nohup pip install x").
+_ENV_ASSIGN_RE = re.compile(r"^(?:\w+=\S*\s+)+")
+_WRAPPER_WORDS = ("command", "exec", "nohup", "time", "builtin")
+
+
+def _normalize_segment(seg: str) -> str:
+    """Strip env-var assignments and transparent wrapper words from the front
+    of a command segment so rules match the effective command."""
+    prev = None
+    while seg != prev:
+        prev = seg
+        seg = _ENV_ASSIGN_RE.sub("", seg).lstrip()
+        first, _, rest = seg.partition(" ")
+        if first in _WRAPPER_WORDS and rest:
+            seg = rest.lstrip()
+    return seg
+
+
+def _split_shell_segments(command: str) -> list[str]:
+    """Split a command on sequencing operators (&&, ||, ;, |, newline) and
+    normalize each segment. The full command is included as the first segment
+    so patterns that span operators can still match."""
+    segments = [command.strip()]
+    for seg in _SHELL_SEQUENCE_RE.split(command):
+        seg = _normalize_segment(seg.strip())
+        if seg and seg not in segments:
+            segments.append(seg)
+    return segments
+
+
+def _evaluate_permission_rules(
+    command: str, ask_scope: frozenset = frozenset(), base: str | None = None
+) -> Decision:
+    """Evaluate the command against user-configured allow/deny rules.
+
+    A deny rule is an operator writing down, in a file, that this must not
+    happen. It is never a question — and it counts as a critical refusal,
+    because an agent hitting one has walked into something someone explicitly
+    fenced off rather than something nobody got round to listing.
+
+    A miss against a non-empty allow list is the softer case: it means the
+    rule author enumerated what they wanted and this was not on the list.
+    That is askable, but only under "system" scope — a scope withheld on a
+    multi-tenant deployment, where the allow list is the operator's boundary
+    around users who must not be able to widen it themselves.
+    """
+    allow, deny, _ = _load_permissions()
+    if not allow and not deny:
+        return Decision(ALLOW)
+
+    segments = _split_shell_segments(command)
+    for seg in segments:
+        for pattern in deny:
+            if fnmatch.fnmatchcase(seg, pattern):
+                return Decision(
+                    DENY,
+                    f"Command blocked by permissions deny rule "
+                    f"'Bash({pattern})' in {_settings_path()}.",
+                    severity=CRITICAL,
+                )
+
+    if allow:
+        # Skip the full-command segment when it chains multiple commands;
+        # each individual segment must be allowed on its own.
+        check = segments[1:] if len(segments) > 1 else segments
+        for seg in check:
+            if not any(fnmatch.fnmatchcase(seg, pattern) for pattern in allow):
+                return _ask_unless_granted(
+                    f"Command blocked: '{seg}' does not match any "
+                    f"permissions allow rule in {_settings_path()}.",
+                    (f"rule:{seg.split()[0] if seg.split() else seg}",),
+                    "system",
+                    ask_scope,
+                    base,
+                )
+
+    return Decision(ALLOW)
+
+
+def _check_permission_rules(command: str) -> str | None:
+    """String form of :func:`_evaluate_permission_rules` (no human to ask)."""
+    decision = _evaluate_permission_rules(command)
+    return None if decision.allowed else decision.reason
+
+
+# =============================================================================
+# AST COMMAND ALLOWLIST + PACKAGE POLICY + AUTO-CONTAINMENT
+# =============================================================================
+
+# The AST-based command allowlist is enforced by default inside the onit
+# container (ONIT_CONTAINER=1). Override per environment:
+#   ONIT_COMMAND_ALLOWLIST=1  enforce everywhere (including host mode)
+#   ONIT_COMMAND_ALLOWLIST=0  disable (even inside the container)
+# Package managers are blocked under allowlist enforcement unless
+# ONIT_ALLOW_PACKAGE_INSTALL=1, and then only version-pinned installs pass.
+# Exception: in the containerized web UI installs are refused unconditionally
+# and ONIT_ALLOW_PACKAGE_INSTALL is ignored — see command_policy.installs_sealed.
+
+
+def _allowlist_enforced() -> bool:
+    v = os.environ.get("ONIT_COMMAND_ALLOWLIST")
+    if v == "1":
+        return True
+    if v == "0":
+        return False
+    return _in_container()
+
+
+def _package_installs_allowed() -> bool:
+    """Whether package-manager install subcommands may run at all.
+
+    The containerized web UI (installs_sealed) is a hard refusal that
+    ONIT_ALLOW_PACKAGE_INSTALL cannot lift — rationale in docs/DOCKER.md,
+    "No package installs in web UI mode".
+
+    Returning False here also removes `onit-install-ml` from the allowlist (see
+    _allowed_commands), so the curated ML installer is refused there too.
+    """
+    if _installs_sealed():
+        return False
+    return os.environ.get("ONIT_ALLOW_PACKAGE_INSTALL") == "1"
+
+
+def _allowed_commands(base: str | None = None) -> frozenset:
+    """Default allowlist extended by ONIT_ALLOWED_COMMANDS (comma-separated),
+    permissions.allowedCommands in the settings file, and anything a human
+    approved for the lifetime of session ``base``.
+
+    Session grants are keyed by the session directory — the value the harness
+    injects and the model cannot influence — so one session's approval never
+    widens another's allowlist.
+    """
+    extra = set()
+    if not _multi_tenant():
+        # Read-only process inspection, on the same reasoning ask_scope() uses
+        # to withhold "path" here: what one user may see of another is not the
+        # session's to waive. An operator who wants it on the web UI anyway
+        # can still list it in permissions.allowedCommands.
+        extra.update(SINGLE_TENANT_COMMANDS)
+    env_extra = os.environ.get("ONIT_ALLOWED_COMMANDS", "")
+    extra.update(c.strip() for c in env_extra.split(",") if c.strip())
+    _, _, settings_extra = _load_permissions()
+    extra.update(settings_extra)
+    if _package_installs_allowed():
+        # Curated installer for heavy ML packages (see Dockerfile). Exempt
+        # from pinning: it selects CUDA-matched wheels from a fixed index.
+        extra.add("onit-install-ml")
+    if base:
+        extra.update(_APPROVALS.commands_for(base))
+    return DEFAULT_ALLOWED_COMMANDS | frozenset(extra)
+
+
+def _installs_allowed_for(base: str | None) -> bool:
+    """Installs permitted by configuration, or by a human for this session.
+
+    A session grant cannot lift the seal: where installs are sealed there is
+    no override by design, and an approval prompt that appeared to offer one
+    would be lying to the person answering it.
+    """
+    if _installs_sealed():
+        return False
+    if _package_installs_allowed():
+        return True
+    return bool(base and _APPROVALS.installs_allowed(base))
+
+
+def _evaluate_command_allowlist(
+    check_command: str, base: str | None = None, ask_scope: frozenset = frozenset()
+) -> Decision:
+    if _installs_sealed():
+        # Where the seal is in force there is no yes to give, so there is no
+        # question to ask. Offering the prompt anyway would put a person in
+        # the position of authorizing something that cannot happen either way
+        # — and then leave the model reading a refusal that says a human
+        # declined, when what actually happened is that the environment did.
+        ask_scope = ask_scope - {"install"}
+    return _evaluate_command_policy(
+        check_command,
+        _allowed_commands(base),
+        allow_installs=_installs_allowed_for(base),
+        denied_msg=(INSTALL_SEALED_MSG if _installs_sealed() else INSTALL_DENIED_MSG),
+        ask_scope=ask_scope,
+    )
+
+
+def _check_command_allowlist(check_command: str) -> str | None:
+    decision = _evaluate_command_allowlist(check_command)
+    return None if decision.allowed else decision.reason
+
+
+# ── Auto-containment ─────────────────────────────────────────────────────
+# After ONIT_CONTAIN_THRESHOLD *critical* refusals inside ONIT_CONTAIN_WINDOW
+# seconds, a session is contained: its execution/write/send tools refuse to
+# run and its managed background processes are stopped. Containment persists
+# across restarts via a marker file; delete it (or set the threshold to 0) to
+# lift it.
+#
+# Disabled by default (threshold 0), everywhere. Three things decide what
+# counts, and each of them exists because the previous design counted the
+# wrong thing:
+#
+#   * Only CRITICAL refusals count — sudo, mkfs, an operator's explicit deny
+#     rule, or a command a person already said no to. An unlisted executable
+#     or a path outside the jail is ordinary friction: it is now a question
+#     rather than a refusal, and it never counts. That removes the failure
+#     mode the old counter was famous for, where a long session accumulated
+#     benign path slips until it locked itself out.
+#   * The count decays. It is a rate over ONIT_CONTAIN_WINDOW, not a
+#     process-lifetime total, so an agent that trips once an hour is not the
+#     same as one trying ten things in ten seconds — and only the second one
+#     is what containment is for.
+#   * Containment is scoped to the session that earned it. The marker goes in
+#     that session's own directory; only a refusal with no session context
+#     contains the server as a whole. One user's bad turn stranding every
+#     later session on a shared host was a denial of service wearing a
+#     safety feature's clothes.
+
+_DEFAULT_CONTAIN_THRESHOLD = 0
+_DEFAULT_CONTAIN_WINDOW = 600
+_CONTAINMENT_MARKER = ".onit-containment.json"
+# base -> [{time, reason, command}], newest last. "" is the server-wide scope.
+_VIOLATIONS: dict = {}
+# Bases known to be contained, plus "" when the server as a whole is.
+_CONTAINED: set = set()
+
+
+def _contain_threshold() -> int:
+    try:
+        return int(os.environ.get("ONIT_CONTAIN_THRESHOLD", _DEFAULT_CONTAIN_THRESHOLD))
+    except ValueError:
+        return _DEFAULT_CONTAIN_THRESHOLD
+
+
+def _contain_window() -> float:
+    try:
+        return float(os.environ.get("ONIT_CONTAIN_WINDOW", _DEFAULT_CONTAIN_WINDOW))
+    except ValueError:
+        return float(_DEFAULT_CONTAIN_WINDOW)
+
+
+def _contain_scope(base: str | None) -> str:
+    """The key a violation is counted under and a marker is written for."""
+    if not base:
+        return ""
+    abs_data = os.path.realpath(os.path.expanduser(DATA_PATH))
+    return "" if base == abs_data else base
+
+
+def _containment_marker_path(base: str | None = None) -> str:
+    root = base or os.path.realpath(os.path.expanduser(DATA_PATH))
+    return os.path.join(root, _CONTAINMENT_MARKER)
+
+
+def _is_contained(base: str | None = None) -> bool:
+    """True when this session, or the server as a whole, is locked down."""
+    if _contain_threshold() <= 0:
+        return False
+    scope = _contain_scope(base)
+    for key in {"", scope}:
+        if key in _CONTAINED:
+            return True
+        marker = _containment_marker_path(key or None)
+        if os.path.isfile(marker):
+            _CONTAINED.add(key)
+            return True
+    return False
+
+
+def _containment_error(context: str = "", base: str | None = None) -> str:
+    return json.dumps(
+        {
+            "error": (
+                "Server is contained after repeated policy violations. "
+                "Command execution, file writes, and file transfers are "
+                "disabled. To lift containment, remove "
+                f"{_containment_marker_path(_contain_scope(base) or None)} "
+                "and restart the MCP server."
+            ),
+            "status": "contained",
+            **({"command": context} if context else {}),
+        }
+    )
+
+
+def _enter_containment(base: str | None = None) -> None:
+    """Lock down a session (or the server): persist the marker, stop its
+    managed processes."""
+    scope = _contain_scope(base)
+    _CONTAINED.add(scope)
+    try:
+        marker = _containment_marker_path(scope or None)
+        _secure_makedirs(os.path.dirname(marker))
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                {
+                    "contained_at": datetime.now().isoformat(),
+                    "scope": scope or "server",
+                    "violations": _VIOLATIONS.get(scope, [])[-20:],
+                },
+                f,
+                indent=2,
+            )
+    except Exception as e:
+        logger.error(f"Failed to persist containment marker: {e}")
+    # Stop everything the serve tool has launched for this scope.
+    try:
+        registry = _load_serve_registry(scope or None)
+        for entry in registry.values():
+            if _process_running(entry["pid"]):
+                try:
+                    _kill_process(entry["pid"])
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Failed to stop managed processes on containment: {e}")
+    logger.error(
+        f"AUTO-CONTAINMENT ({scope or 'server-wide'}): "
+        f"{len(_VIOLATIONS.get(scope, []))} critical policy violations reached "
+        f"the threshold ({_contain_threshold()}) within "
+        f"{_contain_window():.0f}s. Execution disabled; managed processes "
+        "stopped."
+    )
+
+
+def _record_violation(decision: Decision, command: str, base: str | None = None) -> None:
+    """Count a critical refusal; trip containment at the threshold.
+
+    Refusals below CRITICAL are logged by the caller and forgotten here. They
+    are the ones a well-behaved agent produces while finding the edges of the
+    policy, and treating a search for the edges as an attack is what made the
+    old counter unusable.
+    """
+    if decision.severity != CRITICAL:
+        return
+    threshold = _contain_threshold()
+    if threshold <= 0:
+        return
+    scope = _contain_scope(base)
+    now = time.monotonic()
+    window = _contain_window()
+    recent = [v for v in _VIOLATIONS.get(scope, []) if now - v["at"] <= window]
+    recent.append(
+        {
+            "at": now,
+            "time": datetime.now().isoformat(),
+            "reason": (decision.reason or "")[:500],
+            "command": (command or "")[:500],
+        }
+    )
+    _VIOLATIONS[scope] = recent
+    logger.error(
+        f"Policy violation {len(recent)}/{threshold} in {window:.0f}s "
+        f"({scope or 'server-wide'}): {decision.reason}"
+    )
+    if len(recent) >= threshold and scope not in _CONTAINED:
+        _enter_containment(base)
+
+
+# ── Refusals the model can act on ────────────────────────────────────────
+
+
+def _refusal(decision: Decision, command: str) -> str:
+    """The tool result for a command that will not run.
+
+    A refusal is a turn the model has to spend, so it should buy something.
+    Beyond the reason, it says the call did not run, that the same call will
+    not run later either, and — the part that decides whether the next turn
+    is useful — that the way forward is a different approach rather than a
+    different spelling of this one. Without that, the observed behaviour is a
+    retry loop: quote the path, escape it, split the pipeline, try again.
+    """
+    payload = {
+        "error": decision.reason,
+        "command": command,
+        "status": "blocked",
+        "retryable": False,
+        "guidance": (
+            "This command was refused by policy and was not run. "
+            "Retrying it, rewriting it to evade the check, or "
+            "reaching the same effect through another tool will be "
+            "refused as well. Take a different approach, or tell the "
+            "user what you need and why."
+        ),
+    }
+    if decision.severity == CRITICAL:
+        payload["guidance"] = (
+            "This command was refused and was not run. It is in the class of "
+            "operations this deployment never permits, from any tool, under "
+            "any setting. Do not look for another route to it. Say plainly "
+            "what you were trying to do and let the user decide."
+        )
+    return json.dumps(payload)
+
+
+def _ask_unless_granted(
+    reason: str, subjects: tuple, kind: str, ask_scope: frozenset, base: str | None
+) -> Decision:
+    """Ask about ``subjects``, unless this session's human already said yes.
+
+    The grant lookup comes first so that re-checking an approved command is
+    quiet. Every ask in this module goes through here for that reason: a
+    check that asked again after approval would turn one prompt into a loop.
+    """
+    if base and subjects and all(_APPROVALS.granted(base, s) for s in subjects):
+        return Decision(ALLOW)
+    return _ask_or_deny(reason, subjects, kind, ask_scope)
+
+
+def _evaluate_bash_command(
+    command: str, base: str | None = None, ask_scope: frozenset = frozenset()
+) -> Decision:
+    """Decide what to do with a bash command: run it, ask a person, refuse it.
+
+    The order is the order of authority. An operator's written rules come
+    first, then the parsed allowlist, then the pattern lists, then the session
+    path jail. A refusal short-circuits; a question does not — the checks keep
+    running, because a command that needs approval for one thing and is
+    forbidden for another must come back forbidden, not as a prompt whose
+    "yes" leads nowhere.
+    """
+    check_command = _strip_heredoc_bodies(command)
+    pending: Decision | None = None
+
+    def note(decision: Decision) -> Decision | None:
+        """Return denials at once; merge asks into a single question.
+
+        Merged, not first-wins: a command that reaches two directories outside
+        the jail has to be approvable in one answer. Asking about the first,
+        then meeting the second on the way back through, produced a refusal
+        immediately after the user had said yes — which reads, correctly, as
+        the prompt having ignored them.
+        """
+        nonlocal pending
+        if decision.verdict == DENY:
+            return decision
+        if decision.verdict == ASK:
+            if pending is None:
+                pending = decision
+            else:
+                pending = Decision(
+                    ASK,
+                    pending.reason + " " + decision.reason,
+                    subjects=tuple(dict.fromkeys(pending.subjects + decision.subjects)),
+                )
+        return None
+
+    # User-configured settings rules: enforced for the web UI (and when the
+    # settings path is explicitly set), in every mode including the
+    # relaxations below. The text UI skips them (see _settings_rules_active).
+    if hit := note(_evaluate_permission_rules(check_command, ask_scope, base)):
+        return hit
+
+    # In unrestricted mode only the catastrophic always-blocked ops are checked;
+    # path restrictions and package-manager/env blocks are lifted. An explicit
+    # ONIT_COMMAND_ALLOWLIST=1 still enforces the allowlist.
+    if _in_unrestricted():
+        if os.environ.get("ONIT_COMMAND_ALLOWLIST") == "1":
+            if hit := note(_evaluate_command_allowlist(check_command, base, ask_scope)):
+                return hit
+        for pattern, description in _ALWAYS_BLOCKED_PATTERNS:
+            if pattern.search(check_command):
+                return Decision(
+                    DENY, f"Command blocked: {description} is not allowed.", severity=CRITICAL
+                )
+        return pending or Decision(ALLOW)
+
+    # Patterns nobody may authorize. Checked ahead of the allowlist so that
+    # `sudo` is refused as privilege escalation rather than as an unlisted
+    # executable — the message is the true one, and the severity that drives
+    # auto-containment is the true one too.
+    for pattern, description in _BLOCKED_PATTERNS:
+        if pattern.search(check_command):
+            return Decision(
+                DENY, f"Command blocked: {description} is not allowed.", severity=CRITICAL
+            )
+
+    # AST-based allowlist: every executable in the command (including inside
+    # $(...), pipelines, loops, and shell -c payloads) must be allowlisted;
+    # package-manager installs are gated and must be version-pinned.
+    if _allowlist_enforced():
+        if hit := note(_evaluate_command_allowlist(check_command, base, ask_scope)):
+            return hit
+
+    # Patterns a person may authorize, where this deployment has one to ask.
+    for pattern, description, kind in _ASKABLE_PATTERNS:
+        if pattern.search(check_command):
+            if hit := note(
+                _ask_unless_granted(
+                    f"Command blocked: {description} is not allowed.",
+                    (f"pattern:{description}",),
+                    kind,
+                    ask_scope,
+                    base,
+                )
+            ):
+                return hit
+
+    # In container mode the container itself is the filesystem boundary —
+    # skip the path allowlist so agent commands can reach --container-mount
+    # directories and any other path visible to the container.
+    if _in_container():
+        return pending or Decision(ALLOW)
+
+    if hit := note(_evaluate_command_paths(check_command, base, ask_scope)):
+        return hit
+    return pending or Decision(ALLOW)
+
+
+def _evaluate_command_paths(check_command: str, base: str | None, ask_scope: frozenset) -> Decision:
+    """Check absolute paths in the command against the session jail.
+
+    On a single-tenant machine an absolute path outside the jail is the most
+    common refusal there is, and almost always a benign one — /etc, a
+    Homebrew prefix, the user's own project directory. Those become questions.
+    On a multi-tenant deployment they stay refusals: the jail is the only
+    thing separating one logged-in person's session from another's, and it is
+    not the session's to waive. approvals.ask_scope withholds "path" there, so
+    the difference is one place, not scattered through this function.
+    """
+    abs_data = base or os.path.realpath(os.path.expanduser(DATA_PATH))
+    abs_docs = os.path.realpath(os.path.expanduser(DOCUMENTS_PATH)) if DOCUMENTS_PATH else None
+
+    # Normalize for comparison (on Windows, realpath uses backslashes)
+    abs_data_lower = abs_data.lower() if IS_WINDOWS else abs_data
+    abs_docs_lower = abs_docs.lower() if (IS_WINDOWS and abs_docs) else abs_docs
+
+    granted_roots = _APPROVALS.roots_for(base) if base else frozenset()
+
+    target_env_bin = os.environ.get("ONIT_TARGET_ENV_BIN")
+    # Allow the entire env prefix (parent of bin/) so scripts can reference
+    # env_B's lib/, include/, share/, etc. with absolute paths.
+    target_env_prefix = (
+        os.path.normpath(os.path.dirname(target_env_bin)) if target_env_bin else None
+    )
+
+    def _is_allowed_path(p: str) -> bool:
+        """Check if a path is within allowed directories or is a standard tool path."""
+        norm = os.path.normpath(p)
+        if IS_WINDOWS:
+            norm_lower = norm.lower()
+            if norm_lower.startswith(abs_data_lower):
+                return True
+            if abs_docs_lower and norm_lower.startswith(abs_docs_lower):
+                return True
+        else:
+            if norm.startswith(abs_data):
+                return True
+            if abs_docs and norm.startswith(abs_docs):
+                return True
+        # Roots a person approved for this session, earlier in this run.
+        for root in granted_roots:
+            if norm == root or norm.startswith(root.rstrip(os.sep) + os.sep):
+                return True
+        # Allow the target conda env (bin/, lib/, share/, etc.)
+        if target_env_prefix and norm.startswith(target_env_prefix):
+            return True
+        # Allow standard Unix tool/device paths (check against original path
+        # since os.path.normpath on Windows converts /usr/bin to \usr\bin)
+        if p.startswith(
+            (
+                "/usr/bin/",
+                "/usr/local/bin/",
+                "/bin/",
+                "/dev/null",
+                "/dev/stdout",
+                "/dev/stderr",
+                "/dev/stdin",
+                "/dev/fd/",
+            )
+        ):
+            return True
+        return False
+
+    offenders: list = []
+
+    def _collect(raw: str) -> None:
+        path = os.path.normpath(raw)
+        # The subject is the directory, not the file: approving one file of a
+        # project and then being asked again about the next one beside it is
+        # a prompt nobody reads by the third time.
+        root = path if os.path.isdir(path) else os.path.dirname(path) or path
+        if (path, root) not in offenders:
+            offenders.append((path, root))
+
+    # Match Unix-style absolute paths (/...)
+    for match in re.finditer(r'(?:^|(?<=\s)|(?<=[;|&><]))(/[^\s;|&><"\'`\)]+)', check_command):
+        if not _is_allowed_path(match.group(1)):
+            _collect(match.group(1))
+
+    # Match Windows-style absolute paths (C:\... or C:/...)
+    if IS_WINDOWS:
+        for match in re.finditer(
+            r'(?:^|(?<=\s)|(?<=["]))([A-Za-z]:[/\\][^\s;|&><"\'`\)]*)', check_command
+        ):
+            if not _is_allowed_path(match.group(1)):
+                _collect(match.group(1))
+
+    if not offenders:
+        return Decision(ALLOW)
+
+    # Every path in one question. A command commonly names two or three —
+    # `ls ~/project; cat ~/notes` — and approving them one at a time means the
+    # user answers, watches the command fail, and answers again.
+    names = ", ".join(f"'{p}'" for p, _ in offenders)
+    reason = (
+        f"Command blocked: references path {names} outside allowed "
+        f"directories. Commands must operate within DATA_PATH ({abs_data})"
+        + (f" or DOCUMENTS_PATH ({abs_docs})" if abs_docs else "")
+        + "."
+    )
+    subjects = tuple(dict.fromkeys(f"path:{root}" for _, root in offenders))
+    return _ask_unless_granted(reason, subjects, "path", ask_scope, base)
+
+
+def _gate_command(
+    command: str, base: str | None, approval_token: str = "", approval_scope: str = _SCOPE_ONCE
+) -> str | None:
+    """Run one command past the policy. Returns a tool result, or None to run.
+
+    Three answers, and each is a different kind of turn for the model:
+
+    * ``None`` — go ahead.
+    * a ``needs_approval`` payload — the call did not run and a person is
+      being asked. The harness handles this one; the model only ever sees the
+      outcome, which is why the payload does not tell it to retry.
+    * a refusal — the call did not run and will not. It carries guidance to
+      stop rather than to rephrase.
+
+    ``approval_token`` is minted by this server and re-issued by the harness,
+    which overwrites the argument on every call, so a value the model made up
+    never arrives here. Redeeming one does not skip the checks: the command is
+    evaluated again with the approved subjects held in place, so a rule that
+    changed since the ticket was minted still applies.
+    """
+    if approval_token and base and approval_scope == _SCOPE_DENY:
+        # The person said no. Recorded so the same command coming back is a
+        # refusal rather than a second prompt — and so that coming back is
+        # itself the signal auto-containment watches for.
+        _APPROVALS.refuse(approval_token, command, base)
+        return _refusal(
+            Decision(
+                DENY, "Command blocked: the user was asked to approve this command and declined it."
+            ),
+            command,
+        )
+
+    if base and _APPROVALS.was_refused(command, base):
+        decision = Decision(
+            DENY,
+            "Command blocked: a person was asked about this exact command "
+            "earlier in this session and declined it.",
+            severity=CRITICAL,
+        )
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    scope = _ask_scope()
+    if approval_token and base and _APPROVALS.redeem(approval_token, command, base, approval_scope):
+        pending = _pending_subjects_of(command, base, scope)
+        with _APPROVALS.transient(base, pending):
+            decision = _evaluate_bash_command(command, base=base, ask_scope=scope)
+        if decision.allowed:
+            return None
+        if decision.needs_human:
+            # Should not happen: the question carries every subject in the
+            # command, and all of them were just granted. If it ever does,
+            # ask again rather than refuse — the user said yes, and answering
+            # a second question is a better outcome than being told no right
+            # after saying yes.
+            logger.warning("approved command still needs approval: %s", decision.reason)
+            return json.dumps(_APPROVALS.request(command, base, decision.subjects, decision.reason))
+        # Approved for one thing, refused for another: the refusal wins, and
+        # the model is told why rather than being asked a second question.
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    decision = _evaluate_bash_command(command, base=base, ask_scope=scope)
+    if decision.allowed:
+        return None
+    if decision.needs_human and base:
+        return json.dumps(_APPROVALS.request(command, base, decision.subjects, decision.reason))
+    _record_violation(decision, command, base)
+    return _refusal(decision, command)
+
+
+def _gate_serve_command(
+    command: str, base: str | None, approval_token: str = "", approval_scope: str = _SCOPE_ONCE
+) -> str | None:
+    """The gate for ``serve start``: rules and allowlist, but not the path jail.
+
+    Background servers legitimately live outside DATA_PATH, which is why the
+    path check is skipped here — it always was. Everything else, approvals
+    included, is the same policy the foreground tool applies.
+    """
+    check = _strip_heredoc_bodies(command)
+    if approval_token and base and approval_scope == _SCOPE_DENY:
+        # The person said no. Recorded so the same command coming back is a
+        # refusal rather than a second prompt — and so that coming back is
+        # itself the signal auto-containment watches for.
+        _APPROVALS.refuse(approval_token, command, base)
+        return _refusal(
+            Decision(
+                DENY, "Command blocked: the user was asked to approve this command and declined it."
+            ),
+            command,
+        )
+
+    if base and _APPROVALS.was_refused(command, base):
+        decision = Decision(
+            DENY,
+            "Command blocked: a person was asked about this exact command "
+            "earlier in this session and declined it.",
+            severity=CRITICAL,
+        )
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    ask_scope = _ask_scope()
+
+    def evaluate() -> Decision:
+        decision = _evaluate_permission_rules(check, ask_scope, base)
+        if not decision.allowed:
+            return decision
+        if _allowlist_enforced() and not _in_unrestricted():
+            return _evaluate_command_allowlist(check, base, ask_scope)
+        return Decision(ALLOW)
+
+    if approval_token and base and _APPROVALS.redeem(approval_token, command, base, approval_scope):
+        first = evaluate()
+        subjects = first.subjects if first.needs_human else ()
+        with _APPROVALS.transient(base, subjects):
+            decision = evaluate()
+        if decision.allowed:
+            return None
+        _record_violation(decision, command, base)
+        return _refusal(decision, command)
+
+    decision = evaluate()
+    if decision.allowed:
+        return None
+    if decision.needs_human and base:
+        return json.dumps(_APPROVALS.request(command, base, decision.subjects, decision.reason))
+    _record_violation(decision, command, base)
+    return _refusal(decision, command)
+
+
+def _pending_subjects_of(command: str, base: str | None, ask_scope: frozenset) -> tuple:
+    """What the ticket for ``command`` was about, recomputed at redemption.
+
+    The subjects are not taken from the request the client echoes back: they
+    are derived again from the command itself, so the set held in place
+    during re-evaluation is the policy's own answer and not something a
+    caller supplied.
+    """
+    decision = _evaluate_bash_command(command, base=base, ask_scope=ask_scope)
+    return decision.subjects if decision.needs_human else ()
+
+
+def _validate_bash_command(command: str, base: str | None = None) -> str | None:
+    """String form of :func:`_evaluate_bash_command` with no human to ask.
+
+    Every ask collapses to the refusal it would have been before approvals
+    existed, which is what callers with no approval channel — and the tests
+    that pin the fail-closed behaviour — depend on.
+    """
+    decision = _evaluate_bash_command(command, base=base)
+    return None if decision.allowed else decision.reason
+
+
+# =============================================================================
+# TOOL 1: RUN COMMAND
+# =============================================================================
+
+
+@mcp.tool(
+    title="Run Shell Command",
+    description="""Execute a bash/shell command. Captures stdout, stderr, and return code.
+
+Args:
+- command: Shell command to run (e.g., "ls -la", "python script.py", "grep -r 'TODO' .")
+- cwd: FULL absolute path to working directory — never relative.
+- timeout: Max seconds to wait (300 is the hard ceiling)
+- data_path: Session working directory — set automatically by the harness; leave unset.
+
+Returns JSON: {stdout, stderr, returncode, cwd, command, status}
+
+Every path the command names must resolve inside that working directory — the
+check covers reads and traversal, not just writes. Root searches at the working
+directory, never at `/` or `$HOME`.
+
+A command needing a person's approval returns {status: "needs_approval"} and does
+NOT run. The harness handles that exchange and returns either the command's
+output or a refusal — do not re-issue the call yourself.
+
+For work that may take longer than 300 seconds — installs, builds, full test
+suites, training runs — use the serve tool instead. Servers and daemons
+likewise belong in serve.""",
+)
+async def bash(
+    command: Optional[str] = None,
+    cwd: str = ".",
+    timeout: int = DEFAULT_TIMEOUT,
+    data_path: str = "",
+    # Not described in the tool's Args list above, deliberately: the harness
+    # fills these in, and a model told the parameters exist will try them —
+    # spending a turn on a value that every dispatch path strips before the
+    # call leaves. The server still accepts them, which is what lets the
+    # harness re-issue an approved call.
+    approval_token: str = "",
+    approval_scope: str = _SCOPE_ONCE,
+    ctx: Context = None,
+) -> str:
+    if err := _validate_required(command=command):
+        return err
+    try:
+        base = _session_base(data_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e), "command": command, "status": "error"})
+    if _is_contained(base):
+        return _containment_error(command, base)
+    try:
+        # Allow, ask a person, or refuse (see _gate_command).
+        if gated := _gate_command(command, base, approval_token, approval_scope):
+            return gated
+
+        # Validate and normalize working directory
+        # Default to the session jail root when cwd is "." (default) to avoid
+        # rejecting commands when process cwd is outside allowed dirs
+        if cwd == ".":
+            cwd = base
+        work_dir = os.path.abspath(os.path.expanduser(cwd))
+        try:
+            work_dir = _validate_dir_path(work_dir, base=base)
+        except ValueError as e:
+            return json.dumps({"error": str(e), "command": command, "status": "error"})
+        if not os.path.isdir(work_dir):
+            return json.dumps(
+                {"error": f"Working directory does not exist: {work_dir}", "command": command}
+            )
+
+        # Cap timeout at 5 minutes
+        timeout = min(timeout, 300)
+
+        # Execute command with streaming output via ctx.log()
+        result = await _exec_shell_streaming(command, work_dir, timeout, ctx=ctx, base=base)
+
+        stdout = _truncate_output(result["stdout"])
+        stderr = result["stderr"]
+        returncode = result["returncode"]
+
+        if result.get("timeout"):
+            return json.dumps(
+                {
+                    "error": f"Command timed out after {timeout} seconds",
+                    "stdout": stdout if stdout else None,
+                    "stderr": stderr if stderr else None,
+                    "command": command,
+                    "cwd": work_dir,
+                    "status": "timeout",
+                }
+            )
+
+        # Provide helpful message for empty output
+        if not stdout and not stderr and returncode == 0:
+            stdout = "Command completed successfully (no output)"
+
+        # Container-only hint, shown only when it can help: a missing ML
+        # package inside ONIT_CONTAINER is fixed by onit-install-ml.  Kept out
+        # of the tool description so it is not re-sent on every request.
+        if (
+            os.environ.get("ONIT_CONTAINER") == "1"
+            and returncode != 0
+            and re.search(r"ModuleNotFoundError|No module named|ImportError", stderr or "")
+        ):
+            stdout = (stdout or "") + (
+                "\n[Hint] Container mode: heavy ML packages (torch, transformers, "
+                "accelerate, datasets, tokenizers, safetensors, hf_transfer, einops, "
+                "phonemizer) are not preinstalled. Install with "
+                "`onit-install-ml [torch|hf|extras|all]` — picks CUDA vs CPU wheels "
+                "automatically and writes to the persistent data volume."
+            )
+
+        return json.dumps(
+            {
+                "stdout": stdout,
+                "stderr": stderr if stderr else None,
+                "returncode": returncode,
+                "cwd": work_dir,
+                "command": command,
+                "status": "success" if returncode == 0 else "failed",
+            }
+        )
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "command": command, "status": "error"})
+
+
+# =============================================================================
+# TOOL 2: READ FILE
+# =============================================================================
+
+
+@mcp.tool(
+    title="Read File",
+    description=READ_FILE_DESCRIPTION,
+)
+def read_file(
+    path: Optional[str] = None,
+    mode: str = "text",
+    encoding: str = "utf-8",
+    max_chars: int = 100000,
+    table_index: Optional[int] = None,
+    output_format: str = "json",
+    output_dir: str = "",
+    min_size: int = 100,
+    data_path: str = "",
+) -> str:
+    """Read a file, or extract tables or images from it.
+
+    Registered identically by the consolidated Tools server — same signature,
+    same description, same routing — so the two are replicas of one tool
+    rather than two tools sharing a name.  See ToolRegistry.register.
+    """
+    base = _session_base(data_path)
+    return read_file_impl(
+        path=path,
+        mode=mode,
+        encoding=encoding,
+        max_chars=max_chars,
+        table_index=table_index,
+        output_format=output_format,
+        output_dir=output_dir,
+        min_size=min_size,
+        read_text=lambda **kw: _read_file_text(data_path=data_path, **kw),
+        extract_tables=lambda **kw: extract_tables(data_path=data_path, **kw),
+        extract_images=lambda **kw: extract_pdf_images_impl(
+            **kw,
+            validate_read_path=lambda p: _validate_read_path(p, base=base),
+            validate_write_path=lambda p: _validate_write_path(p, base=base),
+            default_output_dir=os.path.join(base, "pdf_images"),
+        ),
+    )
+
+
+def _read_file_text(
+    path: Optional[str] = None,
+    encoding: str = "utf-8",
+    max_chars: int = 100000,
+    data_path: str = "",
+) -> str:
+    """Text/PDF/binary reading — the "text" mode of read_file above.
+
+    Not a tool in its own right: it is one branch of read_file, and
+    registering it separately is what produced two tools with the same name
+    and different parameters in the first place.
+    """
+    if err := _validate_required(path=path):
+        return err
+    try:
+        # Validate path is within allowed directories
+        # (relative paths are resolved against the session jail root)
+        file_path = _validate_read_path(path, base=_session_base(data_path))
+
+        # Check if file exists
+        if not os.path.isfile(file_path):
+            return json.dumps({"error": f"File not found: {file_path}", "path": path})
+
+        # Get file info
+        file_size = os.path.getsize(file_path)
+        file_ext = Path(file_path).suffix.lower()
+
+        # Handle binary files (return description only)
+        if file_ext in BINARY_EXTENSIONS:
+            return _read_binary(file_path, file_size, file_ext)
+
+        # Handle PDF files
+        if file_ext == ".pdf":
+            return _read_pdf(file_path, file_size, max_chars)
+
+        # Handle text files
+        return _read_text(file_path, file_size, file_ext, encoding, max_chars)
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "path": path})
+
+
+def _read_binary(file_path: str, file_size: int, file_ext: str) -> str:
+    """Return metadata for binary files without reading content."""
+    # Categorize binary file types
+    type_map = {
+        # Images
+        ".jpg": "image",
+        ".jpeg": "image",
+        ".png": "image",
+        ".gif": "image",
+        ".bmp": "image",
+        ".webp": "image",
+        ".ico": "image",
+        ".tiff": "image",
+        ".tif": "image",
+        ".svg": "image",
+        # Audio
+        ".mp3": "audio",
+        ".wav": "audio",
+        ".ogg": "audio",
+        ".flac": "audio",
+        ".aac": "audio",
+        ".m4a": "audio",
+        ".wma": "audio",
+        # Video
+        ".mp4": "video",
+        ".avi": "video",
+        ".mov": "video",
+        ".mkv": "video",
+        ".wmv": "video",
+        ".flv": "video",
+        ".webm": "video",
+        # Archives
+        ".zip": "archive",
+        ".tar": "archive",
+        ".gz": "archive",
+        ".rar": "archive",
+        ".7z": "archive",
+        ".bz2": "archive",
+        # Executables
+        ".exe": "executable",
+        ".dll": "library",
+        ".so": "library",
+        ".dylib": "library",
+        ".bin": "binary",
+        ".o": "object",
+        ".a": "archive",
+        # Documents
+        ".doc": "document",
+        ".docx": "document",
+        ".xls": "spreadsheet",
+        ".xlsx": "spreadsheet",
+        ".ppt": "presentation",
+        ".pptx": "presentation",
+        # Other
+        ".pyc": "bytecode",
+        ".class": "bytecode",
+        ".wasm": "bytecode",
+        ".ttf": "font",
+        ".otf": "font",
+        ".woff": "font",
+        ".woff2": "font",
+    }
+
+    file_type = type_map.get(file_ext, "binary")
+    file_name = os.path.basename(file_path)
+
+    return json.dumps(
+        {
+            "path": file_path,
+            "filename": file_name,
+            "size_bytes": file_size,
+            "format": file_ext.lstrip("."),
+            "type": file_type,
+            "note": f"Binary file ({file_type}). Content not returned.",
+            "status": "success",
+        }
+    )
+
+
+def _read_pdf(file_path: str, file_size: int, max_chars: int) -> str:
+    """Extract text from PDF file."""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        pages = []
+        total_chars = 0
+
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text() or ""
+            if total_chars + len(text) > max_chars:
+                # Truncate this page
+                remaining = max_chars - total_chars
+                text = text[:remaining] + f"\n\n... [TRUNCATED at page {i + 1}/{len(reader.pages)}]"
+                pages.append(text)
+                break
+            pages.append(text)
+            total_chars += len(text)
+
+        content = "\n\n".join(pages)
+
+        return json.dumps(
+            {
+                "content": content,
+                "path": file_path,
+                "size_bytes": file_size,
+                "format": "pdf",
+                "pages": len(reader.pages),
+                "status": "success",
+            }
+        )
+
+    except ImportError:
+        return json.dumps(
+            {"error": "pypdf not installed. Run: pip install pypdf", "path": file_path}
+        )
+    except Exception as e:
+        return json.dumps({"error": f"Failed to read PDF: {str(e)}", "path": file_path})
+
+
+def _read_text(file_path: str, file_size: int, file_ext: str, encoding: str, max_chars: int) -> str:
+    """Read text file content."""
+    try:
+        with open(file_path, "r", encoding=encoding, errors="replace") as f:
+            content = f.read(max_chars)
+
+        truncated = file_size > max_chars
+
+        # Detect format
+        format_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".json": "json",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".md": "markdown",
+            ".html": "html",
+            ".css": "css",
+            ".xml": "xml",
+            ".txt": "text",
+            ".sh": "shell",
+            ".bash": "shell",
+            ".sql": "sql",
+            ".java": "java",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".h": "c-header",
+            ".go": "go",
+            ".rs": "rust",
+            ".rb": "ruby",
+            ".php": "php",
+        }
+        file_format = format_map.get(file_ext, "text")
+
+        result = {
+            "content": content,
+            "path": file_path,
+            "size_bytes": file_size,
+            "format": file_format,
+            "encoding": encoding,
+            "status": "success",
+        }
+
+        if truncated:
+            result["truncated"] = True
+            result["truncated_at"] = max_chars
+
+        return json.dumps(result)
+
+    except UnicodeDecodeError:
+        # Try with latin-1 as fallback
+        if encoding != "latin-1":
+            return _read_text(file_path, file_size, file_ext, "latin-1", max_chars)
+        return json.dumps(
+            {"error": f"Could not decode file with encoding: {encoding}", "path": file_path}
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e), "path": file_path})
+
+
+# =============================================================================
+# TOOL 3: WRITE FILE
+# =============================================================================
+
+
+@mcp.tool(
+    title="Write File",
+    description="""Write content to a file. Creates directories if needed.
+Files are created within the working directory with owner-only access.
+
+Args:
+- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/output.txt"). Always use the complete working directory path from your system prompt - never use relative paths.
+- content: Text content to write (required)
+- mode: "write" (overwrite) or "append" (add to end)
+- encoding: Text encoding
+- data_path: Session working directory — set automatically by the harness; leave unset.
+
+Returns JSON: {path, size_bytes, mode, status}""",
+)
+def write_file(
+    path: Optional[str] = None,
+    content: Optional[str] = None,
+    mode: str = "write",
+    encoding: str = "utf-8",
+    data_path: str = "",
+) -> str:
+    if err := _validate_required(path=path, content=content):
+        return err
+    try:
+        base = _session_base(data_path)
+        if _is_contained(base):
+            return _containment_error(base=base)
+        file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
+
+        # Create directory with owner-only permissions
+        _secure_makedirs(os.path.dirname(file_path))
+
+        # Determine file mode
+        file_mode = "a" if mode == "append" else "w"
+
+        # Write content
+        fd = os.open(
+            file_path,
+            os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "append" else os.O_TRUNC),
+            0o600,
+        )
+        with os.fdopen(fd, file_mode, encoding=encoding) as f:
+            f.write(content)
+
+        # Get final file size
+        file_size = os.path.getsize(file_path)
+
+        return json.dumps(
+            {
+                "path": file_path,
+                "size_bytes": file_size,
+                "mode": mode,
+                "encoding": encoding,
+                "status": "success",
+            }
+        )
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "path": path, "status": "failed"})
+
+
+def _normalize_to_data_path(path: str, base: str | None = None) -> str:
+    """Resolve path into the jail root (the per-session ``base`` when given,
+    else DATA_PATH): relative paths are placed under it; absolute paths
+    outside it are re-rooted under it (strips leading separator).
+
+    In container/unrestricted mode we don't re-root — absolute paths are
+    honored as-is so the agent can reach any visible location.
+    """
+    expanded = os.path.expanduser(path)
+    abs_data = base or os.path.abspath(os.path.expanduser(DATA_PATH))
+    if _path_restrictions_relaxed():
+        if os.path.isabs(expanded):
+            return os.path.abspath(expanded)
+        return os.path.join(abs_data, expanded)
+    if not os.path.isabs(expanded) or not os.path.abspath(expanded).startswith(abs_data):
+        return os.path.join(abs_data, expanded.lstrip(os.sep))
+    return os.path.abspath(expanded)
+
+
+def _kill_process(pid: int, grace_timeout: float = 3.0) -> None:
+    """Send SIGTERM to the process group, wait up to grace_timeout seconds, then SIGKILL."""
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + grace_timeout
+    while time.monotonic() < deadline:
+        if not _process_running(pid):
+            return
+        time.sleep(0.5)
+    if _process_running(pid):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except OSError:
+            os.kill(pid, signal.SIGKILL)
+
+
+# =============================================================================
+# TOOL 3b: EDIT FILE (TARGETED STRING REPLACEMENT)
+# =============================================================================
+
+
+@mcp.tool(
+    title="Edit File",
+    description="""Edit a file by replacing an exact string with new content. The file must exist.
+Files must be within the designated data directory.
+
+Args:
+- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/main.py"). Always use the complete working directory path — never use relative paths.
+- old_string: The exact string to find and replace (must be unique in the file, or use replace_all)
+- new_string: The replacement string
+- replace_all: Replace every occurrence of old_string (default: false, replaces first occurrence only)
+- encoding: Text encoding
+- data_path: Session working directory — set automatically by the harness; leave unset.
+
+Returns JSON: {path, replacements, status}""",
+)
+def edit_file(
+    path: Optional[str] = None,
+    old_string: Optional[str] = None,
+    new_string: Optional[str] = None,
+    replace_all: bool = False,
+    encoding: str = "utf-8",
+    data_path: str = "",
+) -> str:
+    if err := _validate_required(path=path, old_string=old_string, new_string=new_string):
+        return err
+    try:
+        base = _session_base(data_path)
+        if _is_contained(base):
+            return _containment_error(base=base)
+        file_path = _validate_write_path(_normalize_to_data_path(path, base), base=base)
+
+        if not os.path.isfile(file_path):
+            return json.dumps(
+                {"error": f"File not found: {file_path}", "path": path, "status": "error"}
+            )
+
+        with open(file_path, "r", encoding=encoding) as f:
+            content = f.read()
+
+        count = content.count(old_string)
+        if count == 0:
+            return json.dumps(
+                {"error": "old_string not found in file", "path": file_path, "status": "error"}
+            )
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            replacements = count
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+            replacements = 1
+
+        fd = os.open(file_path, os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(new_content)
+
+        return json.dumps({"path": file_path, "replacements": replacements, "status": "success"})
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "path": path, "status": "error"})
+
+
+# =============================================================================
+# TOOL 3c: SERVE — BACKGROUND PROCESS MANAGER FOR WEB SERVERS
+# =============================================================================
+
+_SERVE_REGISTRY_FILE = "serve_registry.json"
+
+
+def _serve_registry_path(base: str | None = None) -> str:
+    # The registry lives in the session jail root so one session cannot see
+    # or stop another session's processes.
+    root = base or os.path.abspath(os.path.expanduser(DATA_PATH))
+    return os.path.join(root, _SERVE_REGISTRY_FILE)
+
+
+def _load_serve_registry(base: str | None = None) -> dict:
+    path = _serve_registry_path(base)
+    if os.path.isfile(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_serve_registry(registry: dict, base: str | None = None):
+    path = _serve_registry_path(base)
+    _secure_makedirs(os.path.dirname(path))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(registry, f, indent=2)
+
+
+def _process_running(pid: int) -> bool:
+    """Return True only if the process exists and is not a zombie."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    # On Unix, check /proc/<pid>/status for zombie state (Linux)
+    # On macOS, use ps to detect zombie
+    try:
+        status_path = f"/proc/{pid}/status"
+        if os.path.isfile(status_path):
+            with open(status_path) as f:
+                for line in f:
+                    if line.startswith("State:") and "Z" in line:
+                        return False
+            return True
+    except Exception:
+        pass
+    # macOS fallback: check via ps
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=2
+        )
+        stat = result.stdout.strip()
+        return bool(stat) and "Z" not in stat
+    except Exception:
+        return True
+
+
+def _tail_file(path: str, lines: int, max_chars: int = 8000) -> str:
+    """Return last `lines` lines of a file without loading it all into memory.
+
+    max_chars bounds the tail as well: a process that logs a stack trace or a
+    progress bar every 50ms produces very long lines, and `lines` alone does
+    not bound the bytes.  8k chars ≈ 2k tokens is enough to see what a process
+    is doing; the log file itself stays on disk for a targeted read."""
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return ""
+            buf = b""
+            pos = size
+            chunk_size = 8192
+            newlines_found = 0
+            while pos > 0 and newlines_found <= lines:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                buf = chunk + buf
+                newlines_found += chunk.count(b"\n")
+                if len(buf) >= max_chars * 2:
+                    # Enough buffer to cover the requested line count even
+                    # with long lines; the final slice below applies the cap.
+                    break
+        text = b"\n".join(buf.split(b"\n")[-(lines + 1) :]).decode("utf-8", errors="replace")
+        if len(text) > max_chars:
+            text = ("... [older log lines omitted — full log at " + str(path) + "]\n") + text[
+                -max_chars:
+            ]
+        return text
+    except Exception:
+        return ""
+
+
+@mcp.tool(title="Serve", description=SERVE_DESCRIPTION)
+def serve(
+    action: Optional[str] = None,
+    command: Optional[str] = None,
+    name: Optional[str] = None,
+    pid: Optional[int] = None,
+    cwd: Optional[str] = None,
+    lines: int = 50,
+    data_path: str = "",
+    approval_token: str = "",
+    approval_scope: str = _SCOPE_ONCE,
+) -> str:
+    if err := _validate_required(action=action):
+        return err
+
+    try:
+        base = _session_base(data_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e), "status": "error"})
+
+    action = action.lower().strip()
+
+    # ── START ──────────────────────────────────────────────────────────
+    if action == "start":
+        if err := _validate_required(command=command):
+            return err
+        if _is_contained(base):
+            return _containment_error(command, base)
+
+        # serve skips the path-based bash validation by design (servers live
+        # outside DATA_PATH), but user-configured permission rules and the
+        # AST command allowlist still apply so serve cannot bypass them —
+        # including the approval path, so that a long-running job is not the
+        # way around a prompt a foreground command would have raised.
+        if gated := _gate_serve_command(command, base, approval_token, approval_scope):
+            return gated
+
+        registry = _load_serve_registry(base)
+
+        # Auto-generate name from command if not provided
+        if not name:
+            cmd_word = command.split()[0].split("/")[-1]
+            name = f"{cmd_word}-{int(time.time())}"
+
+        # Reject if already running
+        if name in registry and _process_running(registry[name]["pid"]):
+            entry = registry[name]
+            return json.dumps(
+                {
+                    "error": f"Process '{name}' is already running (pid {entry['pid']}). "
+                    "Use action='stop' first or choose a different name.",
+                    "name": name,
+                    "pid": entry["pid"],
+                    "status": "already_running",
+                }
+            )
+
+        # Resolve cwd — allow any accessible directory (servers live outside DATA_PATH)
+        work_dir = os.path.abspath(os.path.expanduser(cwd)) if cwd else base
+        if not os.path.isdir(work_dir):
+            return json.dumps(
+                {"error": f"Working directory not found: {work_dir}", "status": "error"}
+            )
+
+        # Create log directory under the session jail root
+        log_dir = os.path.join(base, "serve_logs", name)
+        _secure_makedirs(log_dir)
+        stdout_log = os.path.join(log_dir, "stdout.log")
+        stderr_log = os.path.join(log_dir, "stderr.log")
+
+        try:
+            with open(stdout_log, "w") as out, open(stderr_log, "w") as err_f:
+                proc = subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=work_dir,
+                    stdout=out,
+                    stderr=err_f,
+                    start_new_session=True,  # detach from MCP server session
+                )
+
+            # Brief pause to catch immediate startup failures
+            time.sleep(0.5)
+            if not _process_running(proc.pid):
+                err_tail = _tail_file(stderr_log, 20)
+                return json.dumps(
+                    {
+                        "error": "Process exited immediately after launch.",
+                        "stderr": err_tail,
+                        "name": name,
+                        "status": "failed",
+                    }
+                )
+
+            registry[name] = {
+                "pid": proc.pid,
+                "command": command,
+                "cwd": work_dir,
+                "started_at": datetime.now().isoformat(),
+                "stdout_log": stdout_log,
+                "stderr_log": stderr_log,
+            }
+            _save_serve_registry(registry, base)
+
+            return json.dumps(
+                {
+                    "name": name,
+                    "pid": proc.pid,
+                    "command": command,
+                    "cwd": work_dir,
+                    "stdout_log": stdout_log,
+                    "stderr_log": stderr_log,
+                    "status": "started",
+                }
+            )
+
+        except Exception as e:
+            return json.dumps({"error": str(e), "name": name, "status": "error"})
+
+    # ── STOP ───────────────────────────────────────────────────────────
+    elif action == "stop":
+        registry = _load_serve_registry(base)
+        entry = None
+
+        if name and name in registry:
+            entry = registry[name]
+        elif pid is not None:
+            entry = next((e for e in registry.values() if e["pid"] == pid), None)
+            name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
+
+        if not entry:
+            return json.dumps(
+                {
+                    "error": f"No managed process found for name='{name}' / pid={pid}.",
+                    "status": "error",
+                }
+            )
+
+        target_pid = entry["pid"]
+        if not _process_running(target_pid):
+            return json.dumps({"name": name, "pid": target_pid, "status": "already_stopped"})
+
+        try:
+            _kill_process(target_pid)
+        except Exception as e:
+            if _process_running(target_pid):
+                return json.dumps(
+                    {"error": str(e), "name": name, "pid": target_pid, "status": "error"}
+                )
+
+        # The stopped process may have been launched with a git askpass env:
+        # drop its token file so the secret does not outlive the process.
+        _cleanup_askpass(entry.get("cwd") or tempfile.gettempdir())
+        _cleanup_askpass(tempfile.gettempdir())
+
+        return json.dumps({"name": name, "pid": target_pid, "status": "stopped"})
+
+    # ── STATUS ─────────────────────────────────────────────────────────
+    elif action == "status":
+        registry = _load_serve_registry(base)
+        entry = None
+
+        if name and name in registry:
+            entry = registry[name]
+        elif pid is not None:
+            entry = next((e for e in registry.values() if e["pid"] == pid), None)
+            name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
+
+        if not entry:
+            return json.dumps(
+                {
+                    "error": f"No managed process found for name='{name}' / pid={pid}.",
+                    "status": "error",
+                }
+            )
+
+        running = _process_running(entry["pid"])
+        return json.dumps(
+            {
+                "name": name,
+                "pid": entry["pid"],
+                "command": entry["command"],
+                "cwd": entry["cwd"],
+                "started_at": entry["started_at"],
+                "stdout_log": entry["stdout_log"],
+                "stderr_log": entry["stderr_log"],
+                "status": "running" if running else "stopped",
+            }
+        )
+
+    # ── LOGS ───────────────────────────────────────────────────────────
+    elif action == "logs":
+        registry = _load_serve_registry(base)
+        entry = None
+
+        if name and name in registry:
+            entry = registry[name]
+        elif pid is not None:
+            entry = next((e for e in registry.values() if e["pid"] == pid), None)
+            name = next((n for n, e in registry.items() if e["pid"] == pid), str(pid))
+
+        if not entry:
+            return json.dumps(
+                {
+                    "error": f"No managed process found for name='{name}' / pid={pid}.",
+                    "status": "error",
+                }
+            )
+
+        stdout_tail = _tail_file(entry["stdout_log"], lines)
+        stderr_tail = _tail_file(entry["stderr_log"], lines)
+        running = _process_running(entry["pid"])
+
+        return json.dumps(
+            {
+                "name": name,
+                "pid": entry["pid"],
+                "status": "running" if running else "stopped",
+                "stdout": stdout_tail or "(empty)",
+                "stderr": stderr_tail or "(empty)",
+            }
+        )
+
+    # ── LIST ───────────────────────────────────────────────────────────
+    elif action == "list":
+        registry = _load_serve_registry(base)
+        if not registry:
+            return json.dumps({"processes": [], "total": 0, "status": "ok"})
+
+        processes = []
+        dirty = False
+        for n, entry in list(registry.items()):
+            running = _process_running(entry["pid"])
+            processes.append(
+                {
+                    "name": n,
+                    "pid": entry["pid"],
+                    "command": entry["command"],
+                    "cwd": entry["cwd"],
+                    "started_at": entry["started_at"],
+                    "status": "running" if running else "stopped",
+                }
+            )
+            if not running:
+                del registry[n]
+                dirty = True
+
+        if dirty:
+            _save_serve_registry(registry, base)
+
+        return json.dumps({"processes": processes, "total": len(processes), "status": "ok"})
+
+    # ── RESTART ────────────────────────────────────────────────────────
+    elif action == "restart":
+        registry = _load_serve_registry(base)
+
+        if not name:
+            return json.dumps({"error": "name is required for restart.", "status": "error"})
+        if name not in registry:
+            return json.dumps({"error": f"No managed process named '{name}'.", "status": "error"})
+
+        entry = registry[name]
+        saved_command = entry["command"]
+        saved_cwd = entry["cwd"]
+
+        # Stop if running
+        target_pid = entry["pid"]
+        if _process_running(target_pid):
+            try:
+                _kill_process(target_pid)
+            except Exception:
+                pass
+
+        # Re-start with saved command and cwd (override allowed via args)
+        # start checks _process_running before re-using the name, so no pre-removal needed
+        return serve(
+            action="start",
+            command=command or saved_command,
+            name=name,
+            cwd=cwd or saved_cwd,
+            lines=lines,
+            data_path=data_path,
+        )
+
+    else:
+        return json.dumps(
+            {
+                "error": f"Unknown action '{action}'. Use: start, stop, status, logs, list, restart.",
+                "status": "error",
+            }
+        )
+
+
+# =============================================================================
+# TOOL 4: SEND FILE TO REMOTE CLIENT
+# =============================================================================
+
+MAX_BASE64_SIZE = 10 * 1024 * 1024  # 10MB limit for base64 transfer
+
+
+@mcp.tool(
+    title="Send File",
+    description="""Send a file from this host to a remote client.
+
+If callback_url is provided, uploads the file via HTTP POST and returns the download URL.
+Otherwise, returns the file content as base64-encoded data (max 10MB).
+
+Args:
+- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/file.pdf"). Always use the complete working directory path - never use relative paths. (required)
+- callback_url: Full upload URL prefix (e.g., "http://host:9000/uploads/session_id"). File is POSTed to {callback_url}/ (optional)
+- data_path: Session working directory — set automatically by the harness; leave unset.
+
+Returns JSON: {path, filename, size_bytes, download_url, status} or {path, filename, size_bytes, file_data_base64, status}""",
+)
+def send_file(
+    path: Optional[str] = None,
+    callback_url: Optional[str] = None,
+    data_path: str = "",
+) -> str:
+    if err := _validate_required(path=path):
+        return err
+    try:
+        base = _session_base(data_path)
+        if _is_contained(base):
+            return _containment_error(base=base)
+        # Validate path is within allowed directories
+        # (relative paths are resolved against the session jail root)
+        file_path = _validate_read_path(path, base=base)
+
+        if not os.path.isfile(file_path):
+            return json.dumps({"error": f"File not found: {file_path}", "path": path})
+
+        file_size = os.path.getsize(file_path)
+        filename = os.path.basename(file_path)
+
+        if callback_url:
+            # Destination restriction: uploads go to the configured file
+            # server only. Anything else is a model-supplied destination —
+            # refusing it closes the exfiltration path where an injected
+            # instruction in a read document asks for a session file to be
+            # POSTed to an attacker URL. The SSRF screen (public-host check)
+            # runs as defense in depth on the allowed host too.
+            allowed = (FILE_SERVER_URL or "").rstrip("/")
+            cb = callback_url.rstrip("/")
+            if not allowed or not (cb == allowed or cb.startswith(allowed + "/")):
+                return json.dumps(
+                    {
+                        "error": (
+                            "callback_url refused: uploads are restricted to the "
+                            f"configured file server ({allowed or 'none configured'}). "
+                            "Pass the callback_url given in the Files section of "
+                            "your instructions, or omit callback_url to receive "
+                            "the file as base64."
+                        ),
+                        "path": file_path,
+                        "filename": filename,
+                        "status": "refused",
+                    }
+                )
+            try:
+                assert_public_url(cb)
+            except ValueError as e:
+                return json.dumps(
+                    {
+                        "error": f"callback_url refused: {e}",
+                        "path": file_path,
+                        "filename": filename,
+                        "status": "refused",
+                    }
+                )
+            # Upload to remote server
+            try:
+                with open(file_path, "rb") as f:
+                    files = {"file": (filename, f)}
+                    resp = safe_fetch("POST", f"{cb}/", timeout=60, files=files)
+                    resp.raise_for_status()
+                return json.dumps(
+                    {
+                        "path": file_path,
+                        "filename": filename,
+                        "size_bytes": file_size,
+                        "download_url": f"{cb}/{filename}",
+                        "status": "uploaded",
+                    }
+                )
+            except Exception as e:
+                return json.dumps(
+                    {
+                        "error": f"Upload failed: {str(e)}",
+                        "path": file_path,
+                        "filename": filename,
+                        "status": "failed",
+                    }
+                )
+
+        # No callback_url — return base64 content
+        if file_size > MAX_BASE64_SIZE:
+            return json.dumps(
+                {
+                    "error": f"File too large for base64 transfer ({file_size} bytes, max {MAX_BASE64_SIZE}). Provide a callback_url instead.",
+                    "path": file_path,
+                    "filename": filename,
+                    "size_bytes": file_size,
+                    "status": "failed",
+                }
+            )
+
+        with open(file_path, "rb") as f:
+            content = base64.b64encode(f.read()).decode("ascii")
+
+        return json.dumps(
+            {
+                "path": file_path,
+                "filename": filename,
+                "size_bytes": file_size,
+                "file_data_base64": content,
+                "status": "success",
+            }
+        )
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "path": path, "status": "failed"})
+
+
+# =============================================================================
+# DOCUMENT SEARCH HELPERS
+# =============================================================================
+
+MAX_CONTEXT_LINES = 5
+
+
+def _run_command(
+    command: str, cwd: str = ".", timeout: int = 60, base: str | None = None
+) -> Dict[str, Any]:
+    """Execute a shell command and return results."""
+    try:
+        work_dir = os.path.abspath(os.path.expanduser(cwd))
+        if not os.path.isdir(work_dir):
+            return {"error": f"Directory does not exist: {work_dir}", "status": "error"}
+
+        result = _exec_shell(command, work_dir, timeout, base=base)
+
+        return {
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode,
+            "status": "success" if result.returncode == 0 else "failed",
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": f"Command timed out after {timeout} seconds", "status": "timeout"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+# =============================================================================
+# TOOL 5: SEARCH DOCUMENT
+# =============================================================================
+
+
+@mcp.tool(
+    title="Search Document",
+    description=SEARCH_DOCUMENT_DESCRIPTION,
+)
+def search_document(
+    path: Optional[str] = None,
+    mode: str = "pattern",
+    pattern: Optional[str] = None,
+    query: Optional[str] = None,
+    keywords: Optional[str] = None,
+    case_sensitive: bool = False,
+    context_lines: int = 3,
+    max_matches: int = 50,
+    context_chars: int = 500,
+    max_sections: int = 5,
+    data_path: str = "",
+) -> str:
+    """Regex or keyword search within one document.
+
+    This used to take only the regex parameters, while the consolidated Tools
+    server registered a `search_document` that also took `query`,
+    `context_chars` and `max_sections`.  The description here had grown three
+    "Do NOT use 'query'" warnings to cope — a prompt-level patch for a model
+    that had been shown both tools under one name and could not tell which it
+    would get.  Both now accept all of them, so the warnings are gone with the
+    condition that caused them.
+    """
+    base = _session_base(data_path)
+    _validate = lambda p: _validate_read_path(p, base=base)
+    return search_document_dispatch_impl(
+        path=path,
+        mode=mode,
+        pattern=pattern,
+        query=query,
+        keywords=keywords,
+        case_sensitive=case_sensitive,
+        context_lines=context_lines,
+        max_matches=max_matches,
+        context_chars=context_chars,
+        max_sections=max_sections,
+        search_pattern=lambda **kw: search_document_impl(**kw, validate_read_path=_validate),
+        search_context=lambda **kw: get_document_context_impl(**kw, validate_read_path=_validate),
+    )
+
+
+# =============================================================================
+# TOOL 6: SEARCH DIRECTORY
+# =============================================================================
+
+
+@mcp.tool(
+    title="Search Directory",
+    description="""Search for patterns across files in a directory using grep.
+Recursively searches text files matching the file pattern.
+
+Args:
+- directory: FULL absolute directory path (e.g., "/tmp/onit/data/<session_id>"). Always use the complete working directory path from your system prompt — never use relative paths.
+- pattern: Search pattern (regex with -E flag)
+- file_pattern: File glob pattern (default: "*" for all files)
+- case_sensitive: Case-sensitive search
+- include_hidden: Include hidden files
+- max_results: Maximum results to return
+
+Returns JSON: {results, total_files, total_matches, status}
+Each result includes: {file, line_number, content}""",
+)
+def search_directory(
+    directory: Optional[str] = None,
+    pattern: Optional[str] = None,
+    file_pattern: str = "*",
+    case_sensitive: bool = False,
+    include_hidden: bool = False,
+    max_results: int = 100,
+    data_path: str = "",
+) -> str:
+    base = _session_base(data_path)
+    # Pre-resolve before validation (bash server convention)
+    resolved = os.path.abspath(os.path.expanduser(directory)) if directory else directory
+    return search_directory_impl(
+        directory=resolved,
+        pattern=pattern,
+        file_pattern=file_pattern,
+        case_sensitive=case_sensitive,
+        include_hidden=include_hidden,
+        max_results=max_results,
+        validate_dir_path=lambda p: _validate_dir_path(p, base=base),
+        run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
+    )
+
+
+# =============================================================================
+# TOOL 7: EXTRACT TABLES
+# =============================================================================
+
+
+@mcp.tool(
+    title="Extract Tables",
+    description="""Extract tables from documents. Supports PDF and markdown files.
+Tables are returned in a structured format with headers and rows.
+
+Args:
+- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/report.pdf"). Always use the complete working directory path from your system prompt — never use relative paths.
+- table_index: Specific table index to extract (1-based, default: all)
+- output_format: Output format - "json" or "markdown"
+
+Returns JSON: {tables, total_tables, file, format, status}
+Each table includes: {headers, rows, row_count, page (for PDF)}""",
+)
+def extract_tables(
+    path: Optional[str] = None,
+    table_index: Optional[int] = None,
+    output_format: str = "json",
+    data_path: str = "",
+) -> str:
+    base = _session_base(data_path)
+    return extract_tables_impl(
+        path=path,
+        table_index=table_index,
+        output_format=output_format,
+        validate_read_path=lambda p: _validate_read_path(p, base=base),
+    )
+
+
+# =============================================================================
+# TOOL 8: FIND FILES
+# =============================================================================
+
+
+@mcp.tool(
+    title="Find Files",
+    description="""Find files matching patterns using the find command.
+Searches recursively from the specified directory.
+
+Args:
+- directory: FULL absolute directory path (e.g., "/tmp/onit/data/<session_id>"). Always use the complete working directory path from your system prompt — never use relative paths.
+- name_pattern: File name pattern (glob, e.g., "*.py", "test_*")
+- file_type: Type filter - "f" (file), "d" (directory), or None (all)
+- max_depth: Maximum directory depth
+- size_filter: Size filter (e.g., "+1M", "-100k", "50k")
+- modified_days: Modified within N days (e.g., 7 for last week)
+- max_results: Maximum results
+
+Returns JSON: {files, total_files, directory, status}""",
+)
+def find_files(
+    directory: str = ".",
+    name_pattern: Optional[str] = None,
+    file_type: Optional[str] = None,
+    max_depth: Optional[int] = None,
+    size_filter: Optional[str] = None,
+    modified_days: Optional[int] = None,
+    max_results: int = 100,
+    data_path: str = "",
+) -> str:
+    base = _session_base(data_path)
+    # Default "." to the session jail root, then pre-resolve before
+    # validation (bash server convention)
+    resolved = base if directory == "." else os.path.abspath(os.path.expanduser(directory))
+    return find_files_impl(
+        directory=resolved,
+        name_pattern=name_pattern,
+        file_type=file_type,
+        max_depth=max_depth,
+        size_filter=size_filter,
+        modified_days=modified_days,
+        max_results=max_results,
+        validate_dir_path=lambda p: _validate_dir_path(p, base=base),
+        run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
+    )
+
+
+# =============================================================================
+# TOOL 9: TRANSFORM TEXT
+# =============================================================================
+
+
+@mcp.tool(
+    title="Transform Text",
+    description="""Transform text using sed, awk, or tr commands.
+Useful for extracting, replacing, or reformatting text content.
+
+Args:
+- input_text: Text to transform (or path to file if is_file=true)
+- is_file: If true, input_text is treated as a file path
+- operation: Transformation type - "sed", "awk", or "tr"
+- expression: The sed/awk/tr expression to apply
+  - sed: e.g., "s/old/new/g", "/pattern/d"
+  - awk: e.g., "{print $1}", "NR==1", "/pattern/{print}"
+  - tr: e.g., "a-z A-Z" (translate), "-d '\\n'" (delete)
+
+Returns JSON: {output, operation, expression, status}""",
+)
+def transform_text(
+    input_text: Optional[str] = None,
+    operation: Optional[str] = None,
+    expression: Optional[str] = None,
+    is_file: bool = False,
+    data_path: str = "",
+) -> str:
+    base = _session_base(data_path)
+    if _is_contained(base):
+        return _containment_error(base=base)
+
+    # Pre-resolve file path before validation (bash server convention)
+    def _bash_validate_read_path(p: str) -> str:
+        return _validate_read_path(os.path.abspath(os.path.expanduser(p)), base=base)
+
+    return transform_text_impl(
+        input_text=input_text,
+        operation=operation,
+        expression=expression,
+        is_file=is_file,
+        data_path=base,
+        validate_read_path=_bash_validate_read_path,
+        run_command=lambda *a, **kw: _run_command(*a, base=base, **kw),
+    )
+
+
+# =============================================================================
+# TOOL 10: GET DOCUMENT CONTEXT
+# =============================================================================
+
+
+@mcp.tool(
+    title="Get Document Context",
+    description="""Extract relevant context from a document for answering questions.
+Searches for keywords and returns surrounding context that can support answers.
+
+Args:
+- path: FULL absolute file path (e.g., "/tmp/onit/data/<session_id>/document.pdf"). Always use the complete working directory path — never use relative paths.
+- query: The question or topic to find context for
+- keywords: Additional keywords to search (comma-separated)
+- context_chars: Characters of context around matches
+- max_sections: Maximum context sections to return
+
+Returns JSON: {sections, query, file, status}
+Each section includes: {content, relevance_keywords, position}""",
+)
+def get_document_context(
+    path: Optional[str] = None,
+    query: Optional[str] = None,
+    keywords: Optional[str] = None,
+    context_chars: int = 500,
+    max_sections: int = 5,
+    data_path: str = "",
+) -> str:
+    base = _session_base(data_path)
+    return get_document_context_impl(
+        path=path,
+        query=query,
+        keywords=keywords,
+        context_chars=context_chars,
+        max_sections=max_sections,
+        validate_read_path=lambda p: _validate_read_path(p, base=base),
+    )
+
+
+# =============================================================================
+# SERVER ENTRY POINT
+# =============================================================================
+
+
+def run(
+    transport: str = "sse",
+    host: str = "0.0.0.0",
+    port: int = 18202,
+    path: str = "/sse",
+    options: dict = None,
+) -> None:
+    """Run the MCP server."""
+    options = options or {}
+    global \
+        DATA_PATH, \
+        DOCUMENTS_PATH, \
+        _SANDBOX_ENV, \
+        SETTINGS_PATH, \
+        _PERMISSIONS_CACHE, \
+        FILE_SERVER_URL
+
+    if "verbose" in options:
+        logger.setLevel(logging.INFO)
+    else:
+        logger.setLevel(logging.ERROR)
+
+    if "file_server_url" in options and options["file_server_url"]:
+        FILE_SERVER_URL = options["file_server_url"]
+    elif os.environ.get("ONIT_FILE_SERVER_URL"):
+        FILE_SERVER_URL = os.environ["ONIT_FILE_SERVER_URL"]
+
+    if "data_path" in options:
+        DATA_PATH = options["data_path"]
+    elif os.environ.get("ONIT_DATA_PATH"):
+        DATA_PATH = os.environ["ONIT_DATA_PATH"]
+    _secure_makedirs(os.path.abspath(os.path.expanduser(DATA_PATH)))
+
+    if "documents_path" in options:
+        DOCUMENTS_PATH = options["documents_path"]
+    elif os.environ.get("ONIT_DOCUMENTS_PATH"):
+        DOCUMENTS_PATH = os.environ["ONIT_DOCUMENTS_PATH"]
+
+    if "settings_path" in options:
+        SETTINGS_PATH = options["settings_path"]
+    _PERMISSIONS_CACHE = None
+    if os.path.isfile(_settings_path()):
+        if _settings_rules_active():
+            allow, deny, allowed_cmds = _load_permissions()
+            logger.info(
+                f"Loaded permission rules from {_settings_path()}: "
+                f"{len(allow)} allow, {len(deny)} deny, "
+                f"{len(allowed_cmds)} extra allowed commands"
+            )
+        else:
+            logger.info(
+                f"Ignoring permission rules in {_settings_path()}: "
+                "settings-file rules apply only to the web UI "
+                "(text UI runs privileged)."
+            )
+    if _is_contained():
+        logger.error(
+            f"Server is CONTAINED after prior policy violations. Command "
+            f"execution and file writes are disabled. Remove "
+            f"{_containment_marker_path()} and restart to lift containment."
+        )
+
+    # Reset sandbox env cache so it picks up new DATA_PATH/DOCUMENTS_PATH
+    _SANDBOX_ENV = None
+
+    logger.info(f"Starting Bash MCP Server at {host}:{port}{path}")
+    logger.info(f"Data path: {DATA_PATH}")
+    logger.info(
+        "10 Core Tools: bash, read_file, write_file, send_file, search_document, search_directory, extract_tables, find_files, transform_text, get_document_context"
+    )
+
+    quiet = "verbose" not in options
+    if quiet:
+        import uvicorn.config
+
+        uvicorn.config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = "WARNING"
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
+    if transport == "stdio":
+        # stdout is the protocol channel on stdio: no socket, no banner.
+        mcp.run(transport="stdio", show_banner=False)
+        return
+
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        uvicorn_config=uvicorn_config(quiet=quiet),
+    )
+
+
+if __name__ == "__main__":
+    run()

@@ -12,7 +12,7 @@ run, so every loop is *built and unproven*.  The table below marks each row; the
 detailed per-gap prose is kept for history and is now describing a past state.
 
 **Updated Oct 23 2026, after the test suite was built.**  The six deliverables now
-have a suite that holds them: **2,915 tests pass, 2 skipped**, and the `src/learn/`
+have a suite that holds them: **2,915 tests pass, 2 skipped**, and the `onit/learn/`
 package sits at **93%** line coverage (up from 88%).  Five new files check the things
 that exist only *between* the modules — the cross-cutting invariants, the signals as
 properties, the whole chain end to end, the BM25 fallback, and the skill store.  That
@@ -42,15 +42,15 @@ makes the agent better.  See §5.1 of the RFC.
 
 **Updated Aug 31 2026** with the framework from [Recursive Self-Improvement](https://www.philschmid.de/recursive-self-improvement) (Philschmid, Aug 21 2026) — see *External lens* below. All code claims re-verified at `f1552ca`.
 
-**Updated again Aug 31 2026 at `a995876`:** the **event store has landed** (`f91554a`) — tool-lifecycle events (`proposed`/`loaded`/`rejected`/`archived` via `record_tool_event`, `src/learn/events.py`) now append to the same per-session JSONL as trajectories, giving Loop A memory and future tool-lifecycle decisions a single shared log. Gap numbering below predates this commit: the event store closes part of the Loop A substrate (recording half), so the remaining Loop A work is the retrieval/injection half only.
+**Updated again Aug 31 2026 at `a995876`:** the **event store has landed** (`f91554a`) — tool-lifecycle events (`proposed`/`loaded`/`rejected`/`archived` via `record_tool_event`, `onit/learn/events.py`) now append to the same per-session JSONL as trajectories, giving Loop A memory and future tool-lifecycle decisions a single shared log. Gap numbering below predates this commit: the event store closes part of the Loop A substrate (recording half), so the remaining Loop A work is the retrieval/injection half only.
 
 ## Verdict
 
 **Now it reads back — and it has not yet been shown to help.**
 
 The substrate (the hardest part to retrofit) is done, and so is the feedback half:
-the path from "recorded" to "changed behavior" exists in `src/learn/recall.py`,
-`src/learn/playbook.py` and `src/learn/skills_*.py`, and it is reachable from a
+the path from "recorded" to "changed behavior" exists in `onit/learn/recall.py`,
+`onit/learn/playbook.py` and `onit/learn/skills_*.py`, and it is reachable from a
 config file at autonomy 2 and above.  What is missing is the part that would make
 it a claim rather than a capability: **the A/B on the holdout.**
 
@@ -66,18 +66,18 @@ The external lens sharpens the target: what Loops A/B would deliver is **bounded
 
 | Piece | Status | Location |
 |---|---|---|
-| Trajectory recording | ✅ Done — per-turn tool calls, errors, retries, truncations, compactions, token metrics, per-session JSONL | `src/learn/trajectory.py` |
-| Outcome signals | ✅ Partial — tool errors/retries are free; `POST /api/rating` (👍/👎) wired into web UI and lands in the store | `src/learn/`, `src/ui/api.py` |
-| Autonomy ladder (`learn.autonomy`) | ✅ Defined 0–4, **capped at 2** — `_MAX_IMPLEMENTED = ADAPT`, the highest rung implemented — and the cap is *loud*: `requested_level()` and `capped()` say what was asked for and what was granted | `src/learn/config.py` |
+| Trajectory recording | ✅ Done — per-turn tool calls, errors, retries, truncations, compactions, token metrics, per-session JSONL | `onit/learn/trajectory.py` |
+| Outcome signals | ✅ Partial — tool errors/retries are free; `POST /api/rating` (👍/👎) wired into web UI and lands in the store | `onit/learn/`, `onit/ui/api.py` |
+| Autonomy ladder (`learn.autonomy`) | ✅ Defined 0–4, **capped at 2** — `_MAX_IMPLEMENTED = ADAPT`, the highest rung implemented — and the cap is *loud*: `requested_level()` and `capped()` say what was asked for and what was granted | `onit/learn/config.py` |
 | Fitness function | ✅ `benchmarks/` (inspect-ai: bigcodebench, gsm8k, humaneval, mbpp, SWE-bench) with real numbers | `benchmarks/`, `RESULTS.md` |
-| Harness (Phase 0.5) | ✅ Mostly shipped — `RunState` (resume), `ResultStore` (handles), harness tools, verify pass, interpreter (default off) | `src/model/serving/` |
-| Extension-friendly harness | ✅ MCP-tool-based; tools discovered/loaded at runtime (`src/type/tools.py`, `src/lib/tools.py`) — the substrate for the "harness as extensions" direction (see External lens) | `src/mcp/` |
-| Recall (Loop A) | ✅ Built — BM25 over the trajectories, ranked by the outcome signal, injected in the volatile half | `src/learn/recall.py` |
-| The ruler (I1/I7) | ✅ Built — holdout, dev split, pinned baseline, and `assert_outside_agent_surface()` | `src/learn/eval.py` |
-| The playbook (Loop B) | ✅ Built — item store, Reflector, Curator, delta-only updates, token cap, per-session version pin | `src/learn/playbook.py` |
-| The lifecycle actuator | ✅ Built — the policy now has an actuator; withholding is reversible by construction | `src/learn/actuator.py` |
-| The skill library (Loop C) | ✅ Built — miner, five-gate validator, curator, and a server that serves only what the pin names | `src/learn/skills*.py` |
-| Text-UI rating | ✅ Built — the `\rate` command | `src/ui/rating.py` |
+| Harness (Phase 0.5) | ✅ Mostly shipped — `RunState` (resume), `ResultStore` (handles), harness tools, verify pass, interpreter (default off) | `onit/model/serving/` |
+| Extension-friendly harness | ✅ MCP-tool-based; tools discovered/loaded at runtime (`onit/type/tools.py`, `onit/lib/tools.py`) — the substrate for the "harness as extensions" direction (see External lens) | `onit/mcp/` |
+| Recall (Loop A) | ✅ Built — BM25 over the trajectories, ranked by the outcome signal, injected in the volatile half | `onit/learn/recall.py` |
+| The ruler (I1/I7) | ✅ Built — holdout, dev split, pinned baseline, and `assert_outside_agent_surface()` | `onit/learn/eval.py` |
+| The playbook (Loop B) | ✅ Built — item store, Reflector, Curator, delta-only updates, token cap, per-session version pin | `onit/learn/playbook.py` |
+| The lifecycle actuator | ✅ Built — the policy now has an actuator; withholding is reversible by construction | `onit/learn/actuator.py` |
+| The skill library (Loop C) | ✅ Built — miner, five-gate validator, curator, and a server that serves only what the pin names | `onit/learn/skills*.py` |
+| Text-UI rating | ✅ Built — the `\rate` command | `onit/ui/rating.py` |
 
 Trajectory data is already accumulating in `~/.onit/learned/` — **58 trajectory files,
 1,010 task records and 221 loop events** as of October 22, 2026 (Aug 4 – Oct 21), across
@@ -89,7 +89,7 @@ Trajectory data is already accumulating in `~/.onit/learned/` — **58 trajector
 **One thing, and it is not a missing module.**  Every gap this file used to list
 as open is now built.  The gap that is left is the measurement:
 
-1. **The A/B on the holdout has not been run.**  The ruler is built — `src/learn/eval.py` draws the holdout and the dev split, pins the
+1. **The A/B on the holdout has not been run.**  The ruler is built — `onit/learn/eval.py` draws the holdout and the dev split, pins the
    baseline, and `assert_outside_agent_surface()` keeps the whole apparatus out of
    the agent's writable surface.  The loops are built.  What is missing is the run
    that says whether they help: the same tasks, `ONIT_LEARN=off` against
@@ -175,7 +175,7 @@ argument, and the argument is what makes the order right:
 
 | Was | Now |
 |---|---|
-| 1. Freeze the holdout + pin the baseline + the I1/I7 ownership invariant | **built** — `src/learn/eval.py` |
+| 1. Freeze the holdout + pin the baseline + the I1/I7 ownership invariant | **built** — `onit/learn/eval.py` |
 | 2. Loop A → episodic recall | **built, unmeasured** |
 | 3. Implicit signals + a text-UI rating path | **built** |
 | 4. Loop B → the playbook | **built, unmeasured** |
@@ -193,12 +193,12 @@ null result goes in `RESULTS.md` and the loop does not ship.
 - [Recursive Self-Improvement](https://www.philschmid.de/recursive-self-improvement) — Philschmid, Aug 21 2026: bounded vs. recursive, verifier ownership, harness-as-extensions
 - `docs/SELF_IMPROVEMENT.md` — the RFC: loops A–D, phases, exit criteria, gap list (§3)
 - `docs/archive/NOOA_onit_recommendations.md` — Aug 8 2026 NOOA capability analysis; superseded by this file, kept for its per-capability code citations. **Open item absorbed from the retired `docs/TODO.md`:** integrate [baidu/Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) for OCR support.
-- `src/learn/config.py` — autonomy ladder, `_MAX_IMPLEMENTED = ADAPT`, and `requested_level()` / `capped()` so the cap is loud
-- `src/learn/trajectory.py`, `src/learn/report.py` — what is recorded and how it is summarized
-- `src/model/serving/chat.py` — `_build_messages()` now takes the learned context; the recall rides in the volatile half and the playbook at the tail of the static half
-- `src/onit.py` — `_chat_kwargs()` is now the single builder for every `chat()` caller; Loop A injects the learned context there
-- `src/learn/lifecycle.py` — the tool-lifecycle policy, and `src/learn/actuator.py` — the actuator that finally acts on it
-- `src/learn/trajectory.py` — `owner_hash()` and an `iter_records()` that filters by owner and model at the point the record is produced
+- `onit/learn/config.py` — autonomy ladder, `_MAX_IMPLEMENTED = ADAPT`, and `requested_level()` / `capped()` so the cap is loud
+- `onit/learn/trajectory.py`, `onit/learn/report.py` — what is recorded and how it is summarized
+- `onit/model/serving/chat.py` — `_build_messages()` now takes the learned context; the recall rides in the volatile half and the playbook at the tail of the static half
+- `onit/onit.py` — `_chat_kwargs()` is now the single builder for every `chat()` caller; Loop A injects the learned context there
+- `onit/learn/lifecycle.py` — the tool-lifecycle policy, and `onit/learn/actuator.py` — the actuator that finally acts on it
+- `onit/learn/trajectory.py` — `owner_hash()` and an `iter_records()` that filters by owner and model at the point the record is produced
 - `benchmarks/` + `RESULTS.md` — existing fitness function; `baselines/full.json` pinned 2026-09-05. Sampled-tier rows (Sep 06 2026): simpleqa 0.940, humaneval 0.970, mbpp 0.990, on `glm-5.3-flash:cloud` with learn off. The holdout is now drawable with `onit learn --holdout` — and the A/B on it has not been run
 
 

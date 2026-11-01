@@ -67,5 +67,5 @@ Retrieval:  query → BM25 ranking ─┐
 
 ## Adding a new document format
 
-Parsers follow a small adapter interface: each returns a list of `(location, text)` blocks (e.g. `("page 3", ...)`, `("sheet Sales", ...)`). To support a new format, add a parser to `src/mcp/servers/tasks/local/search/toolkit.py`, register its extension in `SUPPORTED_EXTENSIONS`, and dispatch it from `parse_document()` — chunking, indexing, and retrieval pick it up automatically.
+Parsers follow a small adapter interface: each returns a list of `(location, text)` blocks (e.g. `("page 3", ...)`, `("sheet Sales", ...)`). To support a new format, add a parser to `onit/mcp/servers/tasks/local/search/toolkit.py`, register its extension in `SUPPORTED_EXTENSIONS`, and dispatch it from `parse_document()` — chunking, indexing, and retrieval pick it up automatically.
 

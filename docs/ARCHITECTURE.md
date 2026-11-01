@@ -8,7 +8,7 @@
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│                     OnIt (src/onit.py)              │
+│                     OnIt (onit/onit.py)              │
 │                                                     │
 │  ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────────────┐ │
 │  │ ChatUI  │ │ WebApiUI │ │ Loop  │ │ Skills  │ │
@@ -40,7 +40,7 @@
 ```
 onit/
 ├── pyproject.toml              # Package configuration
-├── src/
+├── onit/
 │   ├── cli.py                  # CLI entry point
 │   ├── setup.py                # Setup wizard (onit setup)
 │   ├── onit.py                 # Core agent class

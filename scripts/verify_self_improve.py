@@ -7,7 +7,7 @@ Three questions, and this script answers each one from the code rather
 than from a docstring:
 
 1. **Do I need to reinstall to see an effect?**  No, if the install is
-   editable.  This prints where ``src`` is imported from and whether the
+   editable.  This prints where ``onit`` is imported from and whether the
    tree on disk is the one being imported.
 
 2. **Does self-improvement add anything to the codebase?**  No.  Every
@@ -62,20 +62,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def check_install() -> None:
     banner("1. Is the code on disk the code that runs?")
 
-    import src
-    import src.learn.config as cfg
+    import onit
+    import onit.learn.config as cfg
 
-    src_file = os.path.abspath(src.__file__)
+    src_file = os.path.abspath(onit.__file__)
     in_repo = src_file.startswith(REPO)
     check(
-        "src is imported from this working tree",
+        "onit is imported from this working tree",
         in_repo,
         "imported from: %s\nrepo root:    %s" % (src_file, REPO),
     )
 
     # The metadata is not a reliable test: this install writes a
     # ``__editable__*.pth`` finder and records the *mapping* in
-    # ``dist.files``, so "does the distribution list src/__init__.py" is
+    # ``dist.files``, so "does the distribution list onit/__init__.py" is
     # true for an editable install too.  The behavioural checks above are
     # the evidence: the import resolves to this tree, and a symbol defined
     # only here is live.  A non-editable install fails both.
@@ -85,7 +85,7 @@ def check_install() -> None:
     check(
         "a symbol from the current tree is live",
         live,
-        "learn.config._MAX_IMPLEMENTED = %r" % getattr(cfg, "_MAX_IMPLEMENTED", None),
+        "onit.learn.config._MAX_IMPLEMENTED = %r" % getattr(cfg, "_MAX_IMPLEMENTED", None),
     )
 
     print("""
@@ -101,8 +101,8 @@ def check_install() -> None:
 def check_writes() -> None:
     banner("2. Does self-improvement add anything to the codebase?")
 
-    from src.learn import skills_curator
-    from src.learn.skills import skills_dir
+    from onit.learn import skills_curator
+    from onit.learn.skills import skills_dir
 
     store = tempfile.mkdtemp(prefix="verify_store_", dir=os.path.join(REPO, "tmp"))
     cfg = {"learn": {"path": store, "autonomy": "extend"}}
@@ -117,19 +117,19 @@ def check_writes() -> None:
     written = skills_curator.synthesize(candidate, name="verify_skill", config_data=cfg)
 
     inside_store = written["dir"].startswith(skills_dir(cfg))
-    inside_pkg = os.path.abspath(os.path.join(REPO, "src")) in written["dir"]
+    inside_pkg = os.path.abspath(os.path.join(REPO, "onit")) in written["dir"]
     check("a generated skill lands in the store", inside_store, "written to: %s" % written["dir"])
     check(
         "a generated skill does not land in the package",
         not inside_pkg,
-        "package dir: %s" % os.path.join(REPO, "src"),
+        "package dir: %s" % os.path.join(REPO, "onit"),
     )
 
-    # Nothing in src/learn writes relative to __file__.
+    # Nothing in onit/learn writes relative to __file__.
     import re
 
     offenders = []
-    learn_dir = os.path.join(REPO, "src", "learn")
+    learn_dir = os.path.join(REPO, "onit", "learn")
     for name in sorted(os.listdir(learn_dir)):
         if not name.endswith(".py"):
             continue
@@ -144,7 +144,7 @@ def check_writes() -> None:
         "offenders: %s" % (offenders or "none"),
     )
 
-    from src.learn.config import EVOLVE, _MAX_IMPLEMENTED
+    from onit.learn.config import EVOLVE, _MAX_IMPLEMENTED
 
     check(
         "the rung that would edit source is not implemented",
@@ -174,7 +174,7 @@ def check_instruments() -> None:
 
     def run(args):
         result = subprocess.run(
-            [sys.executable, "-m", "src.cli"] + args, capture_output=True, text=True, cwd=REPO
+            [sys.executable, "-m", "onit.cli"] + args, capture_output=True, text=True, cwd=REPO
         )
         return result.returncode, result.stdout, result.stderr
 

@@ -88,7 +88,7 @@ all = [
 ]
 
 [project.scripts]
-onit = "src.cli:main"
+onit = "onit.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sibyl-oracles/onit"
@@ -96,7 +96,7 @@ Repository = "https://github.com/sibyl-oracles/onit"
 Issues = "https://github.com/sibyl-oracles/onit/issues"
 
 [tool.pytest.ini_options]
-testpaths = ["src/test"]
+testpaths = ["onit/test"]
 asyncio_mode = "auto"
 # The suite is the gate, so it is also the place a coverage floor belongs.
 # Kept here rather than in the workflow so a local `pytest` and CI measure the
@@ -106,22 +106,22 @@ asyncio_mode = "auto"
 # from the measurement turns every unrelated change into a red build.  The
 # floor is a ratchet, not a target -- raise it as the number rises, and never
 # lower it to make a build pass.
-addopts = "--cov=src --cov-report=term-missing --cov-fail-under=74"
+addopts = "--cov=onit --cov-report=term-missing --cov-fail-under=74"
 
 [tool.coverage.run]
-# The tests are in ``src/test``, so ``--cov=src`` measured them too: 21175 of
+# The tests are in ``onit/test``, so ``--cov=onit`` measured them too: 21175 of
 # 40229 statements were the suite covering itself at 99%, which lifted the
 # reported total to 88% over a product tree that sits at 75%.  Omitting them
 # makes the number mean "how much of the code the tests protect".
 omit = [
-    "src/test/*",
+    "onit/test/*",
 ]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["onit*"]
 
 [tool.setuptools.package-data]
-"src" = [
+"onit" = [
     "mcp/prompts/prompt_templates/*.yaml",
     "configs/*.yaml",
     "ui/static/*",

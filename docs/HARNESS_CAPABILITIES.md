@@ -72,19 +72,19 @@ rather than competing for the slot after it.
 
 Worth stating before the gap list, because these should not be regressed:
 
-- **The loop is plain Python.** [`chat()`](../src/model/serving/chat.py) is a readable
+- **The loop is plain Python.** [`chat()`](../onit/model/serving/chat.py) is a readable
   `while True:` — not a graph DSL, not a framework callback maze. This is exactly what
   the article's capability #4 asks for, and it is why Phase 3 is half a day rather than
   a rewrite.
-- **Per-turn telemetry exists.** [`TurnMetrics`](../src/model/serving/chat.py#L98)
+- **Per-turn telemetry exists.** [`TurnMetrics`](../onit/model/serving/chat.py#L98)
   records prefill/decode/tool time and token counts turn by turn, into a caller-owned
   sink. The "caller owns the dict, harness fills it in place" pattern is the right one —
   **Phase 6 should copy it verbatim.**
 - **Read-only tool batching.**
-  [`_execute_tools_in_parallel`](../src/model/serving/chat.py#L1975) runs a batch
+  [`_execute_tools_in_parallel`](../onit/model/serving/chat.py#L1975) runs a batch
   concurrently when every call is in `_READ_ONLY_TOOLS`, with buffers drained in call
   order to satisfy the tool_call_id ordering rule.
-- **MCP connection pooling.** [`_PooledClient`](../src/type/tools.py#L106) keeps one
+- **MCP connection pooling.** [`_PooledClient`](../onit/type/tools.py#L106) keeps one
   session per (URL, event loop), removing a connect + handshake from every tool call.
 - **Recovery heuristics.** Planning-response, acknowledgment, meta-commentary and no-op
   detection are more than most harnesses have. Phase 3 makes them configurable; it must
@@ -98,13 +98,13 @@ Worth stating before the gap list, because these should not be regressed:
 
 ### 3.1 The bug
 
-[`_build_returns`](../src/lib/tools.py#L71) extracts each MCP tool's `outputSchema` and
-stores it at [tools.py:182](../src/lib/tools.py#L182) as `function.returns` inside the
+[`_build_returns`](../onit/lib/tools.py#L71) extracts each MCP tool's `outputSchema` and
+stores it at [tools.py:182](../onit/lib/tools.py#L182) as `function.returns` inside the
 `ToolItem`. Nothing ever reads it.
 
-Meanwhile [`ToolRegistry.get_tool_items()`](../src/type/tools.py#L374) hands the whole
+Meanwhile [`ToolRegistry.get_tool_items()`](../onit/type/tools.py#L374) hands the whole
 dict — `returns` included — straight to `tools=` in the API payload at
-[chat.py:2525](../src/model/serving/chat.py#L2525). `returns` is **not a valid field** in
+[chat.py:2525](../onit/model/serving/chat.py#L2525). `returns` is **not a valid field** in
 the OpenAI tool schema. Today it is dead weight on every request; on any provider that
 validates the tool schema strictly it is a rejection.
 
@@ -114,13 +114,13 @@ Input validation is repair-based rather than schema-based:
 
 | Site | What it does | What it misses |
 |---|---|---|
-| [`_parse_tool_arguments`](../src/model/serving/chat.py#L1955) | regex quote-swap + trailing-comma strip on malformed JSON | anything that parses but is wrong |
-| [`ToolHandler.__call__`](../src/type/tools.py#L243) | unwraps `{"query": {"query": ...}}` nesting | only for `string`-typed params |
-| [`blank_required_args`](../src/type/tools.py#L400) | catches missing/blank **required strings** | wrong types, bad enums, out-of-range numbers |
+| [`_parse_tool_arguments`](../onit/model/serving/chat.py#L1955) | regex quote-swap + trailing-comma strip on malformed JSON | anything that parses but is wrong |
+| [`ToolHandler.__call__`](../onit/type/tools.py#L243) | unwraps `{"query": {"query": ...}}` nesting | only for `string`-typed params |
+| [`blank_required_args`](../onit/type/tools.py#L400) | catches missing/blank **required strings** | wrong types, bad enums, out-of-range numbers |
 
 A wrong-typed argument reaches the MCP server and returns a stack trace, which the model
 then has to interpret. The existing blank-args error at
-[chat.py:890](../src/model/serving/chat.py#L890) shows the right shape for the fix — it
+[chat.py:890](../onit/model/serving/chat.py#L890) shows the right shape for the fix — it
 names the offending parameters and tells the model not to repeat the call unchanged.
 
 ### 3.3 Steps
@@ -128,21 +128,21 @@ names the offending parameters and tells the model not to repeat the call unchan
 1. **Strip `returns` from the wire.** Give `ToolRegistry` a second accessor — keep
    `get_tool_items()` for internal use, add `get_api_tool_items()` that projects each
    entry down to `{type, function: {name, description, parameters}}`. Point
-   [chat.py:2222](../src/model/serving/chat.py#L2222) at the new one.
-2. **Hand-roll a schema validator** in `src/lib/schema.py`:
+   [chat.py:2222](../onit/model/serving/chat.py#L2222) at the new one.
+2. **Hand-roll a schema validator** in `onit/lib/schema.py`:
    `validate_arguments(schema: dict, args: dict) -> list[str]`, returning human-readable
    problems (`"depth: expected integer, got 'three'"`). Support `type`, `required`,
    `enum`, `minimum`/`maximum`, `anyOf`. That covers what MCP servers actually declare.
 
    *Correcting an earlier note in this doc:* pydantic is **already a dependency** —
-   [`OnIt`](../src/onit.py#L586) is a `BaseModel` — so a second review's suggestion to
+   [`OnIt`](../onit/onit.py#L586) is a `BaseModel` — so a second review's suggestion to
    validate with pydantic is not blocked by the no-new-deps rule. It is still the harder
    path: pydantic validates *Python types*, and what arrives here is a **JSON Schema dict
    from an MCP server**, with no JSON-Schema→model path in pydantic core. Building models
    dynamically per tool at discovery time is more machinery than a ~120-line validator over
    the five keywords MCP servers actually emit. Hand-roll it — but for that reason, not for
    a dependency reason. (`jsonschema` itself *is* blocked by the user's deny rules.)
-3. **Call it before dispatch** in [`_execute_tool`](../src/model/serving/chat.py#L795),
+3. **Call it before dispatch** in [`_execute_tool`](../onit/model/serving/chat.py#L795),
    folding it into the existing `_blank_args` branch so there is one refusal path, one
    error format, and one `_log(False, 0)` site.
 4. **Coerce the safe cases** rather than refusing them: `"3"` → `3` for an `integer`
@@ -150,17 +150,17 @@ names the offending parameters and tells the model not to repeat the call unchan
    a refusal costs a whole round trip. Log coercions at debug level.
 5. *(Optional, defer)* Validate tool **output** against `returns` and attach a warning to
    the tool message when it does not conform. Only worth it once a tool actually declares
-   a non-trivial `outputSchema` — check what the servers in `src/mcp/servers/tasks/`
+   a non-trivial `outputSchema` — check what the servers in `onit/mcp/servers/tasks/`
    really emit before building this.
 
 ### 3.4 Acceptance
 
-- New `src/test/test_schema.py`: type mismatch, missing required, bad enum, out-of-range,
+- New `onit/test/test_schema.py`: type mismatch, missing required, bad enum, out-of-range,
   `anyOf` accepted, coercion of `"3"`→`3`.
-- Extend `src/test/test_tool_registry.py`: `parameters_schema()` returns the declared
+- Extend `onit/test/test_tool_registry.py`: `parameters_schema()` returns the declared
   schema; the API payload has exactly `type` and `function`, and `function` has exactly
   `name`/`description`/`parameters`.
-- Extend `src/test/test_chat.py`: a bad-typed call is refused before dispatch — assert the
+- Extend `onit/test/test_chat.py`: a bad-typed call is refused before dispatch — assert the
   MCP handler was never awaited and the tool message names the parameter.
 
 ### 3.5 As shipped
@@ -169,11 +169,11 @@ Implemented August 09, 2026. 55 new tests; suite 966 → 1028, all green.
 
 | Piece | Where |
 |---|---|
-| Schema validator (~200 lines, no new deps) | [`src/lib/schema.py`](../src/lib/schema.py) |
-| Coerce + validate before dispatch | [`_execute_tool`](../src/model/serving/chat.py#L927) |
-| `returns` stripped from the wire | [`_api_tool_payload`](../src/model/serving/chat.py#L79) |
-| Schema accessor | [`ToolRegistry.parameters_schema`](../src/type/tools.py#L400) |
-| **`required` preserved at discovery** | [`_build_parameters`](../src/lib/tools.py#L28) |
+| Schema validator (~200 lines, no new deps) | [`onit/lib/schema.py`](../onit/lib/schema.py) |
+| Coerce + validate before dispatch | [`_execute_tool`](../onit/model/serving/chat.py#L927) |
+| `returns` stripped from the wire | [`_api_tool_payload`](../onit/model/serving/chat.py#L79) |
+| Schema accessor | [`ToolRegistry.parameters_schema`](../onit/type/tools.py#L400) |
+| **`required` preserved at discovery** | [`_build_parameters`](../onit/lib/tools.py#L28) |
 
 **Two decisions changed during implementation.**
 
@@ -188,7 +188,7 @@ method.
 `_build_parameters` reconstructed each tool's schema from `inputSchema` keeping only `type`
 and `properties` — **`required` was dropped**. Two silent consequences: the model was never
 told which parameters are mandatory, and
-[`blank_required_args`](../src/type/tools.py#L426) reads `required` to refuse a call before
+[`blank_required_args`](../onit/type/tools.py#L426) reads `required` to refuse a call before
 dispatch, so it found an empty list for every MCP-discovered tool and **had never fired in
 production**. `$defs`/`definitions` were dropped too, dangling any `$ref` a server used.
 
@@ -250,13 +250,13 @@ information needed to not invent a parameter in the first place.
 ### 3.7 Tool name collisions — fixed
 
 `ToolRegistry` merged every server offering a given tool name into one rotation and
-resolved calls with [`random.choice`](../src/type/tools.py#L514). That is right for
+resolved calls with [`random.choice`](../onit/type/tools.py#L514). That is right for
 **replicas** — the same tool on two hosts, which is load balancing — and wrong for
 **collisions**, the same *name* over different parameters. OnIt ships two:
 
 | Tool | Consolidated `tasks/tools` server | `os/bash` server |
 |---|---|---|
-| [`read_file`](../src/mcp/servers/tasks/tools/mcp_server.py#L234) | `path, mode, encoding, max_chars, table_index, output_format, output_dir, min_size, data_path` | `path, encoding, max_chars, data_path` |
+| [`read_file`](../onit/mcp/servers/tasks/tools/mcp_server.py#L234) | `path, mode, encoding, max_chars, table_index, output_format, output_dir, min_size, data_path` | `path, encoding, max_chars, data_path` |
 | `search_document` | *(differs)* | *(differs)* |
 
 Two consequences in any deployment running both, and the second is the serious one:
@@ -267,7 +267,7 @@ Two consequences in any deployment running both, and the second is the serious o
    excellent way to teach a model to invent parameters, which is exactly what §3.6 caught
    it doing.
 
-**The fix** ([`register`](../src/type/tools.py#L369)) compares the *parameter schema* of
+**The fix** ([`register`](../onit/type/tools.py#L369)) compares the *parameter schema* of
 each incoming copy against the one already holding the name — descriptions are excluded,
 since two servers may word the same tool differently:
 
@@ -320,7 +320,7 @@ could not, which is precisely why the two signatures diverged.
 **What changed**, following the pattern `shared.py` already documents — *"server-specific
 behavior (path validation…) is injected via callable parameters"*:
 
-| Moved to [`tasks/shared.py`](../src/mcp/servers/tasks/shared.py) | What it is |
+| Moved to [`tasks/shared.py`](../onit/mcp/servers/tasks/shared.py) | What it is |
 |---|---|
 | `extract_pdf_images_impl` | the ~108-line body, out of the web-search server |
 | `read_file_impl` | the mode router, with the three readers injected |
@@ -374,12 +374,12 @@ self-consistent within one.
 Context management is entirely invisible to the model:
 
 - Compaction fires on a threshold at
-  [chat.py:2396–2406](../src/model/serving/chat.py#L2396-L2406) — the model is not told
+  [chat.py:2396–2406](../onit/model/serving/chat.py#L2396-L2406) — the model is not told
   it is about to happen, and cannot prepare for it.
-- [`_decay_old_tool_results`](../src/model/serving/chat.py#L733) trims older results every
+- [`_decay_old_tool_results`](../onit/model/serving/chat.py#L733) trims older results every
   iteration, silently.
 - `set_context_usage` computes the exact fill percentage — and forwards it **only to the
-  UI** ([onit.py:367](../src/onit.py#L367) is a documented no-op for external clients).
+  UI** ([onit.py:367](../onit/onit.py#L367) is a documented no-op for external clients).
 
 So the harness knows it is at 85% and the model does not. A model that could see it would
 write its findings down before the summarizer eats them. It has no way to.
@@ -388,9 +388,9 @@ write its findings down before the summarizer eats them. It has no way to.
 
 Add a small in-process harness toolset — these are *not* MCP tools; they need access to
 `messages` and the running loop's state, so they are dispatched inside
-[`_execute_tool`](../src/model/serving/chat.py#L795) ahead of the registry lookup, the
+[`_execute_tool`](../onit/model/serving/chat.py#L795) ahead of the registry lookup, the
 same way `sandbox_download_file` is already intercepted at
-[chat.py:837](../src/model/serving/chat.py#L837).
+[chat.py:837](../onit/model/serving/chat.py#L837).
 
 1. **`context_status()`** → `{used_tokens, max_tokens, pct, turns, tools_called}`. Reads
    `_last_prompt_tokens` / `max_context_tokens`, which the loop already tracks.
@@ -408,23 +408,23 @@ same way `sandbox_download_file` is already intercepted at
    `~/.onit/learned/`. The path from one to the other is Loop B's Reflector — offline and
    gated — never a shared directory, because `data_path` is a session isolation boundary.
 3. **Announce compaction to the model, not just the UI.** When
-   [`_compact`](../src/model/serving/chat.py#L2364) runs, append a short `user`-role
+   [`_compact`](../onit/model/serving/chat.py#L2364) runs, append a short `user`-role
    notice to the compacted message list saying what happened and that `note_read` is
    available. The UI already gets `show_context_compaction`
-   ([onit.py:371](../src/onit.py#L371)) — this is the model-facing twin.
+   ([onit.py:371](../onit/onit.py#L371)) — this is the model-facing twin.
 4. **Register them in the instruction.** Add a block to
-   [`build_assistant_instruction`](../src/mcp/prompts/prompts.py#L50), gated on a new
+   [`build_assistant_instruction`](../onit/mcp/prompts/prompts.py#L50), gated on a new
    `harness_tools_available` flag, following the existing `sandbox_block` /
    `local_search_available` pattern. Keep it in the **static half** of the instruction —
    it does not vary per request, so it stays prefix-cacheable.
 
 ### 4.3 Acceptance
 
-- New `src/test/test_harness_tools.py`: `context_status` reports the loop's real numbers;
+- New `onit/test/test_harness_tools.py`: `context_status` reports the loop's real numbers;
   `note_write` then `note_read` round-trips; notes land under `data_path`, not `$HOME`.
 - Per the `mock-config-data-leaks-dirs` memory: mock `config_data` as a real dict with a
   `tmp_path` `data_path`, or the tests will create orphan `~/sandbox/<uuid>` directories.
-- Extend `src/test/test_chat.py`: a compaction appends exactly one model-visible notice.
+- Extend `onit/test/test_chat.py`: a compaction appends exactly one model-visible notice.
 
 ### 4.4 As shipped
 
@@ -432,12 +432,12 @@ Implemented August 18, 2026. 58 new tests; suite 1275 → 1333, all green.
 
 | Piece | Where |
 |---|---|
-| The three tools, their schemas, and the run state they report | [`src/model/serving/harness.py`](../src/model/serving/harness.py) |
-| Dispatched ahead of the registry lookup | [`_execute_tool`](../src/model/serving/chat.py) |
-| Offered in the same payload as the MCP tools | [`chat()`](../src/model/serving/chat.py) |
-| Compaction notice, model-facing | [`_compact_context(harness_note=…)`](../src/model/serving/chat.py) |
-| Prompt block, gated and cacheable | [`build_assistant_instruction`](../src/mcp/prompts/prompts.py) |
-| `serving.harness_tools` | [`SERVING_PASSTHROUGH`](../src/onit.py#L65) → `chat()` |
+| The three tools, their schemas, and the run state they report | [`onit/model/serving/harness.py`](../onit/model/serving/harness.py) |
+| Dispatched ahead of the registry lookup | [`_execute_tool`](../onit/model/serving/chat.py) |
+| Offered in the same payload as the MCP tools | [`chat()`](../onit/model/serving/chat.py) |
+| Compaction notice, model-facing | [`_compact_context(harness_note=…)`](../onit/model/serving/chat.py) |
+| Prompt block, gated and cacheable | [`build_assistant_instruction`](../onit/mcp/prompts/prompts.py) |
+| `serving.harness_tools` | [`SERVING_PASSTHROUGH`](../onit/onit.py#L65) → `chat()` |
 
 **Four decisions changed during implementation.**
 
@@ -496,7 +496,7 @@ LLM call plus everything the summary drops.
 
 ### 5.1 The bug
 
-[chat.py:2328](../src/model/serving/chat.py#L2328):
+[chat.py:2328](../onit/model/serving/chat.py#L2328):
 
 ```python
 MAX_CHAT_ITERATIONS = -1
@@ -506,18 +506,18 @@ if MAX_CHAT_ITERATIONS >= 0 and iteration_count > MAX_CHAT_ITERATIONS:
 
 The turn cap is disabled. The loop is bounded only by `MAX_REPEATED_TOOL_CALLS` — which
 requires the same tool name **and byte-identical arguments** 30 times
-([chat.py:983](../src/model/serving/chat.py#L983)) — and by the safety queue. A model
+([chat.py:983](../onit/model/serving/chat.py#L983)) — and by the safety queue. A model
 alternating between two slightly-different calls runs until the user stops it.
 
 ### 5.2 Steps
 
 1. Set a real default ceiling (suggest 50) and keep `-1` as an explicit opt-out.
 2. Lift the constants at
-   [chat.py:2328–2343](../src/model/serving/chat.py#L2328-L2343) —
+   [chat.py:2328–2343](../onit/model/serving/chat.py#L2328-L2343) —
    `MAX_CHAT_ITERATIONS`, `MAX_REPEATED_TOOL_CALLS`, `MAX_PLANNING_CONTINUATIONS`,
    `MAX_ACK_CONTINUATIONS`, `MAX_FINAL_CONTINUATIONS` — into `kwargs` with the current
    values as defaults, so `chat()`'s signature stays the single place each default lives.
-3. Add them to `SERVING_PASSTHROUGH` at [onit.py:63](../src/onit.py#L63) so they are
+3. Add them to `SERVING_PASSTHROUGH` at [onit.py:63](../onit/onit.py#L63) so they are
    reachable from `serving:` in the config YAML. That list is already the established
    "forward only when the config sets it" mechanism — no new plumbing needed.
 4. When the iteration cap trips, return a message that says the run hit its turn limit.
@@ -533,9 +533,9 @@ they are.
 
 ### 5.3 Acceptance
 
-- Extend `src/test/test_chat.py`: a stub model that alternates between two distinct tool
+- Extend `onit/test/test_chat.py`: a stub model that alternates between two distinct tool
   calls forever terminates at the configured cap, with a distinguishable message.
-- Extend `src/test/test_onit.py`: `serving.max_chat_iterations` reaches `chat()`; an unset
+- Extend `onit/test/test_onit.py`: `serving.max_chat_iterations` reaches `chat()`; an unset
   key does not appear in `kwargs` at all.
 
 ### 5.4 As shipped
@@ -543,12 +543,12 @@ they are.
 Implemented August 09, 2026, as specified. All six ceilings are `chat()` kwargs defaulting
 to their previous values; `MAX_CHAT_ITERATIONS` now defaults to **50** with `-1` as the
 documented opt-out. Config path is `serving:` → `SERVING_PASSTHROUGH`
-([`onit.py:63`](../src/onit.py#L63)) → `chat()`, documented inline in
-[`src/configs/default.yaml`](../src/configs/default.yaml).
+([`onit.py:63`](../onit/onit.py#L63)) → `chat()`, documented inline in
+[`onit/configs/default.yaml`](../onit/configs/default.yaml).
 
 Two additions beyond the plan:
 
-- **`_as_positive_or_disabled`** ([chat.py:98](../src/model/serving/chat.py#L98)) — YAML
+- **`_as_positive_or_disabled`** ([chat.py:98](../onit/model/serving/chat.py#L98)) — YAML
   hands back whatever was typed, so `"25"` coerces but `"fifty"` falls back to the
   *default*, never to disabled. A typo must not silently restore the unbounded loop.
 - **The turn limit returns partial work.** If prose was already written — a truncated
@@ -581,10 +581,10 @@ destroyed to make room for the next one:
 
 | Site | Behavior | Cost |
 |---|---|---|
-| [`_truncate_tool_response`](../src/model/serving/chat.py#L79) | hard cut at `MAX_TOOL_RESPONSE = 16000` chars, head + tail kept | **the middle is gone permanently** |
-| [`_decay_old_tool_results`](../src/model/serving/chat.py#L733) | all but the last 3 results trimmed to 6000 chars | older evidence reduced to its opening |
-| [`_strip_old_images`](../src/model/serving/chat.py#L766) | base64 replaced with a placeholder in stale messages | image unrecoverable |
-| [`_compact_context`](../src/model/serving/chat.py#L2081) | whole-conversation LLM summarization | an extra model call, and detail loss |
+| [`_truncate_tool_response`](../onit/model/serving/chat.py#L79) | hard cut at `MAX_TOOL_RESPONSE = 16000` chars, head + tail kept | **the middle is gone permanently** |
+| [`_decay_old_tool_results`](../onit/model/serving/chat.py#L733) | all but the last 3 results trimmed to 6000 chars | older evidence reduced to its opening |
+| [`_strip_old_images`](../onit/model/serving/chat.py#L766) | base64 replaced with a placeholder in stale messages | image unrecoverable |
+| [`_compact_context`](../onit/model/serving/chat.py#L2081) | whole-conversation LLM summarization | an extra model call, and detail loss |
 
 The decay marker is the tell:
 
@@ -627,13 +627,13 @@ existing path rather than copying bytes into a second file.
 
 ### 6.3 Steps
 
-1. `src/model/serving/results.py` — `ResultStore(data_path)` with `put(tool, text) -> handle`,
+1. `onit/model/serving/results.py` — `ResultStore(data_path)` with `put(tool, text) -> handle`,
    `read(handle, offset, limit)`, `grep(handle, pattern, context)`. Path-jail every handle
    under `data_path/.onit/results/` and reject traversal; per the
    `session-isolation-data-path` memory, `data_path` is a trust boundary and the harness
    value must win over anything the model supplies.
-2. Wire into [`_execute_tool`](../src/model/serving/chat.py#L795) at the point where
-   `_truncate_tool_response` is called ([chat.py:950](../src/model/serving/chat.py#L950)):
+2. Wire into [`_execute_tool`](../onit/model/serving/chat.py#L795) at the point where
+   `_truncate_tool_response` is called ([chat.py:950](../onit/model/serving/chat.py#L950)):
    store first, then build the preview. Leave `_truncate_tool_response` in place for the
    no-store fallback path.
 3. Make `_decay_old_tool_results` handle-aware — a decayed result keeps its handle line,
@@ -644,9 +644,9 @@ existing path rather than copying bytes into a second file.
 
 ### 6.4 Acceptance
 
-- New `src/test/test_result_store.py`: round-trip; `offset`/`limit` windowing; `grep` with
+- New `onit/test/test_result_store.py`: round-trip; `offset`/`limit` windowing; `grep` with
   context; **traversal rejected** (`../`, absolute paths, symlinks).
-- Extend `src/test/test_chat.py`: a 50k-char tool result puts ≤ ~2.5k chars into
+- Extend `onit/test/test_chat.py`: a 50k-char tool result puts ≤ ~2.5k chars into
   `messages` and is fully recoverable via `result_read`.
 - Regression: prompt tokens across a 6-tool run grow roughly linearly, not quadratically.
   `TurnMetrics` already records `prompt_tokens` per turn — assert against that.
@@ -670,10 +670,10 @@ accumulate, and `_compact_context` stays as the backstop.
 
 | What | Where |
 |---|---|
-| `ResultStore` | [`src/model/serving/results.py`](../src/model/serving/results.py) |
-| Stored at the point truncation used to happen | [`_execute_tool`](../src/model/serving/chat.py) |
-| Decay made handle-aware | [`_decay_old_tool_results`](../src/model/serving/chat.py) |
-| `result_read` / `result_grep` | [`HarnessTools`](../src/model/serving/harness.py), same dispatch as Phase 2 |
+| `ResultStore` | [`onit/model/serving/results.py`](../onit/model/serving/results.py) |
+| Stored at the point truncation used to happen | [`_execute_tool`](../onit/model/serving/chat.py) |
+| Decay made handle-aware | [`_decay_old_tool_results`](../onit/model/serving/chat.py) |
+| `result_read` / `result_grep` | [`HarnessTools`](../onit/model/serving/harness.py), same dispatch as Phase 2 |
 | Switch | `serving.result_store` (default on; needs a `data_path`) |
 | Tests | `test_result_store.py` (53), plus `TestResultStoreInChat` (6), `TestDecayWithAResultStore` (8), `TestResultToolsOnTheHarness` (11), `TestResultStoreBlock` (6), `TestResultStoreFlag` (4) |
 
@@ -757,7 +757,7 @@ anywhere by default. Nothing about the default configuration changed.
 
 Every step of a multi-step operation costs a full model round trip. The parallel path
 helps only when *all* calls are in
-[`_READ_ONLY_TOOLS`](../src/model/serving/chat.py#L1947); anything containing a write is
+[`_READ_ONLY_TOOLS`](../onit/model/serving/chat.py#L1947); anything containing a write is
 strictly sequential — correctly so, per the comment there: *"a batch of those is a script,
 and a script has an order."*
 
@@ -770,7 +770,7 @@ This is the article's central claim and where OnIt has the most headroom.
 ### 7.2 Design
 
 A `run_code` tool backed by a **persistent per-session Python interpreter** hosted in the
-sandbox container ([`container_launcher.py`](../src/container_launcher.py) is already the
+sandbox container ([`container_launcher.py`](../onit/container_launcher.py) is already the
 right place). Registered MCP tools are exposed inside it as callable Python functions, so
 the model writes:
 
@@ -794,7 +794,7 @@ machinery covers the case where a `print` is itself huge.
    Python function whose call marshals to the existing `ToolHandler`. Schema-driven, so
    new MCP servers work with no extra code.
 3. **Route the injected trust parameters.** `session_id` and `data_path` are injected by
-   the harness at [chat.py:829–832](../src/model/serving/chat.py#L829-L832) and must
+   the harness at [chat.py:829–832](../onit/model/serving/chat.py#L829-L832) and must
    **never** be settable from inside the interpreter. Bind them at generation time and
    drop them from the generated signatures entirely.
 4. **Ship it as an additional tool, not a replacement.** `run_code` sits alongside
@@ -818,9 +818,9 @@ machinery covers the case where a `print` is itself huge.
 
 | What | Where |
 |---|---|
-| The interpreter, its child process, its protocol | [`src/model/serving/interpreter.py`](../src/model/serving/interpreter.py) |
+| The interpreter, its child process, its protocol | [`onit/model/serving/interpreter.py`](../onit/model/serving/interpreter.py) |
 | Bindings generated from the registry's schemas | `bindings_for` — same file |
-| `run_code`, and the parent-side tool dispatcher | [`HarnessTools`](../src/model/serving/harness.py) — `run_code`, `_run_tool` |
+| `run_code`, and the parent-side tool dispatcher | [`HarnessTools`](../onit/model/serving/harness.py) — `run_code`, `_run_tool` |
 | Awaited dispatch | `HarnessTools.adispatch`, called from `_execute_tool` |
 | Switches | `serving.code_execution` (**default false**), `serving.code_timeout` |
 | Tests | `test_interpreter.py` (45), plus `TestRunCodeOnTheHarness` (13), `TestRunCodeInChat` (5), `TestCodeExecutionBlock` (6), `TestCodeExecutionFlag` (5) |
@@ -900,8 +900,8 @@ write JSON tool calls, and this phase can lose accuracy even while it cuts laten
 ### 8.1 The gap
 
 **First, what is *not* the gap.** A second review concluded there is "no agent object with
-typed fields" and proposed building `src/agent.py`. That is wrong and the mistake is
-expensive: [`OnIt`](../src/onit.py#L586) is already `class OnIt(BaseModel)` with ~50 typed
+typed fields" and proposed building `onit/agent.py`. That is wrong and the mistake is
+expensive: [`OnIt`](../onit/onit.py#L586) is already `class OnIt(BaseModel)` with ~50 typed
 `Field()` declarations, and a new `Agent` base class would duplicate it. The accurate
 distinction is **configuration state vs. run state**. OnIt's fields are configuration —
 `web_port`, `agent_name`, `theme`, `history_turns` — set at startup and stable for the
@@ -917,17 +917,17 @@ Every piece of that state lives in local variables inside `chat()` —
 - **Testing requires driving the whole loop.** There is no way to construct "20 turns in,
   planning budget exhausted" and assert on the next decision.
 - **Resume is prose-only.** Session persistence at
-  [onit.py:1190](../src/onit.py#L1190) writes `{task, response, timestamp}`. A resumed
+  [onit.py:1190](../onit/onit.py#L1190) writes `{task, response, timestamp}`. A resumed
   session replays what was *said*, with no record of which tools ran, which files were
   written, or what was tried and failed.
-- [`_record_trajectory`](../src/onit.py#L1212) captures some of this but is write-only and
+- [`_record_trajectory`](../onit/onit.py#L1212) captures some of this but is write-only and
   off unless the autonomy level is `observe` or higher.
 
 ### 8.2 Steps
 
-1. `RunState` dataclass in `src/model/serving/state.py` holding the fields above, **owned
+1. `RunState` dataclass in `onit/model/serving/state.py` holding the fields above, **owned
    by the caller and mutated in place** — the exact pattern `TurnMetrics` already uses
-   with its `metrics` sink ([chat.py:2242](../src/model/serving/chat.py#L2242)). That
+   with its `metrics` sink ([chat.py:2242](../onit/model/serving/chat.py#L2242)). That
    pattern is proven in this codebase; do not invent a second one.
 2. Replace the locals in `chat()` with `state.` attributes. Mechanical, and the diff is
    large but shallow — do it in one commit, no behavior change, tests green before and
@@ -935,7 +935,7 @@ Every piece of that state lives in local variables inside `chat()` —
 3. Accept an optional `run_state` kwarg. Absent, `chat()` makes its own — identical to
    today's behavior, so nothing outside has to change.
 4. Persist alongside the session JSONL as `<session_id>.state.json`, and reload on resume
-   ([`_setup_session`](../src/onit.py#L868) already handles `resume_session_id`).
+   ([`_setup_session`](../onit/onit.py#L868) already handles `resume_session_id`).
 5. Feed `tool_call_history` from a resumed state into the instruction, so a continued
    session knows what has already been attempted.
 6. **Coordinate with `docs/SELF_IMPROVEMENT.md`.** Layer 0 (trajectory recording) is
@@ -944,22 +944,22 @@ Every piece of that state lives in local variables inside `chat()` —
 
 ### 8.3 Acceptance
 
-- Extend `src/test/test_chat.py`: a caller-supplied `RunState` is populated during the run
+- Extend `onit/test/test_chat.py`: a caller-supplied `RunState` is populated during the run
   and readable after it returns.
 - New: a `RunState` constructed mid-run (planning budget exhausted) drives the expected
   next decision, without running the preceding turns.
-- Extend `src/test/test_onit.py`: resume restores `tool_call_history`.
-- `src/test/test_learn.py` still passes — trajectory recording must not regress.
+- Extend `onit/test/test_onit.py`: resume restores `tool_call_history`.
+- `onit/test/test_learn.py` still passes — trajectory recording must not regress.
 
 ### 8.4 As shipped
 
 | What | Where |
 |---|---|
-| `RunState` dataclass | [`src/model/serving/state.py`](../src/model/serving/state.py) |
-| The loop reads and writes it | [`chat()`](../src/model/serving/chat.py) — `run_state` kwarg |
+| `RunState` dataclass | [`onit/model/serving/state.py`](../onit/model/serving/state.py) |
+| The loop reads and writes it | [`chat()`](../onit/model/serving/chat.py) — `run_state` kwarg |
 | Persisted per session | `<session_id>.state.json`, beside the `.jsonl` |
-| Loaded on resume | [`_setup_session`](../src/onit.py) → `OnIt.run_state` |
-| Fed back into the instruction | `prior_attempts` → [`build_assistant_instruction`](../src/mcp/prompts/prompts.py) |
+| Loaded on resume | [`_setup_session`](../onit/onit.py) → `OnIt.run_state` |
+| Fed back into the instruction | `prior_attempts` → [`build_assistant_instruction`](../onit/mcp/prompts/prompts.py) |
 | Tests | `test_run_state.py` (30), plus `TestRunState` in `test_chat.py` (7) and `test_onit.py` (10) |
 
 **Four decisions changed during implementation.**
@@ -1009,13 +1009,13 @@ not take on.
 
 Standing constraints for every phase, from prior sessions:
 
-- **Run pytest from the repo root.** `src/mcp` shadows the pip-installed `mcp` package if
-  you run from `src/`, producing a misleading `fastmcp` import error.
+- **Run pytest from the repo root.** `onit/mcp` shadows the pip-installed `mcp` package if
+  you run from `onit/`, producing a misleading `fastmcp` import error.
 - **No new dependencies.** `pip install` is blocked by the user's deny rules — hand-roll
   (the Phase 1 schema validator especially).
 - **Mock `config_data` as a real dict with a `tmp_path` `data_path`**, or tests create
   orphan `~/sandbox/<uuid>` directories.
-- **Monkeypatch `src.setup.get_secret`** in anything touching credentials; the real
+- **Monkeypatch `onit.setup.get_secret`** in anything touching credentials; the real
   keychain makes tests flaky.
 
 ---
@@ -1057,8 +1057,8 @@ biggest architectural gap." Recorded here are the differences that changed this 
 **A long-term memory subsystem, ranked #1.** This document treated
 [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) as a footnote in Phase 6; the second review
 made it the headline, and it was right to. The convergence is real —
-[`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) already specifies `src/learn/recall.py`
-and `src/learn/playbook.py`, and [`trajectory.py:188`](../src/learn/trajectory.py#L188)
+[`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) already specifies `onit/learn/recall.py`
+and `onit/learn/playbook.py`, and [`trajectory.py:188`](../onit/learn/trajectory.py#L188)
 already carries `learned_context` with `playbook_version` and `episodes_used`, wired for
 exactly this.
 
@@ -1078,7 +1078,7 @@ it. See `SELF_IMPROVEMENT.md` §4.0.
 
 | Claim in the second review | Status | Where fixed |
 |---|---|---|
-| "No agent object with typed fields"; build `src/agent.py` | **Wrong** — `OnIt` is a `BaseModel` with ~50 typed fields | §8.1 |
+| "No agent object with typed fields"; build `onit/agent.py` | **Wrong** — `OnIt` is a `BaseModel` with ~50 typed fields | §8.1 |
 | Pass-by-reference "eliminates the need for compaction" | **Overclaim** — reduces pressure, doesn't remove the backstop | §6.5 |
 | Pydantic validation blocked by no-new-deps | **Wrong** — pydantic is already a dependency; hand-roll for a different reason | §3.3 step 2 |
 | Trajectories are `{task, response, timestamp}` | **Conflated** with the *session* JSONL; `build_record` writes per-turn views, signals and metrics | — |

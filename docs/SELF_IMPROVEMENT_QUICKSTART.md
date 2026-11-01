@@ -43,7 +43,7 @@ claim, and it is built so that Act 6 can come out **zero**.
 
 | Fact | Number | Where it came from |
 |---|---:|---|
-| Autonomy level the code implements | `adapt` (2) | `src/learn/config.py:41-62` |
+| Autonomy level the code implements | `adapt` (2) | `onit/learn/config.py:41-62` |
 | Recorded task records on this machine | 1,022 | `onit learn --json` |
 | Records carrying `episodes_used` | **0** | every `learned_context` in the store |
 | Records carrying a `playbook_version` | **0** | same |
@@ -77,16 +77,16 @@ Three of those lines are load-bearing, and each one has bitten:
 
 | Line | Why it is load-bearing |
 |---|---|
-| `serving.host` | the grader and the Reflector read `serving.host` **only** (`src/learn/llm.py:55`). A config with an `endpoints` list resolves to `127.0.0.1:8001` and every background call dies silently. |
+| `serving.host` | the grader and the Reflector read `serving.host` **only** (`onit/learn/llm.py:55`). A config with an `endpoints` list resolves to `127.0.0.1:8001` and every background call dies silently. |
 | `learn.autonomy: adapt` | at the default `observe`, the agent records and **never injects** (`recording_enabled()` is `autonomy >= OBSERVE`; the injection paths gate on `>= ADAPT`). |
-| `data_path` | the bash tool refuses any `data_path` outside the server's `DATA_PATH` (`src/mcp/servers/tasks/os/bash/mcp_server.py:186-206`). A path outside the jail means **every tool call is refused** and the agent measures refusals. |
+| `data_path` | the bash tool refuses any `data_path` outside the server's `DATA_PATH` (`onit/mcp/servers/tasks/os/bash/mcp_server.py:186-206`). A path outside the jail means **every tool call is refused** and the agent measures refusals. |
 
 Check the jail before you start:
 
 ```bash
 python3 - <<'PY'
 import sys; sys.path.insert(0, ".")
-from src.mcp.servers.tasks.os.bash.mcp_server import _session_base, DATA_PATH
+from onit.mcp.servers.tasks.os.bash.mcp_server import _session_base, DATA_PATH
 print("server jail:", DATA_PATH)
 try:
     print("OK   ->", _session_base("<repo>/tmp/onit/data/demo"))
@@ -119,7 +119,7 @@ This is the part most demos get wrong, and it is worth a whole section.
 
 **(a) Keep the date out of the first three content words.** The Reflector
 groups runs by `task_shape()` — the first three content words of the task
-(`src/learn/playbook.py:638-657`). Measured:
+(`onit/learn/playbook.py:638-657`). Measured:
 
 | Task text | Shape | Cluster |
 |---|---|---|
@@ -274,7 +274,7 @@ question, marked as untrusted history. **Claim 2 demonstrated.** Still
 nothing about quality.
 
 > The recall block is capped: `top_k=3` episodes, an 800-token budget
-> (`src/learn/recall.py:71,78`), and each episode is one line — the task,
+> (`onit/learn/recall.py:71,78`), and each episode is one line — the task,
 > a 220-character excerpt of the answer, and the outcome
 > (`_summarize_episode()`). The outcome is the part that transfers.
 
@@ -319,7 +319,7 @@ Implicit signals
 `--write-signals` is **not optional** here, and the reason is a real gap:
 `onit learn --reflect` calls `label_corpus()`, which is documented as
 "pure with respect to the store: nothing is written", and then re-reads
-the records from disk (`src/cli.py:409-412`). The labels it computed are
+the records from disk (`onit/cli.py:409-412`). The labels it computed are
 thrown away, and the records the Reflector sees carry no
 `signals.implicit`.
 
@@ -373,7 +373,7 @@ bullet.
 
 ### A defect worth knowing about before you trust a silent Reflector
 
-`src/learn/llm.py:126` sets `num_predict: JUDGE_MAX_TOKENS` (64) for
+`onit/learn/llm.py:126` sets `num_predict: JUDGE_MAX_TOKENS` (64) for
 Ollama and `max_tokens: 400` for OpenAI-shaped hosts. On a **thinking**
 model, 400 tokens can be entirely consumed by the reasoning, and the reply
 comes back with `finish_reason: "length"` and **`content: None`**.
@@ -398,7 +398,7 @@ believe has one, check the token budget before you check the contrast.
 ## 8. Act 5 — restart, and the bullet rides in
 
 **The playbook is pinned per `OnIt` instance** so the prompt prefix stays
-cache-stable (`src/onit.py:1465-1490`). A long-running session will not
+cache-stable (`onit/onit.py:1465-1490`). A long-running session will not
 see a bullet written after it started. This is a deployment shape, not a
 bug: *reflect offline, then start the agent.*
 
@@ -440,7 +440,7 @@ python3 scripts/measure.py --config ~/demo/config.yaml \
 
 A win is `treatment − baseline`, and it must clear an error bar. The bar
 this codebase uses is **1.96 × the standard error of the difference**,
-`1.96 × sqrt(se_baseline² + se_treatment²)` (`src/learn/runner.py`,
+`1.96 × sqrt(se_baseline² + se_treatment²)` (`onit/learn/runner.py`,
 `compare()`): one arm's error at n=40 and p≈0.45 is ~0.079, so the bar
 is **~0.218 — about 9 items out of 40**. A delta smaller than that is
 noise, and must be reported as such.
@@ -701,7 +701,7 @@ same small pool of weekday arithmetic, the arms were not independent.
 **6. The error bar it "cleared" was a bar of its own making.** The
 reported stderr is 0.153, and the delta is 0.250, so the code called it
 significant. But that stderr is the *sum* of two arms' standard errors
-(`src/learn/runner.py:294`), and the treatment arm's contribution was
+(`onit/learn/runner.py:294`), and the treatment arm's contribution was
 **zero** — because it scored 8/8, and a proportion of 1.0 has a
 standard error of 0. So the bar was 0.153 ≈ the baseline arm's error
 alone. One wrong item in the treatment arm and the same result would
@@ -788,15 +788,15 @@ not learning.
 
 | Thing | Where |
 |---|---|
-| Autonomy ladder (`off`/`observe`/`adapt`) | `src/learn/config.py:41-62`, `:153` |
-| Recording a run | `src/learn/trajectory.py:204` (`build_record`), `:272` (`record_task`) |
-| Recall | `src/learn/recall.py:261` (`recall`), `:380` (`build_context`) |
-| The untrusted-data marker | `src/learn/recall.py:87-91` |
-| The playbook | `src/learn/playbook.py:546` (`build_context`), `:798` (`reflect`) |
-| The model-based Reflector | `src/learn/reflector.py:213`, `:250` |
-| The implicit signals | `src/learn/signals.py:396` (`label_pair`), `:411` (`label_session`), `:440` (`label_records`) |
-| The cluster key | `src/learn/playbook.py:638` (`task_shape`) |
-| The holdout exclusion | `src/learn/eval.py:526` (`task_key`), `:549` (`holdout_exclusions`), `:593` (`is_excluded`) |
-| The A/B | `src/learn/ab.py:73` (`run_ab`), `src/learn/runner.py:189` (`run_arm`), `:294` (`compare`) |
-| The endpoint the loops use | `src/learn/llm.py:45` (`resolve_endpoint`) |
-| The bash jail | `src/mcp/servers/tasks/os/bash/mcp_server.py:135`, `:186` |
+| Autonomy ladder (`off`/`observe`/`adapt`) | `onit/learn/config.py:41-62`, `:153` |
+| Recording a run | `onit/learn/trajectory.py:204` (`build_record`), `:272` (`record_task`) |
+| Recall | `onit/learn/recall.py:261` (`recall`), `:380` (`build_context`) |
+| The untrusted-data marker | `onit/learn/recall.py:87-91` |
+| The playbook | `onit/learn/playbook.py:546` (`build_context`), `:798` (`reflect`) |
+| The model-based Reflector | `onit/learn/reflector.py:213`, `:250` |
+| The implicit signals | `onit/learn/signals.py:396` (`label_pair`), `:411` (`label_session`), `:440` (`label_records`) |
+| The cluster key | `onit/learn/playbook.py:638` (`task_shape`) |
+| The holdout exclusion | `onit/learn/eval.py:526` (`task_key`), `:549` (`holdout_exclusions`), `:593` (`is_excluded`) |
+| The A/B | `onit/learn/ab.py:73` (`run_ab`), `onit/learn/runner.py:189` (`run_arm`), `:294` (`compare`) |
+| The endpoint the loops use | `onit/learn/llm.py:45` (`resolve_endpoint`) |
+| The bash jail | `onit/mcp/servers/tasks/os/bash/mcp_server.py:135`, `:186` |

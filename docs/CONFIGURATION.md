@@ -105,7 +105,7 @@ mcp:
   servers:
     - name: PromptsMCPServer
       transport: stdio
-      module: src.mcp.prompts.prompts
+      module: onit.mcp.prompts.prompts
       enabled: true
     - name: ToolsLocalMCPServer   # per-user: bash, files, document search
       transport: stdio

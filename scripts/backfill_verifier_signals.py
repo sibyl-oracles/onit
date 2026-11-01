@@ -5,7 +5,7 @@ One-off for docs/SELF_IMPROVEMENT.md §8 item 1.  ``derive_signals()`` wrote
 ``"verifier": None`` into every task record while the fact-check's issue
 count sat unread in the same record's metrics blob.  This script reads the
 field with the same function the live writer now uses —
-``learn.trajectory.verifier_signal()`` — so the labels it writes cannot
+``onit.learn.trajectory.verifier_signal()`` — so the labels it writes cannot
 drift from the ones future runs get, and rewrites each session file in
 place.
 
@@ -27,9 +27,9 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from learn.trajectory import verifier_signal  # noqa: E402
+from onit.learn.trajectory import verifier_signal  # noqa: E402
 
 DEFAULT_PATH = os.path.expanduser("~/.onit/learned/trajectories")
 

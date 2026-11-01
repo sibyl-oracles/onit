@@ -87,7 +87,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-# The repository root goes on the path, NOT ``src/``: ``src/mcp/`` would
+# The repository root goes on the path, NOT ``onit/``: ``onit/mcp/`` would
 # then shadow the installed ``mcp`` SDK and break FastMCP's import.
 sys.path.insert(0, ROOT)
 
@@ -295,7 +295,7 @@ def find_contamination(items: list, store: str) -> list:
     if not store or not os.path.isdir(store):
         return []
     try:
-        from src.learn.trajectory import iter_records
+        from onit.learn.trajectory import iter_records
 
         records = list(iter_records({"learn": {"path": store}}))
     except Exception:
@@ -367,7 +367,7 @@ def patch_shuffled_recall(rng: random.Random) -> None:
     *returned* list keeps the recall machinery intact and only changes
     which episodes win the cut.
     """
-    from src.learn import recall as recall_mod
+    from onit.learn import recall as recall_mod
 
     original = recall_mod.recall
 
@@ -380,7 +380,7 @@ def patch_shuffled_recall(rng: random.Random) -> None:
 
     # ``build_context`` lives in the same module and calls ``recall``
     # by module-global name, so patching the module attribute is enough.
-    # But ``src.onit`` imports ``build_context`` from this module, and
+    # But ``onit.onit`` imports ``build_context`` from this module, and
     # ``build_context`` calls the module-global ``recall`` -- so the
     # patch above is picked up without touching the import site.
 
@@ -389,7 +389,7 @@ def patch_shuffled_recall(rng: random.Random) -> None:
 
 
 async def run(args, cfg: dict) -> dict:
-    from src.onit import OnIt
+    from onit.onit import OnIt
 
     items = read_tasks(args.tasks)
     if args.limit:
@@ -433,7 +433,7 @@ async def run(args, cfg: dict) -> dict:
     # The agent is built in a worker thread: OnIt's constructor discovers
     # its tools with asyncio.run, which cannot run inside a running loop.
     def factory():
-        from src.cli import _ensure_mcp_servers
+        from onit.cli import _ensure_mcp_servers
 
         _ensure_mcp_servers(cfg)
         return OnIt(cfg)

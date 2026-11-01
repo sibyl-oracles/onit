@@ -1,0 +1,334 @@
+serving:
+  # Set via env var ONIT_HOST or --host CLI flag
+  # host: http://localhost:8000/v1
+  # host_key: EMPTY  # API key. For OpenRouter set here or via OPENROUTER_API_KEY env var
+  # model: auto-detected from endpoint. Set explicitly for OpenRouter.
+  # Reasoning before answering. On by default: the models worth running
+  # locally reason, and a model told not to answers like a smaller one. Set
+  # false (or pass --no-think) to trade the deliberation for latency.
+  think: true
+  # When think is on, also spend reasoning on the turns that only pick a tool.
+  # A thinking model reasons in full before every tool-call JSON, so a loop of
+  # N tool calls pays for N reasoning passes. Set false to keep thinking for
+  # the opening turn, where the approach is decided, and drop it for the rest
+  # of the loop — the final answer included. Latency for deliberation.
+  think_tool_turns: false
+  # Serving keys the web UI uses *instead of* the ones above. There are no
+  # built-in web values: a browser run inherits everything above, exactly as
+  # the terminal does. Anything named here applies to the web run only, so
+  # this block is how one config serves the two UIs differently — e.g.
+  # `think: false` to drop reasoning in the browser while the terminal keeps
+  # it. An explicit --think / --no-think on the command line wins over both.
+  # web:
+  #   think: false        # reasoning off in the browser only
+  #   temperature: 0.7    # override the sampling for browser turns
+  # Max output tokens per response. 32768 fits any single answer and keeps the
+  # context-compaction threshold healthy (0.70 on a 128k window, 0.825 on a
+  # 256k one) on large-context models.
+  max_tokens: 32768
+  # Context window. Auto-detected from vLLM; Ollama is asked for the model's
+  # native window. When neither can say, 1M is assumed. Set it to hold a run
+  # to a smaller window than the model allows.
+  # max_context_tokens: 1000000
+  # num_ctx: 32768  # Ollama only: context window (prompt+output). Ollama defaults this
+  #                 # to 2048, which truncates long answers. Auto-sized from the model's
+  #                 # native window (capped at max(max_tokens*2, 1000000)) when unset.
+  # host2: http://localhost:8001/v1  # second server for load balancing (or ONIT_HOST2)
+  # model2:  # model on host2; auto-detected when unset
+  # load_balancer: sticky  # sticky | round_robin | random | least_busy
+  # Ollama endpoints only serve while no vLLM/OpenRouter endpoint is healthy.
+  # Set false (or pass --no-ollama-fallback-only) to load-balance across them.
+  # ollama_fallback_only: true
+  #
+  # ── Loop policy ──────────────────────────────────────────────────────────
+  # Ceilings on the ways the agent loop can fail to terminate. Every one is
+  # optional; the default shown is what applies when the key is absent.
+  #
+  # Total turns (one model call each) before the loop gives up and returns
+  # whatever it has. Disabled by default (-1): a long task legitimately runs
+  # hundreds of turns, and a fixed cap stopped that work mid-step. Set a
+  # positive number to bound runs by turn count. With it disabled, the ceiling
+  # below is the only thing that stops a stuck run — and it keys on the tool
+  # name *and* byte-identical arguments, so a model alternating between calls
+  # that differ by a page number or a timestamp never trips it.
+  # max_chat_iterations: -1
+  # Identical tool calls (same name and same arguments) before bailing out.
+  # max_repeated_tool_calls: 30
+  # Retries for a transient API error, with exponential backoff.
+  # max_api_retries: 3
+  # Times to nudge a model that announces a plan but calls no tool.
+  # max_planning_continuations: 2
+  # Times to push past a content-free acknowledgment before accepting it.
+  # max_ack_continuations: 2
+  # Times to resume a final answer that stopped before it was finished — the
+  # output token budget ran out, or the host dropped the tail of the answer and
+  # still reported a clean stop (vLLM does this when the model opens a <think>
+  # block mid-answer). Each resume grants another max_tokens, bounding a long
+  # answer at ~(N+1)*max_tokens.
+  # max_final_continuations: 3
+  # Times to convert a repeated-call stop (the same tool call with the same
+  # arguments returning the same result) into a strategy-change prompt instead
+  # of ending the run. The first bail asks the model to change course and the
+  # task continues; a model that re-loops after this many recoveries ends the
+  # run on the guard's own stop message.
+  # max_repeat_recoveries: 2
+  # Times to hand the tools back to a model that answered a harness nudge
+  # ("write the final answer now, do not call any more tools") by saying the
+  # task is unfinished instead of answering. The reply is a continue request
+  # wearing an answer's clothes: the first one gets its tools back and the
+  # task continues; a model that argues again after that has said its piece,
+  # and the reply is returned as-is.
+  # max_nudge_decline_recoveries: 1
+  #
+  # ── Harness tools ─────────────────────────────────────────────────────────
+  # The tools the model can call to inspect and manage its own context:
+  # context_status (how full the window is, what the run has done, which notes
+  # exist) and note_write/note_read (a scratchpad under the session's
+  # data_path that survives context summarization). Offered only to a run that
+  # has tools of its own. Set false to withdraw them and their prompt block.
+  # harness_tools: true
+  #
+  # ── Result store ──────────────────────────────────────────────────────────
+  # A tool result larger than ~8,000 characters is written whole to
+  # <data_path>/.onit/results/ and enters the conversation as its first 6,000
+  # characters plus a handle. The model reads the rest with result_read /
+  # result_grep — a local file read instead of running the tool again — and an
+  # aged result is cut to ~1,200 characters because the rest stays reachable.
+  # Set false to go back to a hard cut at 16,000 characters with the middle
+  # discarded permanently. Needs a data_path; rides with harness_tools.
+  # result_store: true
+  #
+  # ── Code as action ────────────────────────────────────────────────────────
+  # run_code: a Python interpreter, one per session, that keeps its variables
+  # between calls. Every registered tool is a function inside it, so "search,
+  # filter to three, read each, combine" is one block instead of five turns.
+  # Only what the code prints comes back.
+  #
+  # OFF BY DEFAULT, and read this before turning it on. The code runs in a
+  # child process with the same privileges as OnIt — no AST allowlist and no
+  # path jail, unlike the bash tool. Enable it where the deployment is already
+  # isolated (`onit --container`), and be deliberate about enabling it on a web
+  # deployment that other people can reach. Small models also write worse
+  # Python than they write JSON tool calls, so this can cost accuracy on
+  # 8B-class models even as it cuts turns: benchmark your model class first.
+  # code_execution: false
+  #
+  # Seconds one run_code block may take, tool calls made from inside it
+  # included. Past it the interpreter is killed and restarted, which loses the
+  # variables — the model is told so.
+  # code_timeout: 120
+  #
+  # ── Fact-checking the answer ──────────────────────────────────────────────
+  # The answer streams to the user as it is written, then is checked against
+  # the evidence the run gathered. The check runs in two stages so that being
+  # careful costs the user nothing: a fast one they wait for, and a thorough
+  # one that keeps going behind the answer they already have.
+  #
+  # Set false to hand back the answer unchecked.
+  # verify_answers: true
+  #
+  # The fast stage. Every figure already copied verbatim out of a document the
+  # run read, or off a trusted source, is cleared for free without a model
+  # call at all. What is left gets one small check, capped at this many
+  # seconds — past it the answer stands as written. Findings here are flagged
+  # in a line under the answer rather than rewritten into it, because a
+  # rewrite means generating the whole answer a second time.
+  # verify_timeout_s: 2
+  #
+  # The background stage: read-only lookups for claims the run gathered no
+  # evidence about, and a real rewrite when something is wrong. It starts once
+  # the answer has been handed over, and is cancelled the moment that session
+  # asks anything else. Only the surfaces that can show a late correction run
+  # it (web, terminal); A2A and other one-shot callers never start it.
+  # verify_background: true
+  # Rounds of lookups that stage may run. 0 keeps it to the gathered evidence.
+  # verify_max_tool_turns: 2
+  #
+  # Sources taken at their word, added to the built-in list (reference works,
+  # standards bodies, primary sources — see verify.py). Anything the run read
+  # from the user's own files and documents is trusted already.
+  # verify_trusted_domains:
+  #     - "docs.internal.example.com"
+  #     - ".example.gov"
+
+messages:
+  safety_warning:  "Press 'Enter' key to stop all tasks."
+
+# What the agent is allowed to change about itself. One ladder rather than a
+# switch per feature, raised one rung at a time (see docs/SELF_IMPROVEMENT.md):
+#   off       nothing is recorded, nothing is injected
+#   observe   trajectories are recorded; nothing is injected   (default)
+#   adapt     recalled episodes and the playbook are injected  (not yet built)
+#   extend    validated skills are served as tools             (not yet built)
+#   evolve    scaffold variants may be proposed                (not yet built)
+#
+# At `observe` every request is byte-for-byte what it would have been with this
+# off; the only difference is a JSONL line per task under `path` recording what
+# the run did — which tools ran, how they went, tokens per turn, retries.
+# Override with ONIT_LEARN=off for a baseline run without editing this file.
+learn:
+  autonomy: observe
+  path: "~/.onit/learned"
+  # Store a digest of each tool call's arguments rather than the arguments.
+  # Parameter *names* are kept either way; it is the values that carry file
+  # paths, search queries and the occasional pasted credential.
+  redact_tool_args: true
+
+verbose: false
+show_logs: false
+
+theme: dark
+session_path: "~/.onit/sessions"
+
+# see template examples in the `onit/mcp/prompts/prompt_templates` folder
+template_path:
+
+# Documents a research answer may open after local_search. Each one is a tool
+# round trip whose result then rides along in every later prompt, so this is
+# the dial between recall and how long an answer takes to arrive.
+#
+# Set to the number of documents a result page describes (MAX_DOCUMENT_SUMMARIES).
+# A budget below that silently truncates the very list the prompt just told the
+# model to reason about: the documents ranked last are the ones whose opening
+# does not restate the query, which is exactly the case where the opening is a
+# poor proxy for the contents — a scholarship named only in the tail of an
+# admissions announcement was dropped this way.
+max_documents: 6
+
+# Prior task/response pairs replayed into every request. They are re-sent on
+# each turn, so a long tail costs prompt tokens on all of them. The most recent
+# few are replayed whole; older answers are cut to their opening, which keeps
+# the thread of the conversation without re-sending every answer in full.
+# Kept in sync with the code default (onit.py history_turns Field): 6 pairs is
+# the thread a model needs — deeper history re-sends whole task/response pairs
+# on every turn of every task, which is where multi-task sessions quietly pay.
+history_turns: 6
+
+# Build the agent instruction by calling the prompt function directly instead of
+# reaching PromptsMCPServer over the network. That server hosts one prompt and
+# the prompt is a pure function in this package, so the connection, handshake
+# and round trip in front of every task bought nothing. Set false if your
+# PromptsMCPServer runs a customized prompt rather than the one shipped here.
+prompt_in_process: true
+
+# number of seconds before a request times out; -1 for no overall timeout.
+# Even with -1, connection setup and streaming stalls (no chunk received for
+# 300s) are bounded so a wedged server cannot hang the chat loop forever.
+timeout: -1
+
+# Web UI settings
+web_title: "OnIt Chat"
+web: false
+web_port: 9000
+
+# Full-duplex speech-to-speech (see docs/VOICE.md).
+#
+# Talks to an NVIDIA NemotronLabs VoiceChat container over its realtime
+# WebSocket. That model hears, thinks and speaks end to end — OnIt adds no ASR,
+# TTS or VAD. What OnIt adds is the tool registry: the voice model is given a
+# three-tool facade whose centrepiece, ask_onit, runs the full agent loop.
+#
+# The container wants a GPU with ~66 GB free and takes minutes to load, so the
+# microphone button stays hidden until /api/voice/health reports ready.
+voice:
+  enabled: false
+  # Port 9100, not the container's own default of 9000 — that collides with
+  # web_port above when both run on one host.
+  url: "ws://localhost:9100/v1/realtime"
+  # PCM16 mono, both directions. The server resamples to 16 kHz internally.
+  sample_rate: 24000
+  # Spoken the moment the model commits to a tool call, so a 20-second agent
+  # run is not 20 seconds of silence.
+  # on_hold_message: "Give me a moment while I look that up."
+  # An answer is read aloud, not scrolled: past this many characters the spoken
+  # form is cut at a sentence boundary. The full markdown still reaches the
+  # transcript, links and generated files included.
+  max_spoken_chars: 600
+  # Seconds before a runaway ask_onit is cancelled and the call moves on.
+  tool_timeout: 90
+  # The model documents that it cannot be interrupted while a tool call is
+  # outstanding, which is precisely the window an agent task occupies. With
+  # this on, OnIt measures the microphone itself and cancels the task through
+  # the same safety queue the stop button uses.
+  barge_in: true
+  # barge_in_rms: 900     # PCM16 level that counts as speech
+  # barge_in_frames: 5    # consecutive ~80 ms frames above it (~400 ms)
+  # The model can start turns with no user input and talk to itself; end the
+  # call after this many in a row.
+  max_unprompted_turns: 3
+
+# Google OAuth2 Authentication (Full Redirect Flow)
+# To set up Google OAuth2, follow these steps:
+# 1. Go to https://console.cloud.google.com/
+# 2. Create a new project or select an existing one
+# 3. Enable the Google+ API
+# 4. Go to "Credentials" and create an OAuth 2.0 Client ID
+# 5. Set the application type to "Web application"
+# 6. Add authorized redirect URIs:
+#    - http://localhost:9000/auth/callback
+#    - http://YOUR_SERVER_IP:9000/auth/callback
+# 7. Copy BOTH the Client ID and Client Secret
+#
+# NOTE: Keep your credentials secure and do not commit them to version control!
+web_google_client_id:
+web_google_client_secret:
+
+# Optional: Restrict access to specific email addresses or domains
+# If not specified, any verified Google account can access the web UI
+# Supports:
+#   - Exact emails: "user1@allusers.com" allows specific email addresses
+#   - Domain wildcards: "*@example.com" allows any email from example.com domain
+# web_allowed_emails:
+#     - "*@example.com"
+#     - "user1@allusers.com"
+
+mcp:
+  # Every server below is served over a pipe by a subprocess this OnIt owns:
+  # it runs as you, it exits with you, and no other account on the machine can
+  # reach it. `module` is the launch spec — there is no URL because there is
+  # no socket. `profile` picks which tools a tools server registers.
+  servers:
+    - name: PromptsMCPServer
+      description: Provides prompt templates for instruction generation
+      transport: stdio
+      module: onit.mcp.prompts.prompts
+      enabled: true
+
+    - name: ToolsLocalMCPServer
+      description: Bash, file operations, document search, local retrieval
+      transport: stdio
+      module: tasks.tools
+      profile: local
+      enabled: true
+
+    # The stateless remainder: remote API calls holding no per-user state.
+    - name: ToolsNetMCPServer
+      description: Web search, weather, and GitHub repository tools
+      transport: stdio
+      module: tasks.tools
+      profile: net
+      enabled: true
+
+    # Loop C: the skills the agent promoted for itself (docs/SELF_IMPROVEMENT.md
+    # 4.4).  It serves only the skills named in `pinned.yaml`, so an unpinned
+    # skill is invisible to the model.  It is disabled by default because the
+    # autonomy level has to be `extend` before a skill may be served at all --
+    # the server would start and find an empty pin, and a server that serves
+    # nothing is a process the agent pays for and does not use.
+    #
+    # That level check is real, and it lives in the server
+    # (`load_skills()`), not here: the level arrives as ONIT_LEARN_AUTONOMY in
+    # the spawned process's environment, because a stdio server has no config
+    # of its own.  Below `extend` the server loads nothing and logs which
+    # skills it withheld.
+    - name: SkillsMCPServer
+      description: Skills the agent promoted for itself
+      transport: stdio
+      module: onit.mcp.servers.tasks.skills
+      enabled: false
+
+    # External MCP servers using Streamable HTTP transport (URLs should NOT end in /sse)
+    # - name: SandboxMCPServer
+    #   description: Sandbox code execution server
+    #   url: http://127.0.0.1:18202/mcp
+    #   enabled: true

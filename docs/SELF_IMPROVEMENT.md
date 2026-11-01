@@ -90,7 +90,7 @@ the baseline is frozen.** See §1.1 — this reordered the plan, and the harness
 stopped moving.
 
 The fourth thesis, added August 20: **the cheapest outcome signal in the system is one
-already being computed and thrown away.** [`verify.py`](../src/model/serving/verify.py)
+already being computed and thrown away.** [`verify.py`](../onit/model/serving/verify.py)
 fact-checks every finished answer by default, and its verdict is already sitting in each
 trajectory's `metrics` blob. `derive_signals()` now reads it. Meanwhile the human rating
 path has been wired for weeks and used **zero** times across 1,010 tasks. Unlabeled
@@ -107,10 +107,10 @@ about the current tree, and each is verifiable.
 | # | Finding | Evidence | Status | Effect on the plan |
 |---|---|---|---|---|
 | 1 | **The data gate is open.** 1,010 records / 58 files, 820 weakly labeled. | `~/.onit/learned/trajectories/` | still true | The "wait for data" framing in earlier revisions is dead. Phase 1 is no longer blocked. |
-| 2 | **There is no ruler.** No `eval/`, no `holdout.jsonl`, no `pinned.yaml`; `benchmarks/baselines/full.json` has 2 rows. | `benchmarks/`, `~/.onit/learned/` | **closed** | `src/learn/eval.py` draws the holdout and the dev split and pins the baseline, and `assert_outside_agent_surface()` keeps the ruler out of the agent's reach. |
-| 3 | **The injection path does not exist.** The `memories` kwarg was threaded then deleted; `_build_messages()` has no learned-context input. | `src/model/serving/chat.py` | **closed** | `src/learn/recall.py` and `src/learn/playbook.py` both inject now. |
-| 4 | **`src/learn/lifecycle.py` is dead code.** 178 lines of policy, zero production callers, one test importer. | `src/learn/lifecycle.py` | **closed** | `src/learn/actuator.py` is the missing half, and the policy had a real bug in it that no caller had ever hit. |
-| 5 | **Owner isolation is inert.** All 1,010 records carry `owner: null`; `iter_records()` does not filter by owner. | `src/learn/trajectory.py` | **closed** | `iter_records()` filters by owner and model at the point the record is produced, and every retrieval path passes an explicit filter. |
+| 2 | **There is no ruler.** No `eval/`, no `holdout.jsonl`, no `pinned.yaml`; `benchmarks/baselines/full.json` has 2 rows. | `benchmarks/`, `~/.onit/learned/` | **closed** | `onit/learn/eval.py` draws the holdout and the dev split and pins the baseline, and `assert_outside_agent_surface()` keeps the ruler out of the agent's reach. |
+| 3 | **The injection path does not exist.** The `memories` kwarg was threaded then deleted; `_build_messages()` has no learned-context input. | `onit/model/serving/chat.py` | **closed** | `onit/learn/recall.py` and `onit/learn/playbook.py` both inject now. |
+| 4 | **`onit/learn/lifecycle.py` is dead code.** 178 lines of policy, zero production callers, one test importer. | `onit/learn/lifecycle.py` | **closed** | `onit/learn/actuator.py` is the missing half, and the policy had a real bug in it that no caller had ever hit. |
+| 5 | **Owner isolation is inert.** All 1,010 records carry `owner: null`; `iter_records()` does not filter by owner. | `onit/learn/trajectory.py` | **closed** | `iter_records()` filters by owner and model at the point the record is produced, and every retrieval path passes an explicit filter. |
 
 Finding 5 was the one that gated the others. A retrieval path that returns one user's
 sessions into another's prompt is not a feature, it is a breach, and it had to be closed
@@ -196,7 +196,7 @@ independently and land on this plan's own gap list:
   model-written memory. Loop A and Loop B are the *learned* version of the same idea. They
   must share one on-disk root and one path-jail — see §4.0.
 - **H1 (typed I/O)** fixes two live bugs that corrupt Layer 0's own data: `outputSchema` is
-  captured at [`lib/tools.py:182`](../src/lib/tools.py#L182), never read, and shipped
+  captured at [`lib/tools.py:182`](../onit/lib/tools.py#L182), never read, and shipped
   inside the `tools=` payload where it is not a valid field; and the disabled iteration cap
   lets `turn_count` run unbounded.
 
@@ -373,11 +373,11 @@ is expired. The data is there; the label is there. The blocker is the ruler.
 
 | # | Gap | Where it lives | Closed? |
 |---|---|---|---|
-| 1 | **No ruler.** No `eval/`, no `holdout.jsonl`, no `pinned.yaml`; `benchmarks/baselines/full.json` pins 2 rows for 1 model. | `benchmarks/` | **Closed.** `src/learn/eval.py` builds the holdout, the dev split and the pinned baseline, and `assert_outside_agent_surface()` enforces I7 in code. |
-| 2 | **No injection path.** `memories` was threaded `onit.py` → `chat()` → `_build_messages()` and never used; the Sept 22 simplification pass deleted the dead kwarg entirely. | `src/model/serving/chat.py` | **Closed.** `src/learn/recall.py` and `src/learn/playbook.py` inject at autonomy 2, and the recall rides in the volatile half while the playbook rides at the tail of the static half. |
-| 3 | **No outcome signal beyond the fact-checker.** 0 ratings; no implicit signals; `onit learn` has no text-UI equivalent. | `src/learn/`, `src/ui/commands.py` | **Closed.** `src/learn/signals.py` derives rephrase/acceptance signals, `src/ui/rating.py` adds a `\rate` command, and the derived labels land beside the trajectories rather than overwriting them. |
-| 4 | **Dead policy module.** `should_propose_creation()` / `should_update()` / `should_archive()` / `pending_proposals()` have **zero production callers**; the only importer is `src/test/test_learn_events.py`, and the module is not exported from `learn/__init__.py`. | `src/learn/lifecycle.py` | **Closed.** `src/learn/actuator.py` is the other half: it reports the policy, withholds what the policy says to withhold, and restores it. Withholding is reversible by construction. |
-| 5 | **No self-modification surface, and the autonomy ladder is decorative.** `_MAX_IMPLEMENTED = OBSERVE`; `adapt` / `extend` / `evolve` are exported, documented in `default.yaml`, and **silently degrade to `observe`**. | `src/learn/config.py` | **Closed.** The cap is now `ADAPT` — the highest rung implemented — and the cap is loud: `requested_level()` and `capped()` say what was asked for and what was granted. Loop C's skill server is the self-modification surface. |
+| 1 | **No ruler.** No `eval/`, no `holdout.jsonl`, no `pinned.yaml`; `benchmarks/baselines/full.json` pins 2 rows for 1 model. | `benchmarks/` | **Closed.** `onit/learn/eval.py` builds the holdout, the dev split and the pinned baseline, and `assert_outside_agent_surface()` enforces I7 in code. |
+| 2 | **No injection path.** `memories` was threaded `onit.py` → `chat()` → `_build_messages()` and never used; the Sept 22 simplification pass deleted the dead kwarg entirely. | `onit/model/serving/chat.py` | **Closed.** `onit/learn/recall.py` and `onit/learn/playbook.py` inject at autonomy 2, and the recall rides in the volatile half while the playbook rides at the tail of the static half. |
+| 3 | **No outcome signal beyond the fact-checker.** 0 ratings; no implicit signals; `onit learn` has no text-UI equivalent. | `onit/learn/`, `onit/ui/commands.py` | **Closed.** `onit/learn/signals.py` derives rephrase/acceptance signals, `onit/ui/rating.py` adds a `\rate` command, and the derived labels land beside the trajectories rather than overwriting them. |
+| 4 | **Dead policy module.** `should_propose_creation()` / `should_update()` / `should_archive()` / `pending_proposals()` have **zero production callers**; the only importer is `onit/test/test_learn_events.py`, and the module is not exported from `learn/__init__.py`. | `onit/learn/lifecycle.py` | **Closed.** `onit/learn/actuator.py` is the other half: it reports the policy, withholds what the policy says to withhold, and restores it. Withholding is reversible by construction. |
+| 5 | **No self-modification surface, and the autonomy ladder is decorative.** `_MAX_IMPLEMENTED = OBSERVE`; `adapt` / `extend` / `evolve` are exported, documented in `default.yaml`, and **silently degrade to `observe`**. | `onit/learn/config.py` | **Closed.** The cap is now `ADAPT` — the highest rung implemented — and the cap is loud: `requested_level()` and `capped()` say what was asked for and what was granted. Loop C's skill server is the self-modification surface. |
 
 Two of these are not gaps but **constraints the implementation must respect** — they are
 recorded in §1.0 and repeated where they bind: tool output carries no untrusted marking
@@ -422,28 +422,28 @@ An honest audit. Findings are file-referenced so they can be verified.
 
 | Asset | Location | Why it matters |
 |---|---|---|
-| Rich per-run telemetry | [`TurnMetrics`](../src/model/serving/chat.py#L95) — turns, tool calls, prefill/decode split, compactions, peak prompt tokens | Free efficiency features for the reward model — already computed |
+| Rich per-run telemetry | [`TurnMetrics`](../onit/model/serving/chat.py#L95) — turns, tool calls, prefill/decode split, compactions, peak prompt tokens | Free efficiency features for the reward model — already computed |
 | Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L29) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench + METR time-horizon layer | **The fitness function** — the single biggest head start, but aimed at the model rather than the scaffold. See gap 5 |
-| Answer verifier | [`verify.py`](../src/model/serving/verify.py) — fact-checks the finished answer against the evidence that produced it; on by default | **An outcome signal that already runs**, already recorded per task and not yet read. See gap 3 |
-| Explicit run state | [`RunState`](../src/model/serving/state.py#L86), [`ResultStore`](../src/model/serving/results.py), [harness tools](../src/model/serving/harness.py) | Phase 0.5 (H2/H4/H6). `stop_reason` is the signal metrics cannot supply |
+| Answer verifier | [`verify.py`](../onit/model/serving/verify.py) — fact-checks the finished answer against the evidence that produced it; on by default | **An outcome signal that already runs**, already recorded per task and not yet read. See gap 3 |
+| Explicit run state | [`RunState`](../onit/model/serving/state.py#L86), [`ResultStore`](../onit/model/serving/results.py), [harness tools](../onit/model/serving/harness.py) | Phase 0.5 (H2/H4/H6). `stop_reason` is the signal metrics cannot supply |
 | LLM-as-judge | [`benchmarks/scorers/onit_judge.py`](../benchmarks/scorers/onit_judge.py) | Quality gate for open-ended tasks |
 | Results ledger | [`benchmarks/RESULTS.md`](../benchmarks/RESULTS.md) | Where promotion evidence gets written |
-| MCP tool discovery | [`discover_tools()`](../src/lib/tools.py#L213), [`ToolRegistry`](../src/type/tools.py#L347) | Skills can ship as an MCP server — no new plumbing concept |
-| Containment | [`command_policy.py`](../src/mcp/servers/tasks/os/bash/command_policy.py), `installs_sealed()`, [`container_launcher.py`](../src/container_launcher.py) | Sandbox for validating self-generated code already exists |
-| Prompt templating | [`build_assistant_instruction()`](../src/mcp/prompts/prompts.py#L43) with YAML `template_path` override | Evolved prompts have a place to land |
-| Session index / ownership | [`sessions.py`](../src/sessions.py), `get_session_owner()` | Per-user memory scoping is already possible |
+| MCP tool discovery | [`discover_tools()`](../onit/lib/tools.py#L213), [`ToolRegistry`](../onit/type/tools.py#L347) | Skills can ship as an MCP server — no new plumbing concept |
+| Containment | [`command_policy.py`](../onit/mcp/servers/tasks/os/bash/command_policy.py), `installs_sealed()`, [`container_launcher.py`](../onit/container_launcher.py) | Sandbox for validating self-generated code already exists |
+| Prompt templating | [`build_assistant_instruction()`](../onit/mcp/prompts/prompts.py#L43) with YAML `template_path` override | Evolved prompts have a place to land |
+| Session index / ownership | [`sessions.py`](../onit/sessions.py), `get_session_owner()` | Per-user memory scoping is already possible |
 
 **The gaps**, re-verified against `main` on August 20, 2026. Gap 1 is closed; 2 and 3 moved;
 5 grew; 6 and 7 are new and were not visible until there was a corpus to look at:
 
 1. ~~**No trajectory persistence.**~~ *Closed.* The session file still holds
-   `{task, response, timestamp}`; [`src/learn/`](../src/learn/) now writes the run
+   `{task, response, timestamp}`; [`onit/learn/`](../onit/learn/) now writes the run
    alongside it.
 2. **`memories` is a dead parameter.** *Still dead, deliberately — and now the one thing
    standing between a recording agent and a learning one.* It is threaded from `onit.py`
-   (`'memories': None`, at [three](../src/onit.py#L1486) [call](../src/onit.py#L1806)
-   [sites](../src/onit.py#L2355)) through [`chat.py`](../src/model/serving/chat.py#L2759)
-   into [`_build_messages()`](../src/model/serving/chat.py#L1360), whose body never
+   (`'memories': None`, at [three](../onit/onit.py#L1486) [call](../onit/onit.py#L1806)
+   [sites](../onit/onit.py#L2355)) through [`chat.py`](../onit/model/serving/chat.py#L2759)
+   into [`_build_messages()`](../onit/model/serving/chat.py#L1360), whose body never
    references it. Phase 0 records but injects nothing, so the hook stays unwired until
    Phase 1 — which is what makes level `observe` byte-for-byte identical to learning off.
    Every other gap below is a question of *what* to inject. This one is the aperture, and
@@ -457,7 +457,7 @@ An honest audit. Findings are file-referenced so they can be verified.
      end through the web UI. **Used zero times across 1,010 tasks.** A signal conditional on
      someone bothering to click is not a signal, and no amount of further UI work changes
      that. Implicit signals are the replacement, and are now a Phase 1 deliverable.
-   - **A verifier that already runs.** [`verify.py`](../src/model/serving/verify.py)
+   - **A verifier that already runs.** [`verify.py`](../onit/model/serving/verify.py)
      fact-checks each finished answer against the evidence that produced it, on by
      default, and `TurnMetrics` already records `verify_s`, `verify_issues` and
      `verify_revisions`. Those flow straight into each record's `metrics` blob.
@@ -468,8 +468,8 @@ An honest audit. Findings are file-referenced so they can be verified.
      is what implicit signals and the text-UI rating path (§5, deliverable 3) are for.
      *Verified October 22, 2026 — this bullet was open in the August 20 revision.*
 4. **Tool set is frozen at startup.** `ToolRegistry.register()`
-   ([`type/tools.py`](../src/type/tools.py#L595)) is called from exactly one site —
-   [`lib/tools.py`](../src/lib/tools.py#L266), during discovery. No runtime registration,
+   ([`type/tools.py`](../onit/type/tools.py#L595)) is called from exactly one site —
+   [`lib/tools.py`](../onit/lib/tools.py#L266), during discovery. No runtime registration,
    no unregistration, no reload. Loop C has no insertion point to build against.
 5. **No holdout discipline — and the fitness function measures the wrong thing.** This gap
    grew since August 09, because settling the harness fixed the ruler's *stability* and
@@ -517,7 +517,7 @@ An honest audit. Findings are file-referenced so they can be verified.
 
 **The one constraint that shapes everything:** the instruction is deliberately split into
 a **static, prefix-cacheable half** and a **volatile half**
-([`prompts.py`](../src/mcp/prompts/prompts.py#L365-L390)), so a server with prefix caching
+([`prompts.py`](../onit/mcp/prompts/prompts.py#L365-L390)), so a server with prefix caching
 skips prefilling the preamble on every request of every session. Any learned context
 injected *in the middle* of that prefix invalidates the cache from that byte onward,
 across all sessions. This is a real cost and it dictates the placement decisions in §4.2.
@@ -654,8 +654,8 @@ Implementation notes:
 
 - `TurnMetrics` already produces `metrics` and per-turn `tools` — the change is to
   **persist the sink** rather than log-and-drop it
-  ([`onit.py:1150-1154`](../src/onit.py#L1150-L1154)).
-- `_execute_tool()` ([`chat.py:777`](../src/model/serving/chat.py#L777)) is the single
+  ([`onit.py:1150-1154`](../onit/onit.py#L1150-L1154)).
+- `_execute_tool()` ([`chat.py:777`](../onit/model/serving/chat.py#L777)) is the single
   place to capture per-tool ok/error/duration.
 - **Store argument digests, not arguments.** Tool args carry file paths, queries and
   occasionally credentials. Hash by default; raw capture behind an explicit opt-in flag.
@@ -671,10 +671,10 @@ Implementation notes:
 |---|---|---|---|
 | Tool error / retry / truncation counts | already in the loop | free | ✅ recorded, all 1,010 |
 | Efficiency (turns, tool calls, compactions, peak tokens) | `TurnMetrics` | free | ✅ recorded, all 1,010 |
-| **Verifier verdict** | [`verify.py`](../src/model/serving/verify.py) — on by default; `verify_issues`, `verify_revisions` | **free, already computed** | ✅ **read into `signals.verifier`; 820 clean / 70 issues / 120 unchecked** |
+| **Verifier verdict** | [`verify.py`](../onit/model/serving/verify.py) — on by default; `verify_issues`, `verify_revisions` | **free, already computed** | ✅ **read into `signals.verifier`; 820 clean / 70 issues / 120 unchecked** |
 | Execution feedback (exit codes, test pass/fail) | sandbox `bash` results | free, strongest where available | not extracted |
 | Implicit user signal | next-turn rephrase ≈ failure; acceptance/thanks ≈ success | small heuristic | not built — Phase 1 deliverable 3 (§5) |
-| Explicit rating | 👍/👎 endpoint in [`src/ui/api.py`](../src/ui/api.py) | ~half a day, highest value per bit | ✅ shipped · **used 0 times in 1,010 tasks** · no text-UI equivalent |
+| Explicit rating | 👍/👎 endpoint in [`onit/ui/api.py`](../onit/ui/api.py) | ~half a day, highest value per bit | ✅ shipped · **used 0 times in 1,010 tasks** · no text-UI equivalent |
 | LLM judge | `onit_judge` on a sample | tokens | not wired to trajectories |
 
 The August 20 re-verification reordered this table. "Highest value per bit" was true of the
@@ -696,11 +696,11 @@ distilled outcome ("what worked / what failed"), Reflexion- and Dynamic-Cheatshe
   parameter.
 - **Placement**: a compact block in the **volatile half**, alongside the task — episodes
   are per-task and would thrash the cache if placed in the prefix. The seam is
-  `split_instruction()` ([`lib/text.py`](../src/lib/text.py)); the prefix contract is
-  documented at [`chat.py`](../src/model/serving/chat.py) and is worth ~2,800
+  `split_instruction()` ([`lib/text.py`](../onit/lib/text.py)); the prefix contract is
+  documented at [`chat.py`](../onit/model/serving/chat.py) and is worth ~2,800
   tokens/request on every turn of every task.
 - **Retrieval**: start with BM25/TF-IDF over the task text. OnIt already ships local
-  search infrastructure ([`local/search/toolkit.py`](../src/mcp/servers/tasks/local/search/toolkit.py));
+  search infrastructure ([`local/search/toolkit.py`](../onit/mcp/servers/tasks/local/search/toolkit.py));
   reuse it before reaching for embeddings. Per user's constraint, no new pip deps —
   hand-roll or reuse what's vendored. `toolkit.py` already has BM25, an optional dense
   path and RRF; the corpus is small enough that BM25 alone is the right first cut.
@@ -746,7 +746,7 @@ trajectories by a Reflector/Curator pair, injected into the standing instruction
 
 **Placement — this is the load-bearing decision.** The playbook goes at the **tail of the
 static half**, immediately before `INSTRUCTION_SPLIT`
-([`prompts.py:365-368`](../src/mcp/prompts/prompts.py#L365-L368)):
+([`prompts.py:365-368`](../onit/mcp/prompts/prompts.py#L365-L368)):
 
 ```
 [ role · procedure · standing rules ]  ← unchanged bytes, still prefix-cached
@@ -797,8 +797,8 @@ with an ad-hoc bash/Python fragment, **promote the fragment to an MCP tool**.
   4. a static check against `command_policy.py`;
   5. benchmark delta ≥ 0 on the holdout — a new tool that adds nothing still costs
      schema tokens and dilutes selection accuracy.
-- **Serving**: a new **`SkillsMCPServer`** (`src/mcp/servers/tasks/skills/`, port 18203)
-  registered in [`src/configs/default.yaml`](../src/configs/default.yaml),
+- **Serving**: a new **`SkillsMCPServer`** (`onit/mcp/servers/tasks/skills/`, port 18203)
+  registered in [`onit/configs/default.yaml`](../onit/configs/default.yaml),
   loading only skills
   listed in `pinned.yaml`. **No change to `ToolRegistry` semantics is needed** — the
   registry discovers it like any other MCP server. Hot-reload comes later; a restart is
@@ -818,7 +818,7 @@ research procedure, instructions, sandbox workflow — against `benchmarks/` tas
 GEPA fits OnIt's budget precisely: reflective mutation from *trajectory text* (which
 Layer 0 now stores), Pareto-front retention over per-instance scores, ~35× fewer rollouts
 than RL. Output is a YAML `instruction_template` — an artifact
-[`prompts.py`](../src/mcp/prompts/prompts.py#L125-L136) already knows how to load, and
+[`prompts.py`](../onit/mcp/prompts/prompts.py#L125-L136) already knows how to load, and
 which now keeps its prefix cache when it interpolates nothing volatile (§3).
 
 **D2 — Code-level self-modification (DGM/HGM).** The agent proposes patches to its own
@@ -853,7 +853,7 @@ One knob, `learn.autonomy` in `default.yaml`, defaulting to 1:
 | **4 — evolve** | Loop D; **always** human-reviewed PR, never auto-merge |
 
 **What happens when a level is asked for and does not exist.**
-`_MAX_IMPLEMENTED = EXTEND` in [`src/learn/config.py`](../src/learn/config.py), and
+`_MAX_IMPLEMENTED = EXTEND` in [`onit/learn/config.py`](../onit/learn/config.py), and
 `autonomy()` returns `min(level, _MAX_IMPLEMENTED)`. A config asking for `evolve` gets
 `extend` — the highest rung that is implemented. The cap is loud: `requested_level()`
 and `capped()` say what was asked for and what was granted, and `learn report` prints
@@ -906,7 +906,7 @@ the loop is *built and wired*, and the loop is *unproven*.  Those are different
 claims, and the difference is the whole subject of this document.
 
 **What "the tests pass" is worth, exactly.**  §5.1 records this in full: the
-suite is 3,024 tests with the `src/learn/` package at 91% line coverage, and
+suite is 3,024 tests with the `onit/learn/` package at 91% line coverage, and
 it establishes that the scaffold is wired, bounded, reversible and
 unreachable-by-the-agent.  It does not establish that the agent is better,
 and it is not intended to — nothing in a unit test can.  The A/B is the
@@ -968,15 +968,15 @@ and it is specified in §4.2.
 
 Shipped:
 
-- [`src/learn/config.py`](../src/learn/config.py) — the autonomy ladder, resolved from the
+- [`onit/learn/config.py`](../onit/learn/config.py) — the autonomy ladder, resolved from the
   `learn:` config block or `ONIT_LEARN`. Levels above what exists are capped, so a config
   asking for `evolve` today gets `observe` rather than a run that believes it is evolving.
-- [`src/learn/trajectory.py`](../src/learn/trajectory.py) — schema v1, append-only writer,
+- [`onit/learn/trajectory.py`](../onit/learn/trajectory.py) — schema v1, append-only writer,
   argument redaction, owner hashing, ratings folded in at read time.
 - Per-tool ok/error/duration/result-size from
-  [`_execute_tool()`](../src/model/serving/chat.py#L777) — every path that answers a call
+  [`_execute_tool()`](../onit/model/serving/chat.py#L777) — every path that answers a call
   records one, failures included — plus an API-retry counter on `TurnMetrics`.
-- Recording wired into all three task paths in [`onit.py`](../src/onit.py): `process_task`
+- Recording wired into all three task paths in [`onit.py`](../onit/onit.py): `process_task`
   (web), the interactive CLI, and loop mode.
 - 👍/👎 under every answer in the web UI, backed by `POST /api/rating`. The buttons are
   quiet until hovered, restore the verdict already given when history reloads, and a
@@ -1029,7 +1029,7 @@ Tools (worst failure rate first)
 Recording also surfaced a pre-existing telemetry gap it depends on: the Ollama
 *streaming* path read `prompt_eval_count` but never `eval_count`, so every streamed
 Ollama run accounted for zero generated tokens. Fixed in
-[`_ollama_process_streaming_response`](../src/model/serving/chat.py#L1198); the
+[`_ollama_process_streaming_response`](../onit/model/serving/chat.py#L1198); the
 non-streaming path had always read it.
 
 ### Phase 0.5 — Settle the harness · autonomy 1 — **complete**
@@ -1044,10 +1044,10 @@ land before the baseline could be pinned, and why.
 |---|---|---|---|
 | **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moved `tool_errors` from server stack traces to harness refusals | ✅ done (Aug 09) |
 | **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` was unbounded, so its distribution was not a baseline | ✅ done (Aug 09) |
-| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ✅ done — [`harness.py`](../src/model/serving/harness.py#L95-L128) |
-| **H6** | `RunState` object | What `_record_trajectory` now serializes; supplies `stop_reason` | ✅ done — [`state.py`](../src/model/serving/state.py#L86) |
-| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ✅ done — [`results.py`](../src/model/serving/results.py) |
-| **H5** | Code as action — `run_code` + per-session interpreter | **Was excluded from this phase. Shipped anyway.** See below | ⚠️ done, default off — [`interpreter.py`](../src/model/serving/interpreter.py) |
+| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ✅ done — [`harness.py`](../onit/model/serving/harness.py#L95-L128) |
+| **H6** | `RunState` object | What `_record_trajectory` now serializes; supplies `stop_reason` | ✅ done — [`state.py`](../onit/model/serving/state.py#L86) |
+| **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ✅ done — [`results.py`](../onit/model/serving/results.py) |
+| **H5** | Code as action — `run_code` + per-session interpreter | **Was excluded from this phase. Shipped anyway.** See below | ⚠️ done, default off — [`interpreter.py`](../onit/model/serving/interpreter.py) |
 
 **H1 and H3 shipped August 09, 2026** (suite 966 → 1028, all green). Two findings that
 change this plan's own reading of its data:
@@ -1063,11 +1063,11 @@ change this plan's own reading of its data:
 **On H5 — the exclusion that did not hold.** The August 09 revision said code as action was
 "explicitly *not* in Phase 0.5," because one `run_code` call replaces N tool calls and
 `tool_calls` per task therefore stops being comparable across the boundary. It shipped
-regardless: [`interpreter.py`](../src/model/serving/interpreter.py), offered as `run_code`
-via [`harness.py`](../src/model/serving/harness.py#L199).
+regardless: [`interpreter.py`](../onit/model/serving/interpreter.py), offered as `run_code`
+via [`harness.py`](../onit/model/serving/harness.py#L199).
 
 What saves the baseline is that it is **default off**
-([`onit.py`](../src/onit.py#L89-L93)), for reasons unrelated to this plan — it runs
+([`onit.py`](../onit/onit.py#L89-L93)), for reasons unrelated to this plan — it runs
 model-written Python with the process's privileges, and small models write worse Python
 than they write JSON. So the corpus is uncontaminated *today*, and the constraint converts
 from a schedule into a standing rule:
@@ -1103,7 +1103,7 @@ so the ordering is: build the ruler, then build the loop, then measure them agai
 - Rank retrieved episodes by the outcome signal from §8 item 1. Recall without a notion of
   which episode went *well* retrieves the agent's own mistakes as readily as its successes,
   which is the documented failure mode Reflexion exists to avoid.
-- `src/learn/recall.py` — lexical retrieval over trajectories, token-budgeted.
+- `onit/learn/recall.py` — lexical retrieval over trajectories, token-budgeted.
 - SQLite index over `trajectories/*.jsonl`, derived and rebuildable (§4.0).
 - Reconcile with H2: `note_read` (this session's own notes) and recall (prior sessions'
   distilled outcomes) are one tool family from the model's point of view. Ship them with
@@ -1112,8 +1112,8 @@ so the ordering is: build the ruler, then build the loop, then measure them agai
 
 ### Phase 2 — Playbook *(~3 weeks)* · autonomy 2 — **built, unmeasured**
 
-- `src/learn/playbook.py` — item store, delta ops, decay/eviction, scope isolation.
-- `src/learn/reflect.py` — Reflector + Curator passes (offline, batch).
+- `onit/learn/playbook.py` — item store, delta ops, decay/eviction, scope isolation.
+- `onit/learn/reflect.py` — Reflector + Curator passes (offline, batch).
 - Playbook block at the tail of the static half in `build_assistant_instruction()`;
   version pinned per session.
 - `onit learn` CLI: `--status`, `--reflect`, `--promote`, `--rollback`, `--show`,
@@ -1123,7 +1123,7 @@ so the ordering is: build the ruler, then build the loop, then measure them agai
 **Exit criterion**: a measurable, reproducible win on held-out tasks with playbook on vs.
 off — or an honest negative result and a decision to stop.
 
-**As built (October 22, 2026).**  `src/learn/playbook.py` — the item store, the
+**As built (October 22, 2026).**  `onit/learn/playbook.py` — the item store, the
 Reflector (`reflect`), the Curator (`curate`), delta-only updates
 (`apply_deltas`), the token-capped selection (`select`), and the per-session
 version pin.  The block rides at the *tail of the static half* of the
@@ -1132,11 +1132,11 @@ instance rather than the run state, because a per-task pin would change the
 static bytes per task.  `onit learn --playbook`, `--reflect` and `--rollback`
 drive it.  **The A/B has not been run.**
 
-**As built (October 22, 2026).**  `src/learn/recall.py` — BM25 over the recorded
+**As built (October 22, 2026).**  `onit/learn/recall.py` — BM25 over the recorded
 trajectories, reusing the retrieval kit from `toolkit.py`, ranked by the outcome
 signal so the agent's own failures do not come back as lessons.  The recalled
 episodes ride in the *volatile* half of the prompt (§4.2).  The result is
-`src/learn/eval.py`: the holdout, the dev split, the pinned baseline, and the
+`onit/learn/eval.py`: the holdout, the dev split, the pinned baseline, and the
 `assert_outside_agent_surface()` check that makes I7 a code path rather than a
 promise.  `onit learn --holdout` draws the split; `onit learn --eval` reports
 it.  **The A/B has not been run** — the split is drawable, the baseline is
@@ -1144,8 +1144,8 @@ writable, and the win is unproven.
 
 ### Phase 3 — Skills *(~4 weeks)* · autonomy 3 — **built, unmeasured**
 
-- `src/learn/skills.py` — mining, synthesis, five-gate validation.
-- `src/mcp/servers/tasks/skills/mcp_server.py` — serves pinned skills; config entries.
+- `onit/learn/skills.py` — mining, synthesis, five-gate validation.
+- `onit/mcp/servers/tasks/skills/mcp_server.py` — serves pinned skills; config entries.
 - Wire GAIA in `benchmarks/tasks/agentic.py` as the tool-creation benchmark.
 - `onit skills` CLI: `list`, `test`, `pin`, `unpin`, `rm`.
 
@@ -1153,11 +1153,11 @@ writable, and the win is unproven.
 
 | Module | What it is |
 |---|---|
-| `src/learn/skills.py` | The store: manifests, the pin, delta-only updates (`insert` / `update` / `deprecate`) |
-| `src/learn/skills_mining.py` | The Reflector: groups calls by `(tool, args_digest)`, counts distinct *sessions* |
-| `src/learn/skills_gate.py` | The five checks: manifest, source, dependencies, tests, regression |
-| `src/learn/skills_curator.py` | The Curator: synthesize → gate → pin → rollback |
-| `src/mcp/servers/tasks/skills/mcp_server.py` | Serves exactly what the pin names |
+| `onit/learn/skills.py` | The store: manifests, the pin, delta-only updates (`insert` / `update` / `deprecate`) |
+| `onit/learn/skills_mining.py` | The Reflector: groups calls by `(tool, args_digest)`, counts distinct *sessions* |
+| `onit/learn/skills_gate.py` | The five checks: manifest, source, dependencies, tests, regression |
+| `onit/learn/skills_curator.py` | The Curator: synthesize → gate → pin → rollback |
+| `onit/mcp/servers/tasks/skills/mcp_server.py` | Serves exactly what the pin names |
 
 **The mining trick.**  Trajectories redact argument *values* — the values are
 where file paths, search queries and the occasional pasted credential live — but each
@@ -1271,7 +1271,7 @@ default: `onit learn --skills pin NAME` without a `--delta` says no.
 ### Phase 4 — Evolution *(~6 weeks)* · autonomy 4 — **not started**
 
 - Fix the custom-template prefix-split bug **first**.
-- `src/learn/evolve/` — GEPA-style prompt optimizer over `benchmarks/` tasks (D1).
+- `onit/learn/evolve/` — GEPA-style prompt optimizer over `benchmarks/` tasks (D1).
 - Archive + CMP-based parent selection for code variants (D2), worktree-isolated.
 - Every promotion is a PR with the fitness record attached.
 
@@ -1284,7 +1284,7 @@ suite proves about them and what it does not**, because the two are easy
 to confuse and the difference is the subject of this document.
 
 **The suite.** 2,915 passing, 2 skipped, across the repository.  The
-`src/learn/` package went from 88% line coverage to **93%** when these
+`onit/learn/` package went from 88% line coverage to **93%** when these
 were added:
 
 | Module | Before | After | What the gap was |
@@ -1302,23 +1302,23 @@ that shipped with each deliverable check that module's own contract.
 These five check the things that only exist *between* modules, which is
 where the failures that matter live:
 
-- [`test_learn_invariants.py`](../src/test/test_learn_invariants.py) — the
+- [`test_learn_invariants.py`](../onit/test/test_learn_invariants.py) — the
   cross-cutting invariants (I1, I2, I3, I4, I7), written adversarially:
   each test tries to *break* an invariant rather than confirm it.
-- [`test_learn_signal_properties.py`](../src/test/test_learn_signal_properties.py) —
+- [`test_learn_signal_properties.py`](../onit/test/test_learn_signal_properties.py) —
   the implicit signals as **properties**, with generated inputs rather
   than a list of examples.  The failure mode of a heuristic labeler is
   not a case someone thought of; it is a case nobody thought of.
-- [`test_learn_chain.py`](../src/test/test_learn_chain.py) — the whole chain
+- [`test_learn_chain.py`](../onit/test/test_learn_chain.py) — the whole chain
   end to end: record → label → split → mine → gate → promote → serve → roll
   back.  A chain test is the only kind that catches a signature that
   drifted or a path that is right in isolation and wrong in sequence.
-- [`test_learn_search.py`](../src/test/test_learn_search.py) — the search
+- [`test_learn_search.py`](../onit/test/test_learn_search.py) — the search
   fallback, checked against the toolkit it mirrors.  The two must fold
   plurals *identically*, quirks included ("this" → "thi" in both),
   because a query folded one way against a document folded another is a
   match that silently misses.
-- [`test_learn_skill_store.py`](../src/test/test_learn_skill_store.py) — the pin,
+- [`test_learn_skill_store.py`](../onit/test/test_learn_skill_store.py) — the pin,
   the deltas, the manifest rules and the name rules.
 
 **One real bug, found by the new tests.**  The skills gate's screen for
@@ -1405,7 +1405,7 @@ against the exclusion set directly.  Measured on the real corpus: 27 of
 code path that took a holdout item, asked the agent the question, and
 graded the answer.
 
-`src/learn/runner.py` is that path, and `src/learn/ab.py` drives it:
+`onit/learn/runner.py` is that path, and `onit/learn/ab.py` drives it:
 
 ```
 onit learn --eval-run                 # one arm, the numbers
@@ -1416,7 +1416,7 @@ onit learn --eval-run --eval-split holdout --eval-limit 50
 The agent is driven through `OnIt.process_task` — the same entry point
 the benchmark provider uses — so a number produced here means what it
 would mean in a real run.  The grader is a **separate model** with no
-tools (`src/learn/llm.py`): a judge that could run the agent's tools
+tools (`onit/learn/llm.py`): a judge that could run the agent's tools
 would not be a judge.
 
 Two things the runner refuses to get wrong:
@@ -1472,7 +1472,7 @@ Three fixes, in order of how much they matter:
    tools *inside* a cluster.  Two runs of the same kind of question are
    comparable; that is what a contrast needs.  Branches 1 and 2 now fire
    **48 times** where they fired 0.
-2. **The model-based Reflector exists** (`src/learn/reflector.py`).  It
+2. **The model-based Reflector exists** (`onit/learn/reflector.py`).  It
    hands a model two contrasting runs and asks for the difference a
    person reading both transcripts would name — the arguments, the
    order, the reasoning — and parses the reply strictly.  The model is
@@ -1579,7 +1579,7 @@ missing is no longer the code.*
 **The recommendation in one line: run the measurement, before building anything else.**
 
 The previous version of this section said *build the ruler before the loop*.  That was
-right, and it is done: `src/learn/eval.py` draws the holdout and the dev split, pins the
+right, and it is done: `onit/learn/eval.py` draws the holdout and the dev split, pins the
 baseline, and keeps the whole apparatus outside the agent's writable surface with an
 assertion rather than a convention.  Loops A, B and C are built, tested, and reachable
 from a config file.
@@ -1632,7 +1632,7 @@ blob. `derive_signals()` writes `"verifier": None` next to them. Read the field 
 This is the highest ratio of unlocked capability to lines changed in the
 document: it converts an unlabeled corpus into a weakly-labeled one retroactively, across
 data already on disk. Ratings were never going to do this — 1,010 tasks produced zero.
-**Done September 04, 2026** — `verifier_signal()` in `src/learn/trajectory.py` derives
+**Done September 04, 2026** — `verifier_signal()` in `onit/learn/trajectory.py` derives
 `issues` / `clean` / None (None = the check never ran, which is not "clean"), reported in
 `learn report`; `scripts/backfill_verifier_signals.py` relabeled the corpus in place:
 395 records → 298 clean, 29 issues, 68 unchecked (the corpus has since grown to 1,010
@@ -1696,10 +1696,10 @@ as specified. That is a known scope limit to fix before GAIA enters the holdout.
 enters the measurement panel. Judge rotation (glm-5.1:cloud regrade) agreed 5/5. The
 session also fixed a benchmark-harness bug found by the run: MCP server *spawn children*
 crash-looped (`ModuleNotFoundError: mcp.types`) because they inherit the runner's
-`sys.path` with `src/` first — the `55b7d0e` fix pinned the SDK in the parent's
+`sys.path` with `onit/` first — the `55b7d0e` fix pinned the SDK in the parent's
 `sys.modules` only, and spawn children start with a fresh module table. Fixed by
-demoting the `src/` path entry before the SDK imports in `benchmarks/onit_provider.py`
-and, as defense in depth, at module import in `src/mcp/servers/run.py`. GAIA attempted
+demoting the `onit/` path entry before the SDK imports in `benchmarks/onit_provider.py`
+and, as defense in depth, at module import in `onit/mcp/servers/run.py`. GAIA attempted
 and documented: `GatedRepoError 401` without `HF_TOKEN`; also fixed the task wrapper's
 `trust=True`, which datasets 5.x rejects outright (the hub repo has been
 Parquet-backed since October 2025, so no `trust` flag is needed).

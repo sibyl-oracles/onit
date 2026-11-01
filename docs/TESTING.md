@@ -2,7 +2,7 @@
 
 Three layers, answering different questions:
 
-- **The pytest suite** (`src/test/`) proves the code is correct in the abstract —
+- **The pytest suite** (`onit/test/`) proves the code is correct in the abstract —
   mocks stand in for servers, no model is called, nothing listens on a port.
   Run it after every change; it is the fast, deterministic half.
 - **The live self-check** (`onit doctor` from the shell, `\doctor` in the text
@@ -22,27 +22,27 @@ pip install -e ".[test]"
 ## Run the full test suite
 
 ```bash
-pytest src/test/ -v
+pytest onit/test/ -v
 ```
 
 ## Run specific test modules
 
 ```bash
-pytest src/test/test_onit.py -v          # Core agent tests
-pytest src/test/test_cli.py -v           # CLI tests
-pytest src/test/test_cli_doctor.py -v    # `onit doctor` CLI wiring tests
-pytest src/test/test_chat.py -v          # LLM chat tests
-pytest src/test/test_chat_ui.py -v       # Terminal UI tests
-pytest src/test/test_web_api.py -v       # Web UI tests
-pytest src/test/test_mcp_prompts.py -v   # MCP prompt tests
-pytest src/test/test_tool_discovery.py -v # Tool discovery tests
-pytest src/test/test_mcp_tools_security.py -v # MCP tools security tests
-pytest src/test/test_doctor.py -v        # Live self-check battery tests
+pytest onit/test/test_onit.py -v          # Core agent tests
+pytest onit/test/test_cli.py -v           # CLI tests
+pytest onit/test/test_cli_doctor.py -v    # `onit doctor` CLI wiring tests
+pytest onit/test/test_chat.py -v          # LLM chat tests
+pytest onit/test/test_chat_ui.py -v       # Terminal UI tests
+pytest onit/test/test_web_api.py -v       # Web UI tests
+pytest onit/test/test_mcp_prompts.py -v   # MCP prompt tests
+pytest onit/test/test_tool_discovery.py -v # Tool discovery tests
+pytest onit/test/test_mcp_tools_security.py -v # MCP tools security tests
+pytest onit/test/test_doctor.py -v        # Live self-check battery tests
 ```
 
 ## The live self-check
 
-One battery, two front ends. `src/ui/doctor.py` holds the checks; the CLI
+One battery, two front ends. `onit/ui/doctor.py` holds the checks; the CLI
 subcommand and the text-UI command are thin wrappers that build (or reuse) a
 live agent and print the same report. Both run 22 fast checks against the
 live stack — config, backslash commands, load balancer, MCP server
@@ -145,15 +145,15 @@ that combination points at the model/loop layer rather than the wiring.
 | Exit code | 0/1 — scriptable | report only |
 
 Both report the same checks in the same words, so a failure found in one is
-reproducible in the other. The checks live in `src/ui/doctor.py`; the CLI
-wiring in `src/cli.py` (`_run_doctor`), the text-UI command in
-`src/ui/commands.py` (`cmd_doctor`); their tests in `src/test/test_doctor.py`
-and `src/test/test_cli_doctor.py`.
+reproducible in the other. The checks live in `onit/ui/doctor.py`; the CLI
+wiring in `onit/cli.py` (`_run_doctor`), the text-UI command in
+`onit/ui/commands.py` (`cmd_doctor`); their tests in `onit/test/test_doctor.py`
+and `onit/test/test_cli_doctor.py`.
 
 ## Test structure
 
-All tests are in `src/test/` and `benchmarks/test_*`; there is no second
-tree, and `pyproject.toml` points `testpaths` at `src/test`.
+All tests are in `onit/test/` and `benchmarks/test_*`; there is no second
+tree, and `pyproject.toml` points `testpaths` at `onit/test`.
 
 | File | Description |
 |------|-------------|
@@ -177,6 +177,6 @@ pytest is configured in `pyproject.toml`:
 
 ```toml
 [tool.pytest.ini_options]
-testpaths = ["src/test"]
+testpaths = ["onit/test"]
 asyncio_mode = "auto"
 ```

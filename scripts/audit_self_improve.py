@@ -91,8 +91,8 @@ GATE_PAYLOADS = {
 
 def _gate_payload(name, evil):
     """Does one payload get past the gate and then run?"""
-    from src.learn import skills
-    from src.learn.skills_gate import run_gate
+    from onit.learn import skills
+    from onit.learn.skills_gate import run_gate
 
     gate = run_gate(
         manifest={
@@ -130,7 +130,7 @@ def _gate_payload(name, evil):
     marker = "/tmp/onit_audit_pwn.txt"
     if os.path.exists(marker):
         os.remove(marker)
-    from src.mcp.servers.tasks.skills.mcp_server import load_skills
+    from onit.mcp.servers.tasks.skills.mcp_server import load_skills
 
     loaded = load_skills(cfg)
     if loaded:
@@ -154,8 +154,8 @@ def check_gate_bypass():
 
 # ── 2. the skills server ignores autonomy ──────────────────────────────
 def check_autonomy_ignored():
-    from src.learn import skills
-    from src.learn.config import autonomy, OFF
+    from onit.learn import skills
+    from onit.learn.config import autonomy, OFF
 
     tmp = tempfile.mkdtemp()
     cfg = {"learn": {"path": tmp, "autonomy": "off"}}
@@ -173,7 +173,7 @@ def check_autonomy_ignored():
         cfg,
     )
 
-    from src.mcp.servers.tasks.skills.mcp_server import load_skills
+    from onit.mcp.servers.tasks.skills.mcp_server import load_skills
 
     loaded = load_skills(cfg)
     report(
@@ -185,8 +185,8 @@ def check_autonomy_ignored():
 
 # ── 3. a playbook bullet can forge a prompt section ─────────────────────
 def check_bullet_injection():
-    from src.learn import playbook as pb
-    from src.learn.reflector import _clean_bullet
+    from onit.learn import playbook as pb
+    from onit.learn.reflector import _clean_bullet
 
     hostile = {
         "text": (
@@ -210,11 +210,11 @@ def check_bullet_injection():
 
 # ── 4. recall does not dedupe ──────────────────────────────────────────
 def check_recall_dedupe():
-    from src.learn.recall import recall
+    from onit.learn.recall import recall
 
     tmp = tempfile.mkdtemp()
     cfg = {"learn": {"path": tmp, "autonomy": "adapt"}}
-    from src.learn.trajectory import record_task
+    from onit.learn.trajectory import record_task
 
     task = "what is the capital of japan"
     # Three records, same session and turn -> same episode id.
@@ -256,7 +256,7 @@ def check_demo_idempotent():
 
 # ── 6. the significance test is anti-conservative ──────────────────────
 def check_significance():
-    from src.learn.runner import compare, GRADE_CORRECT as C, GRADE_INCORRECT as I
+    from onit.learn.runner import compare, GRADE_CORRECT as C, GRADE_INCORRECT as I
 
     def arm(p, n):
         return [{"grade": C if random.random() < p else I} for _ in range(n)]
@@ -270,7 +270,7 @@ def check_significance():
     # it is now 1.96 * sqrt(se_c^2 + se_t^2), i.e. 1.96 sigma, whose
     # null rate is 5%.  Report the analytic value the code implies so a
     # regression shows up as a disagreement, not just a big number.
-    from src.learn.runner import compare as _compare
+    from onit.learn.runner import compare as _compare
 
     probe = _compare(
         [{"grade": C}] * 100 + [{"grade": I}] * 100, [{"grade": C}] * 100 + [{"grade": I}] * 100

@@ -104,7 +104,7 @@ Click it, allow the microphone, and talk. The bar above the composer shows
 ## Configuration
 
 All keys live under `voice:` in your config (defaults in
-[`src/configs/default.yaml`](../src/configs/default.yaml)):
+[`onit/configs/default.yaml`](../onit/configs/default.yaml)):
 
 | key | default | what it does |
 |---|---|---|
@@ -192,13 +192,13 @@ continues, the worklet failed to load — check for a
 
 ## Testing without a GPU
 
-`src/test/fake_voicechat.py` is a protocol-accurate stand-in that speaks the
+`onit/test/fake_voicechat.py` is a protocol-accurate stand-in that speaks the
 same event vocabulary as the container, so the bridge, tool dispatch, barge-in,
 sanitiser and auth are all covered without hardware:
 
 ```bash
-python -m pytest src/test/test_voice_bridge.py -q   # from the repo root
+python -m pytest onit/test/test_voice_bridge.py -q   # from the repo root
 ```
 
-Run from the repo root, not `src/` — `src/mcp` shadows the installed `mcp`
+Run from the repo root, not `onit/` — `onit/mcp` shadows the installed `mcp`
 package and the failure looks like an unrelated import error.

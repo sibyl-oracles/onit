@@ -1,0 +1,1568 @@
+"""Tests for chat.py turn telemetry and endpoint-metadata caching,
+plus the vLLM prefix-cache probe in model/serving/diagnostics.py."""
+
+import asyncio
+import os
+import sys
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+from onit.model.serving.chat import (
+    _DECAY_MARKER,
+    TOOL_RESULT_DECAY_CHARS,
+    TurnMetrics,
+    _autodetect_fallback_model,
+    _decay_old_tool_results,
+    _get_model_max_context,
+    _execute_tool,
+    _handle_structured_tool_calls,
+    _resolve_model_id,
+    chat,
+    provider_label,
+    decode_rate,
+    format_token_footer,
+    reset_endpoint_caches,
+    summarize_metrics,
+)
+from onit.model.serving.diagnostics import (
+    _metrics_url,
+    format_report,
+    parse_prometheus,
+    prefix_cache_report,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    """Endpoint answers are cached for the life of the process, so a test that
+    resolved a model would otherwise decide the next test's answer."""
+    reset_endpoint_caches()
+    yield
+    reset_endpoint_caches()
+
+
+def _mock_completion(content="done", tool_calls=None, prompt_tokens=100, completion_tokens=20):
+    message = MagicMock()
+    message.content = content
+    message.tool_calls = tool_calls
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "tool_calls" if tool_calls else "stop"
+    completion = MagicMock()
+    completion.choices = [choice]
+    completion.usage.prompt_tokens = prompt_tokens
+    completion.usage.completion_tokens = completion_tokens
+    return completion
+
+
+def _mock_tool_call(name="local_search", arguments='{"query": "x"}', call_id="c1"):
+    tc = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = arguments
+    tc.id = call_id
+    return tc
+
+
+# ── TurnMetrics ─────────────────────────────────────────────────────────────
+
+
+class TestTurnMetrics:
+    def test_records_turn_and_totals(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.first_token()
+        m.end_api(prompt_tokens=1000, completion_tokens=50, finish_reason="stop")
+
+        assert sink["turn_count"] == 1
+        assert sink["prompt_tokens_max"] == 1000
+        assert sink["completion_tokens"] == 50
+        assert sink["turns"][0]["finish_reason"] == "stop"
+        assert sink["turns"][0]["ttft_s"] is not None
+
+    def test_a_turn_is_recorded_once_however_often_it_is_ended(self):
+        """The streaming paths end the turn early so the UI footer can read a
+        complete sink; the shared call downstream then arrives second, and a
+        turn counted twice would halve the rate that was just printed."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.first_token()
+        m.end_api(prompt_tokens=1000, completion_tokens=50, finish_reason="stop")
+        m.end_api(prompt_tokens=1000, completion_tokens=50, finish_reason="stop")
+
+        assert sink["turn_count"] == 1
+        assert sink["completion_tokens"] == 50
+        assert len(sink["turns"]) == 1
+
+    def test_prompt_tokens_max_tracks_the_peak(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        for tokens in (500, 9000, 3000):
+            m.start_api()
+            m.end_api(prompt_tokens=tokens)
+        assert sink["prompt_tokens_max"] == 9000
+        assert sink["turn_count"] == 3
+
+    def test_non_streaming_turn_has_no_prefill_split(self):
+        """Without a first-token timestamp there is no line between waiting
+        and generating, so neither bucket may be guessed at."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=10)
+        assert sink["turns"][0]["ttft_s"] is None
+        assert sink["prefill_s"] == 0.0
+        assert sink["decode_s"] == 0.0
+
+    def test_tool_time_attaches_to_the_turn_that_called(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=10)
+        m.add_tools(["local_search", "read_file"], 1.5)
+
+        assert sink["tool_calls"] == 2
+        assert sink["tool_s"] == 1.5
+        assert sink["turns"][0]["tools"] == ["local_search", "read_file"]
+        assert sink["turns"][0]["tool_s"] == 1.5
+
+    def test_tool_runs_ride_alongside_the_names(self):
+        """The names drive the status line; the records are what a trajectory
+        is diagnosed from later."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=10)
+        runs = [
+            {"name": "local_search", "ok": True, "ms": 40},
+            {"name": "read_file", "ok": False, "ms": 3},
+        ]
+        m.add_tools(["local_search", "read_file"], 1.5, runs=runs)
+
+        assert sink["turns"][0]["tools"] == ["local_search", "read_file"]
+        assert sink["turns"][0]["tool_runs"] == runs
+        assert sink["tool_calls"] == 2
+
+    @pytest.mark.asyncio
+    async def test_ollama_streaming_reports_generated_tokens(self):
+        """Ollama sends eval_count only on its final chunk. Without reading it
+        every streamed Ollama run accounted for zero output tokens, which is
+        the efficiency signal, not a cosmetic one."""
+        from onit.model.serving.chat import _ollama_process_streaming_response
+
+        def chunk(content, **extra):
+            c = MagicMock()
+            c.message.content = content
+            c.message.tool_calls = None
+            c.message.thinking = None
+            for k in ("done_reason", "prompt_eval_count", "eval_count"):
+                setattr(c, k, extra.get(k))
+            return c
+
+        async def stream():
+            yield chunk("Two ")
+            yield chunk("scholarships.", done_reason="stop", prompt_eval_count=5441, eval_count=128)
+
+        result = await _ollama_process_streaming_response(stream(), asyncio.Queue(), None, False)
+        content, _, _, _, prompt_tokens, done_reason, eval_count = result
+        assert content == "Two scholarships."
+        assert (prompt_tokens, eval_count, done_reason) == (5441, 128, "stop")
+
+    def test_retries_are_counted(self):
+        """A run that retried twice and answered is not the same run as one
+        that answered first time; the turn timings cannot tell them apart."""
+        sink = {}
+        m = TurnMetrics(sink)
+        assert sink["api_retries"] == 0
+        m.add_retry()
+        m.add_retry()
+        assert sink["api_retries"] == 2
+
+    def test_compaction_counted_apart_from_model_time(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        m.add_compaction(2.0)
+        assert sink["compactions"] == 1
+        assert sink["compaction_s"] == 2.0
+        assert sink["model_s"] == 0.0
+
+    def test_non_int_usage_does_not_poison_totals(self):
+        """Providers report usage as None, or not at all; mocks report a mock."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=None, completion_tokens=MagicMock())
+        assert sink["prompt_tokens_max"] == 0
+        assert sink["completion_tokens"] == 0
+
+    def test_decode_rate_divides_generated_tokens_by_decode_time(self):
+        assert decode_rate({"completion_tokens": 900, "decode_s": 30.0}) == 30.0
+
+    def test_decode_rate_counts_every_turn_not_just_the_last(self):
+        """completion_tokens is the provider's own count, so it covers the
+        reasoning and the tool-call arguments no UI ever streams."""
+        sink = {}
+        m = TurnMetrics(sink)
+        for _ in range(3):
+            m.start_api()
+            m.first_token()
+            m.end_api(prompt_tokens=100, completion_tokens=40)
+        assert sink["completion_tokens"] == 120
+        sink["decode_s"] = 4.0  # too fast to measure; the sum is the point
+        assert decode_rate(sink) == 30.0
+
+    def test_decode_rate_is_zero_without_a_stream(self):
+        """decode_s can only be split from prefill on a stream; folding the
+        prefill wait in would be a different measurement, same label."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=100, completion_tokens=40)
+        assert decode_rate(sink) == 0.0
+
+    def test_decode_rate_of_nothing(self):
+        assert decode_rate({}) == 0.0
+        assert decode_rate({"completion_tokens": 0, "decode_s": 5.0}) == 0.0
+
+    def test_summarize_empty(self):
+        assert summarize_metrics({}) == "no turns recorded"
+
+    def test_summarize_mentions_turns_and_buckets(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(prompt_tokens=1234, completion_tokens=10)
+        m.add_tools(["local_search"], 0.5)
+        text = summarize_metrics(sink)
+        assert "1 turn(s)" in text
+        assert "1 tool call(s)" in text
+        assert "1,234 tok" in text
+
+
+# ── per-call tool records ───────────────────────────────────────────────────
+
+
+def _registry_with(name="local_search", handler=None):
+    """Minimal stand-in for ToolRegistry: what _execute_tool actually touches."""
+    registry = MagicMock()
+    registry.tools = {name} if handler is not None else set()
+    registry.tool_accepts_param.return_value = False
+    registry.__getitem__ = MagicMock(return_value=handler)
+    return registry
+
+
+async def _run_tool(registry, name="local_search", args=None, tool_log=None):
+    await _execute_tool(
+        name,
+        args if args is not None else {"query": "scholarships"},
+        "call_1",
+        registry,
+        timeout=5,
+        data_path="",
+        chat_ui=None,
+        verbose=False,
+        messages=[],
+        tool_call_history=[],
+        max_repeated=99,
+        session_id="",
+        tool_log=tool_log,
+    )
+
+
+class TestToolCallRecords:
+    """Every path out of _execute_tool that answers a call records how it went.
+    The failures are the ones worth keeping."""
+
+    @pytest.mark.asyncio
+    async def test_a_successful_call_is_recorded(self):
+        handler = AsyncMock(return_value="four results")
+        log = []
+        await _run_tool(_registry_with(handler=handler), tool_log=log)
+        assert len(log) == 1
+        assert log[0]["name"] == "local_search"
+        assert log[0]["ok"] is True
+        assert log[0]["result_chars"] == len("four results")
+        assert log[0]["arg_keys"] == ["query"]
+
+    @pytest.mark.asyncio
+    async def test_a_raising_tool_is_recorded_as_failed(self):
+        handler = AsyncMock(side_effect=RuntimeError("upstream is down"))
+        log = []
+        await _run_tool(_registry_with(handler=handler), tool_log=log)
+        assert [(r["name"], r["ok"]) for r in log] == [("local_search", False)]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_tool_is_recorded_as_failed(self):
+        log = []
+        await _run_tool(_registry_with(handler=None), name="nope", tool_log=log)
+        assert [(r["name"], r["ok"]) for r in log] == [("nope", False)]
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_not_a_call_that_went_well(self):
+        async def _hang(**kwargs):
+            await asyncio.sleep(10)
+
+        registry = _registry_with(handler=_hang)
+        log = []
+        await _execute_tool(
+            "local_search",
+            {"query": "x"},
+            "call_1",
+            registry,
+            timeout=0.01,
+            data_path="",
+            chat_ui=None,
+            verbose=False,
+            messages=[],
+            tool_call_history=[],
+            max_repeated=99,
+            session_id="",
+            tool_log=log,
+        )
+        assert log[0]["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_argument_values_are_not_recorded_by_default(self):
+        handler = AsyncMock(return_value="ok")
+        log = []
+        await _run_tool(
+            _registry_with(handler=handler), args={"path": "/home/me/salary.pdf"}, tool_log=log
+        )
+        assert log[0]["arg_keys"] == ["path"]
+        assert "salary" not in str(log[0])
+
+    @pytest.mark.asyncio
+    async def test_no_log_means_no_accounting(self):
+        """The parameter is optional, and a caller without one behaves exactly
+        as before."""
+        handler = AsyncMock(return_value="ok")
+        await _run_tool(_registry_with(handler=handler), tool_log=None)
+        handler.assert_awaited()
+
+
+# ── chat() wiring ───────────────────────────────────────────────────────────
+
+
+class TestChatMetrics:
+    @pytest.mark.asyncio
+    async def test_counts_turns_and_tool_calls(self):
+        """One tool call then a final answer: two model turns, one tool."""
+        tc = _mock_tool_call()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(content=None, tool_calls=[tc], prompt_tokens=1000),
+                _mock_completion("The answer.", prompt_tokens=4000),
+            ]
+        )
+        registry = MagicMock()
+        registry.tools = {"local_search"}
+        registry.get_tool_items.return_value = [{"type": "function"}]
+        registry.call_tool = AsyncMock(return_value="search results")
+
+        metrics: dict = {}
+        with (
+            patch("onit.model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "onit.model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch(
+                "onit.model.serving.chat._handle_structured_tool_calls",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="what do the docs say?",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                metrics=metrics,
+            )
+
+        assert result == "The answer."
+        assert metrics["turn_count"] == 2
+        assert metrics["tool_calls"] == 1
+        assert metrics["turns"][0]["tools"] == ["local_search"]
+        # Prompt growth across turns is the cost the streaming rate can't see.
+        assert metrics["prompt_tokens_max"] == 4000
+
+    @pytest.mark.asyncio
+    async def test_metrics_optional(self):
+        """No sink, no accounting — chat() behaves exactly as before."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion("plain answer")
+        )
+
+        with (
+            patch("onit.model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "onit.model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                safety_queue=asyncio.Queue(),
+            )
+        assert result == "plain answer"
+
+    @pytest.mark.asyncio
+    async def test_metrics_survive_a_failed_run(self):
+        """A run that ends in an error is the one worth reading: the turn that
+        was attempted must still be recorded."""
+        from openai import OpenAIError
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=OpenAIError("boom"))
+
+        metrics: dict = {}
+        with (
+            patch("onit.model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "onit.model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="test-model",
+            ),
+            patch("onit.model.serving.chat.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="hi",
+                safety_queue=asyncio.Queue(),
+                metrics=metrics,
+            )
+
+        assert result is None
+        assert metrics["turn_count"] == 0  # no API call completed
+        assert metrics["turns"] == []
+
+
+# ── first-token hook (the prefill/decode split) ─────────────────────────────
+
+
+def _chunk(
+    content=None, reasoning=None, tool_calls=None, finish_reason=None, usage=None, no_choices=False
+):
+    c = MagicMock()
+    c.usage = usage
+    if no_choices:
+        c.choices = []
+        return c
+    delta = MagicMock()
+    delta.content = content
+    delta.reasoning_content = reasoning
+    delta.tool_calls = tool_calls
+    choice = MagicMock()
+    choice.delta = delta
+    choice.finish_reason = finish_reason
+    c.choices = [choice]
+    return c
+
+
+async def _aiter(chunks):
+    for c in chunks:
+        yield c
+
+
+class TestFirstTokenHook:
+    @pytest.mark.asyncio
+    async def test_fires_once_on_the_first_generated_token(self):
+        from onit.model.serving.chat import _process_streaming_response
+
+        calls = []
+        chunks = [
+            _chunk(no_choices=True),  # usage-only preamble
+            _chunk(),  # role-only delta: nothing generated yet
+            _chunk(content="Hel"),
+            _chunk(content="lo", finish_reason="stop"),
+        ]
+        result = await _process_streaming_response(
+            _aiter(chunks),
+            asyncio.Queue(),
+            None,
+            think=False,
+            on_first_token=lambda: calls.append(1),
+        )
+
+        assert result[0] == "Hello"
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_tool_call_turn_counts_as_generation(self):
+        """A turn that only emits a tool call still ends its prefill."""
+        from onit.model.serving.chat import _process_streaming_response
+
+        tc = MagicMock()
+        tc.index = 0
+        tc.id = "c1"
+        tc.function.name = "local_search"
+        tc.function.arguments = '{"query": "x"}'
+
+        calls = []
+        await _process_streaming_response(
+            _aiter([_chunk(), _chunk(tool_calls=[tc], finish_reason="tool_calls")]),
+            asyncio.Queue(),
+            None,
+            think=False,
+            on_first_token=lambda: calls.append(1),
+        )
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_never_fires_when_nothing_is_generated(self):
+        from onit.model.serving.chat import _process_streaming_response
+
+        calls = []
+        await _process_streaming_response(
+            _aiter([_chunk(no_choices=True), _chunk(finish_reason="stop")]),
+            asyncio.Queue(),
+            None,
+            think=False,
+            on_first_token=lambda: calls.append(1),
+        )
+        assert calls == []
+
+
+# ── reasoning budget across turns ───────────────────────────────────────────
+
+
+class TestThinkToolTurns:
+    async def _run(self, think_tool_turns):
+        """Two turns: a tool call, then the answer.  Returns the per-request
+        chat_template_kwargs the model was sent."""
+        tc = _mock_tool_call()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_completion(content=None, tool_calls=[tc]),
+                _mock_completion("The answer."),
+            ]
+        )
+        registry = MagicMock()
+        registry.tools = {"local_search"}
+        registry.get_tool_items.return_value = [{"type": "function"}]
+
+        with (
+            patch("onit.model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "onit.model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="qwen3-30b",
+            ),
+            patch(
+                "onit.model.serving.chat._handle_structured_tool_calls",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            await chat(
+                host="http://localhost:8000/v1",
+                instruction="q",
+                tool_registry=registry,
+                safety_queue=asyncio.Queue(),
+                think=True,
+                think_tool_turns=think_tool_turns,
+            )
+        return [
+            call.kwargs["extra_body"].get("chat_template_kwargs")
+            for call in mock_client.chat.completions.create.call_args_list
+        ]
+
+    @pytest.mark.asyncio
+    async def test_thinking_on_every_turn_by_default(self):
+        sent = await self._run(think_tool_turns=True)
+        assert all(kw and kw["enable_thinking"] for kw in sent)
+
+    @pytest.mark.asyncio
+    async def test_thinking_kept_for_the_opening_turn_only(self):
+        """The reasoning that decides the approach is worth paying for once;
+        repeating it before every tool-call JSON is what costs the loop."""
+        sent = await self._run(think_tool_turns=False)
+        assert sent[0]["enable_thinking"] is True
+        assert sent[1] == {"enable_thinking": False}
+
+    @pytest.mark.asyncio
+    async def test_thinking_off_is_said_not_left_unsaid(self):
+        """Qwen3's chat template defaults the switch on, so omitting it is not
+        the same as turning it off — that is what made think_tool_turns:false a
+        no-op and left the final turn reasoning instead of answering."""
+        sent = await self._run(think_tool_turns=False)
+        assert all(kw is not None and "enable_thinking" in kw for kw in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_host_that_refuses_the_switch_still_gets_its_answer(self):
+        """Saying "thinking off" costs a parameter a validating server may
+        reject. It refuses the whole request when it does, so the refusal has
+        to be remembered and the retry sent plainly — otherwise turning the
+        switch on for every turn would take those hosts down with it."""
+        from openai import OpenAIError
+
+        reset_endpoint_caches()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                OpenAIError("unknown chat_template_kwargs"),
+                _mock_completion("The answer."),
+            ]
+        )
+        with (
+            patch("onit.model.serving.chat.AsyncOpenAI", return_value=mock_client),
+            patch(
+                "onit.model.serving.chat._resolve_model_id",
+                new_callable=AsyncMock,
+                return_value="qwen3-30b",
+            ),
+        ):
+            result = await chat(
+                host="http://localhost:8000/v1",
+                instruction="q",
+                safety_queue=asyncio.Queue(),
+                think=False,
+                verify_answers=False,
+            )
+        assert result == "The answer."
+        calls = mock_client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "chat_template_kwargs" not in calls[1].kwargs["extra_body"]
+
+
+# ── endpoint metadata caching ───────────────────────────────────────────────
+
+
+class TestEndpointCaches:
+    @pytest.mark.asyncio
+    async def test_model_id_resolved_once_per_host(self):
+        client = AsyncMock()
+        models = MagicMock()
+        models.data = [MagicMock(id="qwen3")]
+        client.models.list = AsyncMock(return_value=models)
+
+        first = await _resolve_model_id(client, "http://h:8000/v1")
+        second = await _resolve_model_id(client, "http://h:8000/v1")
+
+        assert first == second == "qwen3"
+        assert client.models.list.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_model_id_cached_per_host_not_globally(self):
+        def _client(model_id):
+            c = AsyncMock()
+            models = MagicMock()
+            models.data = [MagicMock(id=model_id)]
+            c.models.list = AsyncMock(return_value=models)
+            return c
+
+        assert await _resolve_model_id(_client("a"), "http://one/v1") == "a"
+        assert await _resolve_model_id(_client("b"), "http://two/v1") == "b"
+
+    @pytest.mark.asyncio
+    async def test_fallback_detection_bypasses_the_cache(self):
+        """After a 404 the cached id is the dead one; re-detecting it would
+        report 'no fallback available' forever."""
+        client = AsyncMock()
+        first = MagicMock()
+        first.data = [MagicMock(id="old-model")]
+        second = MagicMock()
+        second.data = [MagicMock(id="new-model")]
+        client.models.list = AsyncMock(side_effect=[first, second])
+
+        assert await _resolve_model_id(client, "http://h/v1") == "old-model"
+        detected = await _autodetect_fallback_model(client, None, False, "http://h/v1", "old-model")
+
+        assert detected == "new-model"
+        assert client.models.list.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_max_context_queried_once(self):
+        payload = {"data": [{"id": "m", "max_model_len": 262144}]}
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = payload
+        http = AsyncMock()
+        http.get = AsyncMock(return_value=resp)
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("onit.model.serving.chat.httpx.AsyncClient", return_value=http):
+            a = await _get_model_max_context("http://h/v1", "EMPTY", "m")
+            b = await _get_model_max_context("http://h/v1", "EMPTY", "m")
+
+        assert a == b == 262144
+        assert http.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_context_is_retried_after_the_ttl(self):
+        """A host that was down for one call must be asked again, not written
+        off until the process restarts."""
+        resp = MagicMock(status_code=500)
+        http = AsyncMock()
+        http.get = AsyncMock(return_value=resp)
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("onit.model.serving.chat.httpx.AsyncClient", return_value=http):
+            assert await _get_model_max_context("http://h/v1", "EMPTY", "m") is None
+            assert await _get_model_max_context("http://h/v1", "EMPTY", "m") is None
+            assert http.get.await_count == 1  # cached for now
+
+            import onit.model.serving.chat as chat_mod
+
+            key = ("http://h/v1", "m")
+            value, _expiry = chat_mod._MAX_CONTEXT_CACHE[key]
+            chat_mod._MAX_CONTEXT_CACHE[key] = (value, 0.0)  # expire it
+
+            assert await _get_model_max_context("http://h/v1", "EMPTY", "m") is None
+            assert http.get.await_count == 2
+
+
+# ── parallel tool batches ───────────────────────────────────────────────────
+
+
+class TestParallelToolCalls:
+    """A batch of reads is only as slow as its slowest call, but the results
+    must still line up with the ids the model asked for."""
+
+    def _registry(self, names, delay=0.0, order=None):
+        def _handler_for(name):
+            async def _handler(log_handler=None, **kwargs):
+                if delay:
+                    await asyncio.sleep(delay)
+                if order is not None:
+                    order.append(name)
+                return f"result of {name}"
+
+            return _handler
+
+        reg = MagicMock()
+        reg.tools = set(names)
+        reg.tool_accepts_param.return_value = False
+        reg.__getitem__ = lambda _self, key: _handler_for(key)
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_read_only_batch_runs_concurrently(self):
+        calls = [
+            _mock_tool_call("read_file", '{"path": "/a"}', "c1"),
+            _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
+            _mock_tool_call("search_document", '{"query": "x"}', "c3"),
+        ]
+        registry = self._registry({"read_file", "search_document"}, delay=0.05)
+        messages: list = []
+
+        started = time.monotonic()
+        bail = await _handle_structured_tool_calls(
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        elapsed = time.monotonic() - started
+
+        assert bail is None
+        # Serial would be ~0.15s; concurrent is ~0.05s.
+        assert elapsed < 0.12
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
+
+    @pytest.mark.asyncio
+    async def test_results_keep_call_order_not_completion_order(self):
+        """The API pairs tool messages to tool_call ids by position, so a fast
+        second call must not overtake a slow first one."""
+        slow_first = [
+            _mock_tool_call("read_file", '{"path": "/slow"}', "c1"),
+            _mock_tool_call("read_file", '{"path": "/fast"}', "c2"),
+        ]
+
+        async def _handler(log_handler=None, path=None, **kwargs):
+            await asyncio.sleep(0.05 if path == "/slow" else 0.0)
+            return f"content of {path}"
+
+        registry = MagicMock()
+        registry.tools = {"read_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        messages: list = []
+        await _handle_structured_tool_calls(
+            slow_first,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"]
+        assert "slow" in tool_msgs[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_writes_stay_sequential(self):
+        """A batch that writes is a script, and a script has an order."""
+        order: list = []
+
+        async def _handler(log_handler=None, **kwargs):
+            name = kwargs.get("path", "?")
+            await asyncio.sleep(0.02 if name == "/first" else 0.0)
+            order.append(name)
+            return "written"
+
+        registry = MagicMock()
+        registry.tools = {"write_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        calls = [
+            _mock_tool_call("write_file", '{"path": "/first"}', "c1"),
+            _mock_tool_call("write_file", '{"path": "/second"}', "c2"),
+        ]
+        await _handle_structured_tool_calls(
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            [],
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        assert order == ["/first", "/second"]
+
+    @pytest.mark.asyncio
+    async def test_a_single_call_is_unaffected(self):
+        registry = MagicMock()
+        registry.tools = {"read_file"}
+        registry.tool_accepts_param.return_value = False
+
+        async def _handler(log_handler=None, **kwargs):
+            return "one result"
+
+        registry.__getitem__ = lambda _self, key: _handler
+
+        messages: list = []
+        await _handle_structured_tool_calls(
+            [_mock_tool_call("read_file", '{"path": "/a"}', "c1")],
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        assert [m["tool_call_id"] for m in messages if m.get("role") == "tool"] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_every_call_is_answered_even_when_one_fails(self):
+        """A tool_call id with no tool message gets the next request rejected."""
+
+        async def _handler(log_handler=None, path=None, **kwargs):
+            if path == "/bad":
+                raise RuntimeError("exploded")
+            return "fine"
+
+        registry = MagicMock()
+        registry.tools = {"read_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        messages: list = []
+        await _handle_structured_tool_calls(
+            [
+                _mock_tool_call("read_file", '{"path": "/bad"}', "c1"),
+                _mock_tool_call("read_file", '{"path": "/ok"}', "c2"),
+            ],
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+        assert ids == ["c1", "c2"]
+
+
+# ── tool-result decay ───────────────────────────────────────────────────────
+
+
+class TestToolResultDecay:
+    def _tool_msg(self, text):
+        return {"role": "tool", "content": text, "name": "read_file", "tool_call_id": "c"}
+
+    def test_recent_results_are_untouched(self):
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [{"role": "user", "content": "hi"}] + [self._tool_msg(big) for _ in range(3)]
+        _decay_old_tool_results(messages, keep_full=3)
+        assert all(m["content"] == big for m in messages[1:])
+
+    def test_older_results_are_cut_to_their_opening(self):
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [self._tool_msg(big) for _ in range(5)]
+        _decay_old_tool_results(messages, keep_full=2)
+        assert all(m["content"].endswith(_DECAY_MARKER) for m in messages[:3])
+        assert all(m["content"] == big for m in messages[3:])
+
+    def test_short_results_are_left_alone(self):
+        messages = [self._tool_msg("brief"), self._tool_msg("also brief"), self._tool_msg("third")]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert [m["content"] for m in messages] == ["brief", "also brief", "third"]
+
+    def test_decay_is_idempotent(self):
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [self._tool_msg(big), self._tool_msg(big), self._tool_msg(big)]
+        _decay_old_tool_results(messages, keep_full=1)
+        once = messages[0]["content"]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert messages[0]["content"] == once
+
+    def test_image_results_are_left_to_the_image_stripper(self):
+        """Their content is a list of parts, not text to slice."""
+        parts = [
+            {"type": "text", "text": "y" * 9000},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        messages = [
+            {"role": "tool", "content": parts, "tool_call_id": "c"},
+            self._tool_msg("z" * 9000),
+            self._tool_msg("recent"),
+        ]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert messages[0]["content"] is parts
+
+
+# ── decay, once results are addressable ─────────────────────────────────────
+
+
+class TestDecayWithAResultStore:
+    """Phase 4's step 3. A trimmed result used to be told to run the tool
+    again — a network round trip to recover bytes the harness was holding."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        from onit.model.serving.results import ResultStore
+
+        return ResultStore(str(tmp_path))
+
+    def _tool_msg(self, text):
+        return {"role": "tool", "content": text, "name": "local_search", "tool_call_id": "c"}
+
+    def _stored_msg(self, store, size=60000):
+        return self._tool_msg(store.put("local_search", "x" * size))
+
+    def test_a_stored_result_is_cut_far_below_the_unstored_floor(self, store):
+        """6,000 is the floor for a result whose only recovery is re-running
+        the tool. A result one local read away does not need it."""
+        from onit.model.serving.chat import TOOL_RESULT_STORED_DECAY_CHARS
+
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        body = messages[0]["content"]
+        assert len(body) < TOOL_RESULT_DECAY_CHARS
+        assert body.count("x") == TOOL_RESULT_STORED_DECAY_CHARS
+
+    def test_the_handle_survives_the_trim(self, store):
+        from onit.model.serving.results import handle_of
+
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert handle_of(messages[0]["content"]) == "0001"
+
+    def test_the_marker_points_at_a_local_read(self, store):
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        body = messages[0]["content"]
+        assert 'result_read("0001"' in body
+        assert "call the tool again" not in body
+
+    def test_an_unstored_result_keeps_the_larger_floor_and_old_marker(self, store):
+        """Its head is all there will ever be, so it is not cut further."""
+        big = "x" * (TOOL_RESULT_DECAY_CHARS * 2)
+        messages = [self._tool_msg(big), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert messages[0]["content"].endswith(_DECAY_MARKER)
+        assert messages[0]["content"].count("x") == TOOL_RESULT_DECAY_CHARS
+
+    def test_decay_is_idempotent_for_stored_results(self, store):
+        """The trailer is sliced back into the body on a second pass unless
+        an already-decayed message is recognized as one."""
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        once = messages[0]["content"]
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert messages[0]["content"] == once
+
+    def test_a_fresh_preview_is_still_decayed(self, store):
+        """A preview ends in a continuation line too; treating that as "already
+        trimmed" would decay nothing at all."""
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        before = len(messages[0]["content"])
+        _decay_old_tool_results(messages, keep_full=1, store=store)
+        assert len(messages[0]["content"]) < before
+
+    def test_recent_stored_results_are_untouched(self, store):
+        messages = [self._stored_msg(store), self._stored_msg(store)]
+        before = [m["content"] for m in messages]
+        _decay_old_tool_results(messages, keep_full=2, store=store)
+        assert [m["content"] for m in messages] == before
+
+    def test_without_a_store_a_preview_is_left_intact(self, store):
+        """No store means no handle-aware branch, and a preview already sits at
+        the decay floor — so it is left alone rather than cut through its own
+        trailer."""
+        messages = [self._stored_msg(store), self._tool_msg("recent")]
+        before = messages[0]["content"]
+        _decay_old_tool_results(messages, keep_full=1)
+        assert messages[0]["content"] == before
+
+
+# ── prefix-cache probe ──────────────────────────────────────────────────────
+
+
+class TestPrefixCacheProbe:
+    def test_metrics_url_drops_the_api_prefix(self):
+        assert _metrics_url("http://h:8000/v1") == "http://h:8000/metrics"
+        assert _metrics_url("http://h:8000/v1/") == "http://h:8000/metrics"
+        assert _metrics_url("http://h:8000") == "http://h:8000/metrics"
+
+    def test_parse_sums_samples_across_labels(self):
+        text = (
+            "# HELP vllm:prefix_cache_hits_total Hits\n"
+            'vllm:prefix_cache_hits_total{model_name="a"} 30.0\n'
+            'vllm:prefix_cache_hits_total{model_name="b"} 12.0\n'
+        )
+        assert parse_prometheus(text, ("vllm:prefix_cache_hits_total",)) == 42.0
+
+    def test_parse_returns_none_when_absent(self):
+        assert (
+            parse_prometheus("vllm:num_requests_running 1.0\n", ("vllm:prefix_cache_hits_total",))
+            is None
+        )
+
+    def test_parse_ignores_a_longer_metric_with_the_same_head(self):
+        text = "vllm:prefix_cache_hits_total_extra 5.0\n"
+        assert parse_prometheus(text, ("vllm:prefix_cache_hits_total",)) is None
+
+    @pytest.mark.asyncio
+    async def test_report_computes_hit_rate(self):
+        text = "vllm:prefix_cache_queries_total 1000.0\nvllm:prefix_cache_hits_total 900.0\n"
+        resp = MagicMock(status_code=200, text=text)
+        http = AsyncMock()
+        http.get = AsyncMock(return_value=resp)
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("onit.model.serving.diagnostics.httpx.AsyncClient", return_value=http):
+            report = await prefix_cache_report("http://h:8000/v1")
+
+        assert report["enabled"] is True
+        assert report["hit_rate"] == 0.9
+        assert "hit rate: 90.0%" in format_report("http://h:8000/v1", report)
+
+    @pytest.mark.asyncio
+    async def test_no_metrics_reads_as_unknown_not_disabled(self):
+        resp = MagicMock(status_code=200, text="vllm:num_requests_running 1.0\n")
+        http = AsyncMock()
+        http.get = AsyncMock(return_value=resp)
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("onit.model.serving.diagnostics.httpx.AsyncClient", return_value=http):
+            report = await prefix_cache_report("http://h:8000/v1")
+
+        assert report["reachable"] is True
+        assert report["enabled"] is None
+        assert "unknown" in format_report("http://h:8000/v1", report)
+
+    @pytest.mark.asyncio
+    async def test_unreachable_host_reports_cleanly(self):
+        with patch(
+            "onit.model.serving.diagnostics.httpx.AsyncClient",
+            side_effect=OSError("connection refused"),
+        ):
+            report = await prefix_cache_report("http://nope:8000/v1")
+
+        assert report["reachable"] is False
+        assert "unreachable" in format_report("http://nope:8000/v1", report)
+
+    @pytest.mark.asyncio
+    async def test_low_hit_rate_is_called_out(self):
+        text = "vllm:prefix_cache_queries_total 1000.0\nvllm:prefix_cache_hits_total 100.0\n"
+        resp = MagicMock(status_code=200, text=text)
+        http = AsyncMock()
+        http.get = AsyncMock(return_value=resp)
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("onit.model.serving.diagnostics.httpx.AsyncClient", return_value=http):
+            report = await prefix_cache_report("http://h:8000/v1")
+
+        assert "prefix is probably changing" in format_report("http://h", report)
+
+
+# ── intermediate-turn fold ─────────────────────────────────────────────────
+
+
+class _FoldSpyUI:
+    """Records stream_fold calls; safe to pass where chat.py expects a UI."""
+
+    def __init__(self):
+        self.folds = []
+        self.tokens = []
+
+    def stream_start(self):
+        pass
+
+    def stream_token(self, token):
+        self.tokens.append(token)
+
+    def stream_think_token(self, token):
+        self.tokens.append(token)
+
+    def stream_think_end(self):
+        pass
+
+    def stream_fold(self, summary=""):
+        self.folds.append(summary)
+
+    def stream_end(self, elapsed=""):
+        pass
+
+
+class TestFoldOnToolTurn:
+    """chat.py folds a turn the moment it is known to be intermediate."""
+
+    @pytest.mark.asyncio
+    async def test_structured_tool_call_folds_the_narration(self):
+        """The first tool-call delta proves everything streamed so far was
+        narration -- the fold fires immediately, with a summary of the prose."""
+        from onit.model.serving.chat import _process_streaming_response
+
+        tc = MagicMock()
+        tc.index = 0
+        tc.id = "c1"
+        tc.function.name = "bash"
+        tc.function.arguments = '{"command": "ls"}'
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter(
+                [
+                    _chunk(content="The ninja PATH issue again. Adding the venv to PATH:"),
+                    _chunk(tool_calls=[tc], finish_reason="tool_calls"),
+                ]
+            ),
+            asyncio.Queue(),
+            ui,
+            think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "ninja PATH issue" in ui.folds[0]
+
+    @pytest.mark.asyncio
+    async def test_answer_turn_never_folds(self):
+        from onit.model.serving.chat import _process_streaming_response
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter(
+                [
+                    _chunk(content="## The final answer, with no tool calls."),
+                    _chunk(finish_reason="stop"),
+                ]
+            ),
+            asyncio.Queue(),
+            ui,
+            think=False,
+        )
+        assert ui.folds == []
+
+    @pytest.mark.asyncio
+    async def test_raw_json_tool_call_folds_before_stream_end(self):
+        """A raw-JSON tool call streams as ordinary content, so the fold can
+        only happen once the full content is known -- at the chat() call site,
+        in the last moment before stream_end() persists the block."""
+        from onit.model.serving.chat import _looks_like_raw_tool_call
+
+        raw = '{"name": "bash", "arguments": {"command": "ls"}}'
+        # The chat() call site folds exactly when this predicate fires and no
+        # structured tool calls arrived; pin both sides of that decision.
+        assert _looks_like_raw_tool_call(raw)
+        assert not _looks_like_raw_tool_call('The tool schema {"name": "x"} needs "arguments" too.')
+
+    @pytest.mark.asyncio
+    async def test_prose_mentioning_a_tool_schema_is_not_folded(self):
+        """A plain answer that quotes {"name": ...} in prose must survive."""
+        from onit.model.serving.chat import _process_streaming_response
+
+        ui = _FoldSpyUI()
+        await _process_streaming_response(
+            _aiter(
+                [
+                    _chunk(content='The tool schema {"name": "x"} needs "arguments" too.'),
+                    _chunk(finish_reason="stop"),
+                ]
+            ),
+            asyncio.Queue(),
+            ui,
+            think=False,
+        )
+        assert ui.folds == []
+
+    @pytest.mark.asyncio
+    async def test_ollama_tool_turn_folds_the_narration(self):
+        """Ollama delivers tool calls whole in a later chunk than the prose,
+        so the fold fires on that chunk, after the narration has streamed."""
+        from onit.model.serving.chat import _ollama_process_streaming_response
+
+        prose = MagicMock()
+        prose.message = MagicMock(
+            content="Checking the audio pipeline.", tool_calls=None, thinking=None
+        )
+        prose.done_reason = None
+
+        calls = MagicMock()
+        calls.message = MagicMock(content="", tool_calls=[MagicMock()], thinking=None)
+        calls.done_reason = "tool_calls"
+
+        ui = _FoldSpyUI()
+        await _ollama_process_streaming_response(
+            _aiter([prose, calls]),
+            asyncio.Queue(),
+            ui,
+            think=False,
+        )
+        assert len(ui.folds) == 1
+        assert "Checking the audio pipeline" in ui.folds[0]
+
+    @pytest.mark.asyncio
+    async def test_ollama_answer_turn_never_folds(self):
+        from onit.model.serving.chat import _ollama_process_streaming_response
+
+        chunk = MagicMock()
+        chunk.message = MagicMock(content="## Answer", tool_calls=None, thinking=None)
+        chunk.done_reason = "stop"
+
+        ui = _FoldSpyUI()
+        await _ollama_process_streaming_response(
+            _aiter([chunk]),
+            asyncio.Queue(),
+            ui,
+            think=False,
+        )
+        assert ui.folds == []
+
+    def test_step_summary_is_first_sentence_capped(self):
+        from onit.model.serving.chat import _step_summary
+
+        long = ("First sentence does the work. " + "filler " * 60).strip()
+        s = _step_summary(long)
+        assert s.startswith("First sentence does the work.")
+        assert len(s) <= 121  # 120 + ellipsis
+
+    def test_step_summary_of_empty_prose_is_empty(self):
+        from onit.model.serving.chat import _step_summary
+
+        assert _step_summary("") == ""
+        # A closed think block: what follows the tag is the speakable text.
+        assert _step_summary("</think>only thinking") == "only thinking"
+        # An unterminated think block means nothing was said out loud.
+        assert _step_summary("some prose then </think>") == ""
+
+
+# ─── A3: mixed batches partition ─────────────────────────────────────────────
+
+
+class TestMixedBatchPartition:
+    def _registry(self, names, delay=0.05):
+        import asyncio as _aio
+
+        def _handler_for(name):
+            async def _handler(log_handler=None, **kwargs):
+                await _aio.sleep(delay)
+                return f"result of {name}"
+
+            return _handler
+
+        reg = MagicMock()
+        reg.tools = set(names)
+        reg.tool_accepts_param.return_value = False
+        reg.__getitem__ = lambda _self, key: _handler_for(key)
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_runs_reads_concurrently(self):
+        """search (read-only) + write_file in one turn: the read subset
+        overlaps instead of serializing behind the write."""
+        calls = [
+            _mock_tool_call("read_file", '{"path": "/a"}', "c1"),
+            _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
+            _mock_tool_call("write_file", '{"path": "/w"}', "c3"),
+        ]
+        registry = self._registry({"read_file", "write_file"}, delay=0.05)
+        messages: list = []
+
+        started = time.monotonic()
+        bail = await _handle_structured_tool_calls(
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        elapsed = time.monotonic() - started
+
+        assert bail is None
+        # Reads concurrent (~0.05s) + write serial (~0.05s) ≈ 0.10s; fully
+        # serial would be ~0.15s.
+        assert elapsed < 0.14
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
+
+    @pytest.mark.asyncio
+    async def test_writes_in_mixed_batch_keep_order(self):
+        order: list = []
+
+        async def _handler(log_handler=None, path=None, **kwargs):
+            order.append(path)
+            return f"did {path}"
+
+        registry = MagicMock()
+        registry.tools = {"write_file", "read_file"}
+        registry.tool_accepts_param.return_value = False
+        registry.__getitem__ = lambda _self, key: _handler
+
+        calls = [
+            _mock_tool_call("read_file", '{"path": "/r"}', "c1"),
+            _mock_tool_call("write_file", '{"path": "/w1"}', "c2"),
+            _mock_tool_call("write_file", '{"path": "/w2"}', "c3"),
+        ]
+        messages: list = []
+        await _handle_structured_tool_calls(
+            calls,
+            {"role": "assistant"},
+            registry,
+            None,
+            "",
+            None,
+            False,
+            messages,
+            [],
+            30,
+            asyncio.Queue(),
+            session_id="s",
+        )
+        # Both writes ran, in the order the model asked for them.
+        assert order == ["/r", "/w1", "/w2"]
+
+
+# ── per-run token stats line ─────────────────────────────────────────────
+
+
+class TestTokenFooter:
+    """The one line under a finished answer: what ran, where, at what cost.
+
+    A total alone cannot tell a run that thought hard from one that re-read the
+    same tool results forty times, so the line is built around the in/out
+    split rather than a sum.
+    """
+
+    def test_splits_input_from_output_across_every_turn(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        for _ in range(3):
+            m.start_api()
+            m.first_token()
+            m.end_api(10_000, 1_000, "stop")
+        # Three turns of 10k prompt each is 30k billed in, not 10k: the peak
+        # alone understates a tool loop by the turn count.
+        assert sink["prompt_tokens_total"] == 30_000
+        assert sink["prompt_tokens_max"] == 10_000
+        assert sink["completion_tokens"] == 3_000
+        assert "33,000 tok (30,000 in / 3,000 out)" in format_token_footer(sink)
+
+    def test_totals_are_kept_when_the_provider_reports_no_cache(self):
+        """cached_tokens is optional; the prompt total is not."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(4_200, 300, "stop")  # cached_tokens omitted entirely
+        assert sink["prompt_tokens_total"] == 4_200
+
+    def test_garbage_usage_does_not_poison_the_total(self):
+        """usage.prompt_tokens is absent on some providers and None on others."""
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(None, None, "stop")
+        assert sink["prompt_tokens_total"] == 0
+        assert sink["completion_tokens"] == 0
+
+    def test_line_names_the_model_the_endpoint_the_directory_and_the_version(self):
+        line = format_token_footer(
+            {"prompt_tokens_total": 4_665_239, "completion_tokens": 33_580},
+            model="stealth/space-bunny-alpha",
+            provider="ollama",
+            data_path="/Users/rowel/sandbox",
+            version="0.1.5a",
+            elapsed=316.6,
+        )
+        assert line == (
+            "model stealth/space-bunny-alpha · provider ollama · "
+            "dir /Users/rowel/sandbox · v0.1.5a · 4,698,819 tok "
+            "(4,665,239 in / 33,580 out) · 316.6s"
+        )
+
+    def test_the_session_leads_the_line(self):
+        """Which conversation the numbers belong to comes before which model
+        answered: a bare ``onit`` resumes the last session, and the line used
+        to name the model without ever saying which session it was."""
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5},
+            session="thesis ch3",
+            model="qwen3-coder",
+            provider="ollama",
+            data_path="/Users/rowel/sandbox",
+            version="0.1.5a",
+            elapsed=2.0,
+        )
+        assert line.startswith("session thesis ch3 · model qwen3-coder")
+        assert line.count("session ") == 1
+
+    def test_an_unnamed_session_still_names_its_row(self):
+        line = format_token_footer({}, session="(unnamed) 5ea03e3c")
+        assert line == "session (unnamed) 5ea03e3c"
+
+    def test_no_session_field_when_there_is_no_session(self):
+        """A caller with no session (a bare format test, a web run) is
+        unchanged: the field drops out rather than printing an empty label."""
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0
+        )
+        assert "session" not in line
+
+    def test_version_drops_out_when_unknown(self):
+        """A build without readable package metadata still gets a line."""
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, version="", elapsed=2.0
+        )
+        assert line == "105 tok (100 in / 5 out) · 2.0s"
+        assert "v" not in line.split(" · ")[0]
+
+    def test_unknown_fields_drop_out_rather_than_print_empty_labels(self):
+        line = format_token_footer(
+            {"prompt_tokens_total": 100, "completion_tokens": 5}, elapsed=2.0
+        )
+        assert line == "105 tok (100 in / 5 out) · 2.0s"
+
+    def test_a_run_with_turns_but_no_usage_says_so(self):
+        """ "0 tok" reads as a free run; the provider simply did not report."""
+        assert "tok not reported" in format_token_footer({"turn_count": 4})
+
+    def test_nothing_known_prints_no_line_at_all(self):
+        assert format_token_footer({}) == ""
+        assert format_token_footer(None) == ""
+
+    def test_tok_s_is_only_shown_when_it_was_measured(self):
+        sink = {"completion_tokens": 900, "decode_s": 30.0, "prompt_tokens_total": 0}
+        assert "30.0 tok/s" in format_token_footer(sink, tok_s=30.0)
+        assert "tok/s" not in format_token_footer(sink, tok_s=0.0)
+
+
+class TestProviderLabel:
+    """The host is what the config holds and what an error quotes -- too long
+    for a one-line footer.  This collapses the common endpoints to a word and
+    leaves anything else identifiable rather than guessing."""
+
+    @pytest.mark.parametrize(
+        "host,expected",
+        [
+            ("http://localhost:11434", "ollama"),
+            ("http://localhost:11434/v1", "ollama"),
+            ("http://127.0.0.1:11434/v1", "ollama"),
+            ("http://127.0.0.1:8000", "ollama"),
+            ("http://localhost:8000/v1", "openai-compat"),
+            ("https://api.openai.com/v1", "openai"),
+            ("https://openrouter.ai/api/v1", "openrouter"),
+            ("https://api.anthropic.com/v1", "claude"),
+            ("https://ollama.com/v1", "ollama-cloud"),
+        ],
+    )
+    def test_known_endpoints_get_a_word(self, host, expected):
+        assert provider_label(host) == expected
+
+    def test_an_unrecognized_host_stays_identifiable(self):
+        assert provider_label("https://llm.internal.corp") == "llm.internal.corp"
+
+    def test_any_openai_shaped_host_is_labelled_as_one(self):
+        """/v1 is the shape, not the vendor: a self-hosted gateway serving
+        OpenAI's API under /v1 is one, whatever its hostname."""
+        assert provider_label("https://llm.internal.corp/v1") == "openai-compat"
+
+    def test_no_host_is_a_question_mark_not_a_crash(self):
+        assert provider_label("") == "?"
+        assert provider_label(None) == "?"
+
+
+class TestSummarizeReportsTheTotal:
+    """The log line and the on-screen line must not disagree about cost."""
+
+    def test_says_what_the_run_cost_not_only_its_peak_prompt(self):
+        sink = {
+            "turn_count": 2,
+            "tool_calls": 1,
+            "model_s": 10.0,
+            "tool_s": 1.0,
+            "prefill_s": 4.0,
+            "decode_s": 6.0,
+            "prompt_tokens_max": 10_000,
+            "prompt_tokens_total": 20_000,
+            "completion_tokens": 2_000,
+        }
+        text = summarize_metrics(sink)
+        assert "22,000 tok (20,000 in / 2,000 out)" in text
+        assert "peak prompt 10,000 tok" in text

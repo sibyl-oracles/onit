@@ -39,9 +39,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-# The repository root goes on the path, NOT ``src/``: ``src/mcp/`` would
+# The repository root goes on the path, NOT ``onit/``: ``onit/mcp/`` would
 # then shadow the installed ``mcp`` SDK and break FastMCP's import.  The
-# package is imported as ``src.<module>`` throughout instead.
+# package is imported as ``onit.<module>`` throughout instead.
 sys.path.insert(0, ROOT)
 
 import yaml  # noqa: E402
@@ -101,7 +101,7 @@ async def ask(agent, task: str, session_name: str) -> str:
 
 
 def show_records(cfg: dict) -> list:
-    from src.learn.trajectory import iter_records
+    from onit.learn.trajectory import iter_records
 
     records = list(iter_records(cfg))
     print("  trajectories on disk:")
@@ -138,10 +138,10 @@ async def main() -> int:
         host, model = args.host, args.model
     cfg = write_config(host, model)
 
-    from src.cli import _ensure_mcp_servers
-    from src.onit import OnIt
-    from src.learn.trajectory import iter_records, record_task
-    from src.learn import playbook as pb
+    from onit.cli import _ensure_mcp_servers
+    from onit.onit import OnIt
+    from onit.learn.trajectory import iter_records, record_task
+    from onit.learn import playbook as pb
 
     # ── 1. the cold agent ───────────────────────────────────────────
     banner("1. A cold agent: empty store, nothing to recall")
@@ -208,7 +208,7 @@ async def main() -> int:
 
     print("\n  running the real CLI:  onit learn --reflect")
     result = subprocess.run(
-        [sys.executable, "-m", "src.cli", "--config", CONFIG, "learn", "--reflect"],
+        [sys.executable, "-m", "onit.cli", "--config", CONFIG, "learn", "--reflect"],
         capture_output=True,
         text=True,
         cwd=ROOT,

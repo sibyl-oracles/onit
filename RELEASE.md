@@ -22,7 +22,7 @@
 - **A2A server, Telegram and Viber gateways removed** — `onit serve a2a` and
   `onit serve gateway` are gone, and so is the `legacy/` directory that briefly
   held them: 16 files, 1,482 lines of production code and four test files that
-  nothing in `src/` imported and that `testpaths` never ran. The codebase now
+  nothing in `onit/` imported and that `testpaths` never ran. The codebase now
   covers the terminal chat, web UI, loop mode, MCP servers and the container.
   The removed code is in git history.
 - **Dependencies slimmed** — `a2a-sdk[all]` (with its grpcio/protobuf chain)
@@ -39,7 +39,7 @@
 
 ### New Features
 
-- **Native Web UI** — The web UI no longer runs on Gradio. It is now a FastAPI app with a hand-written front end (`src/ui/api.py` + `src/ui/static/`) served over SSE, with streaming tokens, inline tool-call detail during the thinking phase, code and image rendering, copy buttons, and a login screen (`--no-login` to disable). Gradio is gone from the dependency list.
+- **Native Web UI** — The web UI no longer runs on Gradio. It is now a FastAPI app with a hand-written front end (`onit/ui/api.py` + `onit/ui/static/`) served over SSE, with streaming tokens, inline tool-call detail during the thinking phase, code and image rendering, copy buttons, and a login screen (`--no-login` to disable). Gradio is gone from the dependency list.
 - **Voice Mode** (`onit --voice`) — Full-duplex speech-to-speech. Audio is handled end to end by NVIDIA NemotronLabs VoiceChat 11B over an OpenAI-Realtime-compatible WebSocket (`--voice-url`); OnIt supplies the tools and the work. Install with `onit[voice]`. See [docs/VOICE.md](docs/VOICE.md).
 - **Subcommand CLI** — Modes are now subcommands instead of flags: `onit setup`, `onit sessions`, `onit learn`, `onit resume`, and `onit serve {web,loop}`. Plain `onit` still opens terminal chat. *(A2A and gateway subcommands were later removed.)*
 - **Persistent Sessions** — Terminal chat continues the last session by default. `onit sessions` lists, renames, rebuilds, and clears them; `--resume-session NAME_OR_ID` (or `last`) reopens one; `--new-session [NAME]` starts fresh, named if you give a name.
@@ -47,10 +47,10 @@
 - **Agent Harness Capabilities** — All six harness phases from the NOOA framework landed: run-state budgeting, a result store that keeps large tool results readable instead of truncating them (`result_read` / `result_grep`), harness tools, early stopping, and answer verification. See [docs/HARNESS_CAPABILITIES.md](docs/HARNESS_CAPABILITIES.md).
 - **Answer Verification** — Answers stream to the user and are then checked against the evidence the run gathered, in a fast stage the user waits for and a thorough stage that runs behind the delivered answer. Set `verify_answers: false` to hand back the answer unchecked.
 - **Code as Action** (`code_execution`, off by default) — A per-session Python interpreter that keeps variables between calls and exposes every registered tool as a function, collapsing multi-turn tool chains into one block. Off by default: the code runs with OnIt's privileges and no path jail, so enable it only where the deployment is already isolated (`onit --container`).
-- **Self-Improvement Trajectories** — OnIt records what its own runs did (`src/learn/`); `onit learn` shows the summary as a table or `--json`, and `onit learn --session ID` prints one trajectory. See [docs/SELF_IMPROVEMENT.md](docs/SELF_IMPROVEMENT.md).
+- **Self-Improvement Trajectories** — OnIt records what its own runs did (`onit/learn/`); `onit learn` shows the summary as a table or `--json`, and `onit learn --session ID` prints one trajectory. See [docs/SELF_IMPROVEMENT.md](docs/SELF_IMPROVEMENT.md).
 - **Local Search over In-House Data** — A local search MCP server modeled on the Mistral Search Toolkit: parse → chunk → embed/index, then BM25, dense, or hybrid retrieval over PDF, Markdown, text/CSV, DOCX, and XLSX. Documents and index never leave the machine. Install with `onit[search]`. See [docs/LOCAL_SEARCH.md](docs/LOCAL_SEARCH.md).
 - **Per-User MCP Isolation** — MCP tool servers are started per user, and MCP ports are chosen after the default servers exist, so concurrent users on one host no longer share tool-server state or collide on ports. See [docs/ISOLATION.md](docs/ISOLATION.md).
-- **Bash Command Policy** — Command classification (`src/mcp/servers/tasks/os/bash/command_policy.py`) routes long-running commands to `serve` rather than the bash tool and enforces the blocklist in one place.
+- **Bash Command Policy** — Command classification (`onit/mcp/servers/tasks/os/bash/command_policy.py`) routes long-running commands to `serve` rather than the bash tool and enforces the blocklist in one place.
 - **Container Mode** (`--container`) — Run the whole OnIt process inside a hardened Docker container, with GPU pass-through (`--container-gpus`), extra bind mounts (`--container-mount`), a memory cap (`--container-memory`), custom `/dev/shm` and `/tmp` sizes, and opt-in package installs (`--container-allow-installs`).
 - **Target Environment** (`--target-env`) — Point the agent's bash tool at a specific conda or virtual environment's Python, pip, and binaries without leaving the host shell. *(Removed in the simplification pass.)*
 - **Unrestricted Mode** (`--unrestricted`) — Opt-in flag granting full host filesystem access, lifting the default sandbox path restrictions for power users and CI pipelines.
