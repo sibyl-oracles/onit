@@ -4427,6 +4427,111 @@ def _build_responses_request(
     return _responses_kwargs
 
 
+def _build_chat_completions_request(
+    *,
+    host: str,
+    model: str,
+    messages: list,
+    stream: bool,
+    api_max_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    min_p: float,
+    presence_penalty: float,
+    repetition_penalty: float,
+    openai_strip_sampling: bool,
+    turn_think: bool,
+) -> tuple[dict, dict | None]:
+    """Build the kwargs for ``client.chat.completions.create`` for one turn.
+
+    Extracted verbatim from ``_ModelCaller.call_turn``.  Two shapes:
+    OpenAI rejects unknown body params, so it gets no vLLM extensions and
+    no chat-template switch; vLLM takes both.  Returns
+    ``(completion_kwargs, extra_body)`` -- ``extra_body`` is ``None`` on
+    the OpenAI path, where it is already folded into the kwargs.
+    """
+    if _is_openai_host(host):
+        # OpenAI rejects unknown body params: no vLLM extensions
+        # here, and no chat-template thinking switch.  Output
+        # budget goes out as max_completion_tokens — the spelling
+        # every OpenAI chat model takes (max_tokens is deprecated
+        # and reasoning models refuse it outright).
+        completion_kwargs = dict(
+            model=model,
+            messages=messages,
+            stream=stream,
+            max_completion_tokens=api_max_tokens,
+        )
+        # Reasoning and function tools don't mix on
+        # /v1/chat/completions — but only for models that
+        # actually refuse the combination ("Function tools with
+        # reasoning_effort are not supported").  Others reject
+        # the parameter outright, or reject "none" specifically
+        # ("does not support 'none' with this model", gpt-6
+        # class: supported values low/medium/high/xhigh).  No
+        # single value works everywhere, so nothing is sent
+        # until the model itself asks for it: the tools+effort
+        # 400 is retried with effort "none", and any other
+        # reasoning_effort rejection drops the parameter for the
+        # rest of the run (handler below).  The send itself
+        # happens where tools are attached, further below, so
+        # the flag and the tools list are read at the same
+        # point.
+        # Reasoning models (o-series, gpt-5) take only default
+        # sampling; a rejection names the parameter and the
+        # handler below drops these for the rest of the run.
+        if not openai_strip_sampling:
+            completion_kwargs["temperature"] = temperature
+            completion_kwargs["top_p"] = top_p
+            if presence_penalty:
+                completion_kwargs["presence_penalty"] = presence_penalty
+        return completion_kwargs, None
+
+    _extra_body = {
+        "top_k": top_k,  # vLLM extension, important for Qwen3
+        "min_p": min_p,
+        "presence_penalty": presence_penalty,
+        "repetition_penalty": repetition_penalty,
+    }
+    if turn_think and not _template_kwargs_unsupported(host):
+        _chat_template_kwargs: dict = {"enable_thinking": True}
+        # preserve_thinking is only supported on Qwen3.6+
+        _model_lower = model.lower()
+        _qwen3_ver = next(
+            (
+                float(p.removeprefix("qwen"))
+                for p in _model_lower.replace("/", "-").split("-")
+                if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()
+            ),
+            None,
+        )
+        if _qwen3_ver is not None and _qwen3_ver >= 3.6:
+            _chat_template_kwargs["preserve_thinking"] = True
+        _extra_body["chat_template_kwargs"] = _chat_template_kwargs
+    elif not turn_think and not _template_kwargs_unsupported(host):
+        # Thinking off has to be *said*, not left unsaid.  The
+        # Qwen3 family's chat template reads a missing
+        # ``enable_thinking`` as thinking on, so omitting the
+        # switch made both ``think: false`` and
+        # ``think_tool_turns: false`` no-ops against vLLM: the
+        # model reasoned on every turn anyway, the reasoning
+        # arrived on ``reasoning_content`` where the answer
+        # should have been, and a final turn that thought to
+        # the end of its budget returned no answer at all.
+        _extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+    completion_kwargs = dict(
+        model=model,
+        messages=messages,
+        stream=stream,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=api_max_tokens,
+        extra_body=_extra_body,
+    )
+    return completion_kwargs, _extra_body
+
+
 class _ModelCaller:
     """One turn's model call: kwargs build, send, retry, response unify.
 
@@ -4759,83 +4864,21 @@ class _ModelCaller:
                         logger.warning("Safety queue triggered after API call, exiting chat loop.")
                         return None
                     break  # success — exit retry loop
-                elif _is_openai_host(host):
-                    # OpenAI rejects unknown body params: no vLLM extensions
-                    # here, and no chat-template thinking switch.  Output
-                    # budget goes out as max_completion_tokens — the spelling
-                    # every OpenAI chat model takes (max_tokens is deprecated
-                    # and reasoning models refuse it outright).
-                    completion_kwargs = dict(
-                        model=model,
-                        messages=messages,
-                        stream=stream,
-                        max_completion_tokens=_api_max_tokens,
-                    )
-                    # Reasoning and function tools don't mix on
-                    # /v1/chat/completions — but only for models that
-                    # actually refuse the combination ("Function tools with
-                    # reasoning_effort are not supported").  Others reject
-                    # the parameter outright, or reject "none" specifically
-                    # ("does not support 'none' with this model", gpt-6
-                    # class: supported values low/medium/high/xhigh).  No
-                    # single value works everywhere, so nothing is sent
-                    # until the model itself asks for it: the tools+effort
-                    # 400 is retried with effort "none", and any other
-                    # reasoning_effort rejection drops the parameter for the
-                    # rest of the run (handler below).  The send itself
-                    # happens where tools are attached, further below, so
-                    # the flag and the tools list are read at the same
-                    # point.
-                    # Reasoning models (o-series, gpt-5) take only default
-                    # sampling; a rejection names the parameter and the
-                    # handler below drops these for the rest of the run.
-                    if not _openai_strip_sampling:
-                        completion_kwargs["temperature"] = temperature
-                        completion_kwargs["top_p"] = top_p
-                        if presence_penalty:
-                            completion_kwargs["presence_penalty"] = presence_penalty
-                else:
-                    _extra_body = {
-                        "top_k": top_k,  # vLLM extension, important for Qwen3
-                        "min_p": min_p,
-                        "presence_penalty": presence_penalty,
-                        "repetition_penalty": repetition_penalty,
-                    }
-                    if _turn_think and not _template_kwargs_unsupported(host):
-                        _chat_template_kwargs: dict = {"enable_thinking": True}
-                        # preserve_thinking is only supported on Qwen3.6+
-                        _model_lower = model.lower()
-                        _qwen3_ver = next(
-                            (
-                                float(p.removeprefix("qwen"))
-                                for p in _model_lower.replace("/", "-").split("-")
-                                if p.startswith("qwen") and p[4:].replace(".", "", 1).isdigit()
-                            ),
-                            None,
-                        )
-                        if _qwen3_ver is not None and _qwen3_ver >= 3.6:
-                            _chat_template_kwargs["preserve_thinking"] = True
-                        _extra_body["chat_template_kwargs"] = _chat_template_kwargs
-                    elif not _turn_think and not _template_kwargs_unsupported(host):
-                        # Thinking off has to be *said*, not left unsaid.  The
-                        # Qwen3 family's chat template reads a missing
-                        # ``enable_thinking`` as thinking on, so omitting the
-                        # switch made both ``think: false`` and
-                        # ``think_tool_turns: false`` no-ops against vLLM: the
-                        # model reasoned on every turn anyway, the reasoning
-                        # arrived on ``reasoning_content`` where the answer
-                        # should have been, and a final turn that thought to
-                        # the end of its budget returned no answer at all.
-                        _extra_body["chat_template_kwargs"] = {"enable_thinking": False}
-                    completion_kwargs = dict(
-                        model=model,
-                        messages=messages,
-                        stream=stream,
-                        temperature=temperature,
-                        top_p=top_p,
-                        max_tokens=_api_max_tokens,
-                        extra_body=_extra_body,
-                    )
+                completion_kwargs, _extra_body = _build_chat_completions_request(
+                    host=host,
+                    model=model,
+                    messages=messages,
+                    stream=stream,
+                    api_max_tokens=_api_max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    min_p=min_p,
+                    presence_penalty=presence_penalty,
+                    repetition_penalty=repetition_penalty,
+                    openai_strip_sampling=_openai_strip_sampling,
+                    turn_think=_turn_think,
+                )
                 # Shared by the OpenAI and vLLM branches: the request goes
                 # out here, after each branch has built its kwargs.  The
                 # Ollama branch above already sent its own request and set
