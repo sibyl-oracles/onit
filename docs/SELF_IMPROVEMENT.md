@@ -196,7 +196,7 @@ independently and land on this plan's own gap list:
   model-written memory. Loop A and Loop B are the *learned* version of the same idea. They
   must share one on-disk root and one path-jail — see §4.0.
 - **H1 (typed I/O)** fixes two live bugs that corrupt Layer 0's own data: `outputSchema` is
-  captured at [`lib/tools.py:182`](../onit/lib/tools.py#L182), never read, and shipped
+  captured at [`lib/tools.py:182`](../onit/lib/tools.py#L397), never read, and shipped
   inside the `tools=` payload where it is not a valid field; and the disabled iteration cap
   lets `turn_count` run unbounded.
 
@@ -422,15 +422,15 @@ An honest audit. Findings are file-referenced so they can be verified.
 
 | Asset | Location | Why it matters |
 |---|---|---|
-| Rich per-run telemetry | [`TurnMetrics`](../onit/model/serving/chat.py#L95) — turns, tool calls, prefill/decode split, compactions, peak prompt tokens | Free efficiency features for the reward model — already computed |
-| Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L29) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench + METR time-horizon layer | **The fitness function** — the single biggest head start, but aimed at the model rather than the scaffold. See gap 5 |
+| Rich per-run telemetry | [`TurnMetrics`](../onit/model/serving/chat.py#L319) — turns, tool calls, prefill/decode split, compactions, peak prompt tokens | Free efficiency features for the reward model — already computed |
+| Benchmark harness | [`benchmarks/run.py`](../benchmarks/run.py#L31) — Inspect-AI: gsm8k, humaneval, mbpp, bigcodebench + METR time-horizon layer | **The fitness function** — the single biggest head start, but aimed at the model rather than the scaffold. See gap 5 |
 | Answer verifier | [`verify.py`](../onit/model/serving/verify.py) — fact-checks the finished answer against the evidence that produced it; on by default | **An outcome signal that already runs**, already recorded per task and not yet read. See gap 3 |
-| Explicit run state | [`RunState`](../onit/model/serving/state.py#L86), [`ResultStore`](../onit/model/serving/results.py), [harness tools](../onit/model/serving/harness.py) | Phase 0.5 (H2/H4/H6). `stop_reason` is the signal metrics cannot supply |
+| Explicit run state | [`RunState`](../onit/model/serving/state.py#L90), [`ResultStore`](../onit/model/serving/results.py), [harness tools](../onit/model/serving/harness.py) | Phase 0.5 (H2/H4/H6). `stop_reason` is the signal metrics cannot supply |
 | LLM-as-judge | [`benchmarks/scorers/onit_judge.py`](../benchmarks/scorers/onit_judge.py) | Quality gate for open-ended tasks |
 | Results ledger | [`benchmarks/RESULTS.md`](../benchmarks/RESULTS.md) | Where promotion evidence gets written |
-| MCP tool discovery | [`discover_tools()`](../onit/lib/tools.py#L213), [`ToolRegistry`](../onit/type/tools.py#L347) | Skills can ship as an MCP server — no new plumbing concept |
+| MCP tool discovery | [`discover_tools()`](../onit/lib/tools.py#L441), [`ToolRegistry`](../onit/type/tools.py#L824) | Skills can ship as an MCP server — no new plumbing concept |
 | Containment | [`command_policy.py`](../onit/mcp/servers/tasks/os/bash/command_policy.py), `installs_sealed()`, [`container_launcher.py`](../onit/container_launcher.py) | Sandbox for validating self-generated code already exists |
-| Prompt templating | [`build_assistant_instruction()`](../onit/mcp/prompts/prompts.py#L43) with YAML `template_path` override | Evolved prompts have a place to land |
+| Prompt templating | [`build_assistant_instruction()`](../onit/mcp/prompts/prompts.py#L57) with YAML `template_path` override | Evolved prompts have a place to land |
 | Session index / ownership | [`sessions.py`](../onit/sessions.py), `get_session_owner()` | Per-user memory scoping is already possible |
 
 **The gaps**, re-verified against `main` on August 20, 2026. Gap 1 is closed; 2 and 3 moved;
@@ -439,13 +439,14 @@ An honest audit. Findings are file-referenced so they can be verified.
 1. ~~**No trajectory persistence.**~~ *Closed.* The session file still holds
    `{task, response, timestamp}`; [`onit/learn/`](../onit/learn/) now writes the run
    alongside it.
-2. **`memories` is a dead parameter.** *Still dead, deliberately — and now the one thing
-   standing between a recording agent and a learning one.* It is threaded from `onit.py`
-   (`'memories': None`, at [three](../onit/onit.py#L1486) [call](../onit/onit.py#L1806)
-   [sites](../onit/onit.py#L2355)) through [`chat.py`](../onit/model/serving/chat.py#L2759)
-   into [`_build_messages()`](../onit/model/serving/chat.py#L1360), whose body never
-   references it. Phase 0 records but injects nothing, so the hook stays unwired until
-   Phase 1 — which is what makes level `observe` byte-for-byte identical to learning off.
+2. **`memories` was a dead parameter — and has since been removed.** *It was the one
+   thing standing between a recording agent and a learning one.* It was threaded from
+   `onit.py` (`'memories': None`, three call sites) through `chat()` into
+   `_build_messages()`, whose body never referenced it. It was deleted outright in
+   `80f8168` (2026-09-22, "Remove dead code: VLM MCP server, unused chat kwargs, orphaned
+   helpers") rather than left wired, so there is no longer a parameter to inject into.
+   Phase 0 records but injects nothing, so the hook stays unwired until Phase 1 — which
+   is what makes level `observe` byte-for-byte identical to learning off.
    Every other gap below is a question of *what* to inject. This one is the aperture, and
    nothing is a learning loop until it opens.
 3. **No outcome signal.** *Closer to closed than this document has been claiming.* Three
@@ -468,8 +469,8 @@ An honest audit. Findings are file-referenced so they can be verified.
      is what implicit signals and the text-UI rating path (§5, deliverable 3) are for.
      *Verified October 22, 2026 — this bullet was open in the August 20 revision.*
 4. **Tool set is frozen at startup.** `ToolRegistry.register()`
-   ([`type/tools.py`](../onit/type/tools.py#L595)) is called from exactly one site —
-   [`lib/tools.py`](../onit/lib/tools.py#L266), during discovery. No runtime registration,
+   ([`type/tools.py`](../onit/type/tools.py#L859)) is called from exactly one site —
+   [`lib/tools.py`](../onit/lib/tools.py#L441), during discovery. No runtime registration,
    no unregistration, no reload. Loop C has no insertion point to build against.
 5. **No holdout discipline — and the fitness function measures the wrong thing.** This gap
    grew since August 09, because settling the harness fixed the ruler's *stability* and
@@ -477,7 +478,7 @@ An honest audit. Findings are file-referenced so they can be verified.
    - `benchmarks/baselines/` holds `full.json` (pinned September 05, 2026) and
      nothing else. No `holdout.jsonl`, no
      `pinned.yaml`. Invariants I1 and I3 are prose, not code.
-   - The tasks registered in [`run.py`](../benchmarks/run.py#L30-L41) are gsm8k, humaneval,
+   - The tasks registered in [`run.py`](../benchmarks/run.py#L31-L60) are gsm8k, humaneval,
      mbpp and bigcodebench — **single-turn, and near-saturated** at 0.978 /
      0.915 / 0.957 in `RESULTS.md`. A playbook cannot move humaneval: there is no
      multi-step tool use in it for a learned workflow to improve, and almost no headroom
@@ -517,7 +518,7 @@ An honest audit. Findings are file-referenced so they can be verified.
 
 **The one constraint that shapes everything:** the instruction is deliberately split into
 a **static, prefix-cacheable half** and a **volatile half**
-([`prompts.py`](../onit/mcp/prompts/prompts.py#L365-L390)), so a server with prefix caching
+([`prompts.py`](../onit/mcp/prompts/prompts.py#L167-L186)), so a server with prefix caching
 skips prefilling the preamble on every request of every session. Any learned context
 injected *in the middle* of that prefix invalidates the cache from that byte onward,
 across all sessions. This is a real cost and it dictates the placement decisions in §4.2.
@@ -654,8 +655,8 @@ Implementation notes:
 
 - `TurnMetrics` already produces `metrics` and per-turn `tools` — the change is to
   **persist the sink** rather than log-and-drop it
-  ([`onit.py:1150-1154`](../onit/onit.py#L1150-L1154)).
-- `_execute_tool()` ([`chat.py:777`](../onit/model/serving/chat.py#L777)) is the single
+  ([`onit.py:1150-1154`](../onit/onit.py#L504-L545)).
+- `_execute_tool()` ([`chat.py:777`](../onit/model/serving/chat.py#L2200)) is the single
   place to capture per-tool ok/error/duration.
 - **Store argument digests, not arguments.** Tool args carry file paths, queries and
   occasionally credentials. Hash by default; raw capture behind an explicit opt-in flag.
@@ -746,7 +747,7 @@ trajectories by a Reflector/Curator pair, injected into the standing instruction
 
 **Placement — this is the load-bearing decision.** The playbook goes at the **tail of the
 static half**, immediately before `INSTRUCTION_SPLIT`
-([`prompts.py:365-368`](../onit/mcp/prompts/prompts.py#L365-L368)):
+([`prompts.py:365-368`](../onit/mcp/prompts/prompts.py#L167-L186)):
 
 ```
 [ role · procedure · standing rules ]  ← unchanged bytes, still prefix-cached
@@ -818,7 +819,7 @@ research procedure, instructions, sandbox workflow — against `benchmarks/` tas
 GEPA fits OnIt's budget precisely: reflective mutation from *trajectory text* (which
 Layer 0 now stores), Pareto-front retention over per-instance scores, ~35× fewer rollouts
 than RL. Output is a YAML `instruction_template` — an artifact
-[`prompts.py`](../onit/mcp/prompts/prompts.py#L125-L136) already knows how to load, and
+[`prompts.py`](../onit/mcp/prompts/prompts.py#L215-L226) already knows how to load, and
 which now keeps its prefix cache when it interpolates nothing volatile (§3).
 
 **D2 — Code-level self-modification (DGM/HGM).** The agent proposes patches to its own
@@ -974,7 +975,7 @@ Shipped:
 - [`onit/learn/trajectory.py`](../onit/learn/trajectory.py) — schema v1, append-only writer,
   argument redaction, owner hashing, ratings folded in at read time.
 - Per-tool ok/error/duration/result-size from
-  [`_execute_tool()`](../onit/model/serving/chat.py#L777) — every path that answers a call
+  [`_execute_tool()`](../onit/model/serving/chat.py#L2200) — every path that answers a call
   records one, failures included — plus an API-retry counter on `TurnMetrics`.
 - Recording wired into all three task paths in [`onit.py`](../onit/onit.py): `process_task`
   (web), the interactive CLI, and loop mode.
@@ -1029,7 +1030,7 @@ Tools (worst failure rate first)
 Recording also surfaced a pre-existing telemetry gap it depends on: the Ollama
 *streaming* path read `prompt_eval_count` but never `eval_count`, so every streamed
 Ollama run accounted for zero generated tokens. Fixed in
-[`_ollama_process_streaming_response`](../onit/model/serving/chat.py#L1198); the
+[`_ollama_process_streaming_response`](../onit/model/serving/chat.py#L3170); the
 non-streaming path had always read it.
 
 ### Phase 0.5 — Settle the harness · autonomy 1 — **complete**
@@ -1044,8 +1045,8 @@ land before the baseline could be pinned, and why.
 |---|---|---|---|
 | **H1** | Typed I/O — validate args pre-dispatch; stop shipping `returns` on the wire | Moved `tool_errors` from server stack traces to harness refusals | ✅ done (Aug 09) |
 | **H3** | Loop policy to config; **restore the iteration cap** | `turn_count` was unbounded, so its distribution was not a baseline | ✅ done (Aug 09) |
-| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ✅ done — [`harness.py`](../onit/model/serving/harness.py#L95-L128) |
-| **H6** | `RunState` object | What `_record_trajectory` now serializes; supplies `stop_reason` | ✅ done — [`state.py`](../onit/model/serving/state.py#L86) |
+| **H2** | `context_status`, `note_write`, `note_read` | Shares its on-disk root and path-jail with Loop A/B (§4.0) | ✅ done — [`harness.py`](../onit/model/serving/harness.py#L420-L520) |
+| **H6** | `RunState` object | What `_record_trajectory` now serializes; supplies `stop_reason` | ✅ done — [`state.py`](../onit/model/serving/state.py#L90) |
 | **H4** | Tool-result store (pass-by-reference) | Collapses `truncations`/`compactions` — the largest baseline shift of the five | ✅ done — [`results.py`](../onit/model/serving/results.py) |
 | **H5** | Code as action — `run_code` + per-session interpreter | **Was excluded from this phase. Shipped anyway.** See below | ⚠️ done, default off — [`interpreter.py`](../onit/model/serving/interpreter.py) |
 
@@ -1064,10 +1065,10 @@ change this plan's own reading of its data:
 "explicitly *not* in Phase 0.5," because one `run_code` call replaces N tool calls and
 `tool_calls` per task therefore stops being comparable across the boundary. It shipped
 regardless: [`interpreter.py`](../onit/model/serving/interpreter.py), offered as `run_code`
-via [`harness.py`](../onit/model/serving/harness.py#L199).
+via [`harness.py`](../onit/model/serving/harness.py#L214).
 
 What saves the baseline is that it is **default off**
-([`onit.py`](../onit/onit.py#L89-L93)), for reasons unrelated to this plan — it runs
+([`onit.py`](../onit/onit.py#L75-L130)), for reasons unrelated to this plan — it runs
 model-written Python with the process's privileges, and small models write worse Python
 than they write JSON. So the corpus is uncontaminated *today*, and the constraint converts
 from a schedule into a standing rule:

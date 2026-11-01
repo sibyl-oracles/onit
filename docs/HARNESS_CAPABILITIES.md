@@ -37,7 +37,7 @@ code-as-action with a **sandboxed interpreter** instead of a shared heap.
 ### Build order
 
 Ordered by (payoff ÷ effort), not by the article's numbering. Phases 1–4 and 6 together
-are **Phase 0.5** of [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) — they must all land
+are **Phase 0.5** of [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L519) — they must all land
 before that plan pins its baseline, because each one changes a metric it records:
 
 ```
@@ -76,15 +76,15 @@ Worth stating before the gap list, because these should not be regressed:
   `while True:` — not a graph DSL, not a framework callback maze. This is exactly what
   the article's capability #4 asks for, and it is why Phase 3 is half a day rather than
   a rewrite.
-- **Per-turn telemetry exists.** [`TurnMetrics`](../onit/model/serving/chat.py#L98)
+- **Per-turn telemetry exists.** [`TurnMetrics`](../onit/model/serving/chat.py#L319)
   records prefill/decode/tool time and token counts turn by turn, into a caller-owned
   sink. The "caller owns the dict, harness fills it in place" pattern is the right one —
   **Phase 6 should copy it verbatim.**
 - **Read-only tool batching.**
-  [`_execute_tools_in_parallel`](../onit/model/serving/chat.py#L1975) runs a batch
+  [`_execute_tools_in_parallel`](../onit/model/serving/chat.py#L5764) runs a batch
   concurrently when every call is in `_READ_ONLY_TOOLS`, with buffers drained in call
   order to satisfy the tool_call_id ordering rule.
-- **MCP connection pooling.** [`_PooledClient`](../onit/type/tools.py#L106) keeps one
+- **MCP connection pooling.** [`_PooledClient`](../onit/type/tools.py#L429) keeps one
   session per (URL, event loop), removing a connect + handshake from every tool call.
 - **Recovery heuristics.** Planning-response, acknowledgment, meta-commentary and no-op
   detection are more than most harnesses have. Phase 3 makes them configurable; it must
@@ -98,13 +98,13 @@ Worth stating before the gap list, because these should not be regressed:
 
 ### 3.1 The bug
 
-[`_build_returns`](../onit/lib/tools.py#L71) extracts each MCP tool's `outputSchema` and
-stores it at [tools.py:182](../onit/lib/tools.py#L182) as `function.returns` inside the
+[`_build_returns`](../onit/lib/tools.py#L282) extracts each MCP tool's `outputSchema` and
+stores it at [tools.py:182](../onit/lib/tools.py#L397) as `function.returns` inside the
 `ToolItem`. Nothing ever reads it.
 
-Meanwhile [`ToolRegistry.get_tool_items()`](../onit/type/tools.py#L374) hands the whole
+Meanwhile [`ToolRegistry.get_tool_items()`](../onit/type/tools.py#L929) hands the whole
 dict — `returns` included — straight to `tools=` in the API payload at
-[chat.py:2525](../onit/model/serving/chat.py#L2525). `returns` is **not a valid field** in
+[chat.py:2525](../onit/model/serving/chat.py#L254). `returns` is **not a valid field** in
 the OpenAI tool schema. Today it is dead weight on every request; on any provider that
 validates the tool schema strictly it is a rejection.
 
@@ -114,13 +114,13 @@ Input validation is repair-based rather than schema-based:
 
 | Site | What it does | What it misses |
 |---|---|---|
-| [`_parse_tool_arguments`](../onit/model/serving/chat.py#L1955) | regex quote-swap + trailing-comma strip on malformed JSON | anything that parses but is wrong |
-| [`ToolHandler.__call__`](../onit/type/tools.py#L243) | unwraps `{"query": {"query": ...}}` nesting | only for `string`-typed params |
-| [`blank_required_args`](../onit/type/tools.py#L400) | catches missing/blank **required strings** | wrong types, bad enums, out-of-range numbers |
+| [`_parse_tool_arguments`](../onit/model/serving/chat.py#L5744) | regex quote-swap + trailing-comma strip on malformed JSON | anything that parses but is wrong |
+| [`ToolHandler.__call__`](../onit/type/tools.py#L618) | unwraps `{"query": {"query": ...}}` nesting | only for `string`-typed params |
+| [`blank_required_args`](../onit/type/tools.py#L981) | catches missing/blank **required strings** | wrong types, bad enums, out-of-range numbers |
 
 A wrong-typed argument reaches the MCP server and returns a stack trace, which the model
 then has to interpret. The existing blank-args error at
-[chat.py:890](../onit/model/serving/chat.py#L890) shows the right shape for the fix — it
+[chat.py:890](../onit/model/serving/chat.py#L927) shows the right shape for the fix — it
 names the offending parameters and tells the model not to repeat the call unchanged.
 
 ### 3.3 Steps
@@ -128,7 +128,7 @@ names the offending parameters and tells the model not to repeat the call unchan
 1. **Strip `returns` from the wire.** Give `ToolRegistry` a second accessor — keep
    `get_tool_items()` for internal use, add `get_api_tool_items()` that projects each
    entry down to `{type, function: {name, description, parameters}}`. Point
-   [chat.py:2222](../onit/model/serving/chat.py#L2222) at the new one.
+   [chat.py:2222](../onit/model/serving/chat.py#L2200) at the new one.
 2. **Hand-roll a schema validator** in `onit/lib/schema.py`:
    `validate_arguments(schema: dict, args: dict) -> list[str]`, returning human-readable
    problems (`"depth: expected integer, got 'three'"`). Support `type`, `required`,
@@ -142,7 +142,7 @@ names the offending parameters and tells the model not to repeat the call unchan
    dynamically per tool at discovery time is more machinery than a ~120-line validator over
    the five keywords MCP servers actually emit. Hand-roll it — but for that reason, not for
    a dependency reason. (`jsonschema` itself *is* blocked by the user's deny rules.)
-3. **Call it before dispatch** in [`_execute_tool`](../onit/model/serving/chat.py#L795),
+3. **Call it before dispatch** in [`_execute_tool`](../onit/model/serving/chat.py#L2200),
    folding it into the existing `_blank_args` branch so there is one refusal path, one
    error format, and one `_log(False, 0)` site.
 4. **Coerce the safe cases** rather than refusing them: `"3"` → `3` for an `integer`
@@ -170,10 +170,10 @@ Implemented August 09, 2026. 55 new tests; suite 966 → 1028, all green.
 | Piece | Where |
 |---|---|
 | Schema validator (~200 lines, no new deps) | [`onit/lib/schema.py`](../onit/lib/schema.py) |
-| Coerce + validate before dispatch | [`_execute_tool`](../onit/model/serving/chat.py#L927) |
-| `returns` stripped from the wire | [`_api_tool_payload`](../onit/model/serving/chat.py#L79) |
-| Schema accessor | [`ToolRegistry.parameters_schema`](../onit/type/tools.py#L400) |
-| **`required` preserved at discovery** | [`_build_parameters`](../onit/lib/tools.py#L28) |
+| Coerce + validate before dispatch | [`_execute_tool`](../onit/model/serving/chat.py#L2200) |
+| `returns` stripped from the wire | [`_api_tool_payload`](../onit/model/serving/chat.py#L254) |
+| Schema accessor | [`ToolRegistry.parameters_schema`](../onit/type/tools.py#L968) |
+| **`required` preserved at discovery** | [`_build_parameters`](../onit/lib/tools.py#L224) |
 
 **Two decisions changed during implementation.**
 
@@ -188,7 +188,7 @@ method.
 `_build_parameters` reconstructed each tool's schema from `inputSchema` keeping only `type`
 and `properties` — **`required` was dropped**. Two silent consequences: the model was never
 told which parameters are mandatory, and
-[`blank_required_args`](../onit/type/tools.py#L426) reads `required` to refuse a call before
+[`blank_required_args`](../onit/type/tools.py#L981) reads `required` to refuse a call before
 dispatch, so it found an empty list for every MCP-discovered tool and **had never fired in
 production**. `$defs`/`definitions` were dropped too, dangling any `$ref` a server used.
 
@@ -250,13 +250,13 @@ information needed to not invent a parameter in the first place.
 ### 3.7 Tool name collisions — fixed
 
 `ToolRegistry` merged every server offering a given tool name into one rotation and
-resolved calls with [`random.choice`](../onit/type/tools.py#L514). That is right for
+resolved calls with [`random.choice`](../onit/type/tools.py#L927). That is right for
 **replicas** — the same tool on two hosts, which is load balancing — and wrong for
 **collisions**, the same *name* over different parameters. OnIt ships two:
 
 | Tool | Consolidated `tasks/tools` server | `os/bash` server |
 |---|---|---|
-| [`read_file`](../onit/mcp/servers/tasks/tools/mcp_server.py#L234) | `path, mode, encoding, max_chars, table_index, output_format, output_dir, min_size, data_path` | `path, encoding, max_chars, data_path` |
+| [`read_file`](../onit/mcp/servers/tasks/tools/mcp_server.py#L246) | `path, mode, encoding, max_chars, table_index, output_format, output_dir, min_size, data_path` | `path, encoding, max_chars, data_path` |
 | `search_document` | *(differs)* | *(differs)* |
 
 Two consequences in any deployment running both, and the second is the serious one:
@@ -267,7 +267,7 @@ Two consequences in any deployment running both, and the second is the serious o
    excellent way to teach a model to invent parameters, which is exactly what §3.6 caught
    it doing.
 
-**The fix** ([`register`](../onit/type/tools.py#L369)) compares the *parameter schema* of
+**The fix** ([`register`](../onit/type/tools.py#L859)) compares the *parameter schema* of
 each incoming copy against the one already holding the name — descriptions are excluded,
 since two servers may word the same tool differently:
 
@@ -374,12 +374,12 @@ self-consistent within one.
 Context management is entirely invisible to the model:
 
 - Compaction fires on a threshold at
-  [chat.py:2396–2406](../onit/model/serving/chat.py#L2396-L2406) — the model is not told
+  [chat.py:2396–2406](../onit/model/serving/chat.py#L2200-L2240) — the model is not told
   it is about to happen, and cannot prepare for it.
-- [`_decay_old_tool_results`](../onit/model/serving/chat.py#L733) trims older results every
+- [`_decay_old_tool_results`](../onit/model/serving/chat.py#L1802) trims older results every
   iteration, silently.
 - `set_context_usage` computes the exact fill percentage — and forwards it **only to the
-  UI** ([onit.py:367](../onit/onit.py#L367) is a documented no-op for external clients).
+  UI** ([onit.py:367](../onit/onit.py#L761) is a documented no-op for external clients).
 
 So the harness knows it is at 85% and the model does not. A model that could see it would
 write its findings down before the summarizer eats them. It has no way to.
@@ -388,9 +388,9 @@ write its findings down before the summarizer eats them. It has no way to.
 
 Add a small in-process harness toolset — these are *not* MCP tools; they need access to
 `messages` and the running loop's state, so they are dispatched inside
-[`_execute_tool`](../onit/model/serving/chat.py#L795) ahead of the registry lookup, the
+[`_execute_tool`](../onit/model/serving/chat.py#L2200) ahead of the registry lookup, the
 same way `sandbox_download_file` is already intercepted at
-[chat.py:837](../onit/model/serving/chat.py#L837).
+[chat.py:837](../onit/model/serving/chat.py#L2200).
 
 1. **`context_status()`** → `{used_tokens, max_tokens, pct, turns, tools_called}`. Reads
    `_last_prompt_tokens` / `max_context_tokens`, which the loop already tracks.
@@ -408,12 +408,12 @@ same way `sandbox_download_file` is already intercepted at
    `~/.onit/learned/`. The path from one to the other is Loop B's Reflector — offline and
    gated — never a shared directory, because `data_path` is a session isolation boundary.
 3. **Announce compaction to the model, not just the UI.** When
-   [`_compact`](../onit/model/serving/chat.py#L2364) runs, append a short `user`-role
+   [`_compact`](../onit/model/serving/chat.py#L7000) runs, append a short `user`-role
    notice to the compacted message list saying what happened and that `note_read` is
    available. The UI already gets `show_context_compaction`
-   ([onit.py:371](../onit/onit.py#L371)) — this is the model-facing twin.
+   ([onit.py:371](../onit/onit.py#L813)) — this is the model-facing twin.
 4. **Register them in the instruction.** Add a block to
-   [`build_assistant_instruction`](../onit/mcp/prompts/prompts.py#L50), gated on a new
+   [`build_assistant_instruction`](../onit/mcp/prompts/prompts.py#L57), gated on a new
    `harness_tools_available` flag, following the existing `sandbox_block` /
    `local_search_available` pattern. Keep it in the **static half** of the instruction —
    it does not vary per request, so it stays prefix-cacheable.
@@ -437,7 +437,7 @@ Implemented August 18, 2026. 58 new tests; suite 1275 → 1333, all green.
 | Offered in the same payload as the MCP tools | [`chat()`](../onit/model/serving/chat.py) |
 | Compaction notice, model-facing | [`_compact_context(harness_note=…)`](../onit/model/serving/chat.py) |
 | Prompt block, gated and cacheable | [`build_assistant_instruction`](../onit/mcp/prompts/prompts.py) |
-| `serving.harness_tools` | [`SERVING_PASSTHROUGH`](../onit/onit.py#L65) → `chat()` |
+| `serving.harness_tools` | [`SERVING_PASSTHROUGH`](../onit/onit.py#L75) → `chat()` |
 
 **Four decisions changed during implementation.**
 
@@ -496,7 +496,7 @@ LLM call plus everything the summary drops.
 
 ### 5.1 The bug
 
-[chat.py:2328](../onit/model/serving/chat.py#L2328):
+[chat.py:2328](../onit/model/serving/chat.py#L2200):
 
 ```python
 MAX_CHAT_ITERATIONS = -1
@@ -513,11 +513,11 @@ alternating between two slightly-different calls runs until the user stops it.
 
 1. Set a real default ceiling (suggest 50) and keep `-1` as an explicit opt-out.
 2. Lift the constants at
-   [chat.py:2328–2343](../onit/model/serving/chat.py#L2328-L2343) —
+   [chat.py:2328–2343](../onit/model/serving/chat.py#L2200-L2240) —
    `MAX_CHAT_ITERATIONS`, `MAX_REPEATED_TOOL_CALLS`, `MAX_PLANNING_CONTINUATIONS`,
    `MAX_ACK_CONTINUATIONS`, `MAX_FINAL_CONTINUATIONS` — into `kwargs` with the current
    values as defaults, so `chat()`'s signature stays the single place each default lives.
-3. Add them to `SERVING_PASSTHROUGH` at [onit.py:63](../onit/onit.py#L63) so they are
+3. Add them to `SERVING_PASSTHROUGH` at [onit.py:63](../onit/onit.py#L75) so they are
    reachable from `serving:` in the config YAML. That list is already the established
    "forward only when the config sets it" mechanism — no new plumbing needed.
 4. When the iteration cap trips, return a message that says the run hit its turn limit.
@@ -543,12 +543,12 @@ they are.
 Implemented August 09, 2026, as specified. All six ceilings are `chat()` kwargs defaulting
 to their previous values; `MAX_CHAT_ITERATIONS` now defaults to **50** with `-1` as the
 documented opt-out. Config path is `serving:` → `SERVING_PASSTHROUGH`
-([`onit.py:63`](../onit/onit.py#L63)) → `chat()`, documented inline in
+([`onit.py:63`](../onit/onit.py#L75)) → `chat()`, documented inline in
 [`onit/configs/default.yaml`](../onit/configs/default.yaml).
 
 Two additions beyond the plan:
 
-- **`_as_positive_or_disabled`** ([chat.py:98](../onit/model/serving/chat.py#L98)) — YAML
+- **`_as_positive_or_disabled`** ([chat.py:98](../onit/model/serving/chat.py#L303)) — YAML
   hands back whatever was typed, so `"25"` coerces but `"fifty"` falls back to the
   *default*, never to disabled. A typo must not silently restore the unbounded loop.
 - **The turn limit returns partial work.** If prose was already written — a truncated
@@ -581,10 +581,10 @@ destroyed to make room for the next one:
 
 | Site | Behavior | Cost |
 |---|---|---|
-| [`_truncate_tool_response`](../onit/model/serving/chat.py#L79) | hard cut at `MAX_TOOL_RESPONSE = 16000` chars, head + tail kept | **the middle is gone permanently** |
-| [`_decay_old_tool_results`](../onit/model/serving/chat.py#L733) | all but the last 3 results trimmed to 6000 chars | older evidence reduced to its opening |
-| [`_strip_old_images`](../onit/model/serving/chat.py#L766) | base64 replaced with a placeholder in stale messages | image unrecoverable |
-| [`_compact_context`](../onit/model/serving/chat.py#L2081) | whole-conversation LLM summarization | an extra model call, and detail loss |
+| [`_truncate_tool_response`](../onit/model/serving/chat.py#L140) | hard cut at `MAX_TOOL_RESPONSE = 16000` chars, head + tail kept | **the middle is gone permanently** |
+| [`_decay_old_tool_results`](../onit/model/serving/chat.py#L1802) | all but the last 3 results trimmed to 6000 chars | older evidence reduced to its opening |
+| [`_strip_old_images`](../onit/model/serving/chat.py#L1867) | base64 replaced with a placeholder in stale messages | image unrecoverable |
+| [`_compact_context`](../onit/model/serving/chat.py#L5969) | whole-conversation LLM summarization | an extra model call, and detail loss |
 
 The decay marker is the tell:
 
@@ -632,8 +632,8 @@ existing path rather than copying bytes into a second file.
    under `data_path/.onit/results/` and reject traversal; per the
    `session-isolation-data-path` memory, `data_path` is a trust boundary and the harness
    value must win over anything the model supplies.
-2. Wire into [`_execute_tool`](../onit/model/serving/chat.py#L795) at the point where
-   `_truncate_tool_response` is called ([chat.py:950](../onit/model/serving/chat.py#L950)):
+2. Wire into [`_execute_tool`](../onit/model/serving/chat.py#L2200) at the point where
+   `_truncate_tool_response` is called ([chat.py:950](../onit/model/serving/chat.py#L140)):
    store first, then build the preview. Leave `_truncate_tool_response` in place for the
    no-store fallback path.
 3. Make `_decay_old_tool_results` handle-aware — a decayed result keeps its handle line,
@@ -757,7 +757,7 @@ anywhere by default. Nothing about the default configuration changed.
 
 Every step of a multi-step operation costs a full model round trip. The parallel path
 helps only when *all* calls are in
-[`_READ_ONLY_TOOLS`](../onit/model/serving/chat.py#L1947); anything containing a write is
+[`_READ_ONLY_TOOLS`](../onit/model/serving/chat.py#L5718); anything containing a write is
 strictly sequential — correctly so, per the comment there: *"a batch of those is a script,
 and a script has an order."*
 
@@ -794,7 +794,7 @@ machinery covers the case where a `print` is itself huge.
    Python function whose call marshals to the existing `ToolHandler`. Schema-driven, so
    new MCP servers work with no extra code.
 3. **Route the injected trust parameters.** `session_id` and `data_path` are injected by
-   the harness at [chat.py:829–832](../onit/model/serving/chat.py#L829-L832) and must
+   the harness at [chat.py:829–832](../onit/model/serving/chat.py#L2200-L2240) and must
    **never** be settable from inside the interpreter. Bind them at generation time and
    drop them from the generated signatures entirely.
 4. **Ship it as an additional tool, not a replacement.** `run_code` sits alongside
@@ -901,7 +901,7 @@ write JSON tool calls, and this phase can lose accuracy even while it cuts laten
 
 **First, what is *not* the gap.** A second review concluded there is "no agent object with
 typed fields" and proposed building `onit/agent.py`. That is wrong and the mistake is
-expensive: [`OnIt`](../onit/onit.py#L586) is already `class OnIt(BaseModel)` with ~50 typed
+expensive: [`OnIt`](../onit/onit.py#L838) is already `class OnIt(BaseModel)` with ~50 typed
 `Field()` declarations, and a new `Agent` base class would duplicate it. The accurate
 distinction is **configuration state vs. run state**. OnIt's fields are configuration —
 `web_port`, `agent_name`, `theme`, `history_turns` — set at startup and stable for the
@@ -917,17 +917,17 @@ Every piece of that state lives in local variables inside `chat()` —
 - **Testing requires driving the whole loop.** There is no way to construct "20 turns in,
   planning budget exhausted" and assert on the next decision.
 - **Resume is prose-only.** Session persistence at
-  [onit.py:1190](../onit/onit.py#L1190) writes `{task, response, timestamp}`. A resumed
+  [onit.py:1190](../onit/onit.py#L2553) writes `{task, response, timestamp}`. A resumed
   session replays what was *said*, with no record of which tools ran, which files were
   written, or what was tried and failed.
-- [`_record_trajectory`](../onit/onit.py#L1212) captures some of this but is write-only and
+- [`_record_trajectory`](../onit/onit.py#L2125) captures some of this but is write-only and
   off unless the autonomy level is `observe` or higher.
 
 ### 8.2 Steps
 
 1. `RunState` dataclass in `onit/model/serving/state.py` holding the fields above, **owned
    by the caller and mutated in place** — the exact pattern `TurnMetrics` already uses
-   with its `metrics` sink ([chat.py:2242](../onit/model/serving/chat.py#L2242)). That
+   with its `metrics` sink ([chat.py:2242](../onit/model/serving/chat.py#L6678)). That
    pattern is proven in this codebase; do not invent a second one.
 2. Replace the locals in `chat()` with `state.` attributes. Mechanical, and the diff is
    large but shallow — do it in one commit, no behavior change, tests green before and
@@ -935,7 +935,7 @@ Every piece of that state lives in local variables inside `chat()` —
 3. Accept an optional `run_state` kwarg. Absent, `chat()` makes its own — identical to
    today's behavior, so nothing outside has to change.
 4. Persist alongside the session JSONL as `<session_id>.state.json`, and reload on resume
-   ([`_setup_session`](../onit/onit.py#L868) already handles `resume_session_id`).
+   ([`_setup_session`](../onit/onit.py#L1357) already handles `resume_session_id`).
 5. Feed `tool_call_history` from a resumed state into the instruction, so a continued
    session knows what has already been attempted.
 6. **Coordinate with `docs/SELF_IMPROVEMENT.md`.** Layer 0 (trajectory recording) is
@@ -1057,8 +1057,8 @@ biggest architectural gap." Recorded here are the differences that changed this 
 **A long-term memory subsystem, ranked #1.** This document treated
 [`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md) as a footnote in Phase 6; the second review
 made it the headline, and it was right to. The convergence is real —
-[`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L530) already specifies `onit/learn/recall.py`
-and `onit/learn/playbook.py`, and [`trajectory.py:188`](../onit/learn/trajectory.py#L188)
+[`SELF_IMPROVEMENT.md`](SELF_IMPROVEMENT.md#L519) already specifies `onit/learn/recall.py`
+and `onit/learn/playbook.py`, and [`trajectory.py:188`](../onit/learn/trajectory.py#L165)
 already carries `learned_context` with `playbook_version` and `episodes_used`, wired for
 exactly this.
 
