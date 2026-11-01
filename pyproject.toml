@@ -79,12 +79,13 @@ bench = [
     "numpy",
     "scikit-learn",
 ]
+# Every runtime extra, and nothing a contributor needs.  These five entries
+# were the literal string "onit" -- a self-reference, not an extra -- so
+# `pip install onit[all]` silently installed nothing beyond the base package.
+# `test`, `lint` and `bench` stay out on purpose: asking for every *tool*
+# should not drag in pytest, a pinned ruff, or the inspect-ai stack.
 all = [
-    "onit[search]",
-    "onit[web]",
-    "onit[voice]",
-    "onit[test]",
-    "onit[bench]",
+    "onit[search,web,voice]",
 ]
 
 [project.scripts]
