@@ -4313,6 +4313,89 @@ class _TurnResult:
     api_error: Optional[str] = None
 
 
+async def _build_ollama_request(
+    *,
+    model: str,
+    messages: list,
+    stream: bool,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    num_ctx: int,
+    api_max_tokens: int,
+    presence_penalty: float,
+    repetition_penalty: float,
+    tools,
+    state,
+    turn_think: bool,
+    ollama_client,
+) -> dict:
+    """Build the kwargs for ``ollama_client.chat`` for one turn.
+
+    Extracted verbatim from ``_ModelCaller.call_turn``.  The ``think``
+    switch is sent only when the model can take it: a non-thinking Ollama
+    model refuses the whole request over ``think``, so a run that defaults
+    thinking on would spend every turn on three identical 400s and then
+    fail with no answer.  The probe is one /api/show per model per process
+    (cached, so retries cost nothing), and a refusal is remembered too, so
+    a server that does not publish capabilities still recovers after one
+    wasted attempt.
+    """
+    ollama_kwargs = dict(
+        model=model,
+        messages=_adapt_messages_for_ollama(messages),
+        stream=stream,
+        options={
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "num_ctx": num_ctx,
+            "num_predict": api_max_tokens,
+            "presence_penalty": presence_penalty,
+            "repeat_penalty": repetition_penalty,
+            # Ollama's default stop tokens include "[/]",
+            # which terminates the stream when the model
+            # echoes Rich markup (e.g. "[/yellow]") in code.
+            # Clearing them lets the model stop naturally
+            # via EOS or num_predict.
+            "stop": [],
+        },
+    )
+    # Send the switch only when the model can take it.  A
+    # non-thinking Ollama model refuses the whole request over
+    # ``think``, so a run that defaults thinking on would spend
+    # every turn on three identical 400s and then fail with no
+    # answer.  The probe is one /api/show per model per process
+    # (cached, so the retries below cost nothing), and a refusal
+    # is remembered too — see the handler — so a server that
+    # does not publish capabilities still recovers after one
+    # wasted attempt.
+    #
+    # It is sent in the negative direction too.  Omitting
+    # ``think`` does not mean "off" — it asks for the server's
+    # default, and a server that reports ``thinking.default``
+    # reasons anyway: measured against Ollama 0.34.4, a model
+    # with default ``medium`` sent no ``think`` field spends
+    # the whole output budget on reasoning and returns empty
+    # ``content`` with ``done_reason: length``.  The
+    # OpenAI-compatible path used to say ``enable_thinking:
+    # false`` in chat_template_kwargs and got this right, so
+    # the native path has to say ``think: false`` or it is a
+    # regression against the path it replaces.
+    await _get_ollama_thinking_capability(ollama_client, model)
+    if not _ollama_think_unsupported(model):
+        ollama_kwargs["think"] = bool(turn_think)
+    if tools:
+        ollama_kwargs["tools"] = tools
+    # Force JSON output when the model keeps generating planning prose
+    # instead of tool calls.  Ollama's format="json" ensures the response
+    # is parseable by _parse_tool_call_from_content even though Ollama has
+    # no tool_choice="required" equivalent.
+    if state.force_tool_call and tools:
+        ollama_kwargs["format"] = "json"
+    return ollama_kwargs
+
+
 class _ModelCaller:
     """One turn's model call: kwargs build, send, retry, response unify.
 
@@ -4470,58 +4553,22 @@ class _ModelCaller:
                     _api_max_tokens = min(_api_max_tokens, _available)
 
                 if is_ollama:
-                    ollama_kwargs = dict(
+                    ollama_kwargs = await _build_ollama_request(
                         model=model,
-                        messages=_adapt_messages_for_ollama(messages),
+                        messages=messages,
                         stream=stream,
-                        options={
-                            "temperature": temperature,
-                            "top_p": top_p,
-                            "top_k": top_k,
-                            "num_ctx": num_ctx,
-                            "num_predict": _api_max_tokens,
-                            "presence_penalty": presence_penalty,
-                            "repeat_penalty": repetition_penalty,
-                            # Ollama's default stop tokens include "[/]",
-                            # which terminates the stream when the model
-                            # echoes Rich markup (e.g. "[/yellow]") in code.
-                            # Clearing them lets the model stop naturally
-                            # via EOS or num_predict.
-                            "stop": [],
-                        },
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        num_ctx=num_ctx,
+                        api_max_tokens=_api_max_tokens,
+                        presence_penalty=presence_penalty,
+                        repetition_penalty=repetition_penalty,
+                        tools=tools,
+                        state=state,
+                        turn_think=_turn_think,
+                        ollama_client=ollama_client,
                     )
-                    # Send the switch only when the model can take it.  A
-                    # non-thinking Ollama model refuses the whole request over
-                    # ``think``, so a run that defaults thinking on would spend
-                    # every turn on three identical 400s and then fail with no
-                    # answer.  The probe is one /api/show per model per process
-                    # (cached, so the retries below cost nothing), and a refusal
-                    # is remembered too — see the handler — so a server that
-                    # does not publish capabilities still recovers after one
-                    # wasted attempt.
-                    #
-                    # It is sent in the negative direction too.  Omitting
-                    # ``think`` does not mean "off" — it asks for the server's
-                    # default, and a server that reports ``thinking.default``
-                    # reasons anyway: measured against Ollama 0.34.4, a model
-                    # with default ``medium`` sent no ``think`` field spends
-                    # the whole output budget on reasoning and returns empty
-                    # ``content`` with ``done_reason: length``.  The
-                    # OpenAI-compatible path used to say ``enable_thinking:
-                    # false`` in chat_template_kwargs and got this right, so
-                    # the native path has to say ``think: false`` or it is a
-                    # regression against the path it replaces.
-                    await _get_ollama_thinking_capability(ollama_client, model)
-                    if not _ollama_think_unsupported(model):
-                        ollama_kwargs["think"] = bool(_turn_think)
-                    if tools:
-                        ollama_kwargs["tools"] = tools
-                    # Force JSON output when the model keeps generating planning prose
-                    # instead of tool calls.  Ollama's format="json" ensures the response
-                    # is parseable by _parse_tool_call_from_content even though Ollama has
-                    # no tool_choice="required" equivalent.
-                    if state.force_tool_call and tools:
-                        ollama_kwargs["format"] = "json"
                     chat_completion = await _await_with_safety(
                         ollama_client.chat(**ollama_kwargs), safety_queue
                     )
