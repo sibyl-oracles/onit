@@ -56,10 +56,7 @@ from onit.mcp.servers.tasks.shared import (
     uvicorn_config,
 )
 
-try:
-    from .web_search import WebSearch
-except ImportError:
-    from web_search import WebSearch
+from .web_search import WebSearch
 
 import logging
 

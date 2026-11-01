@@ -53,31 +53,16 @@ from typing import Any, Dict, Optional, Tuple
 
 from fastmcp import FastMCP
 
-try:
-    from ...shared import uvicorn_config
-except ImportError:
-    from mcp.servers.tasks.shared import uvicorn_config
-
-try:
-    from .toolkit import (
-        LocalSearchIndex,
-        DEFAULT_CHUNK_SIZE,
-        DEFAULT_CHUNK_OVERLAP,
-        MAX_DOCUMENT_SUMMARIES,
-        RRF_K,
-        cap_per_file,
-        file_content_hash,
-    )
-except ImportError:
-    from toolkit import (
-        LocalSearchIndex,
-        DEFAULT_CHUNK_SIZE,
-        DEFAULT_CHUNK_OVERLAP,
-        MAX_DOCUMENT_SUMMARIES,
-        RRF_K,
-        cap_per_file,
-        file_content_hash,
-    )
+from ...shared import uvicorn_config
+from .toolkit import (
+    LocalSearchIndex,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+    MAX_DOCUMENT_SUMMARIES,
+    RRF_K,
+    cap_per_file,
+    file_content_hash,
+)
 
 import logging
 
