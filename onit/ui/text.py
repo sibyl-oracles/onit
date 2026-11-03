@@ -81,7 +81,7 @@ class Message:
 
 class ChatUI:
     """Terminal front end; one of the ChatUIProtocol implementations chat()
-    reports through (see onit/ui/protocol.py)."""
+    reports through (see onit/contract/protocol.py)."""
 
     def __init__(
         self,

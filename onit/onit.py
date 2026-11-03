@@ -46,9 +46,8 @@ from .type.tools import _transport_for
 from .lib.text import remove_tags
 from .mcp.prompts.prompts import DEFAULT_MAX_DOCUMENTS, build_assistant_instruction
 from .lib.files import has_code_files
-from .ui import ChatUI
-from .ui.protocol import ChatUIProtocol
-from .ui.commands import dispatch as dispatch_command
+from .contract.protocol import ChatUIProtocol
+from .contract.settings import UISettings
 from .model.serving.chat import (
     chat,
     decode_rate,
@@ -467,7 +466,7 @@ def _join_words(parts: list[str]) -> str:
 class StreamingAdapter:
     """Callback-backed chat_ui that forwards streaming tokens to a caller.
 
-    Implements the full ChatUIProtocol (onit/ui/protocol.py) that ``chat()``
+    Implements the full ChatUIProtocol (onit/contract/protocol.py) that ``chat()``
     reports through, so ``process_task`` callers (web UI, A2A) receive tokens
     incrementally without a terminal.  Hooks with no callback-side meaning are
     no-ops; ``ask_approval`` exists only when ``on_approval`` was supplied —
@@ -973,6 +972,22 @@ class OnIt(BaseModel):
         """Check if the web search tool was discovered."""
         return self.tool_registry is not None and "search" in self.tool_registry.tools
 
+    @property
+    def ui_settings(self) -> "UISettings":
+        """The slice of this agent a front end is allowed to read.
+
+        A UI asks for this instead of reaching into ``config_data``,
+        ``background_checks`` and ``_cancel_background_check`` with
+        ``getattr``.  Built fresh on each access because
+        ``background_checks`` is a live mapping \u2014 a cached copy would answer
+        "is a correction still coming?" with a stale answer.
+        """
+        return UISettings(
+            config_data=self.config_data,
+            background_checks=self.background_checks,
+            cancel_background_check=self._cancel_background_check,
+        )
+
     def __init__(self, config: Union[str, os.PathLike[str], dict[str, Any], None] = None) -> None:
         super().__init__()
 
@@ -1012,6 +1027,11 @@ class OnIt(BaseModel):
                 self.chat_ui._onit = self
             else:
                 banner = "OnIt Chat Interface"
+                # Imported here, not at module scope: the terminal UI is one
+                # front end among several, and the harness must stay
+                # importable without any of them (see onit/contract/).
+                from .ui.text import ChatUI
+
                 self.chat_ui = ChatUI(
                     self.theme,
                     show_logs=self.show_logs,
@@ -2525,15 +2545,23 @@ class OnIt(BaseModel):
             and _last.content
             and (response.startswith(_last.content) or _last.content.startswith(response))
         ):
-            from onit.ui.text import Message
-
-            self.chat_ui.messages[-1] = Message(
-                role=_last.role,
-                content=response,
-                timestamp=_last.timestamp,
-                elapsed=elapsed_time,
-                name=getattr(_last, "name", ""),
-            )
+            # Rebuild the message as the UI's own type, without importing it.
+            # The harness used to reach into onit.ui.text for the Message
+            # dataclass, which made the terminal UI a compile-time dependency
+            # of the agent loop.  ``type(_last)`` is whatever the front end
+            # put in its own list, so this works for any UI whose message
+            # type takes these five fields \u2014 and a UI that stores something
+            # else simply falls through to add_message below.
+            try:
+                self.chat_ui.messages[-1] = type(_last)(
+                    role=_last.role,
+                    content=response,
+                    timestamp=_last.timestamp,
+                    elapsed=elapsed_time,
+                    name=getattr(_last, "name", ""),
+                )
+            except TypeError:
+                self.chat_ui.add_message("assistant", response, elapsed=elapsed_time)
         else:
             self.chat_ui.add_message("assistant", response, elapsed=elapsed_time)
         # Show local codebase path when sandbox generated code files
@@ -2616,6 +2644,10 @@ class OnIt(BaseModel):
             # next task replays.  Only in the text UI: WebApiUI.add_message is
             # a no-op, so the answer would go nowhere.
             if not self.web:
+                # Imported here: slash commands are the terminal UI's, and
+                # the harness must not import a front end at module level.
+                from .ui.commands import dispatch as dispatch_command
+
                 reply = await dispatch_command(self, task)
                 if reply is not None:
                     self.chat_ui.add_message("system", reply)

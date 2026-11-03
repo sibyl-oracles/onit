@@ -1,5 +1,13 @@
 """The interface chat() expects from a UI.
 
+This lives in ``onit/contract/`` rather than ``onit/ui/`` on purpose: it is
+the one thing both sides of the harness/UI boundary are allowed to import.
+The harness (``onit/onit.py``, ``onit/model/serving/chat.py``) names the
+contract without importing any front end, and each front end \u2014 terminal,
+web, and the native app \u2014 implements it without the harness knowing which
+one it was handed.  ``onit/test/test_ui_isolation.py`` enforces that no
+harness module imports ``onit.ui`` at module level.
+
 chat() reports everything it does through one ``chat_ui`` object: streamed
 tokens, tool spinners, context gauges, verification notices.  Three classes
 implement it — ChatUI (the terminal), StreamingAdapter (callback-based

@@ -69,13 +69,13 @@ class TestChatUIProtocolConformance:
     """
 
     def test_terminal_ui_satisfies_the_protocol(self):
-        from onit.ui.protocol import ChatUIProtocol
+        from onit.contract.protocol import ChatUIProtocol
         from onit.ui.text import ChatUI
 
         assert isinstance(ChatUI(), ChatUIProtocol)
 
     def test_streaming_adapter_satisfies_the_protocol(self):
-        from onit.ui.protocol import ChatUIProtocol
+        from onit.contract.protocol import ChatUIProtocol
 
         assert isinstance(StreamingAdapter(), ChatUIProtocol)
 

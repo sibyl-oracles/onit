@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
+from onit.contract.settings import UISettings
 from onit.learn import append_rating as _append_rating
 from onit.learn import normalize_rating as _normalize_rating
 from onit.learn import read_session as _read_trajectory
@@ -555,7 +556,7 @@ class WebApiUI:
 
     Never handed to chat(): web runs report through a StreamingAdapter built
     from per-session callbacks, so this class does not implement
-    ChatUIProtocol (onit/ui/protocol.py) and is not required to."""
+    ChatUIProtocol (onit/contract/protocol.py) and is not required to."""
 
     def __init__(
         self,
@@ -656,6 +657,33 @@ class WebApiUI:
         self._link_cache: dict[str, tuple[bool, float]] = {}
 
         self.app: Optional[FastAPI] = None
+
+    def _settings(self) -> UISettings:
+        """The harness slice this UI may read, or an empty one before wiring.
+
+        ``_onit`` is None between construction and ``Onit`` setting it, and a
+        request can arrive in that window.  Returning empty settings keeps
+        every caller free of a None check, and matches what the previous
+        ``getattr(self._onit, ..., None)`` reads produced in that window.
+
+        A real ``OnIt`` answers with ``ui_settings``.  Anything else \u2014 a
+        stand-in an embedding or a test hands over \u2014 is read field by field
+        with ``getattr``, so a duck-typed agent keeps working without having
+        to grow the property.  That fallback is the old behaviour, kept for
+        objects that are not the harness.
+        """
+        if self._onit is None:
+            return UISettings()
+        settings = getattr(self._onit, "ui_settings", None)
+        if settings is not None:
+            return settings
+        return UISettings(
+            config_data=getattr(self._onit, "config_data", None) or {},
+            background_checks=getattr(self._onit, "background_checks", None) or {},
+            cancel_background_check=getattr(
+                self._onit, "_cancel_background_check", None
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Session management
@@ -922,7 +950,7 @@ class WebApiUI:
         ratings = {}
         try:
             for record in _read_trajectory(
-                session.session_id, getattr(self._onit, "config_data", None)
+                session.session_id, self._settings().config_data
             ):
                 verdict = (record.get("signals") or {}).get("user_rating")
                 if verdict:
@@ -1248,7 +1276,7 @@ class WebApiUI:
                         # count is this answer's number.
                         "turn": _session_turn_count(session.session_path),
                         "rating_enabled": _recording_enabled(
-                            getattr(self._onit, "config_data", None)
+                            self._settings().config_data
                         ),
                     },
                 )
@@ -1330,9 +1358,7 @@ class WebApiUI:
 
     def _awaiting_correction(self, session: ApiSession) -> bool:
         """Whether a fact-check is still running behind this session's answer."""
-        checks = getattr(self._onit, "background_checks", None) or {}
-        task = checks.get(session.session_id)
-        return bool(task and not task.done())
+        return self._settings().check_running(session.session_id)
 
     def _close_stream(self, session: ApiSession, events: queue.Queue) -> None:
         """End an SSE stream that was held open past its answer."""
@@ -1343,9 +1369,11 @@ class WebApiUI:
     def _cancel_session_check(self, session: ApiSession) -> None:
         """End this session's background fact-check and the stream waiting on it."""
         self._release_open_stream(session)
-        cancel = getattr(self._onit, "_cancel_background_check", None)
-        if cancel and self._loop:
-            self._loop.call_soon_threadsafe(cancel, session.session_id)
+        settings = self._settings()
+        if settings.cancel_background_check is not None and self._loop:
+            self._loop.call_soon_threadsafe(
+                settings.cancel_background_check, session.session_id
+            )
 
     def _release_open_stream(self, session: ApiSession) -> None:
         """Let go of the previous answer's stream, correction or not.
@@ -1481,7 +1509,7 @@ class WebApiUI:
                 # Whether to offer the 👍/👎 buttons at all. A deployment with
                 # recording off would otherwise show a control that accepts a
                 # click and drops it.
-                "rating_enabled": _recording_enabled(getattr(self._onit, "config_data", None)),
+                "rating_enabled": _recording_enabled(self._settings().config_data),
                 # The mic button is only drawn when a VoiceChat container is
                 # configured; whether it is *reachable* is a separate question
                 # answered by /api/voice/health (a cold 11B model takes
@@ -1658,7 +1686,7 @@ class WebApiUI:
                 rating=rating,
                 comment=body.get("comment"),
                 source="web",
-                config_data=getattr(self._onit, "config_data", None),
+                config_data=self._settings().config_data,
             )
             # A rating with recording off is not an error: the UI offered a
             # button, the deployment declined to keep the answer.

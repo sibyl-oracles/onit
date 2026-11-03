@@ -35,7 +35,7 @@ from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
 from typing import List, Optional, Any
 
-from ...ui.protocol import ChatUIProtocol
+from ...contract.protocol import ChatUIProtocol
 from .verify import (
     DEFAULT_TRUSTED_DOMAINS,
     REVISION_MAX_TOKENS,
