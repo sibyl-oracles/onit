@@ -4,6 +4,7 @@
 **Author:** Rowel Atienza
 **Date:** November 2026
 **Target:** macOS 14+ first, then Linux, then Windows
+**Design reference:** Mercury Desktop 1.5.0 — see §5.6
 
 ---
 
@@ -85,6 +86,45 @@ Neither side may import the other. Both may import the contract. That is the who
 ### Why not embed Python via `PythonKit` / `libpython`
 
 Tempting for startup speed, but it welds the app to one Python ABI, makes crash isolation impossible, and turns every dependency upgrade into a rebuild of the app. Rejected.
+
+### 2.1 What the shell looks like
+
+The shell is not one window with a sidebar. It is **an app that can hold several OnIts** — the one on this Mac, and any others you point it at — with a session list per OnIt. That is the shape Mercury Desktop settled on, and it is the right one for the same reason: most people run a laptop *and* a box, and a desktop app that can only see the machine it is running on is a toy.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  OnIt                                    [ ⌘K  Search ]      │
+├────────────────┬─────────────────────────────────────────────┤
+│  ◈ This Mac    │  Session title                    ⋯   ⌘↩     │
+│    ● local     │                                             │
+│  ◈ studio      │   transcript                                │
+│    ○ remote    │                                             │
+│                │                                             │
+│  ────────────  │                                             │
+│  + New chat    │                                             │
+│  Today         │                                             │
+│   · Fix the…   │                                             │
+│   · Changelog… │                                             │
+│  Yesterday     │                                             │
+│   · Benchmarks │                                             │
+│                │  ┌───────────────────────────────────────┐ │
+│  ────────────  │  │ Ask anything…              [Ask Me ▾] │ │
+│  ⚙ Settings    │  └───────────────────────────────────────┘ │
+└────────────────┴─────────────────────────────────────────────┘
+```
+
+Three regions, and only the middle one is per-session:
+
+| Region | Scope | What lives there |
+|---|---|---|
+| **Connection rail** | App-wide | One row per OnIt: local sidecar, or a remote host. Status dot, name, host. Clicking switches which OnIt the session list is showing. |
+| **Session list** | Per connection | New chat, then sessions grouped by recency (Today / Yesterday / Previous 7 days / Older). Live spinner on any session with `processing: true`. |
+| **Transcript + composer** | Per session | The conversation, and the composer with its permission-mode control. |
+
+**Why the connection rail is in v1 and not deferred.** The backend already supports it: `X-Session-Id` is a header, not a cookie, so a client can hold several sessions against one server, and nothing in the contract assumes the server is local. Adding a second connection later means retrofitting the session list, the settings screen and the sidecar lifecycle all at once. Adding it now costs one extra `OnItClient` instance per connection and a `Picker` in Settings. The plan takes it now.
+
+**What is deliberately not in v1:** the multi-server *fleet* (one connection recruiting another), the Kanban board, and the bot cockpit. Those are Mercury features with no OnIt backend behind them. See §5.6.3.
+
 ---
 
 ## 3. Isolation: the harness and the UIs must be able to move independently
@@ -415,10 +455,13 @@ apps/macos/
   OnIt/
     OnItApp.swift              app entry, WindowGroup + Settings scene
     Model/
+      Connection.swift         one OnIt: local sidecar or remote host
+      ConnectionStore.swift    the rail; add/remove/switch
       Session.swift            @Observable session view-model
-      SessionStore.swift       list, create, rename, delete
+      SessionStore.swift       list, create, rename, delete; grouped by recency
       ChatMessage.swift        role, content, reasoning, files
       AppSettings.swift        host, model, temperature, think
+      PermissionMode.swift     ask / allow — per session (§5.6.1)
     Net/
       OnItClient.swift         URLSession, base URL, X-Session-Id
       SSEReader.swift          actor: byte stream -> AsyncStream<Event>
@@ -430,13 +473,19 @@ apps/macos/
     Security/
       KeychainStore.swift      SecItemAdd/CopyMatching/Delete
     UI/
-      SidebarView.swift        session list, new/rename/delete
+      ConnectionRail.swift     narrow list of OnIts, status dot
+      FirstRunView.swift       "This Mac" / "Connect to a host…" (§5.6.1)
+      SessionListView.swift    grouped list, new/rename/delete, spinner
       ChatView.swift           transcript + composer
       MessageBubble.swift      markdown, code blocks, file chips
-      ReasoningView.swift      collapsed disclosure for `think`
-      ApprovalSheet.swift      blocking approval modal
-      SettingsView.swift       model, host, keys, advanced
+      ToolLedger.swift         collapsed step ledger (§5.6.1)
+      ApprovalCard.swift       inline approval, not a sheet (§7)
+      Composer.swift           input, attachments, permission mode
+      SettingsScene.swift      General / Security / Connections
       StatusBar.swift          model · tok/s · elapsed
+    Theme/
+      Typography.swift         13 pt body, 1.45 line height (§5.6.3)
+      Palette.swift            system colours; Color.accentColor, never a hex
     Resources/
       Assets.xcassets
   Sidecar/                     PyInstaller build inputs
@@ -448,9 +497,11 @@ apps/macos/
 
 The requirement is "multiple sessions at the same time, each with its own memory." The backend already gives each session its own JSONL transcript and its own data directory (`_get_or_create_session`, `api.py:688`), so the UI's job is to make that visible and concurrent.
 
-**Layout:** `NavigationSplitView`. Sidebar lists sessions with tag, preview and a live spinner for `processing`. Detail pane is the selected session's transcript.
+**Layout:** `NavigationSplitView` with a **three-level** structure, per §2.1: connection rail → session list → transcript. The rail is a narrow `List` in its own column; the session list groups by recency (Today / Yesterday / Previous 7 days / Older) using `updated` from `GET /api/sessions`; the detail pane is the selected session's transcript.
 
 **Concurrency:** each session gets its own `Session` view-model holding its own `AsyncStream<Event>` and its own in-flight `Task`. Switching sessions does **not** cancel the other one — a run in session A keeps streaming while you read session B. This is the whole point of the feature and it falls out of the backend for free, because `ApiSession.processing` is per-session.
+
+**Cross-connection concurrency is the same property.** A session on the local sidecar and a session on a remote host are two `Session` view-models against two `OnItClient`s. Nothing in the design distinguishes them; the rail only decides which list is showing.
 
 **Optional second window:** `WindowGroup(for: Session.ID.self)` lets a session be torn off into its own window. Cheap to add once the view-model is per-session; defer to phase 1.5.
 
@@ -487,6 +538,97 @@ app launch
 | Update | Sparkle is the obvious choice; defer to phase 2 |
 
 > **Honest note on the sandbox.** Turning it off is a real security decision, not a formality. The app runs agent-generated shell commands; the sandbox is one of the few things that would contain them. The plan accepts this for v1 because the agent already runs arbitrary commands by design, and a sandbox that permits that is not much of a sandbox. Document it in the README rather than let a reviewer discover it.
+
+### 5.6 Interface design, after Mercury Desktop
+
+Mercury Desktop 1.5.0 is the closest thing to what this plan is building, and it is worth being explicit about what to take and what to leave. The rule: **take the interaction model, not the feature list.** Mercury's features are backed by a backend OnIt does not have; its *interactions* are backed by a contract OnIt already does.
+
+#### 5.6.1 The five things worth taking
+
+**1. The permission mode is visible, per session, at the point of action.**
+
+Mercury puts "Ask Me / Allow All" in the composer, not in a settings pane. The reason is that the question "how much rope does this agent have right now" is asked *while typing*, not while configuring. OnIt already has the underlying state — `pending_approvals` is per `ApiSession`, and the approval callback fires per gated command — so the mode belongs on the composer row, next to the send button, as a small menu.
+
+| Mode | Behaviour | Backend support |
+|---|---|---|
+| **Ask Me** | Every gated command raises an `approval` event | Default; `approval_callback` already wired (`api.py:1152`) |
+| **Allow All** | Gated commands run without asking | **Needs a backend flag** — see §11.5. Until it exists, do not draw the control. |
+
+> **Do not ship a mode switch that does nothing.** A UI that offers "Allow All" and silently keeps asking is worse than one that offers nothing. This is a §11 dependency, not a §5 one.
+
+**2. The approval card is inline in the transcript, not a modal.**
+
+The plan's §7 says *sheet*. Mercury puts the approval in the conversation, where the command it gates is visible above it, and where a scrolled-back user can still see what was approved and what they said. Revise §7: **inline card, with the app brought to the front and the card scrolled into view.** The three properties that matter — session-scoped, fail-closed, expiring — are unchanged. A modal that steals focus is the wrong instrument for something that happens several times a turn.
+
+The card shows: the exact command in a monospace block, the reason, the subjects touched, a countdown from `expires_in`, and three buttons — **Approve once**, **Always allow this**, **Deny** — mapping to the `once` / `session` / `deny` decisions `api.py:1613` already accepts. Deny is the default button; Escape denies.
+
+**3. The working is folded, and the fold is honest about what it hid.**
+
+Mercury shows tool calls as a one-line ledger (`✓ read_file CHANGELOG.md · read · no prompt`) that expands. OnIt's `think` channel is deliberately separate from `token` (`api.py:1104`) precisely so this works. The native app renders:
+
+- While running: the ledger expands by default, showing `status` events as they arrive.
+- On `answer_start`: the ledger collapses to a single line — *"7 steps · 12.4 s"* — and the answer streams in below it.
+- On `done`: the ledger stays collapsed but is one click from full detail, including `timing.turns`, `timing.tool_calls` and the per-phase seconds the backend already computes.
+
+This is the single highest-value thing to copy. It is also nearly free: the events already exist and already carry everything needed.
+
+**4. The first screen is a connection screen, not an empty chat.**
+
+Mercury's first launch asks "install here, or connect elsewhere." OnIt's equivalent is smaller because the sidecar is bundled: the app always has a local OnIt. But the *shape* is right — on first launch, before any session exists, show a single centred card:
+
+```
+        ◈  OnIt
+        ─────────────────────────────
+        ● This Mac          ready
+        ○ Connect to a host…        →
+```
+
+with **Continue** enabled the moment the local sidecar answers `/api/config`. This replaces the "empty chat with a welcome headline" the web UI uses, and it is where the connection rail from §2.1 gets introduced rather than appearing unannounced later.
+
+**5. Settings is a window, and it is small.**
+
+Mercury's Settings is a standard macOS Settings scene (`⌘,`), not a pane inside the main window. That is the platform-correct choice and it keeps the main window about conversations. §6.3's field table becomes the General pane; Keychain entries become a Security pane; the connection list becomes a Connections pane.
+
+#### 5.6.2 The three things worth leaving
+
+| Mercury does | Why OnIt should not, in v1 |
+|---|---|
+| **Research** — a watched, multi-step browsing run with its own view | OnIt's agent does research, but there is no distinct research event stream to render. It would be a second UI invented on top of a generic `status` channel. Defer until the harness emits something research-shaped. |
+| **Kanban board** | No task-board backend. Building one means building a task store first. Out of scope. |
+| **Bots / channels cockpit** (Telegram, Discord, Slack, Signal) | OnIt has messaging UIs but no cockpit API. The web UI is the cockpit for now. |
+
+Also left: Mercury's **fleet** (one agent recruiting another). The connection rail in §2.1 gives multiple OnIts *side by side*; fleet gives them *to each other*. The first is a client feature; the second is a harness feature.
+
+#### 5.6.3 Visual language
+
+Mercury is dark-first, dense, and quiet — closer to a terminal than to a chat app. The web UI is light-first and airy. The native app should follow Mercury, because a desktop window is looked at for hours and a 15 px body at 1.6 line height is a phone convention.
+
+| Token | Value | Note |
+|---|---|---|
+| Body text | 13 pt, SF Pro Text | Not 15. Desktop density. |
+| Line height | 1.45 | Tighter than the web UI's 1.6 |
+| Sidebar width | 240 pt | Narrower than the web's 264 px |
+| Sidebar background | `NSColor.windowBackgroundColor` + 4% black | Follows system appearance |
+| Transcript max width | 720 pt, centred | Reading measure, not full bleed |
+| Accent | `Color.accentColor` | **Do not hard-code OnIt orange.** The web UI's `#c96442` is a brand colour; a native app that ignores the user's accent colour looks foreign on macOS. |
+| Monospace | SF Mono 12 pt | Commands, code, tool ledger |
+| Corner radius | 8 pt controls, 12 pt cards | Mercury is squarer than the web UI's 16 pt |
+| Motion | 120 ms ease-out, opacity + 4 pt offset | No spring, no bounce |
+
+**Dark mode is not a theme toggle.** It follows the system, via `@Environment(\.colorScheme)`. The web UI's manual toggle exists because a browser cannot be trusted to know; a native app can.
+
+#### 5.6.4 What this changes in the milestone table
+
+The design work above is not free, and it is not a reskin of a working app — it is the shape of the app being built. Concretely it adds to §12:
+
+| Phase | Added by §5.6 | Cost |
+|---|---|---|
+| 1b | Connection rail, first-run connection screen | +2 days |
+| 1c | Grouped session list, inline approval card (replaces the sheet) | +1 day |
+| 1d | Settings as a `Settings` scene with three panes | +1 day |
+| 1e | Visual pass: type scale, density, accent-follows-system | +2 days |
+
+**+6 days**, taking macOS from ~7 weeks to ~8. That is the honest number. The alternative — build it the web UI's way and restyle later — costs more, because the connection rail and the inline approval card are structural.
 
 ---
 
@@ -540,7 +682,9 @@ Three properties the native UI must preserve, each of which the backend already 
 - **Fail-closed.** Timeout, closed window, or no answer is a **deny** (`api.py:1141`). The native UI must not default to allow, and must not let a modal be dismissed into an implicit yes.
 - **Expiring.** `expires_in` is in the payload. Show a countdown; let it run out.
 
-**UI:** a sheet, not a notification. It names the exact command, the reason, and the subjects touched. Approve / Deny, with Deny as the default button. If the app is backgrounded, bring it forward — a gated command must never expire because the user did not see the prompt.
+**UI:** an **inline card in the transcript** (§5.6.1), not a modal sheet. It names the exact command, the reason, and the subjects touched, with a countdown from `expires_in`. Approve once / Always allow this / Deny, with Deny as the default button and Escape as its shortcut. If the app is backgrounded, bring it forward and scroll the card into view — a gated command must never expire because the user did not see the prompt.
+
+> **Revised from the first draft.** This section originally specified a sheet. §5.6.1 changed it: the approval belongs next to the command it gates, in the flow of the conversation, because that is where the user can see what they are approving. A sheet that covers the transcript hides the context the decision depends on. The three properties above are unchanged by the move.
 
 ---
 
@@ -563,6 +707,9 @@ The brief says prioritize speed and lean code. Concretely:
 - `AsyncStream<Event>` end to end; no Combine.
 - No view model holds a `URLSession` task it does not cancel on deinit.
 - Markdown rendering: use `AttributedString(markdown:)` for prose and a small custom renderer for fenced code. Do not pull in a Markdown package.
+- **One `OnItClient` per connection, not per session.** Sessions differ by header, not by transport.
+- **Theme is two files** (`Typography.swift`, `Palette.swift`) and no view hard-codes a font size or a colour. That is what makes the §5.6.3 density pass a two-file change rather than a sweep.
+- **The tool ledger renders from the event stream, not from a parallel model.** `status` events in, rows out; no separate store to keep in sync.
 
 ---
 
@@ -616,6 +763,18 @@ The native app is a new client, but four small changes make it a *good* client. 
 
 Each is a few lines plus a test. They are worth doing **before** the Swift work starts, so the client is built against the final contract.
 
+### 11.5 The one change §5.6 adds
+
+The permission-mode control in the composer (§5.6.1) needs a backend flag, or it must not be drawn.
+
+| # | Change | File | Why |
+|---|---|---|---|
+| 5 | `POST /api/session/mode` with `{mode: "ask" \| "allow"}`; store on `ApiSession`; the approval callback returns `"session"` immediately when the mode is `allow` | `ui/api.py` (`ApiSession`, `_run_task`) | Without it, "Allow All" is a lie |
+
+**Scope note.** This is a *session* flag, not a global setting: `ApiSession` is already the right home (`api.py:525`), and it resets on restart, which is the safe default. It must not be persisted to `config.yaml` — a mode that survives a restart is a mode the user forgets they set.
+
+**If this is not built, ship without the control.** The composer shows nothing where the mode menu would be. That is a better outcome than a menu that does not change behaviour.
+
 ---
 
 ## 12. Milestones
@@ -625,14 +784,14 @@ Each is a few lines plus a test. They are worth doing **before** the Swift work 
 | **0a** | **Isolation §3 (done)**: `onit/contract/`, the three module-level harness→UI imports cut, `UISettings`, one enforcement test | 2 days | `import onit.onit` loads zero `onit.ui` modules |
 | **0b** | Backend changes §12 + a `docs/NATIVE_API.md` freezing the contract | 3 days | Contract documented; tests green |
 | **1a** | Sidecar build: PyInstaller spec, signed, launches, `/api/config` responds | 1 week | `onit-sidecar` runs standalone on a clean Mac |
-| **1b** | Swift shell: window, sidebar, one session, SSE streaming | 2 weeks | A prompt streams into a native window |
-| **1c** | Multi-session, per-session concurrency, history rehydration | 1 week | Two sessions stream at once |
-| **1d** | Settings + Keychain + approval sheet | 1 week | Key written to Keychain, read by sidecar; gated command approves |
-| **1e** | Signing, notarization, DMG, crash banner | 1 week | A colleague installs and runs it |
+| **1b** | Swift shell: window, connection rail, first-run connection screen, one session, SSE streaming | 2 weeks + 2 d | A prompt streams into a native window |
+| **1c** | Multi-session, per-session concurrency, history rehydration, grouped session list, inline approval card | 1 week + 1 d | Two sessions stream at once; a gated command is approved inline |
+| **1d** | Settings scene (General / Security / Connections) + Keychain | 1 week + 1 d | Key written to Keychain, read by sidecar |
+| **1e** | Signing, notarization, DMG, crash banner, visual pass (§5.6.3) | 1 week + 2 d | A colleague installs and runs it |
 | **2** | Linux (Tauri + libsecret + Flatpak) | 3 weeks | AppImage/Flatpak runs on Ubuntu 24.04 |
 | **3** | Windows (Tauri + Credential Manager + MSIX) | 3 weeks | Installer runs on Windows 11 |
 
-**Total to a shippable macOS app: ~7 weeks** (6 + the isolation work, now done). Linux and Windows add ~6 weeks and share one shell codebase. Phase 0a was not optional: without it the Swift client is built against a boundary that moves under it, and every later harness change is a potential app break.
+**Total to a shippable macOS app: ~8 weeks** (6 + the isolation work, now done, + the 6 days §5.6 adds). Linux and Windows add ~6 weeks and share one shell codebase. Phase 0a was not optional: without it the Swift client is built against a boundary that moves under it, and every later harness change is a potential app break.
 
 ---
 
@@ -650,6 +809,9 @@ Each is a few lines plus a test. They are worth doing **before** the Swift work 
 | **Isolation refactor breaks the terminal UI** | Medium | The CLI is the daily driver; a regression is felt immediately | The cut imports are constructor-time only, so `OnIt(config)` behaves exactly as before. `test_chat_ui.py` and `test_onit.py` are the gate; both green. |
 | **`session_io` changes the on-disk format** | Low | Existing sessions unreadable | It must not: the extraction is a pure move. A test reads a checked-in fixture session written by the current code and asserts `read_turns` returns the same records. |
 | **Contract drift after phase 0a** | Medium | The boundary silently widens again | `test_ui_isolation.py` runs in CI on every PR; it fails the build, not a reviewer. |
+| **Copying Mercury's feature list instead of its interaction model** | High | Scope creep into research/kanban/bots, none of which have a backend | §5.6.2 is the explicit exclusion list. Every Mercury feature taken must name the endpoint or event that backs it. |
+| **A permission-mode control that does not change behaviour** | Medium | User believes "Allow All" is on; it is not | §11.5 is a hard dependency. If the flag is not built, the control is not drawn. |
+| **Native app ignores the system accent colour** | Low | Looks foreign on macOS | §5.6.3: `Color.accentColor`, never a hard-coded brand hex. |
 
 ---
 
@@ -659,6 +821,8 @@ Each is a few lines plus a test. They are worth doing **before** the Swift work 
 - **It does not add a new protocol.** SSE over loopback is already implemented, tested, and used by the browser.
 - **It does not put the app in the App Store.** The sandbox and the agent's need to run shell commands are incompatible in v1.
 - **It does not unify the three UIs.** macOS is native; Linux and Windows are a webview shell. That is a deliberate trade of purity for shipping.
+- **It does not copy Mercury's feature list.** Research, Kanban, bots and fleet are excluded in v1 (§5.6.2). What is taken is the interaction model — the connection rail, the inline approval, the folded tool ledger, the composer-level permission mode — because each of those is backed by an endpoint or event that already exists.
+- **It does not build a permission mode the backend cannot honour.** If §11.5 is not built, the control is not drawn.
 
 ---
 

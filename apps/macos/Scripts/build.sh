@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+#
+# Build OnIt.app for macOS.
+#
+#   ./Scripts/build.sh              # release build into build/OnIt.app
+#   ./Scripts/build.sh --debug      # debug build, faster, larger
+#   ./Scripts/build.sh --run        # build, then open the app
+#
+# The app is a Swift package compiled by swift build and then wrapped in a
+# bundle by this script. No Xcode project file: it is the one artifact nobody
+# can read in a diff, and `swift build` is reproducible from the command line.
+#
+# The harness is not bundled. The app runs `python -m onit.cli serve web` from
+# the interpreter and working tree named by ONIT_SIDECAR_PYTHON and
+# ONIT_SIDECAR_ROOT, defaulting to the repo this script lives in. That is the
+# phase-1a trade: runnable today, frozen later.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd "$HERE/.." && pwd)"
+REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
+
+CONFIG="release"
+RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    --debug) CONFIG="debug" ;;
+    --run)   RUN=1 ;;
+    -h|--help)
+      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+APP_NAME="OnIt"
+BUILD_DIR="$APP_DIR/build"
+BUNDLE="$BUILD_DIR/$APP_NAME.app"
+VERSION="$(cd "$REPO_ROOT" && python3 -c "import tomllib,sys; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])" 2>/dev/null || echo "0.0.0")"
+
+echo "==> Building $APP_NAME $VERSION ($CONFIG)"
+cd "$APP_DIR"
+swift build -c "$CONFIG"
+
+BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/$APP_NAME"
+if [[ ! -x "$BIN_PATH" ]]; then
+  echo "error: no binary at $BIN_PATH" >&2
+  exit 1
+fi
+
+echo "==> Assembling $BUNDLE"
+rm -rf "$BUNDLE"
+mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+cp "$BIN_PATH" "$BUNDLE/Contents/MacOS/$APP_NAME"
+
+cat > "$BUNDLE/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>              <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>       <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>        <string>sh.sibyl.onit</string>
+    <key>CFBundleExecutable</key>        <string>$APP_NAME</string>
+    <key>CFBundlePackageType</key>       <string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key>           <string>$VERSION</string>
+    <key>LSMinimumSystemVersion</key>    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>   <true/>
+    <key>NSSupportsAutomaticTermination</key><false/>
+    <key>NSSupportsSuddenTermination</key>   <false/>
+    <key>NSHumanReadableCopyright</key>  <string>OnIt</string>
+    <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
+    <!-- The app spawns a Python helper and writes to ~/.onit; neither is
+         possible under the App Sandbox. See docs/NATIVE_UI_PLAN.md §5.5. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key><true/>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+# Ad-hoc signature. Enough for the app to launch on the machine that built it;
+# a real Developer ID is phase 1e.
+echo "==> Signing (ad-hoc)"
+codesign --force --deep --sign - "$BUNDLE" 2>/dev/null || \
+  echo "    (codesign skipped — the app will still run locally)"
+
+echo "==> Done: $BUNDLE"
+
+if [[ "$RUN" == "1" ]]; then
+  echo "==> Launching"
+  open "$BUNDLE"
+fi
