@@ -80,9 +80,7 @@ def test_harness_does_not_import_a_ui_at_module_level(path: Path):
     """No harness module may import onit.ui at import time."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     offenders = [
-        (lineno, name)
-        for lineno, name in _module_level_imports(tree)
-        if _resolves_to_ui(name)
+        (lineno, name) for lineno, name in _module_level_imports(tree) if _resolves_to_ui(name)
     ]
     assert not offenders, (
         f"{path.relative_to(PACKAGE)} imports a front end at module level: "
@@ -97,15 +95,11 @@ def test_contract_package_imports_without_any_ui():
     The contract is the seam; if it ever imports a front end, the seam is
     gone and both sides are coupled again.
     """
-    tree = ast.parse(
-        (PACKAGE / "contract" / "__init__.py").read_text(encoding="utf-8")
-    )
+    tree = ast.parse((PACKAGE / "contract" / "__init__.py").read_text(encoding="utf-8"))
     for module in (PACKAGE / "contract").glob("*.py"):
         tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
         offenders = [
-            (lineno, name)
-            for lineno, name in _module_level_imports(tree)
-            if _resolves_to_ui(name)
+            (lineno, name) for lineno, name in _module_level_imports(tree) if _resolves_to_ui(name)
         ]
         assert not offenders, f"{module.name} imports a front end: {offenders}"
 

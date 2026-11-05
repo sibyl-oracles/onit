@@ -680,9 +680,7 @@ class WebApiUI:
         return UISettings(
             config_data=getattr(self._onit, "config_data", None) or {},
             background_checks=getattr(self._onit, "background_checks", None) or {},
-            cancel_background_check=getattr(
-                self._onit, "_cancel_background_check", None
-            ),
+            cancel_background_check=getattr(self._onit, "_cancel_background_check", None),
         )
 
     # ------------------------------------------------------------------
@@ -949,9 +947,7 @@ class WebApiUI:
         # person pressed rather than an empty pair of buttons.
         ratings = {}
         try:
-            for record in _read_trajectory(
-                session.session_id, self._settings().config_data
-            ):
+            for record in _read_trajectory(session.session_id, self._settings().config_data):
                 verdict = (record.get("signals") or {}).get("user_rating")
                 if verdict:
                     ratings[record.get("turn")] = verdict
@@ -1275,9 +1271,7 @@ class WebApiUI:
                         # already appended to the session file by now, so its line
                         # count is this answer's number.
                         "turn": _session_turn_count(session.session_path),
-                        "rating_enabled": _recording_enabled(
-                            self._settings().config_data
-                        ),
+                        "rating_enabled": _recording_enabled(self._settings().config_data),
                     },
                 )
             )
@@ -1371,9 +1365,7 @@ class WebApiUI:
         self._release_open_stream(session)
         settings = self._settings()
         if settings.cancel_background_check is not None and self._loop:
-            self._loop.call_soon_threadsafe(
-                settings.cancel_background_check, session.session_id
-            )
+            self._loop.call_soon_threadsafe(settings.cancel_background_check, session.session_id)
 
     def _release_open_stream(self, session: ApiSession) -> None:
         """Let go of the previous answer's stream, correction or not.
