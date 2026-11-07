@@ -61,6 +61,18 @@ private struct ConnectionsTab: View {
                             .font(Typography.caption)
                             .foregroundStyle(Palette.tertiaryText)
                     }
+                    Spacer()
+                    if connection.kind == .remote {
+                        Button(role: .destructive) {
+                            model.remove(connection)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                                .font(.system(size: 13))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove \(connection.name)")
+                        .accessibilityLabel("Remove \(connection.name)")
+                    }
                 }
             }
         }

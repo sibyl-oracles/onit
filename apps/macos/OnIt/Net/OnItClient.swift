@@ -191,30 +191,15 @@ struct OnItClient: Sendable {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     try Self.check(response, data: nil)
 
+                    // Line-at-a-time rather than byte-at-a-time: `bytes.lines`
+                    // handles the line splitting (LF, CRLF, CR) and decoding,
+                    // and the actor hop per line instead of per byte is the
+                    // difference between negligible and measurable on a fast
+                    // token stream. Frame boundaries are the blank lines the
+                    // reader already keys on.
                     let reader = SSEReader()
-                    var chunk = Data()
-                    chunk.reserveCapacity(4096)
-
-                    for try await byte in bytes {
-                        chunk.append(byte)
-                        // Flush on a frame boundary rather than per byte: the
-                        // parser is an actor and a hop per byte would dominate
-                        // the cost of a fast stream.
-                        if byte == 0x0A, chunk.count >= 2,
-                           chunk[chunk.count - 2] == 0x0A {
-                            for event in await reader.consume(chunk) {
-                                continuation.yield(event)
-                            }
-                            chunk.removeAll(keepingCapacity: true)
-                        } else if chunk.count > 8192 {
-                            for event in await reader.consume(chunk) {
-                                continuation.yield(event)
-                            }
-                            chunk.removeAll(keepingCapacity: true)
-                        }
-                    }
-                    if !chunk.isEmpty {
-                        for event in await reader.consume(chunk) {
+                    for try await line in bytes.lines {
+                        for event in await reader.consume(line: line) {
                             continuation.yield(event)
                         }
                     }
@@ -230,6 +215,21 @@ struct OnItClient: Sendable {
     }
 
     // MARK: - Plumbing
+
+    /// A cheap liveness probe with a short timeout, for the health monitor.
+    ///
+    /// `config()` shares the session's default 60 s timeout, which is right
+    /// for real requests and wrong for a poll: an offline host would hold
+    /// each health check for a minute.
+    func ping() async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "api/config"))
+        request.timeoutInterval = 3
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse
+        else { return false }
+        return (200..<300).contains(http.statusCode)
+    }
 
     private func get<T: Decodable>(_ path: String, session: String? = nil, as type: T.Type = T.self) async throws -> T {
         let data = try await send(path, method: "GET", session: session)

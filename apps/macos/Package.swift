@@ -16,6 +16,14 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]
-        )
+        ),
+        // The four regression-prone pieces are pure logic: the SSE parser,
+        // the Markdown splitter, the session event reducer and the recency
+        // grouping. Tests import the executable with @testable.
+        .testTarget(
+            name: "OnItTests",
+            dependencies: ["OnIt"],
+            path: "Tests/OnItTests"
+        ),
     ]
 )

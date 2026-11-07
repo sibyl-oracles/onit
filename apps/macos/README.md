@@ -62,9 +62,12 @@ For a faster, larger debug build:
 1. Runs `swift build -c release`.
 2. Creates the `.app` bundle structure (`Contents/MacOS`, `Contents/Resources`).
 3. Writes `Info.plist` with the version read from `pyproject.toml`.
-4. Ad-hoc signs the bundle so it launches on the machine that built it.
+4. Copies `Assets/AppIcon.icns` into Resources (generate it with
+   `Scripts/make_icon.py`; a missing icon is not an error).
+5. Ad-hoc signs the bundle so it launches on the machine that built it.
 
-It does not bundle Python. See §6.
+By default it does not bundle the harness. `--bundle-harness` changes that —
+see §6.
 
 ---
 
@@ -154,10 +157,10 @@ not stop a run in progress on either.
 
 ---
 
-## 6. How the harness is found (and why it is not bundled)
+## 6. How the harness is found (and why it is not bundled by default)
 
-This build runs the harness from your working tree. That is a deliberate
-trade for the first testable version:
+By default the app runs the harness from your working tree. That is a
+deliberate trade for the first testable version:
 
 - **What you get:** the app runs in minutes, and it always talks to the code
   you are editing. Change a Python file, restart the app, and the change is
@@ -165,10 +168,28 @@ trade for the first testable version:
 - **What you do not get:** a self-contained `.app` you can hand to someone who
   does not have the repo.
 
-Bundling the harness with PyInstaller is phase 1a of the plan
-(`docs/NATIVE_UI_PLAN.md` §12) and is not done yet. When it is, the app will
-find `Contents/Resources/onit-src/` first — the lookup order in
-`SidecarPaths.packageRoot()` already prefers it.
+`--bundle-harness` closes most of that gap:
+
+```bash
+./Scripts/build.sh --bundle-harness
+```
+
+It copies the `onit` package (minus `test/` and `__pycache__`) into
+`Contents/Resources/onit-src/`, which `SidecarPaths.packageRoot()` already
+probes. The result is an app that carries its own harness code and runs on a
+machine that has never seen this repo — with one honest limit: **the
+interpreter still has to provide OnIt's dependencies** (fastapi, uvicorn, and
+the rest). Point `ONIT_SIDECAR_PYTHON` at a venv that has them:
+
+```bash
+ONIT_SIDECAR_PYTHON="$HOME/.onit-venv/bin/python" open build/OnIt.app
+```
+
+A fully frozen PyInstaller binary is still phase 1a of the plan
+(`docs/NATIVE_UI_PLAN.md` §12).
+
+The app also looks for the harness in this order: `ONIT_SIDECAR_ROOT`, then
+the bundled `onit-src/`, then the working tree it was built from.
 
 ---
 
@@ -185,11 +206,14 @@ Verified against a live harness:
 | Folded reasoning disclosure | ✅ |
 | Folded tool ledger | ✅ |
 | Markdown with fenced code blocks and copy button | ✅ |
-| File attachments (upload + download chips) | ✅ |
-| Inline approval card with countdown | ✅ |
+| File attachments (upload + download chips, drag & drop) | ✅ |
+| Inline approval card with live countdown | ✅ |
 | Stop a running turn | ✅ |
 | Rating (thumbs up/down) | ✅ |
-| Multiple connections in the rail | ✅ |
+| Multiple connections in the rail, persisted across relaunch | ✅ |
+| Remove a connection (rail context menu, Settings) | ✅ |
+| Harness death detection with capped auto-restart | ✅ |
+| Health poll + refresh on app activation | ✅ |
 | Settings → Diagnostics with sidecar log | ✅ |
 
 ### Not built yet
@@ -197,9 +221,9 @@ Verified against a live harness:
 | Feature | Why | Plan reference |
 |---|---|---|
 | Permission mode in composer | Needs a backend session flag | §11.5 |
-| Keychain | Sidecar uses the existing config | §6 |
+| Keychain for remote credentials | Hostnames persist in UserDefaults; secrets would not belong there | §6 |
 | Signing and notarization | Ad-hoc only | §5.5 |
-| Bundled Python | Phase 1a | §12 |
+| Frozen (PyInstaller) Python | `--bundle-harness` ships the code; the interpreter is still the user's | §12 |
 | `/api/health`, `ONIT_READY` line | Backend changes not made | §11 |
 
 The composer deliberately has **no** permission-mode menu. A menu that says
@@ -249,10 +273,13 @@ string like `"cowsay"` is silently ignored by the loader.
 apps/macos/
   Package.swift               Swift package manifest
   Scripts/build.sh            the build
+  Scripts/make_icon.py        generates Assets/AppIcon.icns
+  Assets/AppIcon.icns         the app icon
+  Tests/OnItTests/            XCTest target: SSE, markdown, session, model
   OnIt/
     OnItApp.swift             app entry, WindowGroup + Settings scene
     Model/
-      AppModel.swift          sidecar + connections + sessions
+      AppModel.swift          sidecar + connections + sessions, health monitor
       Session.swift           one conversation, its own stream and task
       Connection.swift        one OnIt: local sidecar or remote host
       ChatMessage.swift       one turn, reasoning kept apart from answer
@@ -270,12 +297,17 @@ apps/macos/
       MessageBubble.swift     markdown, reasoning, files, rating
       ToolLedger.swift        folded steps
       ApprovalCard.swift      inline approval
-      MarkdownText.swift      fenced code blocks
+      MarkdownText.swift      fenced code, headings, lists
       SettingsScene.swift     General / Connections / Diagnostics
     Theme/
       Typography.swift        13 pt body, 1.45 line height
       Palette.swift           system colours, Color.accentColor
 ```
+
+Run the tests with `swift test` from this directory — 57 of them, covering
+the SSE parser (including CRLF and byte-sliced frames), the Markdown
+splitter, the session event reducer, event decoding and the recency
+grouping.
 
 The network layer is three files and has no dependency on SwiftUI. That is
 intentional: it is the part that mirrors the backend contract, and it is the

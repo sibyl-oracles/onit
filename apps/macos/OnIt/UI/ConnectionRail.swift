@@ -23,6 +23,14 @@ struct ConnectionRail: View {
                 }
                 .buttonStyle(.plain)
                 .help(connection.name)
+                .accessibilityLabel("Connection \(connection.name)")
+                .contextMenu {
+                    if connection.kind == .remote {
+                        Button("Remove “\(connection.name)”…", role: .destructive) {
+                            model.remove(connection)
+                        }
+                    }
+                }
             }
 
             Button {
@@ -36,6 +44,7 @@ struct ConnectionRail: View {
             }
             .buttonStyle(.plain)
             .help("Connect to a host")
+            .accessibilityLabel("Connect to a host")
 
             Spacer()
         }
@@ -151,8 +160,10 @@ private struct AddHostSheet: View {
                     baseURL: url
                 )
                 connection.isOnline = true
-                model.connections.append(connection)
-                await model.select(connection)
+                model.addRemoteConnection(name: connection.name, baseURL: url)
+                if let added = model.connections.last {
+                    await model.select(added)
+                }
                 dismiss()
             } catch {
                 self.error = "No OnIt answered at \(url.absoluteString)."

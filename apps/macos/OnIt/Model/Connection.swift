@@ -9,8 +9,12 @@ import Observation
 /// apart, which is what makes adding a second connection cheap.
 @MainActor
 @Observable
-final class Connection: Identifiable {
-    enum Kind: Sendable, Equatable {
+final class Connection: Identifiable, Equatable {
+    /// Identity equality — a Connection is its row in the rail.
+    nonisolated static func == (lhs: Connection, rhs: Connection) -> Bool { lhs === rhs }
+
+    /// String-backed so it can round-trip through the persisted snapshot.
+    enum Kind: String, Codable, Sendable, Equatable {
         case local
         case remote
     }
@@ -41,5 +45,27 @@ final class Connection: Identifiable {
         if isOnline { return .online }
         if kind == .local { return .starting }
         return .offline
+    }
+
+    /// What gets written to `UserDefaults`. Deliberately narrow — identity is
+    /// rebuilt on load, so a relaunch gets fresh UUIDs and fresh state. The
+    /// struct itself is unisolated so Codable can synthesize; only the two
+    /// methods that touch a `Connection` need the main actor.
+    struct Snapshot: Codable, Equatable {
+        var name: String
+        var kind: Kind
+        var baseURL: URL?
+
+        @MainActor
+        init(from connection: Connection) {
+            self.name = connection.name
+            self.kind = connection.kind
+            self.baseURL = connection.baseURL
+        }
+
+        @MainActor
+        func connection() -> Connection {
+            Connection(name: name, kind: kind, baseURL: baseURL)
+        }
     }
 }

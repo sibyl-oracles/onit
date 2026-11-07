@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct OnItApp: App {
     @State private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -10,6 +11,14 @@ struct OnItApp: App {
                 .environment(model)
                 .frame(minWidth: 860, minHeight: 520)
                 .task { await model.boot() }
+                // Coming back to the app is the moment stale state is most
+                // visible: a host that went away and came back, or a harness
+                // that died. One probe now, rather than a wrong dot for ten.
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        Task { await model.checkHealth() }
+                    }
+                }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {

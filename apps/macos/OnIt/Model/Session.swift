@@ -10,7 +10,12 @@ import Observation
 /// has to not get in the way.
 @MainActor
 @Observable
-final class Session: Identifiable {
+final class Session: Identifiable, Equatable {
+    /// Identity equality. Two Session objects are the same session when they
+    /// are the same object — the tests and the list diffing compare identity,
+    /// not transcript contents.
+    nonisolated static func == (lhs: Session, rhs: Session) -> Bool { lhs === rhs }
+
     let id: String
     let client: OnItClient
 
@@ -22,15 +27,22 @@ final class Session: Identifiable {
     var loadError: String?
     /// When the server last touched this session, for the recency grouping.
     var lastActivity: Date?
+    /// The list-row preview the server reported, used until this client has
+    /// live messages of its own — a rehydrated session otherwise shows blank.
+    var summaryPreview: String?
 
     private var streamTask: Task<Void, Never>?
-    private var approvalDeadline: Date?
+    /// Internal, not private: the approval card reads the absolute deadline
+    /// (it must recompute the count every second) and the tests drive the
+    /// event path through it without a live server.
+    var approvalDeadline: Date?
 
-    init(id: String, title: String, client: OnItClient, lastActivity: Date? = nil) {
+    init(id: String, title: String, client: OnItClient, lastActivity: Date? = nil, summaryPreview: String? = nil) {
         self.id = id
         self.title = title
         self.client = client
         self.lastActivity = lastActivity
+        self.summaryPreview = summaryPreview
     }
 
     // MARK: - History
@@ -47,16 +59,24 @@ final class Session: Identifiable {
         do {
             let history = try await client.history(session: id)
             messages = history.messages.map { entry in
-                ChatMessage(
-                    role: entry.role == "user" ? .user : .assistant,
-                    content: entry.content
-                )
+                ChatMessage(role: Self.role(from: entry.role), content: entry.content)
             }
             isProcessing = history.processing
             isLoaded = true
         } catch {
             loadError = error.localizedDescription
             isLoaded = true
+        }
+    }
+
+    /// The server's role string, as `onit/ui/api.py` writes it. System lines
+    /// are their own thing — a notice, not an answer — and collapsing them
+    /// into assistant bubbles would put words in the model's mouth.
+    static func role(from serverRole: String) -> ChatMessage.Role {
+        switch serverRole {
+        case "user": return .user
+        case "system": return .system
+        default: return .assistant
         }
     }
 
@@ -111,13 +131,14 @@ final class Session: Identifiable {
     /// that expires is a deny, and the UI must show it expiring rather than
     /// pretend the question is still open.
     func secondsRemaining(now: Date = Date()) -> Int? {
-        guard let approvalDeadline else { return nil }
-        return max(0, Int(approvalDeadline.timeIntervalSince(now).rounded(.up)))
+        ApprovalCard.remaining(until: approvalDeadline, now: now)
     }
 
     // MARK: - Event application
 
-    private func apply(_ event: ChatEvent, at index: Int) {
+    /// Internal, not private: the tests drive this directly, which is the
+    /// cheapest honest way to cover the event contract without a server.
+    func apply(_ event: ChatEvent, at index: Int) {
         guard messages.indices.contains(index) else { return }
         switch event {
         case let .token(delta):

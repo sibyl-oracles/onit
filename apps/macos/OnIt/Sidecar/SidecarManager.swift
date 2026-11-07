@@ -119,7 +119,12 @@ final class SidecarManager {
 
     private var process: Process?
     private var outputPipe: Pipe?
-    private var pollTask: Task<Void, Never>?
+    /// True while `stop()` is tearing the harness down on purpose. The exit
+    /// handler must not report a requested stop as a crash.
+    private var isStopping = false
+    /// Called when the harness exits without being asked to. `AppModel` uses
+    /// it to drop the local connection offline and offer a restart.
+    var onDeath: (() -> Void)?
 
     /// Start the harness on a free port and wait until `/api/config` answers.
     ///
@@ -127,6 +132,7 @@ final class SidecarManager {
     /// so two copies of the app — or the browser UI on 9000 — never collide.
     func start(port explicitPort: Int? = nil) async {
         guard process == nil else { return }
+        isStopping = false
         state = .starting
         logTail.removeAll()
         Self.trace("start: python=\(SidecarPaths.python() ?? "nil") root=\(SidecarPaths.packageRoot() ?? "nil")")
@@ -175,6 +181,15 @@ final class SidecarManager {
         process = proc
         outputPipe = pipe
 
+        // A crash after startup must be visible. Without this the rail keeps
+        // a healthy-looking dot while every request fails with connection
+        // errors, and nothing tells the user the harness is gone.
+        proc.terminationHandler = { [weak self] exited in
+            Task { @MainActor [weak self] in
+                self?.harnessDied(exited)
+            }
+        }
+
         // Poll rather than parse stdout: the harness prints a human banner and
         // nothing machine-readable yet (plan §11 item 2). Polling `/api/config`
         // is the contract that already exists.
@@ -196,21 +211,35 @@ final class SidecarManager {
     }
 
     func stop() {
-        pollTask?.cancel()
-        pollTask = nil
+        isStopping = true
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if let process, process.isRunning {
             process.terminate()
-            // Give it a moment to close its sockets, then insist.
-            let deadline = Date().addingTimeInterval(3)
-            while process.isRunning && Date() < deadline {
-                usleep(50_000)
+            // The grace wait happens off the main actor: a synchronous wait
+            // here would freeze the window for up to three seconds while the
+            // harness closes its sockets.
+            let proc = process
+            DispatchQueue.global(qos: .userInitiated).async {
+                let deadline = Date().addingTimeInterval(3)
+                while proc.isRunning && Date() < deadline {
+                    usleep(50_000)
+                }
+                if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
             }
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
         process = nil
         outputPipe = nil
         state = .stopped
+    }
+
+    /// The harness process ended. Distinguish "we stopped it" from "it died".
+    private func harnessDied(_ exited: Process) {
+        guard !isStopping, exited === process else { return }
+        process = nil
+        outputPipe = nil
+        Self.trace("died: status \(exited.terminationStatus)")
+        state = .failed("The harness exited unexpectedly (status \(exited.terminationStatus)).")
+        onDeath?()
     }
 
     private func appendLog(_ text: String) {

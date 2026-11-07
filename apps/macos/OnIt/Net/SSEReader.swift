@@ -10,42 +10,61 @@ import Foundation
 /// No third-party SSE package: the format is three lines of parsing and the
 /// supply-chain cost of a dependency is not worth it.
 actor SSEReader {
-    private var buffer = ""
+    /// Raw bytes not yet split into lines. Held as plain bytes and scanned
+    /// manually — see `consume(_:)` for why this must not be a `String`, and
+    /// `Data`'s index semantics are their own trap after mutation.
+    private var buffer: [UInt8] = []
     private var eventName = ""
     private var dataLines: [String] = []
 
     /// Feed raw bytes; returns whatever events became complete.
     ///
-    /// A frame is terminated by a blank line. `data:` lines within one frame
-    /// are joined with newlines, per the SSE spec, which matters because a
-    /// `done` payload containing a multi-line answer is still one `data:` line
-    /// from this server but need not stay that way.
+    /// Kept as the byte-level entry point — the tests drive it with
+    /// deliberately awkward slices — but the live stream goes through
+    /// `consume(line:)`, one complete line at a time.
+    ///
+    /// Splitting happens on raw UTF-8, not on `String` indices: in Swift a
+    /// `\r\n` pair is one grapheme cluster, so `firstIndex(of: "\n")` never
+    /// matches a CRLF stream and a proxy that normalized line endings would
+    /// silently deliver nothing. Bytes do not have that problem.
     func consume(_ bytes: Data) -> [ChatEvent] {
-        guard let chunk = String(data: bytes, encoding: .utf8) else { return [] }
-        buffer += chunk
+        buffer.append(contentsOf: bytes)
+
         var events: [ChatEvent] = []
-
-        while let newline = buffer.firstIndex(of: "\n") {
-            var line = String(buffer[buffer.startIndex..<newline])
-            buffer = String(buffer[buffer.index(after: newline)...])
-            if line.hasSuffix("\r") { line.removeLast() }
-
-            if line.isEmpty {
-                if let event = flush() { events.append(event) }
-                continue
-            }
-            // A comment line: the server sends ": keepalive" every 15 s to hold
-            // the connection open through a proxy. It carries no event.
-            if line.hasPrefix(":") { continue }
-
-            if let value = field("event", in: line) {
-                eventName = value
-            } else if let value = field("data", in: line) {
-                dataLines.append(value)
-            }
-            // `id:` and `retry:` are not sent by this server and are ignored.
+        var lineStart = 0
+        while let newline = buffer[lineStart...].firstIndex(of: 0x0A) {
+            let line = String(decoding: buffer[lineStart..<newline], as: UTF8.self)
+            lineStart = newline + 1
+            events.append(contentsOf: consume(line: line))
+        }
+        // Keep only the unconsumed tail so the buffer cannot grow unbounded.
+        if lineStart > 0 {
+            buffer.removeFirst(lineStart)
         }
         return events
+    }
+
+    /// Feed one complete line (no terminator); returns whatever events it
+    /// completed. An empty line is the frame boundary.
+    func consume(line: String) -> [ChatEvent] {
+        var line = line
+        if line.hasSuffix("\r") { line.removeLast() }
+
+        if line.isEmpty {
+            if let event = flush() { return [event] }
+            return []
+        }
+        // A comment line: the server sends ": keepalive" every 15 s to hold
+        // the connection open through a proxy. It carries no event.
+        if line.hasPrefix(":") { return [] }
+
+        if let value = field("event", in: line) {
+            eventName = value
+        } else if let value = field("data", in: line) {
+            dataLines.append(value)
+        }
+        // `id:` and `retry:` are not sent by this server and are ignored.
+        return []
     }
 
     private func field(_ name: String, in line: String) -> String? {

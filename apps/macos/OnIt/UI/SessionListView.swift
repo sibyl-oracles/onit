@@ -95,6 +95,7 @@ struct SessionListView: View {
             }
             .buttonStyle(.plain)
             .help("New session (⌘N)")
+            .accessibilityLabel("New session")
         }
         .padding(.horizontal, Metrics.gutter)
         .padding(.vertical, 12)
@@ -123,6 +124,13 @@ private struct SessionRow: View {
                     .lineLimit(1)
                 if let last = session.messages.last, last.role == .assistant, !last.content.isEmpty {
                     Text(last.content)
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.tertiaryText)
+                        .lineLimit(1)
+                } else if let preview = session.summaryPreview, !preview.isEmpty {
+                    // A rehydrated session has no live transcript yet; the
+                    // server's preview is what the row showed before.
+                    Text(preview)
                         .font(Typography.caption)
                         .foregroundStyle(Palette.tertiaryText)
                         .lineLimit(1)

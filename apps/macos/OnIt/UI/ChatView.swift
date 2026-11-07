@@ -6,6 +6,8 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var attachments: [URL] = []
     @State private var isUploading = false
+    @State private var uploadError: String?
+    @State private var isDropTargeted = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -35,11 +37,12 @@ struct ChatView: View {
                             .id(message.id)
                     }
                     // The approval card sits in the flow, next to the turn it
-                    // gates, so the command it names is still on screen.
+                    // gates, so the command it names is still on screen. The
+                    // card gets the absolute deadline and ticks itself.
                     if let approval = session.pendingApproval {
                         ApprovalCard(
                             approval: approval,
-                            secondsRemaining: session.secondsRemaining()
+                            deadline: session.approvalDeadline
                         ) { decision in
                             session.answer(approval, decision: decision)
                         }
@@ -89,12 +92,30 @@ struct ChatView: View {
                                     .font(.system(size: 8))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Remove \(url.lastPathComponent)")
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Palette.raised, in: Capsule())
                     }
                 }
+            }
+
+            if isUploading {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Uploading…")
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.secondaryText)
+                }
+            }
+
+            if let uploadError {
+                Text(uploadError)
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.danger)
+                    .textSelection(.enabled)
             }
 
             HStack(alignment: .bottom, spacing: 8) {
@@ -106,6 +127,7 @@ struct ChatView: View {
                 .buttonStyle(.plain)
                 .disabled(session.isProcessing || isUploading)
                 .help("Attach a file")
+                .accessibilityLabel("Attach a file")
 
                 TextField(
                     "Ask OnIt…",
@@ -117,7 +139,9 @@ struct ChatView: View {
                 .lineLimit(1...8)
                 .focused($composerFocused)
                 .onSubmit(send)
-                .disabled(session.isProcessing)
+                // An upload in flight means the send this field could trigger
+                // would race the attachments it is about to carry.
+                .disabled(session.isProcessing || isUploading)
 
                 if session.isProcessing {
                     Button(action: session.stop) {
@@ -127,6 +151,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Stop (⌘.)")
+                    .accessibilityLabel("Stop generating")
                 } else {
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill")
@@ -138,6 +163,7 @@ struct ChatView: View {
                     .buttonStyle(.plain)
                     .disabled(!canSend)
                     .keyboardShortcut(.return, modifiers: .command)
+                    .accessibilityLabel("Send message")
                 }
             }
             .padding(.horizontal, 12)
@@ -146,6 +172,24 @@ struct ChatView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: Metrics.cardRadius)
                     .stroke(Palette.hairline, lineWidth: 1)
+            }
+            .overlay {
+                // Where a dropped file would land. Only shown while a drag is
+                // over the composer, so it costs nothing at rest.
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: Metrics.cardRadius)
+                        .stroke(Color.accentColor, lineWidth: 2)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: Metrics.cardRadius))
+                }
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                let files = urls.filter { $0.isFileURL }
+                guard !files.isEmpty else { return false }
+                attachments.append(contentsOf: files)
+                composerFocused = true
+                return true
+            } isTargeted: { hovering in
+                isDropTargeted = hovering
             }
         }
         .padding(.horizontal, Metrics.gutter)
@@ -156,6 +200,7 @@ struct ChatView: View {
 
     private var canSend: Bool {
         !session.isProcessing
+            && !isUploading
             && !(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
     }
 
@@ -165,16 +210,29 @@ struct ChatView: View {
         let files = attachments
         draft = ""
         attachments = []
+        uploadError = nil
         Task {
             var paths: [String] = []
+            var failures: [String] = []
             if !files.isEmpty {
                 isUploading = true
                 for url in files {
-                    if let path = try? await session.client.upload(session: session.id, fileURL: url) {
-                        paths.append(path)
+                    do {
+                        paths.append(try await session.client.upload(session: session.id, fileURL: url))
+                    } catch {
+                        failures.append("\(url.lastPathComponent) — \(error.localizedDescription)")
                     }
                 }
                 isUploading = false
+            }
+            // A failed upload must not vanish: the user believes the model got
+            // the file. Restore the draft and the chips, name what failed, and
+            // send nothing — a partial attachment set is a silent wrong answer.
+            if !failures.isEmpty {
+                draft = text
+                attachments = files
+                uploadError = "Not uploaded:\n" + failures.joined(separator: "\n")
+                return
             }
             session.send(text, files: paths)
         }

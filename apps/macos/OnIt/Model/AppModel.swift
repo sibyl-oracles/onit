@@ -15,8 +15,6 @@ final class AppModel {
     var config: OnItClient.Config?
     var lastError: String?
 
-    private var sessionsLoadedFor: Connection.ID?
-
     var selectedConnection: Connection? {
         connections.first { $0.id == selectedConnectionID }
     }
@@ -29,10 +27,14 @@ final class AppModel {
 
     /// Bring the local harness up and attach a connection to it.
     func boot() async {
+        if connections.isEmpty { loadPersistedConnections() }
         if connections.isEmpty {
             connections = [Connection(name: "This Mac", kind: .local, baseURL: nil)]
-            selectedConnectionID = connections[0].id
         }
+        if selectedConnectionID == nil || !connections.contains(where: { $0.id == selectedConnectionID }) {
+            selectedConnectionID = connections.first?.id
+        }
+        sidecar.onDeath = { [weak self] in self?.localConnectionDied() }
         await sidecar.start()
         guard case let .ready(port) = sidecar.state,
               let local = connections.first(where: { $0.kind == .local }) else {
@@ -42,6 +44,7 @@ final class AppModel {
         local.baseURL = URL(string: "http://127.0.0.1:\(port)")
         local.isOnline = true
         await refresh()
+        startHealthMonitor()
     }
 
     // MARK: - Sessions
@@ -61,16 +64,17 @@ final class AppModel {
                 if let live = existing[summary.sessionID] {
                     if summary.tag != nil { live.title = summary.tag! }
                     live.lastActivity = summary.updatedDate
+                    live.summaryPreview = summary.preview
                     return live
                 }
                 return Session(
                     id: summary.sessionID,
                     title: summary.tag ?? summary.preview ?? "New session",
                     client: client,
-                    lastActivity: summary.updatedDate
+                    lastActivity: summary.updatedDate,
+                    summaryPreview: summary.preview
                 )
             }
-            sessionsLoadedFor = connection.id
 
             if selectedSessionID == nil || !sessions.contains(where: { $0.id == selectedSessionID }) {
                 selectedSessionID = sessions.first?.id
@@ -167,7 +171,110 @@ final class AppModel {
     // MARK: - Teardown
 
     func shutdown() {
+        healthTask?.cancel()
+        healthTask = nil
         for session in sessions { session.stop() }
         sidecar.stop()
+    }
+
+    // MARK: - Connection persistence
+
+    /// Remote connections survive a relaunch. The local one is not persisted:
+    /// it is this app's own harness, not a user choice, and its port changes
+    /// every launch anyway.
+    private static let connectionsKey = "onit.connections.v1"
+
+    private func loadPersistedConnections() {
+        guard let data = UserDefaults.standard.data(forKey: Self.connectionsKey),
+              let snapshots = try? JSONDecoder().decode([Connection.Snapshot].self, from: data)
+        else { return }
+        let remote = snapshots.filter { $0.kind == .remote }.map { $0.connection() }
+        guard !remote.isEmpty else { return }
+        connections = [Connection(name: "This Mac", kind: .local, baseURL: nil)] + remote
+    }
+
+    private func persistConnections() {
+        let snapshots = connections.filter { $0.kind == .remote }.map(Connection.Snapshot.init(from:))
+        guard let data = try? JSONEncoder().encode(snapshots) else { return }
+        UserDefaults.standard.set(data, forKey: Self.connectionsKey)
+    }
+
+    func addRemoteConnection(name: String, baseURL: URL) {
+        let connection = Connection(name: name, kind: .remote, baseURL: baseURL)
+        connections.append(connection)
+        persistConnections()
+    }
+
+    /// Remove a connection. The local one is load-bearing — it is where the
+    /// sidecar attaches — so it is not removable.
+    func remove(_ connection: Connection) {
+        guard connection.kind == .remote else { return }
+        connections.removeAll { $0.id == connection.id }
+        persistConnections()
+        if selectedConnectionID == connection.id {
+            selectedConnectionID = connections.first?.id
+            sessions = []
+            selectedSessionID = nil
+            Task { await refresh() }
+        }
+    }
+
+    // MARK: - Harness death
+
+    /// How many times this run has restarted the harness on its own. A cap
+    /// turns a crash loop into a visible failure instead of a silent spin;
+    /// "Try Again" in the failure view still works regardless.
+    private var restartAttempts = 0
+
+    private func localConnectionDied() {
+        guard let local = connections.first(where: { $0.kind == .local }) else { return }
+        local.isOnline = false
+        guard restartAttempts < 3 else {
+            lastError = "The OnIt harness exited unexpectedly and could not be restarted. See Settings → Diagnostics for its log."
+            return
+        }
+        restartAttempts += 1
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            await self?.boot()
+        }
+    }
+
+    // MARK: - Health
+
+    private var healthTask: Task<Void, Never>?
+
+    /// Reconcile the online dots with reality, every ten seconds.
+    ///
+    /// A connection can go stale in both directions: a remote host that came
+    /// back up, or the local harness that died while another window had
+    /// focus. The poll is what heals both without a relaunch.
+    func startHealthMonitor() {
+        guard healthTask == nil else { return }
+        healthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                await self?.checkHealth()
+            }
+        }
+    }
+
+    /// Ping every connection that has an address. Parallel: five offline
+    /// hosts at three seconds each must not serialize into a fifteen-second
+    /// stall on the main actor.
+    func checkHealth() async {
+        let clients = connections.compactMap { connection -> (Connection, OnItClient)? in
+            connection.client.map { (connection, $0) }
+        }
+        await withTaskGroup(of: (Connection.ID, Bool).self) { group in
+            for (connection, client) in clients {
+                group.addTask { (connection.id, await client.ping()) }
+            }
+            for await (id, alive) in group {
+                if let connection = connections.first(where: { $0.id == id }) {
+                    connection.isOnline = alive
+                }
+            }
+        }
     }
 }

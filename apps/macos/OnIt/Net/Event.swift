@@ -6,7 +6,7 @@ import Foundation
 /// a separate case from `token`: the backend keeps reasoning and answer on two
 /// channels so a client can fold one away without touching the other, and
 /// collapsing them here would throw that away before the UI ever sees it.
-enum ChatEvent: Sendable {
+enum ChatEvent: Sendable, Equatable {
     case token(String)
     case think(String)
     case phaseEnd(String)
