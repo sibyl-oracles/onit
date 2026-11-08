@@ -261,8 +261,17 @@ def save_endpoints(config: dict, rows: list) -> dict:
         entry["priority"] = int(priority) if priority is not None else position
         cleaned.append(entry)
 
+    # *config* is the running harness's resolved config: the setup file
+    # merged with the packaged defaults, the --config file and this run's
+    # command line (``web: true``, a one-off port, ``web_require_auth:
+    # false``, client secrets pulled from the environment...).  Writing that
+    # back would turn one ``onit serve web`` into every later plain ``onit``.
+    # So the live view is updated for this run, and the file on disk gets the
+    # endpoint list and nothing else, as ``\save`` does.
     onit_setup._write_endpoints(config, cleaned)
-    onit_setup._save_config(config)
+    on_disk = onit_setup._load_config()
+    onit_setup._write_endpoints(on_disk, cleaned)
+    onit_setup._save_config(on_disk)
     return describe(config)
 
 

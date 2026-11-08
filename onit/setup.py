@@ -960,10 +960,7 @@ def _edit_endpoints(config: dict) -> None:
             idx = _resolve_index(arg, entries)
             if idx is None:
                 continue
-            if len(entries) == 1:
-                print("  At least one endpoint is required — edit this one instead.")
-                continue
-            print(f"  Removed {entries.pop(idx)['host']}")
+            print(f"  Removed {entry_label(entries.pop(idx))}")
         elif cmd in ("p", "priority"):
             idx = _resolve_index(arg, entries)
             if idx is not None:
@@ -973,6 +970,17 @@ def _edit_endpoints(config: dict) -> None:
 
     if entries:
         _write_endpoints(config, entries)
+        return
+    # Every endpoint was deleted.  Say so in the file rather than leaving the
+    # last one behind: a delete the wizard reported has to be one it saved.
+    serving = config.get("serving")
+    if isinstance(serving, dict):
+        for k in ("endpoints", "host", "model", "host_key"):
+            serving.pop(k, None)
+    print(
+        "  No endpoints configured — 'onit' will need --host or ONIT_HOST "
+        "until you add one here."
+    )
 
 
 # ── Show current configuration ──────────────────────────────────────

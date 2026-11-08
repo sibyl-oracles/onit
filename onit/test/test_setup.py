@@ -367,11 +367,22 @@ class TestEndpointEditor:
         ]
         assert "host" not in cfg["serving"]
 
-    def test_last_endpoint_cannot_be_deleted(self, capsys):
-        cfg = {"serving": {"host": "http://a:8000/v1"}}
+    def test_last_endpoint_can_be_deleted(self, capsys):
+        cfg = {"serving": {"host": "http://a:8000/v1", "model": "m", "load_balancer": "sticky"}}
         _drive_editor(cfg, ["d 1", ""])
-        assert "At least one endpoint" in capsys.readouterr().out
-        assert cfg["serving"]["host"] == "http://a:8000/v1"
+        assert "No endpoints configured" in capsys.readouterr().out
+        # The delete is saved, not silently undone by keeping the old host.
+        assert cfg["serving"] == {"load_balancer": "sticky"}
+
+    def test_last_list_endpoint_can_be_deleted(self):
+        cfg = {"serving": {"endpoints": [{"host": "http://a:8000/v1", "priority": 1}]}}
+        _drive_editor(cfg, ["d 1", ""])
+        assert "endpoints" not in cfg["serving"] and "host" not in cfg["serving"]
+
+    def test_adding_a_model_on_the_same_host_keeps_the_first(self):
+        cfg = {"serving": {"endpoints": [{"host": "https://ollama.com", "model": "a", "priority": 1}]}}
+        _drive_editor(cfg, ["a", "https://ollama.com", "b", "", "", ""])
+        assert [e["model"] for e in cfg["serving"]["endpoints"]] == ["a", "b"]
 
     def test_edit_changes_the_addressed_row(self):
         cfg = {
