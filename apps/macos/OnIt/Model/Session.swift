@@ -179,7 +179,11 @@ final class Session: Identifiable, Equatable {
             messages[index].turn = payload.turn
             messages[index].ratingEnabled = payload.ratingEnabled
             messages[index].isStreaming = false
+            // The progress is scaffolding for the wait, not part of the
+            // answer: the moment the answer lands it is erased, the same
+            // way the browser folds the working away.
             messages[index].status = nil
+            messages[index].steps = []
             isProcessing = false
             pendingApproval = nil
             approvalDeadline = nil

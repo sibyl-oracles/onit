@@ -338,15 +338,27 @@ struct OnItClient: Sendable {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     try Self.check(response, data: nil)
 
-                    // Line-at-a-time rather than byte-at-a-time: `bytes.lines`
-                    // handles the line splitting (LF, CRLF, CR) and decoding,
-                    // and the actor hop per line instead of per byte is the
-                    // difference between negligible and measurable on a fast
-                    // token stream. Frame boundaries are the blank lines the
-                    // reader already keys on.
+                    // Byte-at-a-time into the reader, not `bytes.lines`:
+                    // AsyncLineSequence drops empty lines, and the empty line
+                    // is the SSE frame boundary — through `.lines` no frame
+                    // ever completes, so no event ever fires and the answer
+                    // only shows up after a restart via /api/history. The
+                    // byte path buffers, splits on raw UTF-8 (CRLF-safe) and
+                    // flushes on the boundary; it is the path the tests drive.
                     let reader = SSEReader()
-                    for try await line in bytes.lines {
-                        for event in await reader.consume(line: line) {
+                    var pending: [UInt8] = []
+                    pending.reserveCapacity(4096)
+                    for try await byte in bytes {
+                        pending.append(byte)
+                        if byte == 0x0A {  // newline: flush whole lines at once
+                            for event in await reader.consume(Data(pending)) {
+                                continuation.yield(event)
+                            }
+                            pending.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    if !pending.isEmpty {
+                        for event in await reader.consume(Data(pending)) {
                             continuation.yield(event)
                         }
                     }
