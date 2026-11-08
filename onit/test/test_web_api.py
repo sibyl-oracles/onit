@@ -750,19 +750,21 @@ class TestChatEndpoint:
                 return response
 
         ui._onit = NeverReportingOnit()
-        ui.open_stream_deadline = 0.5  # test deadline; production is 90 s
+        ui.keepalive_interval = 0.2  # the stream re-checks on every tick
         sid = client.get("/api/history").json()["session_id"]
+        started = time.monotonic()
         with TestClient(ui.app) as streaming_client:
             with streaming_client.stream(
                 "POST", "/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid}
             ) as res:
                 assert res.status_code == 200
                 text = "".join(chunk.decode() for chunk in res.iter_bytes())
-        # No correction was sent, but the stream still ended: the deadline
-        # closed it, so the client's read loop finishes instead of hanging.
-        # (The with-block returning at all is the proof — a held stream would
-        # hang here until the client's own timeout.)
+        elapsed = time.monotonic() - started
+        # No correction was sent, but the stream still ended: the first
+        # keepalive tick after the check finished noticed the check was gone
+        # and closed the stream — long before the 90 s deadline would have.
         assert "correction" not in parse_sse(text)
+        assert elapsed < 5.0, f"stream held {elapsed:.1f}s; the tick check did not fire"
         # The watchdog registry is clean afterwards.
         assert ui._open_stream_watchdogs == {}
 

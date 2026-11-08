@@ -664,6 +664,10 @@ class WebApiUI:
         # An instance attribute, not the module constant, so a test can
         # shorten the deadline instead of waiting out the real one.
         self.open_stream_deadline = _OPEN_STREAM_DEADLINE_S
+        # Same for the keepalive interval: a held stream re-asks whether its
+        # check is still alive on every tick, so a test that wants to see
+        # that happen quickly shortens this too.
+        self.keepalive_interval = 15.0
 
         # {cookie_value: {email, session_id, expires}}
         self._authenticated_cookies: dict[str, dict] = {}
@@ -1433,13 +1437,26 @@ class WebApiUI:
         if events is not None:
             events.put_nowait(_END)
 
-    async def _event_stream(self, events: queue.Queue):
-        """Async generator bridging the thread-safe event queue to SSE."""
+    async def _event_stream(self, events: queue.Queue, session: ApiSession):
+        """Async generator bridging the thread-safe event queue to SSE.
+
+        A stream held open past its answer re-asks on every keepalive tick
+        whether the background check it is waiting on is still alive, and
+        ends the moment it is gone — a clean check releases its stream within
+        one tick instead of at the deadline. The deadline itself stays as the
+        backstop for a check that never finishes at all.
+        """
         loop = asyncio.get_running_loop()
         while True:
             try:
-                item = await loop.run_in_executor(None, events.get, True, 15.0)
+                item = await loop.run_in_executor(None, events.get, True, self.keepalive_interval)
             except queue.Empty:
+                if session.open_stream is events and not self._awaiting_correction(session):
+                    # The check is gone without having reported: this stream
+                    # is holding the connection open for an event that can no
+                    # longer arrive. End it here rather than at the deadline.
+                    self._close_stream(session, events)
+                    break
                 yield ": keepalive\n\n"
                 continue
             if item == _END:
@@ -1730,7 +1747,7 @@ class WebApiUI:
             events: queue.Queue = queue.Queue()
             asyncio.run_coroutine_threadsafe(self._run_task(session, task, events), self._loop)
             return StreamingResponse(
-                self._event_stream(events),
+                self._event_stream(events, session),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
