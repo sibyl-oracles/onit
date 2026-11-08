@@ -133,6 +133,15 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 # Sentinel pushed into the event queue when a chat turn is finished
 _END = ("__end__", None)
 
+# How long a stream held open past its answer may sit idle before the server
+# closes it itself. The hold exists so a background fact-check can still
+# deliver a correction, but nothing else travels on it: the client sees only
+# keepalives. If the check's completion hook never fires — a callback dropped
+# between threads, a registry entry lost — the client would wait forever on a
+# composer it cannot use. The deadline sits well past the check's own runtime
+# budget, so a live check is never cut off; only a lost one is.
+_OPEN_STREAM_DEADLINE_S = 90.0
+
 # How long a command approval stays on screen before it is refused. Matched to
 # the server's ticket lifetime (mcp/servers/tasks/os/bash/approvals.py): a
 # prompt outliving the ticket behind it would collect an answer that can no
@@ -649,6 +658,12 @@ class WebApiUI:
         self._onit = None  # set by OnIt after creation
         self.execution_logs: deque[dict] = deque(maxlen=100)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Session id -> the task that closes that session's held-open stream
+        # when its deadline expires. See _OPEN_STREAM_DEADLINE_S.
+        self._open_stream_watchdogs: dict[str, asyncio.TimerHandle] = {}
+        # An instance attribute, not the module constant, so a test can
+        # shorten the deadline instead of waiting out the real one.
+        self.open_stream_deadline = _OPEN_STREAM_DEADLINE_S
 
         # {cookie_value: {email, session_id, expires}}
         self._authenticated_cookies: dict[str, dict] = {}
@@ -1293,8 +1308,10 @@ class WebApiUI:
                 # Held open, alone, for a correction that may never come — a
                 # keepalive every 15s and no work behind it.  Whoever ends the
                 # check ends the stream: the correction itself, or the next
-                # task cancelling it.
+                # task cancelling it. If neither ever lands, the watchdog
+                # closes the stream itself so the client is not left waiting.
                 session.open_stream = events
+                self._arm_open_stream_watchdog(session, events)
             else:
                 events.put_nowait(_END)
 
@@ -1358,7 +1375,43 @@ class WebApiUI:
         """End an SSE stream that was held open past its answer."""
         if session.open_stream is events:
             session.open_stream = None
+        self._cancel_open_stream_watchdog(session)
         events.put_nowait(_END)
+
+    def _cancel_open_stream_watchdog(self, session: ApiSession) -> None:
+        """Retire the deadline that was closing this session's held stream."""
+        handle = self._open_stream_watchdogs.pop(session.session_id, None)
+        if handle is not None:
+            handle.cancel()
+
+    def _arm_open_stream_watchdog(self, session: ApiSession, events: queue.Queue) -> None:
+        """Close a held-open stream itself if its check's completion never lands.
+
+        The hold is released by exactly two things: the check reporting its
+        correction, and the next thing that cancels the check. Both are
+        callbacks or calls that must arrive from elsewhere; if either is lost,
+        the client sits on an open connection that carries nothing but
+        keepalives, with a composer it cannot use. The deadline is the safety
+        net, not the mechanism: it sits well past the check's own runtime
+        budget, so a live check is never cut off — only a lost one is.
+        """
+        self._cancel_open_stream_watchdog(session)
+
+        def _expire() -> None:
+            self._open_stream_watchdogs.pop(session.session_id, None)
+            if session.open_stream is events:
+                session.open_stream = None
+                events.put_nowait(_END)
+                self.add_log(
+                    "Held stream for session %s closed by its %ss deadline — "
+                    "the check behind it never reported back."
+                    % (session.session_id[:8], _OPEN_STREAM_DEADLINE_S)
+                )
+
+        if self._loop is not None:
+            self._open_stream_watchdogs[session.session_id] = self._loop.call_later(
+                self.open_stream_deadline, _expire
+            )
 
     def _cancel_session_check(self, session: ApiSession) -> None:
         """End this session's background fact-check and the stream waiting on it."""
@@ -1376,6 +1429,7 @@ class WebApiUI:
         that can no longer arrive.
         """
         events, session.open_stream = session.open_stream, None
+        self._cancel_open_stream_watchdog(session)
         if events is not None:
             events.put_nowait(_END)
 

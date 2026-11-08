@@ -723,6 +723,80 @@ class TestChatEndpoint:
         res = client.post("/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid})
         assert "correction" not in [e for e, _ in parse_sse(res.text)]
 
+    def test_a_held_stream_closes_itself_when_the_check_never_reports(self, client, ui, bg_loop):
+        """The deadline is the safety net, not the mechanism: the hold is
+        released by the check's own completion or the next task's cancel. If
+        both are lost — the failure that left a real client spinning for six
+        minutes on a composer it could not use — the server closes the stream
+        itself rather than leave the client waiting forever."""
+
+        class NeverReportingOnit(FakeOnit):
+            """Schedules a check that finishes without ever reporting back.
+
+            This is the production shape of the bug: the harness's check
+            completes cleanly, but the completion hook that was supposed to
+            release the stream never fires.
+            """
+
+            async def process_task(self, task, session_path=None, session_id=None, **kwargs):
+                response = await super().process_task(
+                    task, session_path=session_path, session_id=session_id, **kwargs
+                )
+
+                async def _silent_check():
+                    await asyncio.sleep(0.05)  # finishes, reports nothing
+
+                self.background_checks[session_id] = asyncio.ensure_future(_silent_check())
+                return response
+
+        ui._onit = NeverReportingOnit()
+        ui.open_stream_deadline = 0.5  # test deadline; production is 90 s
+        sid = client.get("/api/history").json()["session_id"]
+        with TestClient(ui.app) as streaming_client:
+            with streaming_client.stream(
+                "POST", "/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid}
+            ) as res:
+                assert res.status_code == 200
+                text = "".join(chunk.decode() for chunk in res.iter_bytes())
+        # No correction was sent, but the stream still ended: the deadline
+        # closed it, so the client's read loop finishes instead of hanging.
+        # (The with-block returning at all is the proof — a held stream would
+        # hang here until the client's own timeout.)
+        assert "correction" not in parse_sse(text)
+        # The watchdog registry is clean afterwards.
+        assert ui._open_stream_watchdogs == {}
+
+    def test_a_live_check_is_never_cut_off_by_the_deadline(self, client, ui, bg_loop):
+        """The deadline sits far past the check's runtime: a check that is
+        still working keeps its stream, and its correction still arrives."""
+
+        class SlowReportingOnit(FakeOnit):
+            async def process_task(self, task, session_path=None, session_id=None, **kwargs):
+                response = await super().process_task(
+                    task, session_path=session_path, session_id=session_id, **kwargs
+                )
+                correction_callback = kwargs.get("correction_callback")
+
+                async def _slow_check():
+                    await asyncio.sleep(0.2)  # well under even a short deadline
+                    correction_callback("corrected", "note")
+
+                self.background_checks[session_id] = asyncio.ensure_future(_slow_check())
+                return response
+
+        ui._onit = SlowReportingOnit()
+        ui.open_stream_deadline = 5.0  # far past the 0.2 s check, far under 90 s
+        sid = client.get("/api/history").json()["session_id"]
+        with TestClient(ui.app) as streaming_client:
+            with streaming_client.stream(
+                "POST", "/api/chat", json={"message": "hi"}, headers={"X-Session-Id": sid}
+            ) as res:
+                assert res.status_code == 200
+                text = "".join(chunk.decode() for chunk in res.iter_bytes())
+        events = parse_sse(text)
+        assert dict(events)["correction"]["content"] == "corrected"
+        assert ui._open_stream_watchdogs == {}
+
     def test_the_next_question_lets_go_of_the_held_stream(self, client, ui):
         """The check it was waiting on is about to be cancelled, so leaving the
         browser connected would be waiting for an event that cannot arrive."""

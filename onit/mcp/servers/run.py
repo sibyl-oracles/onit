@@ -16,10 +16,17 @@ rowel.atienza@up.edu.ph
 import os
 import sys
 import logging
+import warnings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
+
+# The logging capability is deprecated in the MCP spec (SEP-2577) and fastmcp
+# warns on every single ctx.log() call — tens of thousands of identical lines
+# in a long-lived stdio server's log file. The deprecation is known and
+# tracked; until it is acted on, one line per server is the useful amount.
+warnings.filterwarnings("once", category=Warning, module=r"fastmcp\.server\.context")
 
 
 def _demote_package_on_syspath() -> None:
