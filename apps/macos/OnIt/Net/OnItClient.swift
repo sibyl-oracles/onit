@@ -77,6 +77,98 @@ struct OnItClient: Sendable {
         }
     }
 
+    // MARK: - Endpoints and keys
+
+    /// Where one secret lives, as the server reports it.
+    ///
+    /// The value itself never crosses the wire — `masked` is at most the last
+    /// four characters, the same `••••abcd` the terminal prints. `source`
+    /// tells the user where it comes from: the keychain, an environment
+    /// variable, a legacy secret name, or the config file itself.
+    struct KeyStatus: Sendable, Decodable, Equatable {
+        let source: String?
+        let masked: String?
+        let label: String
+
+        var isSet: Bool { source != nil }
+    }
+
+    /// One configured model endpoint, in preference order.
+    struct EndpointRow: Sendable, Decodable, Identifiable, Equatable {
+        let id: String
+        let host: String
+        let model: String?
+        let name: String?
+        let priority: Int
+        let position: Int
+        let key: KeyStatus
+        let notes: [String]
+    }
+
+    /// A one-click host in the add form.
+    struct EndpointPreset: Sendable, Decodable, Identifiable, Equatable {
+        let label: String
+        let host: String
+        let needsKey: Bool
+
+        var id: String { host }
+
+        enum CodingKeys: String, CodingKey {
+            case label, host
+            case needsKey = "needs_key"
+        }
+    }
+
+    /// One integration secret (Tavily, Ollama, GitHub, …).
+    ///
+    /// The server's `label` field here is the *status* text, not a display
+    /// name — the status dict is spread over the row and wins. The display
+    /// name is derived from the key, which is the stable identifier.
+    struct IntegrationRow: Sendable, Decodable, Identifiable, Equatable {
+        let key: String
+        let label: String
+        let envVar: String?
+        let blurb: String
+        let source: String?
+        let masked: String?
+
+        var id: String { key }
+
+        enum CodingKeys: String, CodingKey {
+            case key, label, blurb, source, masked
+            case envVar = "env_var"
+        }
+
+        /// The status the server means: `label` is the status text.
+        var status: String { label }
+        var isSet: Bool { source != nil }
+
+        /// The human name for the row, derived from the key spelling.
+        var displayName: String {
+            let stem = key
+                .replacingOccurrences(of: "_api_key", with: "")
+                .replacingOccurrences(of: "_token", with: "")
+            return stem
+                .split(separator: "_")
+                .map { $0.capitalized }
+                .joined(separator: " ")
+        }
+    }
+
+    /// Everything the Keys & Models tab renders, from `GET /api/endpoints`.
+    struct EndpointSurface: Sendable, Decodable, Equatable {
+        let endpoints: [EndpointRow]
+        let presets: [EndpointPreset]
+        let integrations: [IntegrationRow]
+        let configPath: String?
+        let keychain: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case endpoints, presets, integrations, keychain
+            case configPath = "config_path"
+        }
+    }
+
     // MARK: - Requests
 
     func config() async throws -> Config {
@@ -112,6 +204,61 @@ struct OnItClient: Sendable {
 
     func stop(session: String) async throws {
         _ = try await send("api/chat/stop", method: "POST", body: [:], session: session)
+    }
+
+    // MARK: - Endpoints and keys
+
+    /// Everything the Keys & Models tab shows.
+    func endpointSurface() async throws -> EndpointSurface {
+        try await get("api/endpoints")
+    }
+
+    /// Replace the endpoint list, in the order they should be tried.
+    ///
+    /// Keys are not part of this call — they are addressed by URL and stored
+    /// separately, so reordering or renaming cannot lose one.
+    @discardableResult
+    func saveEndpoints(_ rows: [EndpointRow]) async throws -> EndpointSurface {
+        let body: [String: Any] = [
+            "endpoints": rows.map { row -> [String: Any] in
+                var entry: [String: Any] = ["host": row.host]
+                if let model = row.model, !model.isEmpty { entry["model"] = model }
+                if let name = row.name, !name.isEmpty { entry["name"] = name }
+                entry["priority"] = row.priority
+                return entry
+            }
+        ]
+        return try await put("api/endpoints", body: body, as: EndpointSurface.self)
+    }
+
+    /// Store one endpoint's API key. The key crosses the wire once, on save,
+    /// and lands in the OS keychain on the far side; the app never keeps it.
+    @discardableResult
+    func storeEndpointKey(host: String, key: String) async throws -> KeyStatus {
+        try await put(
+            "api/endpoints/key",
+            body: ["host": host, "key": key],
+            as: KeyStatus.self
+        )
+    }
+
+    @discardableResult
+    func forgetEndpointKey(host: String) async throws -> KeyStatus {
+        try await delete("api/endpoints/key", query: ["host": host], as: KeyStatus.self)
+    }
+
+    @discardableResult
+    func storeIntegrationKey(keyName: String, value: String) async throws -> KeyStatus {
+        try await put(
+            "api/integrations/key",
+            body: ["key_name": keyName, "key": value],
+            as: KeyStatus.self
+        )
+    }
+
+    @discardableResult
+    func forgetIntegrationKey(keyName: String) async throws -> KeyStatus {
+        try await delete("api/integrations/key", query: ["key_name": keyName], as: KeyStatus.self)
     }
 
     func rate(session: String, turn: Int, rating: Int?) async throws {
@@ -238,6 +385,23 @@ struct OnItClient: Sendable {
 
     private func post<T: Decodable>(_ path: String, body: [String: Any], as type: T.Type) async throws -> T {
         let data = try await send(path, method: "POST", body: body)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func put<T: Decodable>(_ path: String, body: [String: Any], as type: T.Type) async throws -> T {
+        let data = try await send(path, method: "PUT", body: body)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func delete<T: Decodable>(_ path: String, query: [String: String], as type: T.Type) async throws -> T {
+        var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty {
+            components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 

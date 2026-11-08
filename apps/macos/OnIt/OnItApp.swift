@@ -15,6 +15,9 @@ struct OnItApp: App {
                 // visible: a host that went away and came back, or a harness
                 // that died. One probe now, rather than a wrong dot for ten.
                 .onChange(of: scenePhase) { _, phase in
+                    // Backgrounded windows stop the 10 s poll; the probe on
+                    // the way back to active is what heals stale state.
+                    model.isHealthPollPaused = phase != .active
                     if phase == .active {
                         Task { await model.checkHealth() }
                     }

@@ -243,6 +243,10 @@ final class AppModel {
     // MARK: - Health
 
     private var healthTask: Task<Void, Never>?
+    /// False while the window is backgrounded: the poll is pointless when
+    /// nobody is looking, and the activation probe (scenePhase) covers the
+    /// wake-up case.
+    var isHealthPollPaused = false
 
     /// Reconcile the online dots with reality, every ten seconds.
     ///
@@ -254,7 +258,8 @@ final class AppModel {
         healthTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
-                await self?.checkHealth()
+                guard let self, !self.isHealthPollPaused else { continue }
+                await self.checkHealth()
             }
         }
     }

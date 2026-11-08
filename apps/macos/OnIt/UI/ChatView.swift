@@ -8,6 +8,9 @@ struct ChatView: View {
     @State private var isUploading = false
     @State private var uploadError: String?
     @State private var isDropTargeted = false
+    /// True while the reader is at (or near) the bottom of the transcript.
+    /// Only then does a new token auto-scroll; scrolled-up reading wins.
+    @State private var isNearBottom = true
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -33,7 +36,11 @@ struct ChatView: View {
                             .padding(.top, 80)
                     }
                     ForEach(session.messages) { message in
+                        // .equatable(): a token appending to the streaming
+                        // bubble re-renders only that bubble; every other
+                        // bubble's body is skipped unless its message changed.
                         MessageBubble(message: message)
+                            .equatable()
                             .id(message.id)
                     }
                     // The approval card sits in the flow, next to the turn it
@@ -55,11 +62,19 @@ struct ChatView: View {
                 .frame(maxWidth: Metrics.transcriptMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
+            .modifier(NearBottomTracker(isNearBottom: $isNearBottom))
             .onChange(of: session.messages.count) {
                 withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: session.messages.last?.content) {
-                proxy.scrollTo("bottom", anchor: .bottom)
+            .onChange(of: session.messages.last?.content) { _, _ in
+                // Auto-scroll only while the reader is already at the bottom.
+                // A token arriving every few milliseconds must not yank the
+                // scroll position out from under someone reading earlier in
+                // the transcript — and each forced scroll is a full
+                // scroll-view layout pass, which is half the streaming CPU.
+                if isNearBottom {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
             .onChange(of: session.pendingApproval?.id) { _, newValue in
                 if newValue != nil {
@@ -245,6 +260,34 @@ struct ChatView: View {
         panel.message = "Choose files to send with your message"
         if panel.runModal() == .OK {
             attachments.append(contentsOf: panel.urls)
+        }
+    }
+}
+
+/// Tracks whether the enclosing ScrollView is near its bottom.
+///
+/// macOS 15's `onScrollGeometryChange` is the clean way to do this; on 14 the
+/// sentinel's frame in the scroll coordinate space does the same job. Either
+/// way the answer feeds the auto-scroll gate: a token arriving every few
+/// milliseconds must not yank the scroll position out from under someone
+/// reading earlier in the transcript.
+private struct NearBottomTracker: ViewModifier {
+    @Binding var isNearBottom: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: Bool.self) { geometry in
+                // "Near the bottom": the bottom edge is within half a
+                // viewport of the visible area. A strict ==0 test would flip
+                // false from a half-line of scroll and strand the reader.
+                let visible =
+                    geometry.bounds.maxY - geometry.contentOffset.y - geometry.containerSize.height
+                return visible < geometry.containerSize.height * 0.5
+            } action: { _, near in
+                isNearBottom = near
+            }
+        } else {
+            content
         }
     }
 }

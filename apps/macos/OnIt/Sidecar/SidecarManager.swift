@@ -116,6 +116,14 @@ final class SidecarManager {
 
     private(set) var state: State = .idle
     private(set) var logTail: [String] = []
+    /// The joined form of the last N log lines, recomputed only when
+    /// `logTail` changes. Three views render this; joining 200 lines per
+    /// stderr chunk in each of them is work nobody asked for.
+    private(set) var logText: String = ""
+
+    /// How much of the tail the views show, so the cache matches what is
+    /// rendered rather than joining all 200 lines every time.
+    static let displayedLogLines = 60
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -249,6 +257,7 @@ final class SidecarManager {
         if logTail.count > 200 {
             logTail.removeFirst(logTail.count - 200)
         }
+        logText = logTail.suffix(Self.displayedLogLines).joined(separator: "\n")
     }
 
     /// Write a line to stderr, which the build script and `log stream` both see.

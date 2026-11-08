@@ -1,6 +1,10 @@
 import SwiftUI
 
-/// General / Connections. Deliberately small for the first build.
+/// Keys & Models / General / Connections / Diagnostics.
+///
+/// Keys & Models is first because it is the tab a first run needs: without a
+/// model endpoint and its key the app cannot answer anything, and this is the
+/// only place a secret is written from the app.
 ///
 /// There is no permission-mode control here or in the composer: the backend
 /// has no session flag to honour it yet (plan §11.5), and a menu that says
@@ -10,6 +14,8 @@ struct SettingsScene: View {
 
     var body: some View {
         TabView {
+            KeysModelsTab()
+                .tabItem { Label("Keys & Models", systemImage: "key.horizontal") }
             GeneralTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
             ConnectionsTab()
@@ -17,7 +23,7 @@ struct SettingsScene: View {
             DiagnosticsTab()
                 .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
         }
-        .frame(width: 520, height: 340)
+        .frame(width: 560, height: 420)
     }
 }
 
@@ -28,12 +34,6 @@ private struct GeneralTab: View {
         Form {
             LabeledContent("Agent") {
                 Text(model.config?.agent ?? "OnIt")
-            }
-            LabeledContent("Deployment") {
-                Text(model.config?.title ?? "OnIt Chat")
-            }
-            LabeledContent("Rating") {
-                Text(model.config?.ratingEnabled == true ? "Enabled" : "Disabled")
             }
             LabeledContent("Appearance") {
                 Text("Follows the system")
@@ -90,7 +90,7 @@ private struct DiagnosticsTab: View {
                 .foregroundStyle(Palette.secondaryText)
 
             ScrollView {
-                Text(model.sidecar.logTail.suffix(60).joined(separator: "\n"))
+                Text(model.sidecar.logText)
                     .font(Typography.mono)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)

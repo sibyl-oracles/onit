@@ -6,9 +6,18 @@ import SwiftUI
 /// the moment the app stops being "the local harness's window" and becomes a
 /// client. Retrofitting that later would mean touching the session list, the
 /// settings and the sidecar lifecycle at once.
+///
+/// Until that moment, the rail is hidden: a single-machine user should not
+/// pay a permanent 64-pt column for a concept they never use. It appears the
+/// moment a second connection is added, and hides again when it is removed.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    /// The rail earns its place only when there is more than one connection.
+    private var railIsNeeded: Bool {
+        model.connections.count > 1
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -25,6 +34,14 @@ struct RootView: View {
             DetailPane()
         }
         .navigationSplitViewStyle(.balanced)
+        .onChange(of: railIsNeeded) { _, needed in
+            // A hidden rail is not a closed column the user can reopen; it is
+            // simply not part of the app until a second connection exists.
+            columnVisibility = needed ? .all : .detailOnly
+        }
+        .onAppear {
+            if !railIsNeeded { columnVisibility = .detailOnly }
+        }
         .alert(
             "Something went wrong",
             isPresented: Binding(
@@ -99,7 +116,7 @@ private struct SidecarFailureView: View {
 
             if !model.sidecar.logTail.isEmpty {
                 ScrollView {
-                    Text(model.sidecar.logTail.joined(separator: "\n"))
+                    Text(model.sidecar.logText)
                         .font(Typography.mono)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

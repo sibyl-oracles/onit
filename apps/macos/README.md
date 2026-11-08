@@ -215,6 +215,11 @@ Verified against a live harness:
 | Harness death detection with capped auto-restart | ✅ |
 | Health poll + refresh on app activation | ✅ |
 | Settings → Diagnostics with sidecar log | ✅ |
+| Keys & Models: model endpoints, presets, reorder, remove | ✅ |
+| Keys & Models: integration secrets (Tavily, Ollama, GitHub, …) | ✅ |
+| Keys stored in the OS keychain by the harness; the app never sees one | ✅ |
+| Session search (title filter) | ✅ |
+| Connection rail hidden until a second connection exists | ✅ |
 
 ### Not built yet
 
@@ -298,16 +303,17 @@ apps/macos/
       ToolLedger.swift        folded steps
       ApprovalCard.swift      inline approval
       MarkdownText.swift      fenced code, headings, lists
-      SettingsScene.swift     General / Connections / Diagnostics
+      SettingsScene.swift     Keys & Models / General / Connections / Diagnostics
+      KeysModelsTab.swift     endpoints, presets, integration keys (keychain-backed)
     Theme/
       Typography.swift        13 pt body, 1.45 line height
       Palette.swift           system colours, Color.accentColor
 ```
 
-Run the tests with `swift test` from this directory — 57 of them, covering
+Run the tests with `swift test` from this directory — 66 of them, covering
 the SSE parser (including CRLF and byte-sliced frames), the Markdown
-splitter, the session event reducer, event decoding and the recency
-grouping.
+splitter, the session event reducer, event decoding, the recency grouping
+and the endpoint/key surface decoding.
 
 The network layer is three files and has no dependency on SwiftUI. That is
 intentional: it is the part that mirrors the backend contract, and it is the

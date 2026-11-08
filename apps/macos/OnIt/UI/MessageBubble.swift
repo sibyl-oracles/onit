@@ -5,9 +5,19 @@ import SwiftUI
 /// The assistant's reasoning is folded into a disclosure above the answer and
 /// closes itself when the answer arrives — the same behaviour the browser has,
 /// which is why the backend keeps `think` and `token` on separate channels.
-struct MessageBubble: View {
+///
+/// The view is `Equatable` and applied with `.equatable()`: a token that
+/// appends to the streaming bubble must not re-render the other bubbles, and
+/// each non-streaming bubble's body is skipped entirely unless its message
+/// changed. Without this, every token invalidates the whole transcript body
+/// and every bubble re-runs its Markdown parse.
+struct MessageBubble: View, Equatable {
     let message: ChatMessage
     @State private var showReasoning = false
+
+    static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
+        lhs.message == rhs.message
+    }
 
     var body: some View {
         switch message.role {
@@ -46,10 +56,22 @@ struct MessageBubble: View {
             }
 
             if !message.content.isEmpty {
-                MarkdownText(message.content)
-                    .font(Typography.body)
-                    .lineSpacing(Typography.lineSpacing)
-                    .textSelection(.enabled)
+                // While the answer is streaming it renders as plain text:
+                // a token arriving every few milliseconds must not re-run a
+                // full Markdown block parse on a growing string. The parse
+                // happens once, when the turn completes and isStreaming
+                // flips false.
+                if message.isStreaming {
+                    Text(message.content)
+                        .font(Typography.body)
+                        .lineSpacing(Typography.lineSpacing)
+                        .textSelection(.enabled)
+                } else {
+                    MarkdownText(message.content)
+                        .font(Typography.body)
+                        .lineSpacing(Typography.lineSpacing)
+                        .textSelection(.enabled)
+                }
             }
 
             if message.isStreaming && message.content.isEmpty {

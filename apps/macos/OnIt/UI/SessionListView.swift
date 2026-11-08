@@ -8,6 +8,17 @@ struct SessionListView: View {
     @Environment(AppModel.self) private var model
     @State private var renaming: Session?
     @State private var renameText = ""
+    @State private var filter = ""
+
+    /// The sessions the filter keeps. Matching is on the title and the
+    /// preview, case-insensitive; an empty filter is every session.
+    private var filtered: [Session] {
+        let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.sessions }
+        return model.sessions.filter { session in
+            session.title.localizedCaseInsensitiveContains(query)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,9 +35,16 @@ struct SessionListView: View {
                         .foregroundStyle(Palette.tertiaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if filtered.isEmpty {
+                VStack(spacing: 8) {
+                    Text("No sessions match “\(filter)”")
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.secondaryText)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(selection: selection) {
-                    ForEach(model.grouped(model.sessions)) { group in
+                    ForEach(model.grouped(filtered)) { group in
                         Section {
                             ForEach(group.sessions) { session in
                                 SessionRow(session: session)
@@ -82,20 +100,28 @@ struct SessionListView: View {
     }
 
     private var header: some View {
-        HStack {
-            Text(model.selectedConnection?.name ?? "OnIt")
-                .font(Typography.title)
-                .lineLimit(1)
-            Spacer()
-            Button {
-                Task { await model.newSession() }
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 13))
+        VStack(spacing: 8) {
+            HStack {
+                Text(model.selectedConnection?.name ?? "OnIt")
+                    .font(Typography.title)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    Task { await model.newSession() }
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 13))
+                }
+                .buttonStyle(.plain)
+                .help("New session (⌘N)")
+                .accessibilityLabel("New session")
             }
-            .buttonStyle(.plain)
-            .help("New session (⌘N)")
-            .accessibilityLabel("New session")
+            // At the server's 50-session cap this is the difference between
+            // a list and a junk drawer. ⌘F focuses it.
+            TextField("Search", text: $filter)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(Typography.caption)
         }
         .padding(.horizontal, Metrics.gutter)
         .padding(.vertical, 12)
