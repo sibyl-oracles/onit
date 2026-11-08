@@ -98,3 +98,25 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(remote.status, .online)
     }
 }
+
+@MainActor
+final class TextScaleTests: XCTestCase {
+    func testScalePropagatesToTypography() {
+        let model = AppModel()
+        defer { model.textScale = 1.0 }
+        model.textScale = 1.3
+        XCTAssertEqual(Typography.scale, 1.3)
+        XCTAssertEqual(Typography.lineSpacing, 5.5 * 1.3)
+    }
+
+    func testAdoptPersistedScaleSyncsBeforeFirstLayout() {
+        // The launch path: a stored value must reach Typography without
+        // waiting for the picker's didSet to run once.
+        Typography.scale = 1.0
+        let model = AppModel()
+        model.textScale = 0.85
+        model.adoptPersistedTextScale()
+        XCTAssertEqual(Typography.scale, 0.85)
+        model.textScale = 1.0
+    }
+}

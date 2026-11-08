@@ -63,18 +63,53 @@ struct Timing: Sendable, Equatable {
     let tokenStats: String
 }
 
-struct FileInfo: Sendable, Equatable, Identifiable {
+struct FileInfo: Sendable, Equatable, Identifiable, Decodable {
     let name: String
     /// Path relative to the connection's base URL, already percent-encoded.
     let url: String
     let size: Int
     let kind: String
     let preview: String?
+    /// The server's MIME guess for audio, so the player is fed what the file
+    /// claims to be. Nil for every other kind.
+    let mime: String?
 
     var id: String { url }
 
     var isImage: Bool { kind == "image" }
     var isCode: Bool { kind == "code" }
+    var isAudio: Bool { kind == "audio" }
+
+    init(
+        name: String, url: String, size: Int, kind: String,
+        preview: String? = nil, mime: String? = nil
+    ) {
+        self.name = name
+        self.url = url
+        self.size = size
+        self.kind = kind
+        self.preview = preview
+        self.mime = mime
+    }
+
+    /// History decoding. Lenient on purpose: one unreadable descriptor must
+    /// not cost the row every attachment, and a field of the wrong shape
+    /// (a code preview arrives as an object) becomes nil rather than fatal.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: (try? c.decodeIfPresent(String.self, forKey: .name)) ?? "",
+            url: (try? c.decodeIfPresent(String.self, forKey: .url)) ?? "",
+            size: (try? c.decodeIfPresent(Int.self, forKey: .size)) ?? 0,
+            kind: (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "file",
+            preview: (try? c.decodeIfPresent(String.self, forKey: .preview)) ?? nil,
+            mime: (try? c.decodeIfPresent(String.self, forKey: .mime)) ?? nil
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, url, size, kind, preview, mime
+    }
 }
 
 // MARK: - Decoding
@@ -153,13 +188,15 @@ extension DonePayload {
 }
 
 extension FileInfo {
+    /// The stream path's dictionary form, as DonePayload receives it.
     init(_ json: [String: Any]) {
         self.init(
             name: json["name"] as? String ?? "",
             url: json["url"] as? String ?? "",
             size: (json["size"] as? Int) ?? 0,
             kind: json["kind"] as? String ?? "file",
-            preview: json["preview"] as? String
+            preview: json["preview"] as? String,
+            mime: json["mime"] as? String
         )
     }
 }

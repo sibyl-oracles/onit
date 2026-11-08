@@ -38,6 +38,19 @@ private struct GeneralTab: View {
             LabeledContent("Appearance") {
                 Text("Follows the system")
             }
+            LabeledContent("Text size") {
+                Picker("Text size", selection: Binding(
+                    get: { model.textScale },
+                    set: { model.textScale = $0 }
+                )) {
+                    Text("Compact").tag(CGFloat(0.85))
+                    Text("Default").tag(CGFloat(1.0))
+                    Text("Large").tag(CGFloat(1.15))
+                    Text("Largest").tag(CGFloat(1.3))
+                }
+                .labelsHidden()
+                .frame(width: 120)
+            }
         }
         .formStyle(.grouped)
         .padding()

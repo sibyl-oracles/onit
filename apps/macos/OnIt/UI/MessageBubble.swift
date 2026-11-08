@@ -205,36 +205,133 @@ private struct CorrectionNote: View {
 private struct FileChips: View {
     let files: [FileInfo]
     @Environment(AppModel.self) private var model
+    @Environment(AudioCenter.self) private var audio
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(files) { file in
-                HStack(spacing: 6) {
-                    Image(systemName: file.isImage ? "photo" : (file.isCode ? "chevron.left.forwardslash.chevron.right" : "doc"))
-                        .font(.system(size: 10))
-                    Text(file.name)
-                        .font(Typography.caption)
-                        .lineLimit(1)
-                    Text(byteString(file.size))
-                        .font(Typography.caption)
-                        .foregroundStyle(Palette.tertiaryText)
-                    Spacer()
-                    Button("Open") { open(file) }
-                        .buttonStyle(.plain)
-                        .font(Typography.caption)
-                        .foregroundStyle(Color.accentColor)
+                if file.isAudio {
+                    AudioRow(file: file)
+                } else {
+                    fileRow(file)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Palette.raised, in: RoundedRectangle(cornerRadius: Metrics.controlRadius))
             }
         }
+    }
+
+    /// The row every non-audio attachment gets: icon, name, size, Open.
+    private func fileRow(_ file: FileInfo) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: file.isImage ? "photo" : (file.isCode ? "chevron.left.forwardslash.chevron.right" : "doc"))
+                .font(.system(size: 10))
+            Text(file.name)
+                .font(Typography.caption)
+                .lineLimit(1)
+            Text(byteString(file.size))
+                .font(Typography.caption)
+                .foregroundStyle(Palette.tertiaryText)
+            Spacer()
+            Button("Open") { open(file) }
+                .buttonStyle(.plain)
+                .font(Typography.caption)
+                .foregroundStyle(Color.accentColor)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Palette.raised, in: RoundedRectangle(cornerRadius: Metrics.controlRadius))
     }
 
     private func open(_ file: FileInfo) {
         guard let base = model.selectedConnection?.baseURL,
               let url = URL(string: file.url, relativeTo: base) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private func byteString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+/// One playable attachment: a Play/Stop button, the elapsed side of a
+/// progress bar, and the name.
+///
+/// The row reads the center's state for its URL, not its own @State, so a
+/// second Play anywhere in the app stops this one and the bar follows.
+/// Playback itself stays in AudioCenter: a row does not own a player that
+/// outlives its message.
+private struct AudioRow: View {
+    let file: FileInfo
+    @Environment(AppModel.self) private var model
+    @Environment(AudioCenter.self) private var audio
+
+    var body: some View {
+        let state = audio.state(for: file.url)
+        HStack(spacing: 8) {
+            Button {
+                Task { await toggle(state.isPlaying) }
+            } label: {
+                Image(systemName: state.isPlaying ? "stop.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help(state.isPlaying ? "Stop" : "Play \(file.name)")
+            .accessibilityLabel(state.isPlaying ? "Stop \(file.name)" : "Play \(file.name)")
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(file.name)
+                    .font(Typography.caption)
+                    .lineLimit(1)
+                if state.isPlaying, state.duration > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Palette.tertiaryText.opacity(0.3))
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .frame(width: geo.size.width * progress(state))
+                        }
+                    }
+                    .frame(height: 3)
+                }
+            }
+
+            Spacer()
+
+            if state.isPlaying {
+                Text(timeString(state.elapsed))
+                    .font(Typography.caption.monospacedDigit())
+                    .foregroundStyle(Palette.tertiaryText)
+            } else if state.loadFailed {
+                Text("cannot play")
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.tertiaryText)
+            } else {
+                Text(byteString(file.size))
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.tertiaryText)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Palette.raised, in: RoundedRectangle(cornerRadius: Metrics.controlRadius))
+    }
+
+    private func toggle(_ wasPlaying: Bool) async {
+        if wasPlaying {
+            audio.stopAll()
+            return
+        }
+        guard let data = await model.attachmentData(file.url) else { return }
+        audio.toggle(url: file.url, data: data)
+    }
+
+    private func progress(_ state: AudioCenter.RowState) -> CGFloat {
+        guard state.duration > 0 else { return 0 }
+        return CGFloat(min(1, state.elapsed / state.duration))
+    }
+
+    private func timeString(_ t: TimeInterval) -> String {
+        String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
     }
 
     private func byteString(_ bytes: Int) -> String {

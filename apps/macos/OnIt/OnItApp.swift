@@ -9,7 +9,11 @@ struct OnItApp: App {
         WindowGroup {
             RootView()
                 .environment(model)
-                .frame(minWidth: 860, minHeight: 520)
+                .environment(model.audio)
+                // Adopt the persisted scale before the first layout pass so
+                // the transcript never draws once at the wrong size.
+                .onAppear { model.adoptPersistedTextScale() }
+                .frame(minWidth: 720, minHeight: 480)
                 .task { await model.boot() }
                 // Coming back to the app is the moment stale state is most
                 // visible: a host that went away and came back, or a harness

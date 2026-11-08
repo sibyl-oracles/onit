@@ -47,6 +47,11 @@ struct OnItClient: Sendable {
     struct HistoryMessage: Sendable, Decodable, Identifiable, Equatable {
         let role: String
         let content: String
+        /// Attachment descriptors for files a turn produced. The server only
+        /// sends them for assistant rows; nil elsewhere, and nil from an
+        /// older sidecar that does not send the key at all.
+        let files: [FileInfo]?
+
         var id: String { role + "\u{0}" + content.prefix(64) }
     }
 
@@ -204,6 +209,14 @@ struct OnItClient: Sendable {
 
     func stop(session: String) async throws {
         _ = try await send("api/chat/stop", method: "POST", body: [:], session: session)
+    }
+
+    /// The bytes behind an attachment (`/uploads/...`), for inline playback.
+    ///
+    /// `send` already returns raw data; this is the public, JSON-free name
+    /// for it, because an attachment is not a decoded payload.
+    func data(_ path: String) async throws -> Data {
+        try await send(path, method: "GET")
     }
 
     // MARK: - Endpoints and keys

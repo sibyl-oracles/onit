@@ -15,6 +15,38 @@ final class AppModel {
     var config: OnItClient.Config?
     var lastError: String?
 
+    /// The user's text size, as a multiplier on Typography's design sizes.
+    /// Its didSet is the only writer of `Typography.scale`: the type-scale
+    /// enum is plain statics so equality-gated views can read it without an
+    /// environment hop, and the @Observable graph is what propagates change.
+    var textScale: CGFloat = {
+        let stored = UserDefaults.standard.double(forKey: "onit.textScale")
+        return stored > 0 ? CGFloat(stored) : 1.0
+    }() {
+        didSet {
+            Typography.scale = textScale
+            UserDefaults.standard.set(Double(textScale), forKey: "onit.textScale")
+        }
+    }
+
+    /// Inline audio playback, shared across sessions: one sound at a time, so
+    /// starting a row in one transcript stops the row playing in another.
+    let audio = AudioCenter()
+
+    /// Sync Typography with whatever a previous launch persisted. Property
+    /// initializers cannot touch other statics safely at declaration time.
+    func adoptPersistedTextScale() {
+        Typography.scale = textScale
+    }
+
+    /// Download an attachment's bytes for inline playback. Public so file
+    /// rows can reach it through the environment without knowing which
+    /// connection owns the URL.
+    func attachmentData(_ path: String) async -> Data? {
+        guard let client = selectedConnection?.client else { return nil }
+        return try? await client.data(path)
+    }
+
     var selectedConnection: Connection? {
         connections.first { $0.id == selectedConnectionID }
     }

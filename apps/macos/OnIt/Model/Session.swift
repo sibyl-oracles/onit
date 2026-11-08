@@ -59,7 +59,14 @@ final class Session: Identifiable, Equatable {
         do {
             let history = try await client.history(session: id)
             messages = history.messages.map { entry in
-                ChatMessage(role: Self.role(from: entry.role), content: entry.content)
+                var message = ChatMessage(role: Self.role(from: entry.role), content: entry.content)
+                // The server attaches descriptors for files the turn
+                // produced; without them a restored transcript loses every
+                // attachment and its Play button.
+                if entry.role == "assistant", let files = entry.files, !files.isEmpty {
+                    message.files = files
+                }
+                return message
             }
             isProcessing = history.processing
             isLoaded = true

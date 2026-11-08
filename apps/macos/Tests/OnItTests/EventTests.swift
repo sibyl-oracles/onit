@@ -92,3 +92,34 @@ final class EventTests: XCTestCase {
         XCTAssertEqual(data, "not json")
     }
 }
+
+final class AudioFileInfoTests: XCTestCase {
+    func testDonePayloadDecodesAudioKindAndMime() {
+        let json = """
+        {"content": "ok", "files": [{"name": "take.wav", "url": "/uploads/s/take.wav",
+          "size": 88, "kind": "audio", "mime": "audio/wav"}], "elapsed": 1, "tok_s": 0,
+         "turn": 1, "rating_enabled": false, "timing": {}}
+        """
+        guard let json2 = JSON.object(from: json) else { return XCTFail("json") }
+        let payload = DonePayload(json2)
+        let file = payload.files.first
+        XCTAssertEqual(file?.kind, "audio")
+        XCTAssertEqual(file?.mime, "audio/wav")
+        XCTAssertEqual(file?.isAudio, true)
+        XCTAssertEqual(file?.isImage, false)
+    }
+
+    func testHistoryMessageDecodesFilesAndToleratesTheirAbsence() throws {
+        let withFiles = """
+        {"role": "assistant", "content": "here", "files":
+          [{"name": "song.mp3", "url": "/uploads/s/song.mp3", "size": 9, "kind": "audio", "mime": "audio/mpeg"}]}
+        """
+        let decoded = try JSONDecoder().decode(OnItClient.HistoryMessage.self, from: withFiles.data(using: .utf8)!)
+        XCTAssertEqual(decoded.files?.first?.mime, "audio/mpeg")
+
+        let withoutFiles = #"{"role": "user", "content": "hi"}"#
+        let bare = try JSONDecoder().decode(OnItClient.HistoryMessage.self, from: withoutFiles.data(using: .utf8)!)
+        XCTAssertNil(bare.files)
+    }
+}
+
