@@ -172,6 +172,40 @@ _PREVIEW_IMAGE_TYPES = {
     "image/bmp",
 }
 
+# Audio the UIs can play inline: the macOS app hands the bytes to
+# AVAudioPlayer, the web UI would use an <audio> element. Data files that
+# merely have an audio-ish name stay downloads.
+_PLAYABLE_AUDIO_TYPES = {
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/ogg",
+    "audio/opus",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/wave",
+    "audio/flac",
+    "audio/x-flac",
+    "audio/mp4",
+    "audio/aac",
+    "audio/aiff",
+    "audio/x-aiff",
+    "audio/webm",
+}
+
+# Extensions some systems map to nothing but a player accepts anyway.
+_AUDIO_EXT_MIME = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".aiff": "audio/aiff",
+    ".aif": "audio/aiff",
+}
+
 # Text files the UI shows in a scrollable inset beside the download, mapped to
 # the highlight.js language name. Data and binary formats stay downloads: a
 # preview of a spreadsheet or a PDF is worse than opening the real thing.
@@ -440,6 +474,14 @@ def _preview_image_type(path: str) -> Optional[str]:
     """MIME type if this file is an image the UI can render inline, else None."""
     mime = mimetypes.guess_type(path)[0]
     return mime if mime in _PREVIEW_IMAGE_TYPES else None
+
+
+def _audio_type(path: str) -> Optional[str]:
+    """MIME type if this file is something the UI can play inline, else None."""
+    mime = mimetypes.guess_type(path)[0]
+    if mime in _PLAYABLE_AUDIO_TYPES:
+        return mime
+    return _AUDIO_EXT_MIME.get(os.path.splitext(path)[1].lower())
 
 
 def _inject_preview_shim(html: str) -> str:
@@ -932,14 +974,19 @@ class WebApiUI:
             if not os.path.isfile(fpath):
                 continue
             fname = os.path.basename(fpath)
+            # What the agent produced is shown in the reply, not just
+            # offered as a download: audio plays, images render, code opens
+            # in an inset.
+            audio = _audio_type(fpath)
+            kind = "audio" if audio else ("image" if _preview_image_type(fpath) else "file")
             info = {
                 "name": fname,
                 "url": f"/uploads/{session_id}/{urllib.parse.quote(fname)}",
                 "size": os.path.getsize(fpath),
-                # What the agent produced is shown in the reply, not just
-                # offered as a download: images render, code opens in an inset.
-                "kind": "image" if _preview_image_type(fpath) else "file",
+                "kind": kind,
             }
+            if audio:
+                info["mime"] = audio
             if info["kind"] == "file":
                 preview = _code_preview(fpath)
                 if preview:
