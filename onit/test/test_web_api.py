@@ -1408,7 +1408,12 @@ class TestSessionOwnership:
         alice = _login(auth_ui, "alice@gmail.com")
         bob = _login(auth_ui, "bob@gmail.com")
         alice_sid = alice.post("/api/sessions/new").json()["session_id"]
-        alice_ids = {s["session_id"] for s in alice.get("/api/sessions").json()["sessions"]}
+        # A brand-new session has no turns, and the list hides empty sessions
+        # by default; the point here is ownership scoping, so ask for them.
+        alice_ids = {
+            s["session_id"]
+            for s in alice.get("/api/sessions?include_empty=true").json()["sessions"]
+        }
         bob_ids = {s["session_id"] for s in bob.get("/api/sessions").json()["sessions"]}
         assert alice_sid in alice_ids
         assert alice_sid not in bob_ids

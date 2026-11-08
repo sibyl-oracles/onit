@@ -1520,6 +1520,116 @@ class WebApiUI:
         async def api_voice(websocket: WebSocket):
             await self._serve_voice(websocket)
 
+        # ── Endpoints and keys ──────────────────────────────────────────
+        #
+        # The terminal has \host, \model and \key; a graphical front end had
+        # no way to name a model, add a vLLM server or store an API key at
+        # all, which left it unable to answer the one question a first run
+        # asks. These four routes are that surface, and they are the only
+        # place a secret is written from a UI.
+        #
+        # Two rules hold across all of them:
+        #
+        # - **A key is never returned.** Every read reports where it comes
+        #   from and at most its last four characters. A response carrying
+        #   the key would put it in a browser history, a screenshot and a
+        #   log.
+        # - **A key is never written to the config file.** It goes to the OS
+        #   keychain (or the 0600 fallback), so the config stays safe to
+        #   paste into an issue.
+        #
+        # When auth is enabled these require a signed-in user: an open
+        # deployment must not let anyone who can reach the port rewrite
+        # which model it talks to, or store a key that bills someone else.
+
+        def _settings_denied(request: Request):
+            """A 401 response when the caller may not change settings."""
+            if not self.auth_enabled:
+                return None
+            if self._auth_email(request):
+                return None
+            return JSONResponse({"detail": "Sign in to change settings"}, status_code=401)
+
+        def _config_data() -> dict:
+            """The harness's live config, or an empty one before it is wired."""
+            settings = self._settings()
+            return dict(settings.config_data or {})
+
+        @app.get("/api/endpoints")
+        async def api_endpoints(request: Request):
+            from . import endpoints as endpoints_mod
+
+            return endpoints_mod.describe(_config_data())
+
+        @app.put("/api/endpoints")
+        async def api_save_endpoints(request: Request):
+            from . import endpoints as endpoints_mod
+
+            denied = _settings_denied(request)
+            if denied is not None:
+                return denied
+            body = await request.json()
+            rows = body.get("endpoints")
+            if not isinstance(rows, list):
+                return JSONResponse({"detail": "endpoints must be a list"}, status_code=400)
+            try:
+                return endpoints_mod.save_endpoints(_config_data(), rows)
+            except (ValueError, OSError) as e:
+                return JSONResponse({"detail": str(e)}, status_code=400)
+
+        @app.put("/api/endpoints/key")
+        async def api_store_endpoint_key(request: Request):
+            from . import endpoints as endpoints_mod
+
+            denied = _settings_denied(request)
+            if denied is not None:
+                return denied
+            body = await request.json()
+            try:
+                return endpoints_mod.store_key(body.get("host") or "", body.get("key") or "")
+            except (ValueError, OSError) as e:
+                return JSONResponse({"detail": str(e)}, status_code=400)
+
+        @app.delete("/api/endpoints/key")
+        async def api_forget_endpoint_key(request: Request):
+            from . import endpoints as endpoints_mod
+
+            denied = _settings_denied(request)
+            if denied is not None:
+                return denied
+            host = request.query_params.get("host") or ""
+            try:
+                return endpoints_mod.forget_key(host)
+            except (ValueError, OSError) as e:
+                return JSONResponse({"detail": str(e)}, status_code=400)
+
+        @app.put("/api/integrations/key")
+        async def api_store_integration_key(request: Request):
+            from . import endpoints as endpoints_mod
+
+            denied = _settings_denied(request)
+            if denied is not None:
+                return denied
+            body = await request.json()
+            try:
+                return endpoints_mod.store_integration(
+                    body.get("key_name") or "", body.get("key") or ""
+                )
+            except (ValueError, OSError) as e:
+                return JSONResponse({"detail": str(e)}, status_code=400)
+
+        @app.delete("/api/integrations/key")
+        async def api_forget_integration_key(request: Request):
+            from . import endpoints as endpoints_mod
+
+            denied = _settings_denied(request)
+            if denied is not None:
+                return denied
+            try:
+                return endpoints_mod.forget_integration(request.query_params.get("key_name") or "")
+            except (ValueError, OSError) as e:
+                return JSONResponse({"detail": str(e)}, status_code=400)
+
         @app.get("/api/history")
         async def api_history(request: Request):
             sid, session = self._resolve_session(request)
@@ -1733,7 +1843,23 @@ class WebApiUI:
         @app.get("/api/sessions")
         async def api_sessions(request: Request):
             owner = self._auth_email(request) if self.auth_enabled else None
-            sessions = _list_sessions(sessions_dir=self._sessions_dir(), limit=50, owner=owner)
+            # Empty sessions are hidden unless asked for. A session is created
+            # the moment a client opens one, so a client that opens one per
+            # launch leaves a row behind every time; on a long-lived install
+            # those outnumber the real conversations and bury them. The
+            # session the client is *in* is fetched by id, not from this list,
+            # so hiding them costs nothing.
+            include_empty = request.query_params.get("include_empty", "false").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            sessions = _list_sessions(
+                sessions_dir=self._sessions_dir(),
+                limit=50,
+                owner=owner,
+                include_empty=include_empty,
+            )
             for s in sessions:
                 mem = self._web_sessions.get(s["session_id"])
                 s["processing"] = bool(mem and mem.processing)
