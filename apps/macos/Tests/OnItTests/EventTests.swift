@@ -109,6 +109,21 @@ final class AudioFileInfoTests: XCTestCase {
         XCTAssertEqual(file?.isImage, false)
     }
 
+    func testDonePayloadDecodesImageKind() {
+        let json = """
+        {"content": "ok", "files": [{"name": "chart.png", "url": "/uploads/s/chart.png",
+          "size": 2048, "kind": "image", "preview": "a chart"}], "elapsed": 1, "tok_s": 0,
+         "turn": 1, "rating_enabled": false, "timing": {}}
+        """
+        guard let json2 = JSON.object(from: json) else { return XCTFail("json") }
+        let payload = DonePayload(json2)
+        let file = payload.files.first
+        XCTAssertEqual(file?.kind, "image")
+        XCTAssertEqual(file?.isImage, true)
+        XCTAssertEqual(file?.isAudio, false)
+        XCTAssertEqual(file?.preview, "a chart")
+    }
+
     func testHistoryMessageDecodesFilesAndToleratesTheirAbsence() throws {
         let withFiles = """
         {"role": "assistant", "content": "here", "files":

@@ -204,25 +204,31 @@ private struct CorrectionNote: View {
 
 private struct FileChips: View {
     let files: [FileInfo]
-    @Environment(AppModel.self) private var model
-    @Environment(AudioCenter.self) private var audio
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(files) { file in
-                if file.isAudio {
+                if file.isImage {
+                    ImageRow(file: file, fallback: FileRow(file: file))
+                } else if file.isAudio {
                     AudioRow(file: file)
                 } else {
-                    fileRow(file)
+                    FileRow(file: file)
                 }
             }
         }
     }
+}
 
-    /// The row every non-audio attachment gets: icon, name, size, Open.
-    private func fileRow(_ file: FileInfo) -> some View {
+/// The row every non-image, non-audio attachment gets: icon, name, size,
+/// Open. Also the landing spot for an image whose bytes never arrived.
+private struct FileRow: View {
+    let file: FileInfo
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: file.isImage ? "photo" : (file.isCode ? "chevron.left.forwardslash.chevron.right" : "doc"))
+            Image(systemName: file.isCode ? "chevron.left.forwardslash.chevron.right" : "doc")
                 .font(.system(size: 10))
             Text(file.name)
                 .font(Typography.caption)
@@ -231,7 +237,7 @@ private struct FileChips: View {
                 .font(Typography.caption)
                 .foregroundStyle(Palette.tertiaryText)
             Spacer()
-            Button("Open") { open(file) }
+            Button("Open") { open() }
                 .buttonStyle(.plain)
                 .font(Typography.caption)
                 .foregroundStyle(Color.accentColor)
@@ -241,7 +247,7 @@ private struct FileChips: View {
         .background(Palette.raised, in: RoundedRectangle(cornerRadius: Metrics.controlRadius))
     }
 
-    private func open(_ file: FileInfo) {
+    private func open() {
         guard let base = model.selectedConnection?.baseURL,
               let url = URL(string: file.url, relativeTo: base) else { return }
         NSWorkspace.shared.open(url)
@@ -249,6 +255,58 @@ private struct FileChips: View {
 
     private func byteString(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+/// One viewable attachment: the image itself, loaded once over the
+/// connection, scaled to fit and clickable into Preview. A load that fails
+/// falls back to the generic file row rather than an empty frame, and the
+/// loading placeholder holds the row's height so the transcript does not
+/// jump when the pixels arrive.
+private struct ImageRow: View {
+    let file: FileInfo
+    let fallback: FileRow
+    @Environment(AppModel.self) private var model
+    @State private var image: NSImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: Metrics.controlRadius))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Metrics.controlRadius)
+                            .strokeBorder(Palette.raised)
+                    )
+                    .onTapGesture { open() }
+                    .help("Open \(file.name) in Preview")
+                    .accessibilityLabel("Image attachment \(file.name)")
+            } else if failed {
+                fallback
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 60)
+            }
+        }
+        .task(id: file.url) {
+            guard image == nil, !failed else { return }
+            guard let data = await model.attachmentData(file.url),
+                  let loaded = NSImage(data: data) else {
+                failed = true
+                return
+            }
+            image = loaded
+        }
+    }
+
+    private func open() {
+        guard let base = model.selectedConnection?.baseURL,
+              let url = URL(string: file.url, relativeTo: base) else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 
