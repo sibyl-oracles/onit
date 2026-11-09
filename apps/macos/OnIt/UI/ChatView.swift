@@ -365,12 +365,14 @@ struct DictationButton: View {
                 // user dictating into a draft they believe is empty.
                 appendBase = ""
                 draft = ""
-                // The command words must not resurface as the next partial.
-                // The mic stays live so the next task can be dictated at
-                // once — unlike the send path, nothing here restarts the
-                // recognizer with a fresh accumulator, so flush() is what
-                // drops the buffer.
-                dictation.flush()
+                // The center's accumulator must go too, not just the
+                // recognizer's buffer. takeCommand() strips only the command
+                // words — the task text stays in the transcript — and the
+                // next partial would ride it straight back into the draft.
+                // reset() empties transcript and partial AND restarts
+                // recognition with a fresh request, so the mic stays live
+                // for the next task.
+                dictation.reset()
             }
         }
         // Leaving the composer (session switch, window close) must not leave
