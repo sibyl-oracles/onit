@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -27,6 +28,17 @@ struct OnItApp: App {
                     if phase == .active {
                         Task { await model.checkHealth() }
                     }
+                }
+                // Quitting must reap the sidecar harness. Without this the
+                // `python -m onit.cli serve web` child outlives the app: every
+                // relaunch allocates a fresh port and spawns a new harness,
+                // and the orphans accumulate — 43 were found on one machine.
+                // scenePhase does not fire on quit, so this observer is the
+                // only reliable teardown hook in a SwiftUI app lifecycle.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSApplication.willTerminateNotification
+                )) { _ in
+                    model.shutdown()
                 }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
