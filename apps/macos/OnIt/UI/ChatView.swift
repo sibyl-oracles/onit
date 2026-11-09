@@ -9,9 +9,6 @@ struct ChatView: View {
     @State private var isUploading = false
     @State private var uploadError: String?
     @State private var isDropTargeted = false
-    /// True while the reader is at (or near) the bottom of the transcript.
-    /// Only then does a new token auto-scroll; scrolled-up reading wins.
-    @State private var isNearBottom = true
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -63,26 +60,23 @@ struct ChatView: View {
                 .frame(maxWidth: Metrics.transcriptMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .modifier(NearBottomTracker(isNearBottom: $isNearBottom))
             .onChange(of: session.messages.count) {
                 withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: session.messages.last?.activityFootprint) { _, _ in
-                // Auto-scroll only while the reader is already at the bottom.
-                // A token arriving every few milliseconds must not yank the
-                // scroll position out from under someone reading earlier in
-                // the transcript — and each forced scroll is a full
-                // scroll-view layout pass, which is half the streaming CPU.
-                if isNearBottom {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                // Every transcript update pins the reader to the bottom: the
+                // window is the agent's progress readout, and a token arriving
+                // every few milliseconds must still land the newest line in
+                // view. (Scrolled-up reading deliberately loses — that is the
+                // requested policy.)
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
             // The answer replacing the working state can shrink the transcript
             // or land a large final bubble in one pass; a lazy stack has not
             // laid out its full height yet, so the first scrollTo can undershoot.
             // One deferred re-scroll lands the reader at the true bottom.
             .onChange(of: session.messages.last?.isStreaming) { _, streaming in
-                guard streaming == false, isNearBottom else { return }
+                guard streaming == false else { return }
                 withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
                 DispatchQueue.main.async {
                     withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -280,50 +274,6 @@ struct ChatView: View {
         panel.message = "Choose files to send with your message"
         if panel.runModal() == .OK {
             attachments.append(contentsOf: panel.urls)
-        }
-    }
-}
-
-/// Tracks whether the enclosing ScrollView is near its bottom.
-///
-/// macOS 15's `onScrollGeometryChange` is the clean way to do this; on 14 the
-/// sentinel's frame in the scroll coordinate space does the same job. Either
-/// way the answer feeds the auto-scroll gate: a token arriving every few
-/// milliseconds must not yank the scroll position out from under someone
-/// reading earlier in the transcript.
-private struct NearBottomTracker: ViewModifier {
-    @Binding var isNearBottom: Bool
-
-    func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.onScrollGeometryChange(for: Bool.self) { geometry in
-                // "Near the bottom": the bottom edge is within half a
-                // viewport of the visible area. A strict ==0 test would flip
-                // false from a half-line of scroll and strand the reader.
-                let visible =
-                    geometry.bounds.maxY - geometry.contentOffset.y - geometry.containerSize.height
-                return visible < geometry.containerSize.height * 0.5
-            } action: { _, near in
-                isNearBottom = near
-            }
-            .onScrollGeometryChange(for: CGFloat?.self) { geometry in
-                geometry.contentOffset.y
-            } action: { old, new in
-                // Disarm on a real upward scroll only. The scroll offset is
-                // the one axis the user alone controls: transcript growth
-                // extends the content below the viewport and leaves the
-                // offset untouched, a programmatic auto-scroll only increases
-                // it, and only the reader's wheel or trackpad moves it
-                // backwards. Treating growth as "the reader scrolled up"
-                // would disarm auto-scroll for the rest of the turn.
-                if let old, let new, new < old - 1 {
-                    isNearBottom = false
-                }
-            }
-        } else {
-            // Pre-macOS 15 there is no scroll geometry to read: always follow,
-            // which matches the app's behavior before the gate existed.
-            content
         }
     }
 }
