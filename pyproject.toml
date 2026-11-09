@@ -73,6 +73,11 @@ lint = [
 ]
 bench = [
     "inspect-ai>=0.3.0",
+    # inspect-ai (still at 0.3.288) imports acp.helpers, which
+    # agent-client-protocol 1.0.0 removed; its own constraint
+    # (>=0.12.0) permits the broken release, so bound it here.
+    # Drop this pin when inspect-ai adapts to acp 1.x.
+    "agent-client-protocol>=0.12,<1.0",
     "inspect-evals",
     "datasets",
     "huggingface-hub",
