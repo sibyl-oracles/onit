@@ -211,13 +211,39 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// Finalized utterances plus the in-flight hypothesis, joined the way a
     /// person would have typed them. Speech finalizes on a pause, so one
     /// breath between sentences must not look like two dictation sessions.
+    ///
+    /// The join also refuses to paint a word twice. The recognizer's stream
+    /// repeats what it has already committed — a cumulative partial grows
+    /// past the transcript, and after its head is revised (the server path
+    /// re-scores earlier words) it re-speaks the transcript's tail — so a
+    /// naive transcript + partial read showed every committed word twice,
+    /// growing with each pause. The preview shows only what is new.
     var currentText: String {
         switch (transcript.isEmpty, partial.isEmpty) {
         case (true, true): return ""
         case (true, false): return partial
         case (false, true): return transcript
-        default: return transcript + " " + partial
+        default: break
         }
+        let p = Self.words(transcript)
+        let l = Self.words(partial)
+        // Cumulative partial: the stream repeats the transcript and grows
+        // past it. Preview the delta only.
+        if l.count > p.count,
+           l.prefix(p.count).elementsEqual(p),
+           let delta = Self.rawTrailingTokens(l.count - p.count, in: partial) {
+            return transcript + " " + delta
+        }
+        // Cumulative with a revised head: the stream no longer begins where
+        // the transcript begins, but it re-speaks the transcript's tail and
+        // adds a short extension past it. Preview the extension only.
+        if let c = Self.driftExtension(previous: p, incoming: l) {
+            if c == 0 { return transcript }
+            if let ext = Self.rawTrailingTokens(c, in: partial) {
+                return transcript + " " + ext
+            }
+        }
+        return transcript + " " + partial
     }
 
     private(set) var isListening = false
@@ -463,6 +489,18 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// So: a final that starts with the transcript (the cumulative shape)
     /// replaces it; anything else continues it.
     ///
+    /// Continuation has a second cumulative shape, the one behind the
+    /// reported repetition bug: once the stream's head is revised — the
+    /// server re-scores and drops or rewords its earliest words — the final
+    /// no longer *starts* with the transcript, so the plain append fired and
+    /// the whole re-spoken tail landed a second time. Every pause then grew
+    /// the draft by everything dictated since the drift: "Hello Find the
+    /// cheapest accommodation in Tokyo Find the cheapest accommodation in
+    /// Tokyo for December …". When a final instead re-speaks the
+    /// transcript's tail (at least 5 words, aligned at the transcript's end)
+    /// and adds only a short extension past it, only the extension is
+    /// appended; a pure re-emission of the tail lands nothing.
+    ///
     /// A finalized utterance is also a command boundary — this is where the
     /// pause-delimited bare form becomes legal ("run" as its own utterance
     /// after the task finalized). For a cumulative final the utterance is
@@ -474,19 +512,128 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         guard !trimmed.isEmpty else { return }
         let previous = Self.words(transcript)
         let incoming = Self.words(trimmed)
-        let cumulative = incoming.count >= previous.count
-            && incoming.prefix(previous.count).elementsEqual(previous)
-        if cumulative {
-            transcript = trimmed
-        } else {
-            transcript = transcript.isEmpty ? trimmed : transcript + " " + trimmed
+        guard !incoming.isEmpty else {
+            setPendingCommand(utterance: nil)
+            return
         }
-        let utterance = cumulative
-            ? incoming.dropFirst(previous.count).joined(separator: " ")
-            : trimmed
+        let previousCount = previous.count
+
+        // Cumulative: the stream repeated everything and grew.
+        if incoming.count >= previousCount,
+           incoming.prefix(previousCount).elementsEqual(previous) {
+            transcript = trimmed
+            setPendingCommand(
+                utterance: incoming.dropFirst(previousCount).joined(separator: " ")
+            )
+            return
+        }
+
+        // A pure echo of any length: the final repeats the transcript's own
+        // tail and adds nothing (a flushed request replaying committed
+        // words, or the real final for audio the watchdog already
+        // committed). Land nothing. Command-shaped text is exempt: a bare
+        // "run" after a task ending in "run" is a command, not an echo.
+        if incoming.count < previousCount,
+           previous.suffix(incoming.count).elementsEqual(incoming),
+           !Self.isCommandShaped(trimmed) {
+            setPendingCommand(utterance: nil)
+            return
+        }
+
+        // Cumulative with a revised head: the final re-speaks the
+        // transcript's tail and extends it. Append the extension only.
+        if let c = Self.driftExtension(previous: previous, incoming: incoming) {
+            if c == 0 {
+                // A pure re-emission of the transcript's own tail — a
+                // flushed request replaying words already committed.
+                // Nothing new to land; re-check commands so no stale
+                // pending survives.
+                setPendingCommand(utterance: nil)
+                return
+            }
+            if let ext = Self.rawTrailingTokens(c, in: trimmed) {
+                transcript = transcript.isEmpty ? ext : transcript + " " + ext
+                setPendingCommand(utterance: ext)
+                return
+            }
+            // Raw tokens did not align with the word count — a hyphenated
+            // or punctuated tangle the slice cannot express. Fall through
+            // to the plain append rather than corrupt the text.
+        }
+
+        // A genuine new utterance.
+        transcript = transcript.isEmpty ? trimmed : transcript + " " + trimmed
+        setPendingCommand(utterance: trimmed)
+    }
+
+    /// Record the command the just-committed text may carry, exactly once.
+    private func setPendingCommand(utterance: String?) {
         pendingCommand = VoiceCommand.consume(from: transcript, utterance: utterance).map {
             PendingCommand(command: $0.command, consumedWords: $0.consumed)
         }
+    }
+
+    /// The raw token(s) carrying the last `n` normalized words of `raw` —
+    /// the mirror of `strippingLastWords` for appending instead of cutting.
+    /// Used to extend the transcript with only the new tail of a cumulative
+    /// final, keeping the raw casing and punctuation of the fresh words.
+    /// Returns nil when the raw tokens do not align with the word count
+    /// (a fused token like "on,it" cannot be split without corrupting it).
+    static func rawTrailingTokens(_ n: Int, in raw: String) -> String? {
+        guard n > 0 else { return "" }
+        let tokens = raw.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        var seen = 0
+        var cut = 0
+        for token in tokens.reversed() {
+            let count = Self.words(token).count
+            if count == 0 { continue }
+            if seen + count > n { return nil }
+            seen += count
+            cut += 1
+            if seen == n { break }
+        }
+        guard seen == n else { return nil }
+        return tokens.suffix(cut).joined(separator: " ")
+    }
+
+    /// How many words of `incoming` extend `previous` when `incoming` is a
+    /// cumulative re-emission whose head has drifted — the server re-scores
+    /// its earliest words, so the final no longer starts where the
+    /// transcript starts, but it still re-speaks the transcript's tail and
+    /// grows past it. Returns the extension count (0 for a pure re-emission
+    /// of the tail), or nil when the shapes do not match this pattern and
+    /// the caller should treat the final as a fresh utterance.
+    ///
+    /// The guard is deliberately strict, because every false positive eats
+    /// real words: at least 5 words must re-align (a short tail matches too
+    /// much by chance), the alignment must sit at the transcript's end, and
+    /// the extension past it is capped at half the final's length — a
+    /// genuinely new sentence is longer than the echo that precedes it.
+    static func driftExtension(previous: [String], incoming: [String]) -> Int? {
+        let n = incoming.count
+        // The echo must re-align (5 words) and leave something to extend.
+        guard n > 5, !previous.isEmpty else { return nil }
+        // Longest overlap first: the echo is the maximal prefix of incoming
+        // that matches the transcript's suffix; the extension is the rest.
+        let maxK = min(previous.count, n)
+        for k in stride(from: maxK, through: 5, by: -1) {
+            let ext = n - k
+            // The echo dominates: a "new" utterance longer than the echo is
+            // a fresh sentence that happens to open with the same words.
+            if ext * 2 >= n { break }
+            if Array(previous.suffix(k)) == Array(incoming.prefix(k)) {
+                return ext
+            }
+        }
+        return nil
+    }
+
+    /// True when the text, taken whole, is a voice command — anchor plus
+    /// phrase, or a bare command phrase standing as its own utterance.
+    /// Echo suppression must not eat these.
+    static func isCommandShaped(_ text: String) -> Bool {
+        guard let match = VoiceCommand.consume(from: text, utterance: text) else { return false }
+        return match.remaining.isEmpty
     }
 
     /// Lowercased words with punctuation stripped — the shape finals must be

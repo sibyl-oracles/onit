@@ -10,7 +10,7 @@ final class DictationCenterTests: XCTestCase {
         let center = DictationCenter()
         center.commitFinal("what should")
         center.updatePartial("what should onit do")
-        XCTAssertEqual(center.currentText, "what should what should onit do")
+        XCTAssertEqual(center.currentText, "what should onit do")
         center.commitFinal("what should onit do")
         XCTAssertEqual(center.currentText, "what should onit do")
     }
@@ -501,5 +501,83 @@ final class VoiceCommandTests: XCTestCase {
         // "on,it" is one raw token with two normalized words: cutting one
         // word out of it would corrupt the token, so the strip bails.
         XCTAssertNil(VoiceCommand.strippingLastWords(1, from: "task on,it"))
+    }
+
+    /// The reported repetition bug. After the server revises its earliest
+    /// words, each finalized utterance re-speaks the transcript's tail; the
+    /// plain append landed that tail a second time on every pause, so the
+    /// draft grew "Find the cheapest accommodation in Tokyo" twice and the
+    /// last fragment once more. The final's re-spoken tail must land only
+    /// its extension, and a bare re-emission of the tail nothing at all.
+    func testDriftedFinalAppendsOnlyItsExtension() {
+        let center = DictationCenter()
+        center.commitFinal("Hello")
+        center.commitFinal("Find the cheapest accommodation in Tokyo")
+        XCTAssertEqual(
+            center.currentText,
+            "Hello Find the cheapest accommodation in Tokyo"
+        )
+        center.commitFinal("Find the cheapest accommodation in Tokyo for December")
+        XCTAssertEqual(
+            center.currentText,
+            "Hello Find the cheapest accommodation in Tokyo for December"
+        )
+        center.commitFinal("Find the cheapest accommodation in Tokyo for December 10-14 2026")
+        XCTAssertEqual(
+            center.currentText,
+            "Hello Find the cheapest accommodation in Tokyo for December 10-14 2026"
+        )
+        // The trailing echo the draft showed ("... 2026 2026"): a final
+        // repeating only the transcript's tail lands nothing.
+        center.commitFinal("2026")
+        XCTAssertEqual(
+            center.currentText,
+            "Hello Find the cheapest accommodation in Tokyo for December 10-14 2026"
+        )
+    }
+
+    /// The same shape arriving as a partial: the live preview must show the
+    /// splice the commit will make, not transcript plus whole partial.
+    func testDriftedPartialPreviewShowsOnlyExtension() {
+        let center = DictationCenter()
+        center.commitFinal("Find the cheapest accommodation in Tokyo")
+        center.updatePartial("the cheapest accommodation in Tokyo for December")
+        XCTAssertEqual(
+            center.currentText,
+            "Find the cheapest accommodation in Tokyo for December"
+        )
+    }
+
+    /// A pure echo of the transcript's tail, shorter than the 5-word
+    /// alignment floor: a flushed request replaying committed words lands
+    /// nothing.
+    func testEchoFinalLandsNothing() {
+        let center = DictationCenter()
+        center.commitFinal("summarize chapter 3")
+        center.commitFinal("chapter 3")
+        XCTAssertEqual(center.currentText, "summarize chapter 3")
+    }
+
+    /// Echo suppression must not eat a command. A bare "run" after a task
+    /// that itself ends in "run" is a command utterance, not an echo.
+    func testBareCommandAfterTaskEndingWithSameWordStillFires() {
+        let center = DictationCenter()
+        center.commitFinal("go for a run")
+        center.commitFinal("run")
+        XCTAssertEqual(center.takeCommand(), .run)
+        // The consumed command words leave the draft's source.
+        XCTAssertEqual(center.currentText, "go for a run")
+    }
+
+    /// A fresh utterance with no relation to the transcript still appends
+    /// plainly. The suppression and drift paths must not touch it.
+    func testUnrelatedUtteranceAppends() {
+        let center = DictationCenter()
+        center.commitFinal("list the files in Documents")
+        center.commitFinal("draft the invitation for Friday")
+        XCTAssertEqual(
+            center.currentText,
+            "list the files in Documents draft the invitation for Friday"
+        )
     }
 }
