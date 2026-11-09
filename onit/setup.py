@@ -978,8 +978,7 @@ def _edit_endpoints(config: dict) -> None:
         for k in ("endpoints", "host", "model", "host_key"):
             serving.pop(k, None)
     print(
-        "  No endpoints configured — 'onit' will need --host or ONIT_HOST "
-        "until you add one here."
+        "  No endpoints configured — 'onit' will need --host or ONIT_HOST until you add one here."
     )
 
 

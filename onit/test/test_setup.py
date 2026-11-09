@@ -380,7 +380,9 @@ class TestEndpointEditor:
         assert "endpoints" not in cfg["serving"] and "host" not in cfg["serving"]
 
     def test_adding_a_model_on_the_same_host_keeps_the_first(self):
-        cfg = {"serving": {"endpoints": [{"host": "https://ollama.com", "model": "a", "priority": 1}]}}
+        cfg = {
+            "serving": {"endpoints": [{"host": "https://ollama.com", "model": "a", "priority": 1}]}
+        }
         _drive_editor(cfg, ["a", "https://ollama.com", "b", "", "", ""])
         assert [e["model"] for e in cfg["serving"]["endpoints"]] == ["a", "b"]
 
