@@ -187,6 +187,84 @@ final class DictationCenterTests: XCTestCase {
         XCTAssertNil(center.snapshot.pendingCommand)
     }
 
+    // MARK: - The pause watchdog: on-device recognition often emits no
+    // mid-stream finals, so the bare form must unlock on a silence lull.
+
+    /// The reported flow, in the shape the on-device path actually delivers
+    /// it: the task as a final, "run" as a *partial* that never finalizes,
+    /// then the pause. The watchdog commits the stalled hypothesis and the
+    /// bare command fires — no recognizer final required.
+    func testWatchdogFiresBareRunFromStalledPartial() {
+        let center = DictationCenter()
+        center.commitFinal("Summarize chapter 3.")
+        center.updatePartial("run")
+        XCTAssertNil(center.snapshot.pendingCommand) // no boundary yet
+        center.commitStalledPartial() // the 1s lull
+        XCTAssertEqual(center.snapshot.pendingCommand?.command, .run)
+        XCTAssertEqual(center.takeCommand(), .run)
+        XCTAssertEqual(center.currentText, "Summarize chapter 3.")
+    }
+
+    /// "go" through the same lull path.
+    func testWatchdogFiresBareGoFromStalledPartial() {
+        let center = DictationCenter()
+        center.commitFinal("summarize chapter 3")
+        center.updatePartial("go")
+        center.commitStalledPartial()
+        XCTAssertEqual(center.snapshot.pendingCommand?.command, .run)
+    }
+
+    /// The watchdog must not invent words: it cannot commit while the
+    /// hypothesis is empty, and it cannot fire a second time on the same
+    /// silence (it consumes its own commit).
+    func testWatchdogNoOpWithoutPartial() {
+        let center = DictationCenter()
+        center.commitFinal("summarize chapter 3")
+        center.commitStalledPartial()
+        XCTAssertEqual(center.snapshot.currentText, "summarize chapter 3")
+        center.commitStalledPartial()
+        XCTAssertEqual(center.snapshot.currentText, "summarize chapter 3")
+        XCTAssertNil(center.snapshot.pendingCommand)
+    }
+
+    /// A lull that is not a command just lands the words — a person thinking
+    /// mid-task ("…chapter 3" … silence … keeps talking) must not lose text
+    /// or fire anything.
+    func testWatchdogCommitsPlainTaskTextOnLull() {
+        let center = DictationCenter()
+        center.updatePartial("summarize")
+        center.commitStalledPartial()
+        XCTAssertEqual(center.snapshot.currentText, "summarize")
+        XCTAssertNil(center.snapshot.pendingCommand)
+        // Continuing after the lull appends, exactly as after a real final.
+        center.commitFinal("chapter 3")
+        XCTAssertEqual(center.snapshot.currentText, "summarize chapter 3")
+    }
+
+    /// A real recognizer final arriving after the watchdog already committed
+    /// the same words must not duplicate them: the final is the cumulative
+    /// shape of what we committed, so it replaces.
+    func testRealFinalAfterWatchdogCommitDoesNotDuplicate() {
+        let center = DictationCenter()
+        center.updatePartial("summarize chapter 3")
+        center.commitStalledPartial()
+        XCTAssertEqual(center.snapshot.currentText, "summarize chapter 3")
+        center.commitFinal("Summarize chapter 3.")
+        XCTAssertEqual(center.snapshot.currentText, "Summarize chapter 3.")
+    }
+
+    /// An anchored command fires mid-stream, before any lull — the watchdog
+    /// must not delay or interfere with the barge-in path.
+    func testAnchoredCommandStillFiresBeforeWatchdog() {
+        let center = DictationCenter()
+        center.commitFinal("Summarize chapter 3.")
+        center.updatePartial("onit run")
+        XCTAssertEqual(center.snapshot.pendingCommand?.command, .run)
+        // The watchdog pending underneath must not double-fire anything.
+        center.commitStalledPartial()
+        XCTAssertEqual(center.takeCommand(), .run)
+    }
+
     /// A new task that begins with a command word must not fire: the bare
     /// form needs a task behind it, and "run the linter too" is a task.
     func testBareCommandNeedsWholeUtterance() {

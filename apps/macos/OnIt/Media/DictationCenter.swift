@@ -19,6 +19,13 @@ import Speech
 /// pause is what separates command from task text: a sentence that merely
 /// ends with one of these words ("went for a run") is one utterance, not an
 /// utterance plus a command, and passes through untouched.
+///
+/// "Finalized" is produced by two paths, because on-device recognition does
+/// not guarantee the first: the recognizer's own `isFinal` when it emits one,
+/// and a silence watchdog that commits the hypothesis after it has sat
+/// unchanged for `pauseInterval` — on-device sessions often deliver only
+/// partials until endAudio, and without the watchdog the bare form would
+/// wait forever for a final that never comes.
 enum VoiceCommand: Equatable {
     /// "onit, run" / "onit, run it" / "onit, execute" / "onit, go" — send.
     case run
@@ -221,6 +228,14 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// fresh transcript — it resurrected the sent words into the draft,
     /// looking like the send never happened.
     private var generation = 0
+    /// How long the hypothesis must sit unchanged before it counts as a
+    /// pause. The user's contract is one second; a little under a breath.
+    static let pauseInterval: TimeInterval = 1.0
+    /// The pause watchdog. Rescheduled on every partial change; when it
+    /// fires, the stable hypothesis is committed as if the recognizer had
+    /// finalized it, which is what unlocks the bare command form on the
+    /// on-device path (that path often emits no mid-stream finals).
+    private var pauseWork: DispatchWorkItem?
     /// A fresh engine per listening session. AVAudioEngine's graph is not
     /// reliably reusable across start/stop cycles on macOS 26 — re-preparing
     /// a stopped engine raised an NSException that Swift's do/catch cannot
@@ -331,6 +346,7 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// callback is dropped by the generation guard.
     private func restart() {
         guard isListening, recognizer != nil else { return }
+        cancelPauseWatchdog()
         request?.endAudio()
         task?.finish()
         task = nil
@@ -353,6 +369,7 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         guard isListening else { return }
         isListening = false
         pendingCommand = nil
+        cancelPauseWatchdog()
         // Bump the generation before tearing down: the cancelled task's last
         // callbacks (an error 216, or a final for the tail just spoken) must
         // not land — the tail is already in the partial and the draft, and a
@@ -474,6 +491,8 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
 
     func updatePartial(_ text: String) {
         partial = text
+        // Words still moving means no pause yet — reschedule the watchdog.
+        schedulePauseWatchdog()
         // Anchored commands fire on the partial, the moment the phrase is
         // complete — a barge-in cannot wait for the pause that finalizes the
         // utterance. The bare form needs a finalized utterance, so it is
@@ -481,6 +500,45 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         pendingCommand = VoiceCommand.consume(from: currentText).map {
             PendingCommand(command: $0.command, consumedWords: $0.consumed)
         }
+    }
+
+    /// Arm the silence detector: in `pauseInterval`, if the hypothesis has
+    /// not changed, commit it. Rescheduled by every partial change and torn
+    /// down by every stop/restart, so it fires only on a genuine lull —
+    /// exactly the pause the user places between their task and "run".
+    private func schedulePauseWatchdog() {
+        pauseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            // We are on the main queue by construction, so the isolated
+            // method is safe to reach synchronously.
+            MainActor.assumeIsolated { self?.commitStalledPartial() }
+        }
+        pauseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pauseInterval, execute: work)
+    }
+
+    private func cancelPauseWatchdog() {
+        pauseWork?.cancel()
+        pauseWork = nil
+    }
+
+    /// The lull happened: the hypothesis is stable, treat it as finalized.
+    /// It rides the same commit path as a real final — cumulative-vs-append
+    /// logic, command matching, once-only consumption — so a "run" lull
+    /// fires the bare command and a mid-task lull simply lands the words.
+    /// Internal so tests can drive the lull without waiting on the clock.
+    /// (No isListening gate here: the watchdog is armed only from
+    /// updatePartial and torn down by every stop and restart, so a stale
+    /// fire cannot happen — and the guard would also lock tests out, since
+    /// they drive the accumulator without a live session. A stale-fire
+    /// commit is harmless anyway: it lands words that are already in the
+    /// partial, and a recognizer final then replaces them by shape.)
+    /// A recognizer final arriving on top is harmless too: the cumulative
+    /// shape it then repeats replaces what we committed.
+    func commitStalledPartial() {
+        pauseWork = nil
+        guard !partial.isEmpty else { return }
+        commitFinal(partial)
     }
 
     /// Consume the pending command: strip its words out of the raw text so
