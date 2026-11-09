@@ -164,6 +164,39 @@ class TestDuckDuckGo:
         monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS", fake_cls)
         assert WebSearch()._search_ddgs("q") is None
 
+    def test_retries_after_empty_draw(self, monkeypatch):
+        """ddgs auto picks a random engine subset per call; a draw that
+        returns nothing must not end the search."""
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS_AVAILABLE", True)
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.time.sleep", lambda s: None)
+        fake_cls = MagicMock()
+        fake_cls.return_value.text.side_effect = [[], [], [{"title": "T", "href": "u", "body": "b"}]]
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS", fake_cls)
+        out = WebSearch()._search_ddgs("q")
+        assert out and out[0]["url"] == "u"
+        assert fake_cls.return_value.text.call_count == 3
+
+    def test_retries_after_exception(self, monkeypatch):
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS_AVAILABLE", True)
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.time.sleep", lambda s: None)
+        fake_cls = MagicMock()
+        fake_cls.return_value.text.side_effect = [
+            RuntimeError("blocked"),
+            [{"title": "T", "href": "u", "body": "b"}],
+        ]
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS", fake_cls)
+        out = WebSearch()._search_ddgs("q")
+        assert out and out[0]["url"] == "u"
+
+    def test_gives_up_after_max_attempts(self, monkeypatch):
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS_AVAILABLE", True)
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.time.sleep", lambda s: None)
+        fake_cls = MagicMock()
+        fake_cls.return_value.text.side_effect = Exception("no results")
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.DDGS", fake_cls)
+        assert WebSearch()._search_ddgs("q") is None
+        assert fake_cls.return_value.text.call_count == 5
+
 
 # ── the chain ───────────────────────────────────────────────────────────────
 

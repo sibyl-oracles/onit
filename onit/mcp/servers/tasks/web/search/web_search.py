@@ -31,6 +31,7 @@ Features:
 import json
 import os
 import re
+import time
 import html
 import logging
 from typing import Optional
@@ -183,30 +184,50 @@ class WebSearch:
             return None
 
     def _search_ddgs(self, query: str) -> Optional[list]:
-        """Search using DuckDuckGo as fallback."""
+        """Search using DuckDuckGo as fallback.
+
+        ddgs >= 9 aggregates several engines and, for small max_results,
+        only queries a couple of randomly-chosen ones per call. Individual
+        engines fail often (rate limits, bot checks), so a single attempt
+        is a lottery: two bad draws in a row return nothing even though
+        the query is perfectly searchable. Retry with fresh engine draws
+        before giving up.
+        """
         if not DDGS_AVAILABLE:
             return None
 
-        try:
-            ddgs = DDGS(timeout=self.timeout)
-            response = ddgs.text(query, max_results=self.max_results)
+        attempts = 5
+        for attempt in range(attempts):
+            try:
+                ddgs = DDGS(timeout=self.timeout)
+                response = ddgs.text(query, max_results=self.max_results)
 
-            results = []
-            for result in response:
-                results.append(
-                    {
-                        "title": result.get("title", "No title"),
-                        "url": result.get("href", result.get("link", "")),
-                        "content": self._clean_content(result.get("body", "")),
-                        "source": "duckduckgo",
-                    }
+                results = []
+                for result in response:
+                    results.append(
+                        {
+                            "title": result.get("title", "No title"),
+                            "url": result.get("href", result.get("link", "")),
+                            "content": self._clean_content(result.get("body", "")),
+                            "source": "duckduckgo",
+                        }
+                    )
+
+                if results:
+                    return results
+                logger.warning(
+                    "DuckDuckGo attempt %d/%d returned no results", attempt + 1, attempts
                 )
+            except Exception as e:
+                logger.warning(
+                    "DuckDuckGo attempt %d/%d failed: %s", attempt + 1, attempts, str(e)
+                )
+            # Engines rate-limit aggressively (HTTP 202 challenges, 429s);
+            # a short backoff between draws lands on a different engine mix.
+            if attempt < attempts - 1:
+                time.sleep(1.5)
 
-            return results if results else None
-
-        except Exception as e:
-            logger.warning(f"DuckDuckGo search failed: {str(e)}")
-            return None
+        return None
 
     def search(self, query: str) -> str:
         """
@@ -245,11 +266,24 @@ class WebSearch:
             tried = (["tavily"] if self.tavily_api_key else []) + (
                 ["ollama", "duckduckgo"] if self.use_fallback else ["ollama"]
             )
+            reasons = []
+            if self.tavily_api_key:
+                reasons.append("tavily: no results")
+            if OLLAMA_AVAILABLE:
+                if os.environ.get("OLLAMA_API_KEY", "").strip():
+                    reasons.append("ollama: no results")
+                else:
+                    reasons.append("ollama: OLLAMA_API_KEY not set")
+            else:
+                reasons.append("ollama: package not installed")
+            if self.use_fallback:
+                reasons.append("duckduckgo: no results after retries")
             return json.dumps(
                 {
                     "error": "Search failed - no results from any provider",
                     "query": query,
                     "providers_tried": tried,
+                    "reasons": reasons,
                 }
             )
 
