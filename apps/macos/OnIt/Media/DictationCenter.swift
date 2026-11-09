@@ -3,6 +3,86 @@ import Foundation
 import Observation
 import Speech
 
+/// A spoken command recognized at the end of a dictation stream. Commands
+/// are *trailing* on purpose: a task that merely mentions the words
+/// mid-sentence must not fire, so only the tail of the transcript counts.
+enum VoiceCommand: Equatable {
+    /// "run it" / "execute" — send the composer.
+    case run
+    /// "onit, stop" — barge in and stop the running task.
+    case stop
+
+    /// Normalize a dictation stream and peel a command off its tail.
+    /// Returns the text with the command words removed, plus the command.
+    ///
+    /// Normalization folds the two things the recognizer is inconsistent
+    /// about: case, punctuation, and the "onit"/"on it" homophone pair.
+    /// Filler words are dropped so "um, run it" still fires.
+    static func consume(from text: String) -> (remaining: String, command: VoiceCommand)? {
+        var words = normalize(text)
+        guard !words.isEmpty else { return nil }
+
+        if takeStop(from: &words) {
+            return (words.joined(separator: " "), .stop)
+        }
+        if takeRun(from: &words) {
+            return (words.joined(separator: " "), .run)
+        }
+        return nil
+    }
+
+    /// Peel the barge-in off the tail. Longest match first: the three-word
+    /// "on it stop" must be checked before the two-word forms, or its tail
+    /// would be eaten by the "stop it" branch and leave a stray "on" behind.
+    /// Bare "stop" is deliberately not a command: it appears in half of all
+    /// task text ("stop the server…"), and a false stop kills real work.
+    private static func takeStop(from words: inout [String]) -> Bool {
+        if words.count >= 3,
+           words[words.count - 3] == "on",
+           words[words.count - 2] == "it",
+           words.last == "stop" {
+            words.removeLast(3)
+            return true
+        }
+        if words.count >= 2, isOnit(words[words.count - 2]), words.last == "stop" {
+            words.removeLast(2)
+            return true
+        }
+        if words.count >= 2, words[words.count - 2] == "stop", words.last == "it" {
+            words.removeLast(2)
+            return true
+        }
+        return false
+    }
+
+    /// Peel "run it" / "execute" off the tail.
+    private static func takeRun(from words: inout [String]) -> Bool {
+        if words.last == "execute" {
+            words.removeLast()
+            return true
+        }
+        if words.count >= 2, words[words.count - 2] == "run", words.last == "it" {
+            words.removeLast(2)
+            return true
+        }
+        return false
+    }
+
+    private static func isOnit(_ word: String) -> Bool {
+        word == "onit" || word == "on it"
+    }
+
+    /// Lowercase, split on anything that is not a letter or digit, and drop
+    /// the filler words speech pads sentences with.
+    private static func normalize(_ text: String) -> [String] {
+        let fillers: Set<String> = ["um", "uh", "hey", "please"]
+        return text.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !fillers.contains($0) }
+    }
+}
+
 /// Dictation for the composer, backed by Apple's Speech framework — the same
 /// engine macOS Dictation uses, so spoken text lands in the draft field the
 /// way the system's own dictation would.

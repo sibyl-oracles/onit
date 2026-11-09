@@ -66,3 +66,80 @@ final class DictationCenterTests: XCTestCase {
         XCTAssertEqual(snap.currentText, "note to self")
     }
 }
+
+@MainActor
+final class VoiceCommandTests: XCTestCase {
+    // MARK: - "run it" / "execute"
+
+    /// The plain execute command, with and without punctuation.
+    func testRunIt() {
+        XCTAssertEqual(VoiceCommand.consume(from: "run it")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "Run it.")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "execute")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "Execute!")?.command, .run)
+    }
+
+    /// The command peels off the tail, leaving the task text behind.
+    func testRunItLeavesTaskText() {
+        let match = VoiceCommand.consume(from: "summarize this chapter, run it")
+        XCTAssertEqual(match?.command, .run)
+        XCTAssertEqual(match?.remaining, "summarize this chapter")
+    }
+
+    /// Filler words must not block the match.
+    func testRunItWithFillers() {
+        XCTAssertEqual(VoiceCommand.consume(from: "um, run it")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "hey execute please")?.command, .run)
+    }
+
+    // MARK: - "onit, stop" barge-in
+
+    /// Both spellings of the anchor: the recognizer is inconsistent about
+    /// whether "onit" comes back as one word or the English phrase.
+    func testOnitStop() {
+        XCTAssertEqual(VoiceCommand.consume(from: "onit stop")?.command, .stop)
+        XCTAssertEqual(VoiceCommand.consume(from: "on it stop")?.command, .stop)
+        XCTAssertEqual(VoiceCommand.consume(from: "Onit, stop.")?.command, .stop)
+    }
+
+    /// "stop it" is an accepted barge-in variant.
+    func testStopIt() {
+        XCTAssertEqual(VoiceCommand.consume(from: "stop it")?.command, .stop)
+    }
+
+    /// Bare "stop" is deliberately not a command: it appears in half of all
+    /// task text, and a false stop kills real work.
+    func testBareStopIsNotACommand() {
+        XCTAssertNil(VoiceCommand.consume(from: "stop"))
+        XCTAssertNil(VoiceCommand.consume(from: "stop the server"))
+    }
+
+    /// A task that merely mentions the command words mid-sentence must not
+    /// fire — only the tail counts.
+    func testMidSentenceMentionDoesNotFire() {
+        XCTAssertNil(VoiceCommand.consume(from: "run it and then stop the server"))
+        XCTAssertNil(VoiceCommand.consume(from: "how do I run it in production"))
+        XCTAssertNil(VoiceCommand.consume(from: "tell onit to stop the build"))
+    }
+
+    /// Ordinary text produces no command and no rewrite.
+    func testOrdinaryTextUnmatched() {
+        XCTAssertNil(VoiceCommand.consume(from: "write me a haiku about the sea"))
+        XCTAssertNil(VoiceCommand.consume(from: ""))
+        XCTAssertNil(VoiceCommand.consume(from: "   "))
+    }
+
+    /// The stop command strips cleanly, though a barge-in normally sends
+    /// nothing afterwards — the remaining text is what stays in the draft.
+    func testStopLeavesRemainingText() {
+        let match = VoiceCommand.consume(from: "wait, on it stop")
+        XCTAssertEqual(match?.command, .stop)
+        XCTAssertEqual(match?.remaining, "wait")
+    }
+
+    /// The homophone fold works inside normalization, not just at the tail.
+    func testNormalizationFoldsCaseAndPunctuation() {
+        // "ONIT!!! STOP???" must match the same as "onit stop".
+        XCTAssertEqual(VoiceCommand.consume(from: "ONIT!!! STOP???")?.command, .stop)
+    }
+}

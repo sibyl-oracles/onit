@@ -3,6 +3,7 @@ import SwiftUI
 /// The transcript and the composer for one session.
 struct ChatView: View {
     @Bindable var session: Session
+    @Environment(DictationCenter.self) private var dictation
     @State private var draft = ""
     @State private var attachments: [URL] = []
     @State private var isUploading = false
@@ -157,7 +158,7 @@ struct ChatView: View {
                 .help("Attach a file")
                 .accessibilityLabel("Attach a file")
 
-                DictationButton(draft: $draft)
+                DictationButton(draft: $draft, session: session, onSend: send)
                 TextField(
                     "Ask OnIt…",
                     text: $draft,
@@ -240,6 +241,9 @@ struct ChatView: View {
         draft = ""
         attachments = []
         uploadError = nil
+        // The dictation accumulator still holds the words just sent; without
+        // this, the next dictation session would resurrect them.
+        dictation.reset()
         Task {
             var paths: [String] = []
             var failures: [String] = []
@@ -348,10 +352,22 @@ private struct EmptyTranscript: View {
 struct DictationButton: View {
     @Binding var draft: String
     @Environment(DictationCenter.self) private var dictation
+    /// The session this composer sends into — spoken "onit, stop" stops it.
+    let session: Session
+    /// Sends the composer, with all the gating ChatView applies (canSend,
+    /// uploads, draft clearing). Spoken "run it" goes through the same door
+    /// as ⌘Return — never a side door.
+    let onSend: () -> Void
     /// The draft as it was when listening began. Words recognized during
     /// this session append after it; the field itself is never rewritten
     /// wholesale, so keyboard edits mid-dictation survive.
     @State private var appendBase = ""
+    /// The normalized tail that last fired a command. The transcript keeps
+    /// its words after a command fires, so without this guard every later
+    /// partial update would re-fire it — worst case re-killing a *new* task
+    /// started after a barge-in. A fresh command changes the tail, so it
+    /// still fires.
+    @State private var firedTail: String?
 
     var body: some View {
         let snap = dictation.snapshot
@@ -376,6 +392,25 @@ struct DictationButton: View {
         .onChange(of: snap.currentText) {
             guard snap.isListening else { return }
             draft = appendBase + separator + snap.currentText
+        }
+        // Spoken commands ride the same stream: "run it" sends the composer,
+        // "onit, stop" barges in on the running task. Both fire through the
+        // center's callback so the matcher stays testable without a mic.
+        .onChange(of: dictation.snapshot) { _, snap in
+            guard snap.isListening,
+                  let match = VoiceCommand.consume(from: snap.currentText)
+            else { return }
+            let tail = match.remaining + "|" + String(describing: match.command)
+            guard tail != firedTail else { return }
+            firedTail = tail
+            switch match.command {
+            case .run:
+                // The command words must not ride into the sent message.
+                draft = appendBase + separator + match.remaining
+                onSend()
+            case .stop:
+                session.stop()
+            }
         }
         // Leaving the composer (session switch, window close) must not leave
         // a live microphone behind.
