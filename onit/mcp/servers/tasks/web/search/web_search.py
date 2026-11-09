@@ -219,9 +219,7 @@ class WebSearch:
                     "DuckDuckGo attempt %d/%d returned no results", attempt + 1, attempts
                 )
             except Exception as e:
-                logger.warning(
-                    "DuckDuckGo attempt %d/%d failed: %s", attempt + 1, attempts, str(e)
-                )
+                logger.warning("DuckDuckGo attempt %d/%d failed: %s", attempt + 1, attempts, str(e))
             # Engines rate-limit aggressively (HTTP 202 challenges, 429s);
             # a short backoff between draws lands on a different engine mix.
             if attempt < attempts - 1:
