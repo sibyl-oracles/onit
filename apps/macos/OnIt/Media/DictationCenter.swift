@@ -221,10 +221,21 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// fresh transcript — it resurrected the sent words into the draft,
     /// looking like the send never happened.
     private var generation = 0
-    private let engine = AVAudioEngine()
+    /// A fresh engine per listening session. AVAudioEngine's graph is not
+    /// reliably reusable across start/stop cycles on macOS 26 — re-preparing
+    /// a stopped engine raised an NSException that Swift's do/catch cannot
+    /// intercept, aborting the process. Rebuilding is cheap and always sound.
+    private var engine = AVAudioEngine()
 
     func toggle() {
-        Task { await toggleAsync() }
+        // Hopping through the main queue before spawning the task re-enters
+        // the runloop outside SwiftUI's event dispatch. During debugging the
+        // direct `Task {}` hung in the permission round-trip when invoked
+        // from an accessibility-driven press; the hop makes both paths —
+        // mouse and accessibility — behave identically.
+        DispatchQueue.main.async {
+            Task { @MainActor in await self.toggleAsync() }
+        }
     }
 
     private func toggleAsync() async {
@@ -243,7 +254,8 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         isDenied = false
         pendingCommand = nil
 
-        guard await ensurePermissions() else { return }
+        let ok = await ensurePermissions()
+        guard ok else { return }
 
         // Match the user's language, falling back to US English; a locale
         // Speech cannot handle yields nil rather than a broken recognizer.
@@ -259,7 +271,14 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         let request = makeRequest()
         self.request = request
 
+        engine = AVAudioEngine()
         do {
+            // Materialize the input node BEFORE prepare: on macOS 26,
+            // prepare() with no nodes attached raises an NSException
+            // ('inputNode != nullptr || outputNode != nullptr') that Swift
+            // cannot catch — touching the input node first gives the graph
+            // its node.
+            _ = engine.inputNode
             engine.prepare()
             try engine.start()
         } catch {
@@ -339,11 +358,19 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         // not land — the tail is already in the partial and the draft, and a
         // late final would append it a second time.
         generation += 1
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        // Retire the recognition task explicitly before dropping it.
+        // Releasing an SFSpeechRecognitionTask that is still running — no
+        // finish(), no cancel() — crashed the NEXT main-actor dispatch with
+        // heap corruption (objc_opt_class / swift_getObjectType under
+        // ButtonAction): the abandoned session's callbacks landed in memory
+        // that had already moved on. cancel() barges in without a final,
+        // which is what a stop wants.
         request?.endAudio()
+        task?.cancel()
         task = nil
         request = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
     }
 
     /// Drop accumulated text and any error. Called when the draft leaves
@@ -496,11 +523,14 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     }
 
     private func requestMic() async -> Bool {
-        await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
-        }
+        // The status read is synchronous; only the not-determined case
+        // needs the async round-trip through tccd (and its on-screen prompt).
+        // Keeping the common path — permission already decided — free of the
+        // callback dance keeps start() honest about when it can block.
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        guard status == .notDetermined else { return status == .authorized }
+        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        return granted
     }
 
     private func requestSpeech() async -> Bool {
