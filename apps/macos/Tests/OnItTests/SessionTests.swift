@@ -186,7 +186,8 @@ final class SessionTests: XCTestCase {
             ratingEnabled: true,
             timing: Timing(
                 turns: 1, toolCalls: 2, modelSeconds: 1.1,
-                promptTokensTotal: 100, completionTokens: 50, tokenStats: "150 tok"
+                promptTokensTotal: 100, completionTokens: 50,
+                promptTokensSum: 80, cachedTokens: 30, tokenStats: "150 tok"
             )
         )
         session.apply(.done(payload), at: index)
@@ -197,6 +198,10 @@ final class SessionTests: XCTestCase {
         XCTAssertNil(session.pendingApproval)
         XCTAssertEqual(session.messages[index].turn, 3)
         XCTAssertTrue(session.messages[index].ratingEnabled)
+        // The stats ride to the footer on the message; a restored transcript
+        // has none (history does not persist them) and must show no line.
+        XCTAssertEqual(session.messages[index].timing?.tokenStats, "150 tok")
+        XCTAssertEqual(session.messages[index].timing?.cachedTokens, 30)
     }
 
     func testDoneTitlesTheSessionFromTheUserMessage() {
@@ -206,7 +211,8 @@ final class SessionTests: XCTestCase {
             content: "done", files: [], elapsed: 0, tokensPerSecond: 0,
             turn: 1, ratingEnabled: false,
             timing: Timing(turns: 0, toolCalls: 0, modelSeconds: 0,
-                           promptTokensTotal: 0, completionTokens: 0, tokenStats: "")
+                           promptTokensTotal: 0, completionTokens: 0,
+                           promptTokensSum: 0, cachedTokens: 0, tokenStats: "")
         )
         session.apply(.done(payload), at: index)
         XCTAssertEqual(session.title, "list the files")

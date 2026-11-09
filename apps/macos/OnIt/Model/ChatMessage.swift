@@ -20,6 +20,10 @@ struct ChatMessage: Identifiable, Sendable, Equatable {
     var turn: Int?
     var ratingEnabled: Bool = false
     var rating: Int?
+    /// Where the run's time and tokens went, as the server reported them on
+    /// `done`. Nil for restored messages: history does not persist it, and a
+    /// blank row would claim a measurement that was never taken.
+    var timing: Timing?
     /// The status line the agent last reported, e.g. "Running shell".
     var status: String?
     /// Steps the agent took, in order, for the folded ledger.

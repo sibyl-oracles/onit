@@ -57,10 +57,28 @@ struct Timing: Sendable, Equatable {
     let modelSeconds: Double
     let promptTokensTotal: Int
     let completionTokens: Int
+    /// Prompt tokens from turns that reported a cache state, and how much of
+    /// that was served from cache. The hit rate is these two over each other
+    /// — NOT over `promptTokensTotal`, which includes turns the provider
+    /// said nothing about cache for, and would silently read as a miss.
+    let promptTokensSum: Int
+    let cachedTokens: Int
     /// The backend's own one-line summary. Shown verbatim in the status bar
     /// rather than reassembled from the numbers, so the app and the browser
     /// never disagree about what a run cost.
     let tokenStats: String
+    /// The split the server would print, for a sidecar too old to send
+    /// `token_stats`: "150 tok (100 in / 50 out, 30 cached)". Empty when the
+    /// run recorded no usage at all.
+    var fallbackStats: String {
+        let total = promptTokensTotal + completionTokens
+        guard total > 0 else { return "" }
+        var split = "\(promptTokensTotal.formatted()) in / \(completionTokens.formatted()) out"
+        if cachedTokens > 0 {
+            split += ", \(cachedTokens.formatted()) cached"
+        }
+        return "\(total.formatted()) tok (\(split))"
+    }
 }
 
 struct FileInfo: Sendable, Equatable, Identifiable, Decodable {
@@ -181,6 +199,8 @@ extension DonePayload {
                 modelSeconds: (timingJSON["model_s"] as? Double) ?? 0,
                 promptTokensTotal: (timingJSON["prompt_tokens_total"] as? Int) ?? 0,
                 completionTokens: (timingJSON["completion_tokens"] as? Int) ?? 0,
+                promptTokensSum: (timingJSON["prompt_tokens_sum"] as? Int) ?? 0,
+                cachedTokens: (timingJSON["cached_tokens"] as? Int) ?? 0,
                 tokenStats: (timingJSON["token_stats"] as? String) ?? ""
             )
         )

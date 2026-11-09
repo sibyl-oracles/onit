@@ -49,7 +49,7 @@ final class EventTests: XCTestCase {
     func testDonePayload() {
         let event = decode(
             "done",
-            #"{"content": "Answer", "files": [{"name": "a.txt", "url": "/f/a.txt", "size": 3, "kind": "file"}], "elapsed": 1.5, "tok_s": 40.0, "turn": 2, "rating_enabled": true, "timing": {"turns": 1, "tool_calls": 3, "model_s": 1.2, "prompt_tokens_total": 90, "completion_tokens": 45, "token_stats": "135 tok"}}"#
+            #"{"content": "Answer", "files": [{"name": "a.txt", "url": "/f/a.txt", "size": 3, "kind": "file"}], "elapsed": 1.5, "tok_s": 40.0, "turn": 2, "rating_enabled": true, "timing": {"turns": 1, "tool_calls": 3, "model_s": 1.2, "prompt_tokens_total": 90, "completion_tokens": 45, "prompt_tokens_sum": 80, "cached_tokens": 30, "token_stats": "135 tok (90 in / 45 out, 30 cached)"}}"#
         )
         guard case let .done(payload) = event else {
             return XCTFail("expected .done, got \(event)")
@@ -62,7 +62,9 @@ final class EventTests: XCTestCase {
         XCTAssertEqual(payload.turn, 2)
         XCTAssertTrue(payload.ratingEnabled)
         XCTAssertEqual(payload.timing.toolCalls, 3)
-        XCTAssertEqual(payload.timing.tokenStats, "135 tok")
+        XCTAssertEqual(payload.timing.tokenStats, "135 tok (90 in / 45 out, 30 cached)")
+        XCTAssertEqual(payload.timing.promptTokensSum, 80)
+        XCTAssertEqual(payload.timing.cachedTokens, 30)
     }
 
     func testDoneWithMissingFieldsDefaults() {

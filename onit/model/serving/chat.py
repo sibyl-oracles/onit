@@ -533,10 +533,13 @@ def format_token_footer(
     """One stats line for a finished run: session, model, endpoint, tokens, time.
 
     ``session thesis-ch3 · model qwen3-coder · provider ollama · 4,698,819 tok
-    (4,665,239 in / 33,580 out) · 316.6s`` — the in/out split is the point of
-    it.  A single total cannot distinguish a run that thought hard from one
-    that re-read the same tool results forty times: the first is expensive in
-    generation, the second in prefill, and only the split says which.
+    (4,665,239 in / 33,580 out, 1,234 cached) · 316.6s`` — the in/out split is
+    the point of it.  A single total cannot distinguish a run that thought
+    hard from one that re-read the same tool results forty times: the first is
+    expensive in generation, the second in prefill, and only the split says
+    which.  Cached rides inside the split when the provider reports it: the
+    prompt total already counts cached tokens as read, so without the third
+    number a cache-heavy run looks like it re-read everything.
     Everything is optional and drops out when unknown, so a caller with
     nothing but a sink still gets a useful line.
 
@@ -562,8 +565,14 @@ def format_token_footer(
         parts.append(f"dir {data_path}")
     if version:
         parts.append(f"v{version}")
+    cached_tokens = _as_int((m or {}).get("cached_tokens"))
     if total > 0:
-        parts.append(f"{total:,} tok ({prompt_tokens:,} in / {completion_tokens:,} out)")
+        split = f"{prompt_tokens:,} in / {completion_tokens:,} out"
+        # Only when the provider reports it: a bare split must not read as
+        # "none of it was cached".
+        if cached_tokens and cached_tokens > 0:
+            split += f", {cached_tokens:,} cached"
+        parts.append(f"{total:,} tok ({split})")
     elif total == 0 and m and m.get("turn_count"):
         # A run that recorded turns but no usage: the provider does not report
         # it.  Saying so beats printing "0 tok", which reads as a free run.

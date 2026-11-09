@@ -455,6 +455,10 @@ def _timing_summary(
         "other_s": round(max(elapsed - accounted, 0.0), 2),
         "prompt_tokens_max": metrics.get("prompt_tokens_max", 0),
         "prompt_tokens_total": metrics.get("prompt_tokens_total", 0),
+        # The cached side, raw: what a client makes of it is its own call.
+        # The sum is the cache-reporting denominator, not the prompt total.
+        "prompt_tokens_sum": metrics.get("prompt_tokens_sum", 0),
+        "cached_tokens": metrics.get("cached_tokens", 0),
         "completion_tokens": metrics.get("completion_tokens", 0),
         # Pre-rendered so every client shows the same line the terminal does,
         # instead of each one reformatting the two counts its own way.

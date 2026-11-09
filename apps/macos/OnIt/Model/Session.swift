@@ -185,6 +185,7 @@ final class Session: Identifiable, Equatable {
             messages[index].elapsed = payload.elapsed
             messages[index].turn = payload.turn
             messages[index].ratingEnabled = payload.ratingEnabled
+            messages[index].timing = payload.timing
             messages[index].isStreaming = false
             // The progress is scaffolding for the wait, not part of the
             // answer: the moment the answer lands it is erased, the same

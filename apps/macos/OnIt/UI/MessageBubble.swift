@@ -143,7 +143,36 @@ struct MessageBubble: View, Equatable {
                     RatingButtons(rating: message.rating, turn: turn)
                 }
             }
+
+            // What the run was and what it cost, one line, from the server's
+            // own summary — the same string the terminal prints under an
+            // answer. Skipped when the sidecar did not send it (older
+            // sidecars) rather than reconstructed here: two renderings of one
+            // number are how clients drift apart.
+            if let stats = statsLine, !stats.isEmpty {
+                Text(stats)
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.tertiaryText)
+                    .opacity(0.75)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    /// The per-run stats line: model, provider, data directory, tokens
+    /// (in / out / cached), tok/s, elapsed — the server's `token_stats`.
+    ///
+    /// Falls back to rebuilding the token split from the raw counts only when
+    /// the summary is missing, which happens with a sidecar predating it. The
+    /// rebuild is the server's format, not a new one.
+    private var statsLine: String? {
+        guard let timing = message.timing else { return nil }
+        if !timing.tokenStats.isEmpty {
+            return timing.tokenStats
+        }
+        let fallback = timing.fallbackStats
+        return fallback.isEmpty ? nil : fallback
     }
 }
 

@@ -1432,6 +1432,17 @@ class TestTokenFooter:
         m.start_api()
         m.end_api(4_200, 300, "stop")  # cached_tokens omitted entirely
         assert sink["prompt_tokens_total"] == 4_200
+        # No cache report, no cached segment: a bare split must not read as
+        # "none of it was cached".
+        assert "cached" not in format_token_footer(sink)
+
+    def test_the_cached_segment_rides_inside_the_split(self):
+        sink = {}
+        m = TurnMetrics(sink)
+        m.start_api()
+        m.end_api(4_200, 300, "stop", cached_tokens=1_050)
+        line = format_token_footer(sink)
+        assert "4,500 tok (4,200 in / 300 out, 1,050 cached)" in line
 
     def test_garbage_usage_does_not_poison_the_total(self):
         """usage.prompt_tokens is absent on some providers and None on others."""
