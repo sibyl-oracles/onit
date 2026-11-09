@@ -9,41 +9,84 @@ import Speech
 /// them as commands ate the dictated task (say "…and execute" and the whole
 /// task was consumed as a command instead of sent).
 ///
-/// The grammar is strict: anchor, then the command phrase, then nothing.
-/// "onit run" fires; "onit run the tests" is a task addressed to onit and
-/// passes through untouched.
+/// The anchored grammar is strict: anchor, then the command phrase, then
+/// nothing. "onit run" fires; "onit run the tests" is a task addressed to
+/// onit and passes through untouched.
+///
+/// There is a second, pause-delimited form: once an utterance has finalized
+/// (the user paused), a follow-up utterance that is *exactly* a command
+/// phrase — "run", "go", "execute", "stop" — fires without the anchor. The
+/// pause is what separates command from task text: a sentence that merely
+/// ends with one of these words ("went for a run") is one utterance, not an
+/// utterance plus a command, and passes through untouched.
 enum VoiceCommand: Equatable {
-    /// "onit, run" / "onit, run it" / "onit, execute" — send the composer.
+    /// "onit, run" / "onit, run it" / "onit, execute" / "onit, go" — send.
     case run
     /// "onit, stop" / "onit, stop it" — barge in and stop the running task.
     case stop
 
+    /// The phrases each command accepts, in normalized form.
+    private static let runPhrases: Set<[String]> = [["run"], ["run", "it"], ["execute"], ["go"]]
+    private static let stopPhrases: Set<[String]> = [["stop"], ["stop", "it"]]
+
     /// Normalize a dictation stream and peel a command off its tail.
-    /// Returns the text with the command words removed, plus the command.
+    /// Returns the text with the command words removed, the command, and how
+    /// many normalized words the command consumed — the raw-text strip in
+    /// `strippingLastWords` needs the count.
     ///
     /// Normalization folds the two things the recognizer is inconsistent
     /// about: case, punctuation, and the "onit"/"on it" homophone pair.
     /// Filler words are dropped so "onit, um, execute" still fires.
-    static func consume(from text: String) -> (remaining: String, command: VoiceCommand)? {
+    ///
+    /// `utterance` is the text of the utterance the recognizer just
+    /// finalized, when there is one; it unlocks the pause-delimited bare
+    /// form. On a partial there is no utterance boundary yet, so bare words
+    /// never fire mid-stream.
+    static func consume(
+        from text: String,
+        utterance: String? = nil
+    ) -> (remaining: String, command: VoiceCommand, consumed: Int)? {
         let words = normalize(text)
-        guard !words.isEmpty, let anchor = anchorRange(in: words) else { return nil }
+        guard !words.isEmpty else { return nil }
 
-        // Everything before the anchor is the task; everything after must be
-        // exactly the command phrase — extra words make it a task, not a
-        // command ("onit execute this script" should run the script, not
-        // send the draft). The anchor itself is command words too: it must
-        // not ride into the sent message.
-        let head = words[..<anchor.lowerBound]
-        let tail = Array(words[anchor.upperBound...])
-
-        switch tail {
-        case ["stop"], ["stop", "it"]:
-            return (head.joined(separator: " "), .stop)
-        case ["run"], ["run", "it"], ["execute"]:
-            return (head.joined(separator: " "), .run)
-        default:
-            return nil
+        if let anchor = anchorRange(in: words) {
+            // Everything before the anchor is the task; everything after must
+            // be exactly the command phrase — extra words make it a task, not
+            // a command ("onit execute this script" should run the script,
+            // not send the draft). The anchor itself is command words too: it
+            // must not ride into the sent message.
+            let head = words[..<anchor.lowerBound]
+            let tail = Array(words[anchor.upperBound...])
+            if let command = commandPhrase(tail) {
+                return (head.joined(separator: " "), command, words.count - head.count)
+            }
         }
+
+        // No anchored command: try the pause-delimited bare form.
+        return bare(stream: words, utterance: utterance)
+    }
+
+    /// The pause-delimited form: the finalized utterance is exactly a
+    /// command phrase, and it sits at the tail of the stream — a newer
+    /// partial in flight breaks the suffix and vetoes the fire.
+    private static func bare(
+        stream: [String],
+        utterance: String?
+    ) -> (remaining: String, command: VoiceCommand, consumed: Int)? {
+        guard let utterance, !utterance.isEmpty else { return nil }
+        let phrase = normalize(utterance)
+        guard stream.count >= phrase.count,
+              Array(stream.suffix(phrase.count)) == phrase,
+              let command = commandPhrase(phrase)
+        else { return nil }
+        let head = stream.prefix(stream.count - phrase.count)
+        return (head.joined(separator: " "), command, phrase.count)
+    }
+
+    private static func commandPhrase(_ words: [String]) -> VoiceCommand? {
+        if stopPhrases.contains(words) { return .stop }
+        if runPhrases.contains(words) { return .run }
+        return nil
     }
 
     /// Range of the wake word. "onit" is spoken as one word but the
@@ -66,6 +109,48 @@ enum VoiceCommand: Equatable {
             .map(String.init)
             .filter { !fillers.contains($0) }
     }
+
+    /// Remove the command's words from the raw text, preserving the raw
+    /// casing and punctuation of everything before them — the stripped text
+    /// is what gets sent or kept in the draft, and it must read the way the
+    /// user spoke it ("Summarize chapter 3.", not "summarize chapter 3").
+    ///
+    /// The command is always a raw suffix (both grammars end with it), so
+    /// the walk goes backwards over whitespace tokens, counting normalized
+    /// words until the consumed count is met. Filler tokens count as zero
+    /// words and are cut too — "onit, um, run" is three raw tokens, two
+    /// words. Returns nil when the tokens do not align; the caller then
+    /// keeps the text as-is rather than corrupt it.
+    static func strippingLastWords(_ consumed: Int, from raw: String) -> String? {
+        guard consumed > 0 else { return nil }
+        let tokens = raw.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        var seen = 0
+        var cut = 0
+        for token in tokens.reversed() {
+            let count = normalize(token).count
+            if seen + count > consumed { return nil }
+            seen += count
+            cut += 1
+            if seen == consumed { break }
+        }
+        guard seen == consumed else { return nil }
+        var kept = tokens.dropLast(cut).joined(separator: " ")
+        // The punctuation that introduced the command ("wait, onit stop")
+        // dangles once the command is gone; separator marks go with it.
+        // Terminal punctuation ("Summarize chapter 3.") is kept.
+        while let last = kept.last, ",;:-".contains(last) {
+            kept = String(kept.dropLast()).trimmingCharacters(in: .whitespaces)
+        }
+        return kept
+    }
+}
+
+/// A command the matcher found in the stream, waiting for the composer to
+/// act on it. Carries the word count the command consumed so the raw strip
+/// can remove exactly those words.
+struct PendingCommand: Equatable {
+    let command: VoiceCommand
+    let consumedWords: Int
 }
 
 /// Dictation for the composer, backed by Apple's Speech framework — the same
@@ -92,6 +177,9 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         var currentText = ""
         var error: String?
         var isDenied = false
+        /// A spoken command waiting for the composer to act. Consumed
+        /// exactly once via `takeCommand()`.
+        var pendingCommand: PendingCommand?
     }
 
     var snapshot: Snapshot {
@@ -99,7 +187,8 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
             isListening: isListening,
             currentText: currentText,
             error: error,
-            isDenied: isDenied
+            isDenied: isDenied,
+            pendingCommand: pendingCommand
         )
     }
 
@@ -122,9 +211,16 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
 
     private var transcript = ""
     private var partial = ""
+    private var pendingCommand: PendingCommand?
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    /// Bumped on every restart and stop. Recognition callbacks carry the
+    /// generation they belong to, and stale ones are dropped: a flushed
+    /// request still delivers its final, and that final must not land in a
+    /// fresh transcript — it resurrected the sent words into the draft,
+    /// looking like the send never happened.
+    private var generation = 0
     private let engine = AVAudioEngine()
 
     func toggle() {
@@ -145,6 +241,7 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     private func start() async {
         error = nil
         isDenied = false
+        pendingCommand = nil
 
         guard await ensurePermissions() else { return }
 
@@ -159,37 +256,76 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
         recognizer.delegate = self
         self.recognizer = recognizer
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.addsPunctuation = true
-        // Prefer on-device transcription: it is private and works offline.
-        // Not forced everywhere, because some locales/languages still only
-        // have the server path — a hard requirement there would break
-        // dictation entirely rather than degrade it.
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        let request = makeRequest()
         self.request = request
 
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
         do {
-            input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
-                request.append(buffer)
-            }
             engine.prepare()
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
             self.request = nil
             self.error = "Microphone unavailable: \(error.localizedDescription)"
             return
         }
 
         isListening = true
-        task = recognizer.recognitionTask(with: request) { [weak self] result, taskError in
-            Task { @MainActor in self?.handle(result: result, error: taskError) }
+        beginTask(with: request)
+    }
+
+    /// A fresh recognition request with the settings every request in this
+    /// class shares — partials on, punctuation on, on-device when the
+    /// recognizer supports it (private, offline; not forced everywhere
+    /// because some locales still only have the server path — a hard
+    /// requirement there would break dictation rather than degrade it).
+    private func makeRequest() -> SFSpeechAudioBufferRecognitionRequest {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.addsPunctuation = true
+        if recognizer?.supportsOnDeviceRecognition == true {
+            request.requiresOnDeviceRecognition = true
         }
+        return request
+    }
+
+    /// Attach `request` to the microphone and start recognizing. The tap is
+    /// (re)installed so it feeds this request — a restart swaps requests
+    /// under a running engine, and a tap that still held the old one would
+    /// keep feeding audio to the request that was just flushed.
+    private func beginTask(with request: SFSpeechAudioBufferRecognitionRequest) {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 2048, format: input.outputFormat(forBus: 0)) { buffer, _ in
+            request.append(buffer)
+        }
+        generation += 1
+        let gen = generation
+        task = recognizer?.recognitionTask(with: request) { [weak self] result, taskError in
+            Task { @MainActor in self?.handle(result: result, error: taskError, generation: gen) }
+        }
+    }
+
+    /// Restart recognition in place: fresh request, fresh task, same running
+    /// engine. Used after a send or a spoken command — the request that
+    /// produced the words keeps them in its internal buffer, and without a
+    /// restart it re-emits everything already heard as the next partial, so
+    /// the just-sent text lands back in the draft. The old task's last
+    /// callback is dropped by the generation guard.
+    private func restart() {
+        guard isListening, recognizer != nil else { return }
+        request?.endAudio()
+        task?.finish()
+        task = nil
+        let request = makeRequest()
+        self.request = request
+        beginTask(with: request)
+    }
+
+    /// Flush the recognizer's buffer without touching the accumulated text —
+    /// the companion to `takeCommand()` for commands that must not clear the
+    /// draft (a spoken stop keeps the task text for the next "onit, run").
+    func flush() {
+        guard isListening, recognizer != nil else { return }
+        restart()
     }
 
     /// Stop listening but keep the text: the words already belong to the
@@ -197,12 +333,15 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     func stop() {
         guard isListening else { return }
         isListening = false
+        pendingCommand = nil
+        // Bump the generation before tearing down: the cancelled task's last
+        // callbacks (an error 216, or a final for the tail just spoken) must
+        // not land — the tail is already in the partial and the draft, and a
+        // late final would append it a second time.
+        generation += 1
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         request?.endAudio()
-        // finish() flushes one last (usually final) result for the tail the
-        // user spoke just before releasing the button.
-        task?.finish()
         task = nil
         request = nil
     }
@@ -210,22 +349,32 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// Drop accumulated text and any error. Called when the draft leaves
     /// (send) so a stale transcript cannot resurface in the next dictation.
     ///
-    /// Also ends the recognizer's buffer: the task that produced the words
-    /// keeps its internal buffer, and without this it re-emits everything
-    /// already heard as the next partial — the just-sent text would land
-    /// back in the draft, looking like the send never happened. Ending the
-    /// request flushes that buffer; the next press starts a fresh one.
+    /// While listening this restarts recognition rather than only clearing
+    /// the accumulator: the request that produced the words keeps its
+    /// internal buffer, and without a restart it re-emits everything already
+    /// heard as the next partial — the just-sent text would land back in
+    /// the draft, looking like the send never happened.
     func reset() {
         transcript = ""
         partial = ""
+        pendingCommand = nil
         error = nil
-        request?.endAudio()
-        request = nil
+        guard isListening, recognizer != nil else {
+            generation += 1
+            request?.endAudio()
+            task = nil
+            request = nil
+            return
+        }
+        restart()
     }
 
     // MARK: - Recognition callbacks
 
-    private func handle(result: SFSpeechRecognitionResult?, error: Error?) {
+    private func handle(result: SFSpeechRecognitionResult?, error: Error?, generation gen: Int) {
+        // A callback from a flushed generation carries words the accumulator
+        // no longer wants — the request was restarted out from under it.
+        guard gen == self.generation else { return }
         if let result {
             let text = result.bestTranscription.formattedString
             if result.isFinal {
@@ -260,6 +409,12 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// transcript shrank to just "execute", wiping the task from the draft.
     /// So: a final that starts with the transcript (the cumulative shape)
     /// replaces it; anything else continues it.
+    ///
+    /// A finalized utterance is also a command boundary — this is where the
+    /// pause-delimited bare form becomes legal ("run" as its own utterance
+    /// after the task finalized). For a cumulative final the utterance is
+    /// the delta past the previous transcript: the words the recognizer
+    /// added this time.
     func commitFinal(_ text: String) {
         partial = ""
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -272,6 +427,12 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
             transcript = trimmed
         } else {
             transcript = transcript.isEmpty ? trimmed : transcript + " " + trimmed
+        }
+        let utterance = cumulative
+            ? incoming.dropFirst(previous.count).joined(separator: " ")
+            : trimmed
+        pendingCommand = VoiceCommand.consume(from: transcript, utterance: utterance).map {
+            PendingCommand(command: $0.command, consumedWords: $0.consumed)
         }
     }
 
@@ -286,6 +447,29 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
 
     func updatePartial(_ text: String) {
         partial = text
+        // Anchored commands fire on the partial, the moment the phrase is
+        // complete — a barge-in cannot wait for the pause that finalizes the
+        // utterance. The bare form needs a finalized utterance, so it is
+        // checked only in commitFinal.
+        pendingCommand = VoiceCommand.consume(from: currentText).map {
+            PendingCommand(command: $0.command, consumedWords: $0.consumed)
+        }
+    }
+
+    /// Consume the pending command: strip its words out of the raw text so
+    /// they neither ride into the sent message nor linger in the draft, and
+    /// return the command for the composer to act on. Returns nil when
+    /// nothing is pending — the once-only gate that keeps one spoken
+    /// command from firing twice.
+    @discardableResult
+    func takeCommand() -> VoiceCommand? {
+        guard let pending = pendingCommand else { return nil }
+        pendingCommand = nil
+        if let stripped = VoiceCommand.strippingLastWords(pending.consumedWords, from: currentText) {
+            transcript = stripped
+            partial = ""
+        }
+        return pending.command
     }
 
     private func fail(_ message: String) {

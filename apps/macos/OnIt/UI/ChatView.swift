@@ -242,7 +242,9 @@ struct ChatView: View {
         attachments = []
         uploadError = nil
         // The dictation accumulator still holds the words just sent; without
-        // this, the next dictation session would resurrect them.
+        // this, the next dictation session would resurrect them. While the
+        // mic is live this also restarts recognition, so the flushed
+        // request's buffer cannot re-emit the sent words into the draft.
         dictation.reset()
         Task {
             var paths: [String] = []
@@ -362,12 +364,6 @@ struct DictationButton: View {
     /// this session append after it; the field itself is never rewritten
     /// wholesale, so keyboard edits mid-dictation survive.
     @State private var appendBase = ""
-    /// The normalized tail that last fired a command. The transcript keeps
-    /// its words after a command fires, so without this guard every later
-    /// partial update would re-fire it — worst case re-killing a *new* task
-    /// started after a barge-in. A fresh command changes the tail, so it
-    /// still fires.
-    @State private var firedTail: String?
 
     var body: some View {
         let snap = dictation.snapshot
@@ -394,29 +390,26 @@ struct DictationButton: View {
             draft = appendBase + separator + snap.currentText
         }
         // Spoken commands ride the same stream: "onit, run" sends the
-        // composer, "onit, stop" barges in on the running task. Both fire
-        // through the center's callback so the matcher stays testable
-        // without a mic.
+        // composer, "onit, stop" barges in on the running task — and after a
+        // pause, a bare "run" / "go" / "stop" utterance works without the
+        // anchor. The center flags the command; the view consumes it exactly
+        // once and strips the command words from the draft's source.
         .onChange(of: dictation.snapshot) { _, snap in
-            guard snap.isListening,
-                  let match = VoiceCommand.consume(from: snap.currentText)
-            else { return }
-            let tail = match.remaining + "|" + String(describing: match.command)
-            guard tail != firedTail else { return }
-            firedTail = tail
-            switch match.command {
+            guard snap.isListening, snap.pendingCommand != nil else { return }
+            guard let command = dictation.takeCommand() else { return }
+            // The command words leave the draft's source; what remains is
+            // the task, in its raw casing and punctuation.
+            draft = appendBase + separator + dictation.snapshot.currentText
+            switch command {
             case .run:
-                // The command words must not ride into the sent message.
-                draft = appendBase + separator + match.remaining
                 onSend()
             case .stop:
                 session.stop()
+                // Drop the recognizer's buffer so the consumed words cannot
+                // resurface as the next partial — without clearing the task
+                // text, which must survive for the next "onit, run".
+                dictation.flush()
             }
-            // The buffer that produced the command words keeps them: without
-            // this flush, the recognizer's next partial re-emits the whole
-            // utterance (task + command) and the just-sent task text lands
-            // back in the draft — looking like nothing executed.
-            dictation.reset()
         }
         // Leaving the composer (session switch, window close) must not leave
         // a live microphone behind.
