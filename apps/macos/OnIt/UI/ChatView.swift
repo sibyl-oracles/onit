@@ -378,7 +378,6 @@ struct DictationButton: View {
             Image(systemName: snap.isListening ? "mic.fill" : "mic")
                 .font(.system(size: 13))
                 .foregroundStyle(snap.isListening ? Color.accentColor : Palette.secondaryText)
-                .symbolEffect(.pulse, options: .repeating, isActive: snap.isListening)
         }
         .buttonStyle(.plain)
         .help(snap.isListening ? "Stop dictation" : "Dictate (click to speak)")
