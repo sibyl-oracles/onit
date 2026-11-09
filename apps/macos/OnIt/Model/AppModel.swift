@@ -36,6 +36,11 @@ final class AppModel {
     /// Inline video playback, shared app-wide for the same reason.
     let video = VideoCenter()
 
+    /// Composer dictation, shared app-wide: one microphone at a time, and
+    /// leaving a session (or sending) ends the listening session rather than
+    /// letting its stream bleed into another transcript's draft.
+    let dictation = DictationCenter()
+
     /// Sync Typography with whatever a previous launch persisted. Property
     /// initializers cannot touch other statics safely at declaration time.
     func adoptPersistedTextScale() {

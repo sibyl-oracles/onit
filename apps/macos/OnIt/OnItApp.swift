@@ -11,6 +11,7 @@ struct OnItApp: App {
                 .environment(model)
                 .environment(model.audio)
                 .environment(model.video)
+                .environment(model.dictation)
                 // Adopt the persisted scale before the first layout pass so
                 // the transcript never draws once at the wrong size.
                 .onAppear { model.adoptPersistedTextScale() }

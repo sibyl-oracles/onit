@@ -87,6 +87,13 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>
     </dict>
+    <!-- Composer dictation: microphone capture plus Apple's Speech framework
+         (the engine macOS Dictation uses). Without these keys the prompts
+         never appear and the APIs fail with opaque errors. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OnIt uses the microphone only while you press the mic button to dictate a message.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>OnIt transcribes dictated messages, on this Mac where the language allows it.</string>
 </dict>
 </plist>
 PLIST

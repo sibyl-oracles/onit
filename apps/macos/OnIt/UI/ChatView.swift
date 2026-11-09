@@ -144,6 +144,8 @@ struct ChatView: View {
                     .textSelection(.enabled)
             }
 
+            DictationStatus()
+
             HStack(alignment: .bottom, spacing: 8) {
                 Button(action: attach) {
                     Image(systemName: "paperclip")
@@ -155,6 +157,7 @@ struct ChatView: View {
                 .help("Attach a file")
                 .accessibilityLabel("Attach a file")
 
+                DictationButton(draft: $draft)
                 TextField(
                     "Ask OnIt…",
                     text: $draft,
@@ -331,5 +334,86 @@ private struct EmptyTranscript: View {
                 .frame(maxWidth: 380)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// The microphone button in the composer: an alternative to typing, backed by
+/// Apple's Speech framework (the engine macOS Dictation uses).
+///
+/// While listening, the button pulses and the recognized text streams into
+/// the draft field live — the user watches their words appear as they speak,
+/// and can correct by keyboard mid-stream. The draft keeps its own text:
+/// dictation appends to whatever is already there, and a second press stops
+/// listening while keeping the words.
+struct DictationButton: View {
+    @Binding var draft: String
+    @Environment(DictationCenter.self) private var dictation
+    /// The draft as it was when listening began. Words recognized during
+    /// this session append after it; the field itself is never rewritten
+    /// wholesale, so keyboard edits mid-dictation survive.
+    @State private var appendBase = ""
+
+    var body: some View {
+        let snap = dictation.snapshot
+        Button {
+            if snap.isListening {
+                dictation.stop()
+            } else {
+                appendBase = draft
+                dictation.toggle()
+            }
+        } label: {
+            Image(systemName: snap.isListening ? "mic.fill" : "mic")
+                .font(.system(size: 13))
+                .foregroundStyle(snap.isListening ? Color.accentColor : Palette.secondaryText)
+                .symbolEffect(.pulse, options: .repeating, isActive: snap.isListening)
+        }
+        .buttonStyle(.plain)
+        .help(snap.isListening ? "Stop dictation" : "Dictate (click to speak)")
+        .accessibilityLabel(snap.isListening ? "Stop dictation" : "Dictate a message")
+        // The stream lands in the field as it is recognized. Base + dictated,
+        // never dictated alone, so the user's mid-stream edits survive.
+        .onChange(of: snap.currentText) {
+            guard snap.isListening else { return }
+            draft = appendBase + separator + snap.currentText
+        }
+        // Leaving the composer (session switch, window close) must not leave
+        // a live microphone behind.
+        .onDisappear {
+            if dictation.snapshot.isListening { dictation.stop() }
+        }
+    }
+
+    /// One space between the user's own words and the dictated ones — but
+    /// only when there are words to separate.
+    private var separator: String {
+        appendBase.isEmpty || appendBase.hasSuffix(" ") || appendBase.hasSuffix("\n") ? "" : " "
+    }
+}
+
+/// Live dictation status above the composer row: the hypothesis as it grows,
+/// or the error/denial that stopped the stream. Mirrors how `uploadError`
+/// is surfaced — close to the input, dismissible by the next attempt.
+struct DictationStatus: View {
+    @Environment(DictationCenter.self) private var dictation
+
+    var body: some View {
+        let snap = dictation.snapshot
+        if snap.isListening {
+            HStack(spacing: 6) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.accentColor)
+                Text(snap.currentText.isEmpty ? "Listening…" : snap.currentText)
+                    .font(Typography.caption)
+                    .foregroundStyle(snap.currentText.isEmpty ? Palette.secondaryText : .primary)
+                    .lineLimit(2)
+            }
+        } else if let error = snap.error {
+            Text(error)
+                .font(Typography.caption)
+                .foregroundStyle(snap.isDenied ? Palette.danger : Palette.secondaryText)
+                .textSelection(.enabled)
+        }
     }
 }
