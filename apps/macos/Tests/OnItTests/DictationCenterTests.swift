@@ -119,27 +119,34 @@ final class DictationCenterTests: XCTestCase {
 
 @MainActor
 final class VoiceCommandTests: XCTestCase {
-    // MARK: - "run it" / "execute"
+    // MARK: - "onit, run" / "onit, execute"
 
-    /// The plain execute command, with and without punctuation.
-    func testRunIt() {
-        XCTAssertEqual(VoiceCommand.consume(from: "run it")?.command, .run)
-        XCTAssertEqual(VoiceCommand.consume(from: "Run it.")?.command, .run)
-        XCTAssertEqual(VoiceCommand.consume(from: "execute")?.command, .run)
-        XCTAssertEqual(VoiceCommand.consume(from: "Execute!")?.command, .run)
+    /// The plain execute command, with and without punctuation, in both
+    /// spellings of the anchor.
+    func testOnitRun() {
+        XCTAssertEqual(VoiceCommand.consume(from: "onit run")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "Onit, run.")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "on it run")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "onit execute")?.command, .run)
+    }
+
+    /// "onit, run it" is an accepted variant.
+    func testOnitRunIt() {
+        XCTAssertEqual(VoiceCommand.consume(from: "onit run it")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "on it, run it")?.command, .run)
     }
 
     /// The command peels off the tail, leaving the task text behind.
-    func testRunItLeavesTaskText() {
-        let match = VoiceCommand.consume(from: "summarize this chapter, run it")
+    func testOnitRunLeavesTaskText() {
+        let match = VoiceCommand.consume(from: "summarize this chapter, onit run")
         XCTAssertEqual(match?.command, .run)
         XCTAssertEqual(match?.remaining, "summarize this chapter")
     }
 
     /// Filler words must not block the match.
-    func testRunItWithFillers() {
-        XCTAssertEqual(VoiceCommand.consume(from: "um, run it")?.command, .run)
-        XCTAssertEqual(VoiceCommand.consume(from: "hey execute please")?.command, .run)
+    func testOnitRunWithFillers() {
+        XCTAssertEqual(VoiceCommand.consume(from: "onit, um, execute")?.command, .run)
+        XCTAssertEqual(VoiceCommand.consume(from: "hey onit please run")?.command, .run)
     }
 
     // MARK: - "onit, stop" barge-in
@@ -150,30 +157,33 @@ final class VoiceCommandTests: XCTestCase {
         XCTAssertEqual(VoiceCommand.consume(from: "onit stop")?.command, .stop)
         XCTAssertEqual(VoiceCommand.consume(from: "on it stop")?.command, .stop)
         XCTAssertEqual(VoiceCommand.consume(from: "Onit, stop.")?.command, .stop)
+        XCTAssertEqual(VoiceCommand.consume(from: "onit stop it")?.command, .stop)
     }
 
-    /// "stop it" is an accepted barge-in variant.
-    func testStopIt() {
-        XCTAssertEqual(VoiceCommand.consume(from: "stop it")?.command, .stop)
-    }
-
-    /// Bare "stop" is deliberately not a command: it appears in half of all
-    /// task text, and a false stop kills real work.
-    func testBareStopIsNotACommand() {
+    /// Bare "execute", "run it", and "stop it" are deliberately not
+    /// commands: without the anchor they are ordinary words that end half
+    /// of all dictated tasks, and treating them as commands consumed the
+    /// task instead of executing it.
+    func testBareCommandsAreNotCommands() {
+        XCTAssertNil(VoiceCommand.consume(from: "run it"))
+        XCTAssertNil(VoiceCommand.consume(from: "execute"))
+        XCTAssertNil(VoiceCommand.consume(from: "stop it"))
         XCTAssertNil(VoiceCommand.consume(from: "stop"))
-        XCTAssertNil(VoiceCommand.consume(from: "stop the server"))
     }
 
-    /// A task that merely mentions the command words mid-sentence must not
-    /// fire — only the tail counts.
+    /// A task that merely mentions the command words must not fire — the
+    /// command phrase must be the entire tail after the anchor.
+    func testExtraWordsAfterAnchorDoNotFire() {
+        XCTAssertNil(VoiceCommand.consume(from: "onit run the tests"))
+        XCTAssertNil(VoiceCommand.consume(from: "onit execute this script"))
+        XCTAssertNil(VoiceCommand.consume(from: "onit stop the server"))
+        XCTAssertNil(VoiceCommand.consume(from: "onit run it and then stop"))
+    }
+
+    /// A task addressed to onit mid-sentence passes through untouched.
     func testMidSentenceMentionDoesNotFire() {
-        XCTAssertNil(VoiceCommand.consume(from: "run it and then stop the server"))
         XCTAssertNil(VoiceCommand.consume(from: "how do I run it in production"))
         XCTAssertNil(VoiceCommand.consume(from: "tell onit to stop the build"))
-    }
-
-    /// Ordinary text produces no command and no rewrite.
-    func testOrdinaryTextUnmatched() {
         XCTAssertNil(VoiceCommand.consume(from: "write me a haiku about the sea"))
         XCTAssertNil(VoiceCommand.consume(from: ""))
         XCTAssertNil(VoiceCommand.consume(from: "   "))
@@ -191,5 +201,13 @@ final class VoiceCommandTests: XCTestCase {
     func testNormalizationFoldsCaseAndPunctuation() {
         // "ONIT!!! STOP???" must match the same as "onit stop".
         XCTAssertEqual(VoiceCommand.consume(from: "ONIT!!! STOP???")?.command, .stop)
+    }
+
+    /// The last anchor wins: a task that quotes an earlier command still
+    /// ends with the words the user just said.
+    func testLastAnchorWins() {
+        let match = VoiceCommand.consume(from: "onit run, no wait, onit stop")
+        XCTAssertEqual(match?.command, .stop)
+        XCTAssertEqual(match?.remaining, "onit run no wait")
     }
 }

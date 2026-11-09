@@ -3,13 +3,19 @@ import Foundation
 import Observation
 import Speech
 
-/// A spoken command recognized at the end of a dictation stream. Commands
-/// are *trailing* on purpose: a task that merely mentions the words
-/// mid-sentence must not fire, so only the tail of the transcript counts.
+/// A spoken command recognized in a dictation stream. Every command is
+/// anchored on the wake word "onit" — bare "execute", "run it", or "stop"
+/// are ordinary words that appear in half of all task text, and treating
+/// them as commands ate the dictated task (say "…and execute" and the whole
+/// task was consumed as a command instead of sent).
+///
+/// The grammar is strict: anchor, then the command phrase, then nothing.
+/// "onit run" fires; "onit run the tests" is a task addressed to onit and
+/// passes through untouched.
 enum VoiceCommand: Equatable {
-    /// "run it" / "execute" — send the composer.
+    /// "onit, run" / "onit, run it" / "onit, execute" — send the composer.
     case run
-    /// "onit, stop" — barge in and stop the running task.
+    /// "onit, stop" / "onit, stop it" — barge in and stop the running task.
     case stop
 
     /// Normalize a dictation stream and peel a command off its tail.
@@ -17,59 +23,38 @@ enum VoiceCommand: Equatable {
     ///
     /// Normalization folds the two things the recognizer is inconsistent
     /// about: case, punctuation, and the "onit"/"on it" homophone pair.
-    /// Filler words are dropped so "um, run it" still fires.
+    /// Filler words are dropped so "onit, um, execute" still fires.
     static func consume(from text: String) -> (remaining: String, command: VoiceCommand)? {
-        var words = normalize(text)
-        guard !words.isEmpty else { return nil }
+        let words = normalize(text)
+        guard !words.isEmpty, let anchor = anchorRange(in: words) else { return nil }
 
-        if takeStop(from: &words) {
-            return (words.joined(separator: " "), .stop)
+        // Everything before the anchor is the task; everything after must be
+        // exactly the command phrase — extra words make it a task, not a
+        // command ("onit execute this script" should run the script, not
+        // send the draft). The anchor itself is command words too: it must
+        // not ride into the sent message.
+        let head = words[..<anchor.lowerBound]
+        let tail = Array(words[anchor.upperBound...])
+
+        switch tail {
+        case ["stop"], ["stop", "it"]:
+            return (head.joined(separator: " "), .stop)
+        case ["run"], ["run", "it"], ["execute"]:
+            return (head.joined(separator: " "), .run)
+        default:
+            return nil
         }
-        if takeRun(from: &words) {
-            return (words.joined(separator: " "), .run)
+    }
+
+    /// Range of the wake word. "onit" is spoken as one word but the
+    /// recognizer often emits the English pair "on it", so both count. The
+    /// last occurrence wins: the command follows the most recent anchor.
+    private static func anchorRange(in words: [String]) -> Range<Int>? {
+        for i in words.indices.reversed() {
+            if words[i] == "onit" { return i..<i + 1 }
+            if words[i] == "on", i + 1 < words.count, words[i + 1] == "it" { return i..<i + 2 }
         }
         return nil
-    }
-
-    /// Peel the barge-in off the tail. Longest match first: the three-word
-    /// "on it stop" must be checked before the two-word forms, or its tail
-    /// would be eaten by the "stop it" branch and leave a stray "on" behind.
-    /// Bare "stop" is deliberately not a command: it appears in half of all
-    /// task text ("stop the server…"), and a false stop kills real work.
-    private static func takeStop(from words: inout [String]) -> Bool {
-        if words.count >= 3,
-           words[words.count - 3] == "on",
-           words[words.count - 2] == "it",
-           words.last == "stop" {
-            words.removeLast(3)
-            return true
-        }
-        if words.count >= 2, isOnit(words[words.count - 2]), words.last == "stop" {
-            words.removeLast(2)
-            return true
-        }
-        if words.count >= 2, words[words.count - 2] == "stop", words.last == "it" {
-            words.removeLast(2)
-            return true
-        }
-        return false
-    }
-
-    /// Peel "run it" / "execute" off the tail.
-    private static func takeRun(from words: inout [String]) -> Bool {
-        if words.last == "execute" {
-            words.removeLast()
-            return true
-        }
-        if words.count >= 2, words[words.count - 2] == "run", words.last == "it" {
-            words.removeLast(2)
-            return true
-        }
-        return false
-    }
-
-    private static func isOnit(_ word: String) -> Bool {
-        word == "onit" || word == "on it"
     }
 
     /// Lowercase, split on anything that is not a letter or digit, and drop

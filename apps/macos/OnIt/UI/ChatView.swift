@@ -355,8 +355,8 @@ struct DictationButton: View {
     /// The session this composer sends into — spoken "onit, stop" stops it.
     let session: Session
     /// Sends the composer, with all the gating ChatView applies (canSend,
-    /// uploads, draft clearing). Spoken "run it" goes through the same door
-    /// as ⌘Return — never a side door.
+    /// uploads, draft clearing). Spoken "onit, run" goes through the same
+    /// door as ⌘Return — never a side door.
     let onSend: () -> Void
     /// The draft as it was when listening began. Words recognized during
     /// this session append after it; the field itself is never rewritten
@@ -393,9 +393,10 @@ struct DictationButton: View {
             guard snap.isListening else { return }
             draft = appendBase + separator + snap.currentText
         }
-        // Spoken commands ride the same stream: "run it" sends the composer,
-        // "onit, stop" barges in on the running task. Both fire through the
-        // center's callback so the matcher stays testable without a mic.
+        // Spoken commands ride the same stream: "onit, run" sends the
+        // composer, "onit, stop" barges in on the running task. Both fire
+        // through the center's callback so the matcher stays testable
+        // without a mic.
         .onChange(of: dictation.snapshot) { _, snap in
             guard snap.isListening,
                   let match = VoiceCommand.consume(from: snap.currentText)
