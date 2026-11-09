@@ -411,6 +411,11 @@ struct DictationButton: View {
             case .stop:
                 session.stop()
             }
+            // The buffer that produced the command words keeps them: without
+            // this flush, the recognizer's next partial re-emits the whole
+            // utterance (task + command) and the just-sent task text lands
+            // back in the draft — looking like nothing executed.
+            dictation.reset()
         }
         // Leaving the composer (session switch, window close) must not leave
         // a live microphone behind.

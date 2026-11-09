@@ -31,6 +31,43 @@ final class DictationCenterTests: XCTestCase {
         XCTAssertFalse(center.currentText.contains("wor hello"))
     }
 
+    /// On-device recognition finalizes per utterance: each final holds only
+    /// the words since the last pause. A command spoken after a dictated
+    /// task must not wipe the task — this is the reported overwrite bug.
+    func testFinalAfterPauseAppends() {
+        let center = DictationCenter()
+        center.commitFinal("summarize chapter 3")
+        center.commitFinal("execute")
+        XCTAssertEqual(center.currentText, "summarize chapter 3 execute")
+    }
+
+    /// The server path repeats everything recognized so far; that shape
+    /// must replace, not append on top of itself.
+    func testCumulativeFinalReplaces() {
+        let center = DictationCenter()
+        center.commitFinal("summarize chapter 3")
+        center.commitFinal("summarize chapter 3 execute")
+        XCTAssertEqual(center.currentText, "summarize chapter 3 execute")
+    }
+
+    /// The cumulative test is case- and punctuation-insensitive: the
+    /// recognizer's casing and punctuation are not stable across utterances.
+    func testCumulativeFinalIgnoresCaseAndPunctuation() {
+        let center = DictationCenter()
+        center.commitFinal("Summarize chapter 3.")
+        center.commitFinal("Summarize chapter 3. Execute!")
+        XCTAssertEqual(center.currentText, "Summarize chapter 3. Execute!")
+    }
+
+    /// A final that only shares a prefix with the transcript is a new
+    /// utterance, not a longer version of it — it must append.
+    func testPrefixSharedFinalAppends() {
+        let center = DictationCenter()
+        center.commitFinal("run the tests")
+        center.commitFinal("run the linter too")
+        XCTAssertEqual(center.currentText, "run the tests run the linter too")
+    }
+
     /// Reset clears everything: after a send, a stale transcript must not
     /// resurface in the next dictation session.
     func testResetClearsAccumulator() {
@@ -40,6 +77,19 @@ final class DictationCenterTests: XCTestCase {
         center.reset()
         XCTAssertEqual(center.currentText, "")
         XCTAssertNil(center.snapshot.error)
+    }
+
+    /// Reset also clears the in-flight hypothesis, so a partial that arrives
+    /// after the flush cannot resurrect already-sent words into the draft.
+    func testResetDropsPartial() {
+        let center = DictationCenter()
+        center.updatePartial("summarize chapter 3 run it")
+        center.reset()
+        center.updatePartial("summarize chapter 3 run it")
+        XCTAssertEqual(center.currentText, "summarize chapter 3 run it")
+        center.commitFinal("summarize chapter 3 run it")
+        center.reset()
+        XCTAssertEqual(center.currentText, "")
     }
 
     /// Stopping while not listening is a no-op, not a state corruption.

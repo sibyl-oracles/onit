@@ -224,10 +224,18 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
 
     /// Drop accumulated text and any error. Called when the draft leaves
     /// (send) so a stale transcript cannot resurface in the next dictation.
+    ///
+    /// Also ends the recognizer's buffer: the task that produced the words
+    /// keeps its internal buffer, and without this it re-emits everything
+    /// already heard as the next partial — the just-sent text would land
+    /// back in the draft, looking like the send never happened. Ending the
+    /// request flushes that buffer; the next press starts a fresh one.
     func reset() {
         transcript = ""
         partial = ""
         error = nil
+        request?.endAudio()
+        request = nil
     }
 
     // MARK: - Recognition callbacks
@@ -258,9 +266,37 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
 
     /// State transitions the recognition callback drives; internal so tests
     /// can exercise the accumulator without a microphone.
+    ///
+    /// A final result is not always the whole story. The server path repeats
+    /// everything recognized so far (cumulative), while on-device recognition
+    /// finalizes per utterance — each final holds only the words since the
+    /// last pause. Replacing unconditionally dropped everything dictated
+    /// before the pause: say "execute" after a dictated task and the
+    /// transcript shrank to just "execute", wiping the task from the draft.
+    /// So: a final that starts with the transcript (the cumulative shape)
+    /// replaces it; anything else continues it.
     func commitFinal(_ text: String) {
-        transcript = text
         partial = ""
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let previous = Self.words(transcript)
+        let incoming = Self.words(trimmed)
+        let cumulative = incoming.count >= previous.count
+            && incoming.prefix(previous.count).elementsEqual(previous)
+        if cumulative {
+            transcript = trimmed
+        } else {
+            transcript = transcript.isEmpty ? trimmed : transcript + " " + trimmed
+        }
+    }
+
+    /// Lowercased words with punctuation stripped — the shape finals must be
+    /// compared in, because the recognizer's casing and punctuation are not
+    /// stable from one utterance to the next.
+    private static func words(_ text: String) -> [String] {
+        text.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
     }
 
     func updatePartial(_ text: String) {
