@@ -61,3 +61,6 @@ benchmarks/eval/baseline.json
 local_search/
 # Scratch commit-message file, written while committing.
 tmp_commit_msg.txt
+
+# Local scratch / debug output
+data/
