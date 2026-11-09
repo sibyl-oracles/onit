@@ -33,6 +33,9 @@ final class AppModel {
     /// starting a row in one transcript stops the row playing in another.
     let audio = AudioCenter()
 
+    /// Inline video playback, shared app-wide for the same reason.
+    let video = VideoCenter()
+
     /// Sync Typography with whatever a previous launch persisted. Property
     /// initializers cannot touch other statics safely at declaration time.
     func adoptPersistedTextScale() {

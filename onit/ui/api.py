@@ -192,6 +192,20 @@ _PLAYABLE_AUDIO_TYPES = {
     "audio/webm",
 }
 
+# Video the UIs can play inline: the macOS app hands the bytes to AVPlayer,
+# the web UI would use a <video> element. Same bar as audio — a data file
+# that merely has a video-ish name stays a download.
+_PLAYABLE_VIDEO_TYPES = {
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+    "video/x-m4v",
+    "video/mpeg",
+    "video/x-matroska",
+    "video/x-msvideo",
+    "video/3gpp",
+}
+
 # Extensions some systems map to nothing but a player accepts anyway.
 _AUDIO_EXT_MIME = {
     ".mp3": "audio/mpeg",
@@ -204,6 +218,20 @@ _AUDIO_EXT_MIME = {
     ".aac": "audio/aac",
     ".aiff": "audio/aiff",
     ".aif": "audio/aiff",
+}
+
+# Same story for video: mimetypes covers the common ones but misses some
+# players accept, and a wrong-but-playable guess beats a download row.
+_VIDEO_EXT_MIME = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/x-m4v",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".mpg": "video/mpeg",
+    ".mpeg": "video/mpeg",
+    ".3gp": "video/3gpp",
 }
 
 # Text files the UI shows in a scrollable inset beside the download, mapped to
@@ -486,6 +514,14 @@ def _audio_type(path: str) -> Optional[str]:
     if mime in _PLAYABLE_AUDIO_TYPES:
         return mime
     return _AUDIO_EXT_MIME.get(os.path.splitext(path)[1].lower())
+
+
+def _video_type(path: str) -> Optional[str]:
+    """MIME type if this file is something the UI can play inline, else None."""
+    mime = mimetypes.guess_type(path)[0]
+    if mime in _PLAYABLE_VIDEO_TYPES:
+        return mime
+    return _VIDEO_EXT_MIME.get(os.path.splitext(path)[1].lower())
 
 
 def _inject_preview_shim(html: str) -> str:
@@ -979,10 +1015,15 @@ class WebApiUI:
                 continue
             fname = os.path.basename(fpath)
             # What the agent produced is shown in the reply, not just
-            # offered as a download: audio plays, images render, code opens
-            # in an inset.
+            # offered as a download: audio and video play, images render,
+            # code opens in an inset.
             audio = _audio_type(fpath)
-            kind = "audio" if audio else ("image" if _preview_image_type(fpath) else "file")
+            video = _video_type(fpath)
+            kind = (
+                "audio"
+                if audio
+                else ("video" if video else ("image" if _preview_image_type(fpath) else "file"))
+            )
             info = {
                 "name": fname,
                 "url": f"/uploads/{session_id}/{urllib.parse.quote(fname)}",
@@ -991,6 +1032,8 @@ class WebApiUI:
             }
             if audio:
                 info["mime"] = audio
+            if video:
+                info["mime"] = video
             if info["kind"] == "file":
                 preview = _code_preview(fpath)
                 if preview:

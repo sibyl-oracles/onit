@@ -97,6 +97,7 @@ struct FileInfo: Sendable, Equatable, Identifiable, Decodable {
     var isImage: Bool { kind == "image" }
     var isCode: Bool { kind == "code" }
     var isAudio: Bool { kind == "audio" }
+    var isVideo: Bool { kind == "video" }
 
     init(
         name: String, url: String, size: Int, kind: String,

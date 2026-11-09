@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 /// One message in the transcript.
@@ -241,6 +242,8 @@ private struct FileChips: View {
                     ImageRow(file: file, fallback: FileRow(file: file))
                 } else if file.isAudio {
                     AudioRow(file: file)
+                } else if file.isVideo {
+                    VideoRow(file: file, fallback: FileRow(file: file))
                 } else {
                     FileRow(file: file)
                 }
@@ -415,6 +418,89 @@ private struct AudioRow: View {
     private func progress(_ state: AudioCenter.RowState) -> CGFloat {
         guard state.duration > 0 else { return 0 }
         return CGFloat(min(1, state.elapsed / state.duration))
+    }
+
+    private func timeString(_ t: TimeInterval) -> String {
+        String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
+    }
+
+    private func byteString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+/// A video attachment rendered as an inline player.
+///
+/// Playback lives in VideoCenter, not the row: one player app-wide, the same
+/// contract as audio. The bytes are fetched over the connection before the
+/// center is touched — a file the agent named but never wrote falls back to
+/// the plain download row instead of leaving an empty frame behind, which is
+/// the same bargain ImageRow strikes.
+private struct VideoRow: View {
+    let file: FileInfo
+    let fallback: FileRow
+    @Environment(VideoCenter.self) private var video
+    @Environment(AppModel.self) private var model
+    @State private var loading = false
+
+    var body: some View {
+        let state = video.state(for: file.url)
+        if video.activeURL == file.url, state.isReady, let player = video.player {
+            VStack(alignment: .leading, spacing: 4) {
+                VideoPlayer(player: player)
+                    .frame(maxHeight: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: Metrics.controlRadius))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Metrics.controlRadius)
+                            .strokeBorder(Palette.raised)
+                    )
+                HStack {
+                    Text(file.name)
+                        .font(Typography.caption)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(timeString(state.duration))
+                        .font(Typography.caption.monospacedDigit())
+                        .foregroundStyle(Palette.tertiaryText)
+                }
+            }
+        } else if state.loadFailed {
+            fallback
+        } else {
+            // Not loaded yet: a quiet row with a play affordance, sized like
+            // the audio row so the transcript does not jump on click.
+            HStack(spacing: 8) {
+                Image(systemName: "play.circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(loading ? 0.4 : 1)
+                Text(file.name)
+                    .font(Typography.caption)
+                    .lineLimit(1)
+                Spacer()
+                Text(loading ? "loading…" : byteString(file.size))
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.tertiaryText)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: Metrics.controlRadius))
+            .contentShape(Rectangle())
+            .onTapGesture { load() }
+            .help("Play \(file.name)")
+            .accessibilityLabel("Play video \(file.name)")
+            .accessibilityAddTraits(.isButton)
+        }
+    }
+
+    private func load() {
+        guard !loading else { return }
+        loading = true
+        Task {
+            defer { loading = false }
+            guard let data = await model.attachmentData(file.url) else { return }
+            video.play(url: file.url, data: data)
+        }
     }
 
     private func timeString(_ t: TimeInterval) -> String {

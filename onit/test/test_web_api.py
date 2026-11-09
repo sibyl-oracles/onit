@@ -314,14 +314,6 @@ class TestAudioKind:
         assert info["kind"] == "audio"
         assert info["mime"] == "audio/mp4"
 
-    def test_video_webm_stays_a_download(self, ui):
-        # AVAudioPlayer cannot decode it; do not offer a broken Play button.
-        sid, session = ui._get_or_create_session()
-        path = os.path.join(session.data_path, "clip.webm")
-        with open(path, "wb") as f:
-            f.write(b"\x1a\x45\xdf\xa3")
-        assert ui._file_infos([path], sid)[0]["kind"] == "file"
-
     def test_audio_file_is_served_with_its_real_type(self, client, ui):
         sid, session = ui._get_or_create_session()
         with open(os.path.join(session.data_path, "take.mp3"), "wb") as f:
@@ -329,6 +321,57 @@ class TestAudioKind:
         res = client.get(f"/uploads/{sid}/take.mp3")
         assert res.status_code == 200
         assert res.headers["content-type"] == "audio/mpeg"
+        assert "attachment" in res.headers.get("content-disposition", "")
+
+
+class TestVideoKind:
+    """Video an agent produces plays in the reply, not just downloads."""
+
+    def _write(self, session, name, data):
+        path = os.path.join(session.data_path, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_mp4_is_video_with_its_mime(self, ui):
+        sid, session = ui._get_or_create_session()
+        # An ftyp box naming mp42 — enough of a header to be honest about it.
+        path = self._write(session, "clip.mp4", b"\x00\x00\x00 ftypmp42")
+        info = ui._file_infos([path], sid)[0]
+        assert info["kind"] == "video"
+        assert info["mime"] == "video/mp4"
+
+    def test_mov_is_video(self, ui):
+        sid, session = ui._get_or_create_session()
+        path = self._write(session, "take.mov", b"\x00\x00\x00 ftypqt  ")
+        info = ui._file_infos([path], sid)[0]
+        assert info["kind"] == "video"
+        assert info["mime"] == "video/quicktime"
+
+    def test_webm_is_video(self, ui):
+        # AVPlayer decodes WebM, so it no longer has to stay a download.
+        sid, session = ui._get_or_create_session()
+        path = self._write(session, "clip.webm", b"\x1a\x45\xdf\xa3")
+        info = ui._file_infos([path], sid)[0]
+        assert info["kind"] == "video"
+        assert info["mime"] == "video/webm"
+
+    def test_mkv_is_video_by_extension(self, ui):
+        # mimetypes maps .mkv to video/x-matroska on this interpreter, but
+        # the extension fallback is what keeps the kind stable if that
+        # mapping ever moves.
+        sid, session = ui._get_or_create_session()
+        path = self._write(session, "cast.mkv", b"\x1a\x45\xdf\xa3")
+        info = ui._file_infos([path], sid)[0]
+        assert info["kind"] == "video"
+        assert info["mime"] == "video/x-matroska"
+
+    def test_video_file_is_served_with_its_real_type(self, client, ui):
+        sid, session = ui._get_or_create_session()
+        self._write(session, "clip.mp4", b"\x00\x00\x00 ftypmp42")
+        res = client.get(f"/uploads/{sid}/clip.mp4")
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "video/mp4"
         assert "attachment" in res.headers.get("content-disposition", "")
 
 
