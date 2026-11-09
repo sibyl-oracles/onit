@@ -15,7 +15,8 @@ import Speech
 ///
 /// There is a second, pause-delimited form: once an utterance has finalized
 /// (the user paused), a follow-up utterance that is *exactly* a command
-/// phrase — "run", "go", "execute", "stop" — fires without the anchor. The
+/// phrase — "run", "go", "execute", "stop", "clear" — fires without the
+/// anchor. The
 /// pause is what separates command from task text: a sentence that merely
 /// ends with one of these words ("went for a run") is one utterance, not an
 /// utterance plus a command, and passes through untouched.
@@ -31,10 +32,17 @@ enum VoiceCommand: Equatable {
     case run
     /// "onit, stop" / "onit, stop it" — barge in and stop the running task.
     case stop
+    /// "onit, clear" / "onit, discard" — wipe the draft and start over.
+    /// The view layer decides what a clear wipes; the center only peels
+    /// the command and keeps the task text, like `stop`.
+    case clear
 
     /// The phrases each command accepts, in normalized form.
     private static let runPhrases: Set<[String]> = [["run"], ["run", "it"], ["execute"], ["go"]]
     private static let stopPhrases: Set<[String]> = [["stop"], ["stop", "it"]]
+    private static let clearPhrases: Set<[String]> = [
+        ["clear"], ["clear", "it"], ["discard"], ["discard", "it"], ["start", "over"],
+    ]
 
     /// Normalize a dictation stream and peel a command off its tail.
     /// Returns the text with the command words removed, the command, and how
@@ -93,6 +101,7 @@ enum VoiceCommand: Equatable {
     private static func commandPhrase(_ words: [String]) -> VoiceCommand? {
         if stopPhrases.contains(words) { return .stop }
         if runPhrases.contains(words) { return .run }
+        if clearPhrases.contains(words) { return .clear }
         return nil
     }
 

@@ -339,10 +339,11 @@ struct DictationButton: View {
             draft = appendBase + separator + snap.currentText
         }
         // Spoken commands ride the same stream: "onit, run" sends the
-        // composer, "onit, stop" barges in on the running task — and after a
-        // pause, a bare "run" / "go" / "stop" utterance works without the
-        // anchor. The center flags the command; the view consumes it exactly
-        // once and strips the command words from the draft's source.
+        // composer, "onit, stop" barges in on the running task, "onit,
+        // clear" wipes the draft — and after a pause, a bare "run" / "go" /
+        // "stop" / "clear" utterance works without the anchor. The center
+        // flags the command; the view consumes it exactly once and strips
+        // the command words from the draft's source.
         .onChange(of: dictation.snapshot) { _, snap in
             guard snap.isListening, snap.pendingCommand != nil else { return }
             guard let command = dictation.takeCommand() else { return }
@@ -357,6 +358,18 @@ struct DictationButton: View {
                 // Drop the recognizer's buffer so the consumed words cannot
                 // resurface as the next partial — without clearing the task
                 // text, which must survive for the next "onit, run".
+                dictation.flush()
+            case .clear:
+                // Wipe everything: the dictated task *and* the words typed
+                // before it. A clear that spared appendBase would leave the
+                // user dictating into a draft they believe is empty.
+                appendBase = ""
+                draft = ""
+                // The command words must not resurface as the next partial.
+                // The mic stays live so the next task can be dictated at
+                // once — unlike the send path, nothing here restarts the
+                // recognizer with a fresh accumulator, so flush() is what
+                // drops the buffer.
                 dictation.flush()
             }
         }

@@ -159,6 +159,49 @@ final class DictationCenterTests: XCTestCase {
         XCTAssertEqual(center.currentText, "Summarize chapter 3.")
     }
 
+    /// A spoken clear strips its words but keeps the task text in the
+    /// center — the center only peels the command; the view decides what a
+    /// clear wipes (the whole draft, unlike stop).
+    func testClearStripsButKeepsTaskText() {
+        let center = DictationCenter()
+        center.commitFinal("Summarize chapter 3.")
+        center.commitFinal("Onit, clear.")
+        XCTAssertEqual(center.snapshot.pendingCommand?.command, .clear)
+        XCTAssertEqual(center.takeCommand(), .clear)
+        XCTAssertEqual(center.currentText, "Summarize chapter 3.")
+    }
+
+    /// Every phrase the clear grammar accepts, anchored form.
+    func testClearPhrases() {
+        for phrase in [["clear"], ["clear", "it"], ["discard"], ["discard", "it"], ["start", "over"]] {
+            let center = DictationCenter()
+            center.commitFinal("Summarize chapter 3.")
+            center.updatePartial("Onit, " + phrase.joined(separator: " ") + ".")
+            XCTAssertEqual(center.snapshot.pendingCommand?.command, .clear, "\(phrase)")
+            XCTAssertEqual(center.takeCommand(), .clear, "\(phrase)")
+            XCTAssertEqual(center.currentText, "Summarize chapter 3.", "\(phrase)")
+        }
+    }
+
+    /// A bare "clear" after a pause fires without the anchor, like "run".
+    func testBareClearAfterPauseFires() {
+        let center = DictationCenter()
+        center.commitFinal("Summarize chapter 3.")
+        center.commitFinal("clear")
+        XCTAssertEqual(center.snapshot.pendingCommand?.command, .clear)
+        XCTAssertEqual(center.takeCommand(), .clear)
+        XCTAssertEqual(center.currentText, "Summarize chapter 3.")
+    }
+
+    /// "clear" inside a sentence is task text — the pause boundary is what
+    /// makes it a command, exactly like "run" in "went for a run".
+    func testSentenceContainingClearIsTaskText() {
+        let center = DictationCenter()
+        center.commitFinal("clear the cache before running")
+        XCTAssertNil(center.snapshot.pendingCommand)
+        XCTAssertEqual(center.currentText, "clear the cache before running")
+    }
+
     /// A bare stop with nothing behind it still fires — after a send the
     /// transcript is empty, and barge-in is exactly what is wanted.
     func testBareStopWithEmptyTranscriptFires() {
