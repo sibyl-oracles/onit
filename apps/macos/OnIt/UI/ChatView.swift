@@ -66,7 +66,7 @@ struct ChatView: View {
             .onChange(of: session.messages.count) {
                 withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: session.messages.last?.content) { _, _ in
+            .onChange(of: session.messages.last?.activityFootprint) { _, _ in
                 // Auto-scroll only while the reader is already at the bottom.
                 // A token arriving every few milliseconds must not yank the
                 // scroll position out from under someone reading earlier in
@@ -74,6 +74,17 @@ struct ChatView: View {
                 // scroll-view layout pass, which is half the streaming CPU.
                 if isNearBottom {
                     proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+            // The answer replacing the working state can shrink the transcript
+            // or land a large final bubble in one pass; a lazy stack has not
+            // laid out its full height yet, so the first scrollTo can undershoot.
+            // One deferred re-scroll lands the reader at the true bottom.
+            .onChange(of: session.messages.last?.isStreaming) { _, streaming in
+                guard streaming == false, isNearBottom else { return }
+                withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
+                DispatchQueue.main.async {
+                    withAnimation(.onit) { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
             .onChange(of: session.pendingApproval?.id) { _, newValue in
@@ -286,7 +297,23 @@ private struct NearBottomTracker: ViewModifier {
             } action: { _, near in
                 isNearBottom = near
             }
+            .onScrollGeometryChange(for: CGFloat?.self) { geometry in
+                geometry.contentOffset.y
+            } action: { old, new in
+                // Disarm on a real upward scroll only. The scroll offset is
+                // the one axis the user alone controls: transcript growth
+                // extends the content below the viewport and leaves the
+                // offset untouched, a programmatic auto-scroll only increases
+                // it, and only the reader's wheel or trackpad moves it
+                // backwards. Treating growth as "the reader scrolled up"
+                // would disarm auto-scroll for the rest of the turn.
+                if let old, let new, new < old - 1 {
+                    isNearBottom = false
+                }
+            }
         } else {
+            // Pre-macOS 15 there is no scroll geometry to read: always follow,
+            // which matches the app's behavior before the gate existed.
             content
         }
     }

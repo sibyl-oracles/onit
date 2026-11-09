@@ -85,6 +85,44 @@ final class SessionTests: XCTestCase {
 
     // MARK: - Approvals
 
+    /// The auto-scroll trigger observes `activityFootprint`, not `content`.
+    /// This is the regression it exists for: during a task the visible growth
+    /// is reasoning, steps and status while `content` stays empty until the
+    /// answer starts — a content-only trigger left the working phase
+    /// unscrolled.
+    func testActivityFootprintChangesWhileContentIsStillEmpty() {
+        let session = makeSession()
+        let index = openTurn(on: session)
+        let idle = session.messages[index].activityFootprint
+
+        session.apply(.think("weighing options"), at: index)
+        let afterThink = session.messages[index].activityFootprint
+        XCTAssertNotEqual(idle, afterThink)
+        XCTAssertTrue(session.messages[index].content.isEmpty)
+
+        session.apply(.status("Running shell"), at: index)
+        XCTAssertNotEqual(afterThink, session.messages[index].activityFootprint)
+
+        session.apply(.phaseEnd("listed 3 files"), at: index)
+        XCTAssertNotEqual(afterThink, session.messages[index].activityFootprint)
+    }
+
+    /// Equal state must produce an equal footprint, or `onChange` fires on
+    /// every render and each firing is a scroll layout pass.
+    func testActivityFootprintIsStableWhenNothingGrows() {
+        var message = ChatMessage(role: .assistant, content: "partial answer")
+        message.reasoning = "thinking"
+        message.steps = ["Running shell"]
+        message.status = "Running shell"
+
+        XCTAssertEqual(message.activityFootprint, message.activityFootprint)
+
+        var same = message
+        same.steps.append("Running shell")
+        message.steps.append("Running shell")
+        XCTAssertEqual(message.activityFootprint, same.activityFootprint)
+    }
+
     func testApprovalSetsPendingAndDeadline() {
         let session = makeSession()
         let index = openTurn(on: session)

@@ -25,5 +25,30 @@ struct ChatMessage: Identifiable, Sendable, Equatable {
     /// Steps the agent took, in order, for the folded ledger.
     var steps: [String] = []
 
+    /// The growth of one streaming message, as plain numbers. Equatable so
+    /// SwiftUI's `onChange` can compare it without copying the text itself.
+    struct ActivityFootprint: Equatable {
+        var contentBytes: Int
+        var reasoningBytes: Int
+        var steps: Int
+        var status: String?
+    }
+
     var isEmpty: Bool { content.isEmpty && reasoning.isEmpty }
+
+    /// What can grow while this message is being written, as O(1) counts
+    /// rather than a copy of the text. The transcript's auto-scroll triggers
+    /// on this and it is observed for every token, so building it must not
+    /// allocate. It deliberately covers more than `content`: during a task
+    /// the visible growth is the reasoning, the step ledger and the status
+    /// line, while `content` stays empty until the answer starts — a
+    /// `content`-only trigger would leave the whole working phase unscrolled.
+    var activityFootprint: ActivityFootprint {
+        ActivityFootprint(
+            contentBytes: content.utf8.count,
+            reasoningBytes: reasoning.utf8.count,
+            steps: steps.count,
+            status: status
+        )
+    }
 }
