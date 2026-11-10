@@ -24,6 +24,12 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
     /// True while a clip is actually sounding, so the toggle can show it.
     private(set) var isSpeaking = false
 
+    /// Called on every speaking-state transition — `true` when a clip
+    /// starts sounding, `false` when it stops. The dictation center
+    /// observes this to mute its recognizer for the duration: a mic that
+    /// hears the app's own voice transcribes it into the draft.
+    var onSpeakingChange: ((Bool) -> Void)?
+
     private var player: AVAudioPlayer?
 
     func setEnabled(_ on: Bool) {
@@ -32,10 +38,18 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
         if !on { stop() }
     }
 
+    /// The one place isSpeaking flips with the callback fired — every
+    /// transition (start, stop, disable mid-clip) goes through here.
+    private func setSpeaking(_ speaking: Bool) {
+        guard isSpeaking != speaking else { return }
+        isSpeaking = speaking
+        onSpeakingChange?(speaking)
+    }
+
     func stop() {
         player?.stop()
         player = nil
-        isSpeaking = false
+        setSpeaking(false)
     }
 
     /// Speak one finished reply. Markdown is stripped here, mirroring the
@@ -75,7 +89,7 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
         player.delegate = self
         guard player.play() else { return }
         self.player = player
-        isSpeaking = true
+        setSpeaking(true)
     }
 
     private func speakStripped(_ text: String, client: OnItClient) async {
@@ -85,7 +99,7 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
             player.delegate = self
             guard player.play() else { return }
             self.player = player
-            isSpeaking = true
+            setSpeaking(true)
         } catch {
             // A reply the user can already read does not need an error
             // dialog about why it could not also be heard.
@@ -97,7 +111,7 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor in
             self.player = nil
-            self.isSpeaking = false
+            self.setSpeaking(false)
         }
     }
 }

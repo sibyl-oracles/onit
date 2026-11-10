@@ -91,4 +91,50 @@ final class TtsCenterTests: XCTestCase {
         center.speak("```python\nprint(1)\n```", client: OnItClient(baseURL: URL(string: "http://127.0.0.1:1")!))
         XCTAssertFalse(center.isSpeaking)
     }
+
+    // MARK: - The speaking-state callback: the dictation center mutes its
+    // recognizer on it, so every transition must fire it exactly once.
+
+    func testSpeakingChangeFiresOnStart() {
+        let center = TtsCenter()
+        var fired: [Bool] = []
+        center.onSpeakingChange = { fired.append($0) }
+        center.setEnabled(true)
+        center.playForTest(makeWav())
+        XCTAssertEqual(fired, [true])
+    }
+
+    func testSpeakingChangeFiresOnStop() {
+        let center = TtsCenter()
+        var fired: [Bool] = []
+        center.onSpeakingChange = { fired.append($0) }
+        center.setEnabled(true)
+        center.playForTest(makeWav())
+        center.stop()
+        XCTAssertEqual(fired, [true, false])
+    }
+
+    func testSpeakingChangeFiresOnDisableMidClip() {
+        let center = TtsCenter()
+        var fired: [Bool] = []
+        center.onSpeakingChange = { fired.append($0) }
+        center.setEnabled(true)
+        center.playForTest(makeWav())
+        center.setEnabled(false)  // stops the clip and unmutes dictation
+        XCTAssertEqual(fired, [true, false])
+    }
+
+    func testSpeakingChangeDoesNotFireWithoutTransition() {
+        let center = TtsCenter()
+        var fired: [Bool] = []
+        center.onSpeakingChange = { fired.append($0) }
+        center.stop()  // not speaking; stop must not fire a spurious false
+        XCTAssertEqual(fired, [])
+        center.setEnabled(true)
+        center.playForTest(makeWav())
+        center.playForTest(makeWav())  // new clip while speaking: no false
+        XCTAssertEqual(fired, [true])
+        center.stop()
+        XCTAssertEqual(fired, [true, false])
+    }
 }

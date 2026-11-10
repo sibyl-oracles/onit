@@ -277,6 +277,40 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     /// intercept, aborting the process. Rebuilding is cheap and always sound.
     private var engine = AVAudioEngine()
 
+    /// True while the TTS center is sounding: the tap drops buffers instead
+    /// of feeding the recognizer, so the app's own voice coming out of the
+    /// speakers is never transcribed into the draft. The engine and the
+    /// recognition task keep running underneath the silence — restarting
+    /// recognition per buffer would thrash it — and each transition hands
+    /// off with a fresh request so nothing crosses the boundary.
+    private(set) var isMuted = false
+
+    /// Enter or leave the muted state, driven by the TTS center's
+    /// speaking-state callback.
+    ///
+    /// Both edges restart recognition rather than only flipping the flag:
+    ///
+    /// - Muting: the clip's first syllable is sounding right now, and the
+    ///   mic may have caught a lead-in that is already queued on the
+    ///   current request. A fresh request discards it — the recognizer's
+    ///   own buffer never finalizes it into the draft.
+    /// - Unmuting: speaker bleed keeps reaching the mic for a beat after
+    ///   the player stops, and the old request's tail is tainted with it.
+    ///   A fresh request starts the next utterance clean.
+    ///
+    /// Restarting costs only the request's uncommitted buffer, and the
+    /// pause watchdog guarantees that buffer is stale silence by the time
+    /// TTS sounds: a reply is spoken only after its answer completes,
+    /// seconds after the user's last words were committed as a pause.
+    /// Nothing a user dictated is thrown away.
+    func setMuted(_ mute: Bool) {
+        guard isMuted != mute else { return }
+        isMuted = mute
+        guard isListening else { return }
+        partial = ""
+        restart()
+    }
+
     func toggle() {
         // Hopping through the main queue before spawning the task re-enters
         // the runloop outside SwiftUI's event dispatch. During debugging the
@@ -363,7 +397,12 @@ final class DictationCenter: NSObject, SFSpeechRecognizerDelegate {
     private func beginTask(with request: SFSpeechAudioBufferRecognitionRequest) {
         let input = engine.inputNode
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: input.outputFormat(forBus: 0)) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 2048, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+            // The muted tap stays installed — unmuting re-arms this exact
+            // closure — but its buffers go nowhere while TTS is sounding.
+            // Dropping frames (rather than tearing the tap down) is what
+            // keeps the engine graph intact across the clip.
+            guard let self, !self.isMuted else { return }
             request.append(buffer)
         }
         generation += 1

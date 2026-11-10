@@ -580,4 +580,41 @@ final class VoiceCommandTests: XCTestCase {
             "list the files in Documents draft the invitation for Friday"
         )
     }
+
+    // MARK: - TTS mute gate: the mic never hears the app's own voice.
+
+    /// The flag flips idempotently — a transition that already happened is
+    /// not applied twice, so the restart fires once per edge.
+    func testSetMutedIdempotent() {
+        let center = DictationCenter()
+        center.setMuted(true)
+        XCTAssertTrue(center.isMuted)
+        center.setMuted(true)
+        XCTAssertTrue(center.isMuted)
+        center.setMuted(false)
+        XCTAssertFalse(center.isMuted)
+        center.setMuted(false)
+        XCTAssertFalse(center.isMuted)
+    }
+
+    /// Muting is meaningful only while listening; without a live session it
+    /// just records the flag so a session that starts mid-clip stays muted.
+    func testSetMutedWithoutListeningStillRecordsFlag() {
+        let center = DictationCenter()
+        center.setMuted(true)
+        XCTAssertTrue(center.isMuted)
+        XCTAssertFalse(center.snapshot.isListening)
+    }
+
+    /// The mute gate is observable state the composer can read.
+    func testSnapshotIsListeningUnaffectedByMute() {
+        let center = DictationCenter()
+        // No live engine in tests — the flag and the accumulator are what
+        // the state machine can prove here.
+        center.setMuted(true)
+        let snap = center.snapshot
+        XCTAssertFalse(snap.isListening)
+        XCTAssertFalse(snap.isDenied)
+        XCTAssertNil(snap.error)
+    }
 }

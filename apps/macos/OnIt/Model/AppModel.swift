@@ -45,6 +45,16 @@ final class AppModel {
     /// letting its stream bleed into another transcript's draft.
     let dictation = DictationCenter()
 
+    init() {
+        // The mic must not hear the app's own voice: while a TTS clip is
+        // sounding, the dictation tap drops buffers instead of transcribing
+        // them. Speech synthesis and speech recognition are mutually
+        // exclusive by wiring, not by hoping the user is quiet.
+        tts.onSpeakingChange = { [dictation] speaking in
+            dictation.setMuted(speaking)
+        }
+    }
+
     /// Sync Typography with whatever a previous launch persisted. Property
     /// initializers cannot touch other statics safely at declaration time.
     func adoptPersistedTextScale() {
