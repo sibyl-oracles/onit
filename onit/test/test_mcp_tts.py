@@ -24,10 +24,10 @@ def fake_engine(monkeypatch, tmp_path):
             assert voice, "voice must reach the engine"
             # 12000 samples at 24 kHz = 0.5 s; the sample rate is what the
             # WAV header ends up carrying, so a non-default value proves
-            # the plumbing rather than a coincidence.
-            import numpy as np
-
-            return np.zeros(12000, dtype="float32"), 24000
+            # the plumbing rather than a coincidence. A plain list, not a
+            # numpy array: CI installs no numpy, and the writer must take
+            # any engine's output.
+            return [0.0] * 12000, 24000
 
     monkeypatch.setattr(tts, "_ENGINE", FakeEngine())
     return None
@@ -72,9 +72,7 @@ def test_speak_clamps_speed(fake_engine, sandbox, monkeypatch):
 
     def fake_create(text, voice, speed, lang):
         seen["speed"] = speed
-        import numpy as np
-
-        return np.zeros(100, dtype="float32"), 24000
+        return [0.0] * 100, 24000
 
     monkeypatch.setattr(tts, "_ENGINE", type("E", (), {"create": staticmethod(fake_create)})())
     out = json.loads(tts.speak_impl(text="Hi", speed=9.0, data_path=str(sandbox)))
@@ -87,9 +85,7 @@ def test_speak_strips_markdown(fake_engine, sandbox, monkeypatch):
 
     def fake_create(text, voice, speed, lang):
         seen["text"] = text
-        import numpy as np
-
-        return np.zeros(100, dtype="float32"), 24000
+        return [0.0] * 100, 24000
 
     monkeypatch.setattr(tts, "_ENGINE", type("E", (), {"create": staticmethod(fake_create)})())
     out = json.loads(
@@ -106,14 +102,34 @@ def test_speak_truncates_long_text(fake_engine, sandbox, monkeypatch):
 
     def fake_create(text, voice, speed, lang):
         seen["text"] = text
-        import numpy as np
-
-        return np.zeros(100, dtype="float32"), 24000
+        return [0.0] * 100, 24000
 
     monkeypatch.setattr(tts, "_ENGINE", type("E", (), {"create": staticmethod(fake_create)})())
     out = json.loads(tts.speak_impl(text="x" * 9000, data_path=str(sandbox)))
     assert out["status"] == "ok"
     assert len(seen["text"]) == tts.MAX_CHARS
+
+
+def test_numpy_engine_output_writes_valid_wav(sandbox):
+    """The real Kokoro engine returns numpy arrays; exercise that branch of
+    the writer where numpy exists (CI installs none, so skip there)."""
+    np = pytest.importorskip("numpy", exc_type=ImportError)
+
+    class NumpyEngine:
+        def create(self, text, voice, speed, lang):
+            return np.zeros(12000, dtype="float32"), 24000
+
+    monkeypatch_engine = pytest.MonkeyPatch()
+    monkeypatch_engine.setattr(tts, "_ENGINE", NumpyEngine())
+    try:
+        out = json.loads(tts.speak_impl(text="Hi", data_path=str(sandbox)))
+    finally:
+        monkeypatch_engine.undo()
+    assert out["status"] == "ok"
+    path = os.path.join(str(sandbox), out["filename"])
+    with wave.open(path, "rb") as wav:
+        assert wav.getnframes() == 12000
+        assert wav.getframerate() == 24000
 
 
 def test_missing_dependency_is_a_json_error(monkeypatch, sandbox):

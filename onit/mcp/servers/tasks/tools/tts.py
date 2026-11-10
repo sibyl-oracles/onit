@@ -35,6 +35,7 @@ distributed, which keeps the Apache-2.0 model weights and this code
 clean.
 """
 
+import array
 import json
 import logging
 import os
@@ -206,13 +207,28 @@ def synthesize_to_wav(
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     # soundfile writes WAVs too, but the stdlib wave module has no
-    # dependency to fail on and float32 -> int16 is a plain scale here.
-    pcm = (audio * 32767.0).astype("int16")
-    with wave.open(out_path, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm.tobytes())
+    # dependency to fail on. Kokoro returns a numpy array, which scales
+    # and casts in one shot; any other engine's plain sequence of floats
+    # goes through the stdlib array module instead, so this writer never
+    # requires numpy itself (the test fakes rely on that — CI has no
+    # numpy, and a test-only dependency would be the wrong fix).
+    try:
+        frames = (audio * 32767.0).astype("int16").tobytes()
+    except (TypeError, AttributeError):
+        frames = array.array(
+            "h",
+            (int(max(-1.0, min(1.0, float(sample))) * 32767.0) for sample in audio),
+        ).tobytes()
+    try:
+        with wave.open(out_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(frames)
+    except Exception as e:
+        # A write failure (bad path, disk full) is the tool's error to
+        # report, not a traceback that kills the server.
+        raise TTSError(f"Failed to write the WAV file: {e}") from e
 
     duration = len(audio) / sample_rate
     return {
