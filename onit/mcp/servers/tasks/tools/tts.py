@@ -1,0 +1,314 @@
+"""
+# Copyright 2025 Rowel Atienza. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+Kokoro TTS engine - text to speech as local ONNX inference.
+
+The model is Kokoro-82M (Apache 2.0), run through ``kokoro-onnx`` on
+ONNX Runtime: no GPU, no cloud call, no key. Weights are downloaded once
+to ``~/.onit/models/kokoro`` on first use and reused from disk after
+that, so the tool works offline from the second call on.
+
+The engine is loaded lazily and kept as a module singleton: an 82M model
+takes a few seconds to map into memory and the MCP server process is
+long-lived, so paying that once per process beats paying it per call.
+Everything here is importable without ``kokoro_onnx`` installed - the
+import happens inside :func:`_get_engine`, and a missing dependency is
+reported as a JSON error the model can act on rather than a traceback
+that kills the tool server.
+
+Phonemization goes through espeak-ng (bundled by ``espeakng-loader``,
+no system install needed). espeak-ng is GPLv3; it is used here as a
+separate pip-installed component at runtime, not linked into anything
+distributed, which keeps the Apache-2.0 model weights and this code
+clean.
+"""
+
+import json
+import logging
+import os
+import re
+import time
+import wave
+from typing import Optional
+
+from onit.mcp.servers.tasks.shared import validate_required as _validate_required
+
+logger = logging.getLogger(__name__)
+
+# Where weights live. Overridable for tests and for pointing several
+# runs at one shared download.
+KOKORO_MODEL_DIR = os.environ.get(
+    "ONIT_KOKORO_DIR", os.path.join(os.path.expanduser("~"), ".onit", "models", "kokoro")
+)
+MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+VOICES_URL = (
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+)
+MODEL_FILE = "kokoro-v1.0.onnx"
+VOICES_FILE = "voices-v1.0.bin"
+
+DEFAULT_VOICE = "af_heart"
+DEFAULT_LANG = "en-us"
+DEFAULT_SPEED = 1.0
+MAX_CHARS = 5000  # one call's budget; longer text should be split by the caller
+
+# Voices shipped in voices.bin that read as female/male American English,
+# the set a user is most likely to mean by "a normal voice". The full
+# catalog is larger; anything outside this list is accepted as-is and
+# validated by the engine itself.
+KNOWN_VOICES = frozenset(
+    {
+        "af_heart",
+        "af_alloy",
+        "af_aoede",
+        "af_bella",
+        "af_jessica",
+        "af_kore",
+        "af_nicole",
+        "af_nova",
+        "af_river",
+        "af_sarah",
+        "af_sky",
+        "am_adam",
+        "am_echo",
+        "am_eric",
+        "am_fenrir",
+        "am_liam",
+        "am_michael",
+        "am_onyx",
+        "am_puck",
+        "am_santa",
+        "bf_alice",
+        "bf_emma",
+        "bf_isabella",
+        "bf_lily",
+        "bm_daniel",
+        "bm_fable",
+        "bm_george",
+        "bm_lewis",
+    }
+)
+
+_ENGINE = None  # Kokoro instance once loaded; None until first use
+
+
+class TTSError(Exception):
+    """Raised for conditions the tool should report as a JSON error."""
+
+
+def _download(url: str, dest: str) -> None:
+    """Fetch one file to *dest* with a resume, so an interrupted first
+    run continues rather than restarting a 300 MB download.
+
+    GitHub's release CDN honours ``Range``, but a proxy that does not
+    would answer a resume with the whole body; blindly appending that
+    yields a corrupt file that loads as nothing. The response status
+    decides: 206 appends, anything else starts over."""
+    import urllib.request
+
+    part = dest + ".part"
+    resume_from = os.path.getsize(part) if os.path.isfile(part) else 0
+    req = urllib.request.Request(url)
+    if resume_from:
+        req.add_header("Range", f"bytes={resume_from}-")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        append = resume_from and resp.status == 206
+        mode = "ab" if append else "wb"
+        offset = resume_from if append else 0
+        with open(part, mode) as f:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                offset += len(chunk)
+    # A truncated file is worse than a missing one: the next call would
+    # skip the download and fail to load. Only a complete body promotes.
+    expected = resp.headers.get("Content-Length")
+    if expected is not None and offset != int(expected) + (resume_from if append else 0):
+        os.unlink(part)
+        raise TTSError(f"Download of {url} was truncated ({offset} of {expected} bytes)")
+    os.replace(part, dest)
+
+
+def ensure_weights() -> tuple[str, str]:
+    """Return (model_path, voices_path), downloading either when missing."""
+    model_path = os.path.join(KOKORO_MODEL_DIR, MODEL_FILE)
+    voices_path = os.path.join(KOKORO_MODEL_DIR, VOICES_FILE)
+    os.makedirs(KOKORO_MODEL_DIR, exist_ok=True)
+    for url, path in ((MODEL_URL, model_path), (VOICES_URL, voices_path)):
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            continue
+        logger.info("Downloading %s -> %s", url, path)
+        _download(url, path)
+    return model_path, voices_path
+
+
+def _get_engine():
+    """Load the Kokoro engine once per process; raise TTSError when it cannot."""
+    global _ENGINE
+    if _ENGINE is not None:
+        return _ENGINE
+    try:
+        from kokoro_onnx import Kokoro
+    except ImportError as e:
+        raise TTSError(
+            "kokoro-onnx is not installed. Install it with: pip install kokoro-onnx"
+        ) from e
+    model_path, voices_path = ensure_weights()
+    try:
+        _ENGINE = Kokoro(model_path=model_path, voices_path=voices_path)
+    except Exception as e:
+        # A corrupt cache (truncated download, disk full) must not be a
+        # permanent failure: drop the weights and fetch them once more.
+        # One retry, not a loop — a genuinely broken download should
+        # surface as an error, not spin.
+        for path in (model_path, voices_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        logger.warning("Kokoro model failed to load (%s); re-downloading weights", e)
+        model_path, voices_path = ensure_weights()
+        try:
+            _ENGINE = Kokoro(model_path=model_path, voices_path=voices_path)
+        except Exception as e2:
+            raise TTSError(f"Failed to load the Kokoro model: {e2}") from e2
+    return _ENGINE
+
+
+def synthesize_to_wav(
+    text: str,
+    out_path: str,
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+    lang: str = DEFAULT_LANG,
+) -> dict:
+    """Synthesize *text* to a WAV file at *out_path*. Returns metadata."""
+    start = time.time()
+    engine = _get_engine()
+    try:
+        audio, sample_rate = engine.create(text=text, voice=voice, speed=speed, lang=lang)
+    except Exception as e:
+        raise TTSError(f"Speech synthesis failed: {e}") from e
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    # soundfile writes WAVs too, but the stdlib wave module has no
+    # dependency to fail on and float32 -> int16 is a plain scale here.
+    pcm = (audio * 32767.0).astype("int16")
+    with wave.open(out_path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm.tobytes())
+
+    duration = len(audio) / sample_rate
+    return {
+        "path": out_path,
+        "duration_s": round(duration, 2),
+        "sample_rate": sample_rate,
+        "voice": voice,
+        "synthesize_s": round(time.time() - start, 2),
+    }
+
+
+def sanitize_text(text: str) -> str:
+    """Reduce a chat reply to what reads well aloud.
+
+    Markdown symbols are noise to a listener: emphasis markers, headings,
+    link targets and fenced code say nothing when spoken. Link text stays
+    (the words are the point), fenced code blocks go entirely — reading
+    source aloud is never what "read this to me" means.
+    """
+    out = re.sub(r"```[\s\S]*?```", " ", text)
+    out = re.sub(r"`([^`]*)`", r"\1", out)
+    out = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", out)
+    out = re.sub(r"(^|\n)\s*#{1,6}\s*", r"\1", out)
+    out = re.sub(r"[*_~]{1,3}", " ", out)
+    out = re.sub(r"[ \t]*\n+[ \t]*", ". ", out)
+    return re.sub(r"  +", " ", out).strip()
+
+
+# Shared with the unified ToolsMCPServer re-registration (tools/mcp_server.py)
+TTS_TOOL_DESCRIPTION = """Convert text to spoken audio as a WAV file, using the local
+Kokoro TTS model (offline, no API key). Use this when the user asks to
+hear something read aloud, or to produce a voice clip.
+
+Args:
+- text: What to say (plain prose; markdown symbols are stripped)
+- voice: Voice name (default: af_heart; try af_bella, am_michael, bf_emma, bm_george, ...)
+- speed: Speaking rate, 0.5 to 2.0 (default 1.0)
+- lang: BCP-47 language code (default en-us)
+- data_path: Session working directory - set automatically by the harness; leave unset.
+
+Returns JSON: {path, url, filename, duration_s, sample_rate, voice, synthesize_s}"""
+
+
+def speak_impl(
+    text: Optional[str] = None,
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+    lang: str = DEFAULT_LANG,
+    data_path: str = "",
+) -> str:
+    """Core speak implementation (always defined for import by other modules)."""
+    if err := _validate_required(text=text):
+        return err
+
+    text = sanitize_text(str(text))
+    if not text:
+        return json.dumps({"error": "Nothing to speak after stripping markup.", "status": "error"})
+    if len(text) > MAX_CHARS:
+        text = text[:MAX_CHARS]
+
+    if voice not in KNOWN_VOICES:
+        return json.dumps(
+            {
+                "error": f"Unknown voice {voice!r}. Known voices include: "
+                + ", ".join(sorted(KNOWN_VOICES)[:8])
+                + " ...",
+                "status": "error",
+            }
+        )
+    speed = min(max(float(speed), 0.5), 2.0)
+
+    base = os.path.realpath(os.path.expanduser(data_path or DATA_PATH))
+    os.makedirs(base, exist_ok=True)
+    # Filenames carry the voice and a timestamp so two clips never collide
+    # and a listener can tell them apart in the file list.
+    filename = "tts_%s_%s.wav" % (voice, time.strftime("%Y%m%d_%H%M%S"))
+    out_path = os.path.join(base, filename)
+
+    try:
+        meta = synthesize_to_wav(text, out_path, voice=voice, speed=speed, lang=lang)
+    except TTSError as e:
+        return json.dumps({"error": str(e), "status": "error"})
+
+    meta.update(
+        {
+            "filename": filename,
+            # The harness rewrites bare filenames it finds in the reply into
+            # /uploads/<session>/ links (ui/api.py _extract_file_paths), so
+            # the plain name is what the model should surface.
+            "url": filename,
+            "bytes": os.path.getsize(out_path),
+            "status": "ok",
+        }
+    )
+    return json.dumps(meta)
+
+
+# Set via run() options in tools/mcp_server.py, like the other sub-modules.
+DATA_PATH = os.path.join(os.path.expanduser("~"), "sandbox")

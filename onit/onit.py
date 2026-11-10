@@ -915,6 +915,11 @@ class OnIt(BaseModel):
     web_title: str = Field(default="OnIt Chat")
     web_ga_measurement_id: str | None = Field(default=None)
     web_html_preview: bool = Field(default=True)
+    # Text to speech for the web/desktop chat UI: gates the /api/tts
+    # endpoint and the speaker toggle. Off stays the default for a plain
+    # `onit serve web` unless web_tts is set; the desktop app passes
+    # tts=True when it builds its UI.
+    web_tts: bool = Field(default=True)
     # Full-duplex speech-to-speech via a NemotronLabs VoiceChat container.
     # See onit/ui/voice.py:VoiceConfig for the keys.
     voice: dict[str, Any] = Field(default_factory=dict)
@@ -1023,6 +1028,7 @@ class OnIt(BaseModel):
                     require_auth=self.web_require_auth,
                     html_preview=self.web_html_preview,
                     voice=self.voice,
+                    tts=self.web_tts,
                 )
                 self.chat_ui._onit = self
             else:
@@ -1488,6 +1494,11 @@ class OnIt(BaseModel):
         # Generated pages run in a sandboxed frame in the reply; set false to
         # keep them as source and a download instead.
         self.web_html_preview = bool(self.config_data.get("web_html_preview", True))
+        # Text to speech. Available by default in both UIs; the speaker
+        # toggle in the UI is what actually turns speaking on, and the
+        # Kokoro weights only download when it is used. Set web_tts: false
+        # to remove the endpoint and the toggle entirely.
+        self.web_tts = bool(self.config_data.get("web_tts", True))
         _voice = self.config_data.get("voice") or {}
         self.voice = _voice if isinstance(_voice, dict) else {}
         self.agent_name = self.config_data.get("agent_name", "OnIt")

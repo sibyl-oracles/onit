@@ -51,6 +51,15 @@ private struct GeneralTab: View {
                 .labelsHidden()
                 .frame(width: 120)
             }
+            if model.config?.ttsEnabled == true {
+                LabeledContent("Read replies aloud") {
+                    Toggle("Read replies aloud", isOn: Binding(
+                        get: { model.tts.isEnabled },
+                        set: { model.tts.setEnabled($0) }
+                    ))
+                    .labelsHidden()
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()

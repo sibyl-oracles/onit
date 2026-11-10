@@ -75,6 +75,7 @@ def _init_submodules(
     import onit.mcp.servers.tasks.os.bash.mcp_server as bash_mod
     import onit.mcp.servers.tasks.web.search.mcp_server as search_mod
     import onit.mcp.servers.tasks.local.search.mcp_server as local_mod
+    import onit.mcp.servers.tasks.tools.tts as tts_mod
 
     bash_mod.DATA_PATH = data_path
     bash_mod.DOCUMENTS_PATH = documents_path
@@ -87,11 +88,13 @@ def _init_submodules(
     )
     local_mod.DATA_PATH = data_path
     local_mod.DOCUMENTS_PATH = documents_path
+    tts_mod.DATA_PATH = data_path
 
     level = logging.INFO if verbose else logging.ERROR
     bash_mod.logger.setLevel(level)
     search_mod.logger.setLevel(level)
     local_mod.logger.setLevel(level)
+    tts_mod.logger.setLevel(level)
 
     # Re-ingest the corpus in the background so this server never serves a
     # local_search index left stale by changes made while it was down
@@ -538,6 +541,28 @@ if not os.environ.get("ONIT_DISABLE_LOCAL_SEARCH"):
         return _local_search(
             query=query, top_k=top_k, method=method, path=path, data_path=data_path
         )
+
+
+# -- Text to speech (local Kokoro model) ---------------------------------------
+
+from onit.mcp.servers.tasks.tools.tts import (
+    TTS_TOOL_DESCRIPTION,
+    speak_impl as _speak_impl,
+)
+
+if not os.environ.get("ONIT_DISABLE_TTS"):
+
+    @mcp.tool(title="Text to Speech", description=TTS_TOOL_DESCRIPTION)
+    def speak(
+        text: Optional[str] = None,
+        voice: str = "af_heart",
+        speed: float = 1.0,
+        lang: str = "en-us",
+        data_path: str = "",
+    ) -> str:
+        if err := _validate_required(text=text):
+            return err
+        return _speak_impl(text=text, voice=voice, speed=speed, lang=lang, data_path=data_path)
 
 
 # =============================================================================

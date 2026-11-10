@@ -34,6 +34,7 @@ The tools servers register these by default (required parameters in **bold**; de
 | `search_document` | **`path`**, `mode` (`pattern`\|`context`, `pattern`), `pattern`, `query`, `keywords`, `case_sensitive` (false), `context_lines` (3), `max_matches` (50), `context_chars` (500), `max_sections` (5) | Search within a single document (text, PDF, markdown) by regex or by keyword/query relevance. |
 | `index_documents` | `path` (`documents_path`, else `data_path`), `recursive` (true), `rebuild` (false), `chunk_size` (1600), `chunk_overlap` (200), `status_only` (false) | Ingest in-house documents (pdf, md, txt, csv, docx, xlsx) into the local search index. Incremental. |
 | `local_search` | **`query`**, `top_k` (5), `method` (`hybrid`\|`bm25`\|`dense`, `hybrid`), `path` | Search indexed in-house documents. Auto-ingests the default corpus on first use. |
+| `speak` | **`text`**, `voice` (`af_heart`), `speed` (1.0), `lang` (`en-us`) | Convert text to spoken audio as a WAV file, using the local Kokoro TTS model — offline, no API key. Weights (~330 MB) download once to `~/.onit/models/kokoro` on first use. Requires `pip install kokoro-onnx`. |
 
 ### Which paths can the tools touch?
 
@@ -61,7 +62,7 @@ another's. See [Command Approvals](ISOLATION.md#command-approvals).
 
 ### Disabling tools
 
-Some tools can be switched off via environment variables: `ONIT_DISABLE_WEB_SEARCH` (removes `search`), `ONIT_DISABLE_WEATHER` (removes `get_weather`), and `ONIT_DISABLE_LOCAL_SEARCH` (removes `index_documents` and `local_search`).
+Some tools can be switched off via environment variables: `ONIT_DISABLE_WEB_SEARCH` (removes `search`), `ONIT_DISABLE_WEATHER` (removes `get_weather`), `ONIT_DISABLE_LOCAL_SEARCH` (removes `index_documents` and `local_search`), and `ONIT_DISABLE_TTS` (removes `speak`).
 
 Connect to additional external MCP servers through the config (OnIt neither
 starts nor re-ports a server marked external):

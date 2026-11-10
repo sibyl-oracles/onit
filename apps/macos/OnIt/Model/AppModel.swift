@@ -36,6 +36,10 @@ final class AppModel {
     /// Inline video playback, shared app-wide for the same reason.
     let video = VideoCenter()
 
+    /// Reply speech, shared app-wide: one voice at a time, and turning the
+    /// toggle off stops the clip in flight. Fed by finished answers only.
+    let tts = TtsCenter()
+
     /// Composer dictation, shared app-wide: one microphone at a time, and
     /// leaving a session (or sending) ends the listening session rather than
     /// letting its stream bleed into another transcript's draft.
@@ -107,13 +111,15 @@ final class AppModel {
                     live.summaryPreview = summary.preview
                     return live
                 }
-                return Session(
+                let session = Session(
                     id: summary.sessionID,
                     title: summary.tag ?? summary.preview ?? "New session",
                     client: client,
                     lastActivity: summary.updatedDate,
                     summaryPreview: summary.preview
                 )
+                session.tts = tts
+                return session
             }
 
             if selectedSessionID == nil || !sessions.contains(where: { $0.id == selectedSessionID }) {
@@ -141,6 +147,7 @@ final class AppModel {
         do {
             let id = try await client.newSession()
             let session = Session(id: id, title: "New session", client: client)
+            session.tts = tts
             session.isLoaded = true
             sessions.insert(session, at: 0)
             selectedSessionID = id

@@ -18,6 +18,9 @@ final class Session: Identifiable, Equatable {
 
     let id: String
     let client: OnItClient
+    /// Reply speech, nil when the server offers no TTS endpoint. Weak: the
+    /// center is owned by AppModel and outlives any session.
+    weak var tts: TtsCenter?
 
     var title: String
     var messages: [ChatMessage] = []
@@ -198,6 +201,8 @@ final class Session: Identifiable, Equatable {
             if title.isEmpty || title == "New session" {
                 title = String(messages[max(0, index - 1)].content.prefix(60))
             }
+            // The answer is complete and on screen; now it may be heard.
+            tts?.speak(payload.content, client: client)
 
         case let .error(message):
             messages[index].error = message

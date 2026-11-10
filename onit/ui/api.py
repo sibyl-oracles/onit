@@ -666,6 +666,7 @@ class WebApiUI:
         require_auth: bool = True,
         html_preview: bool = True,
         voice: Optional[dict] = None,
+        tts: bool = False,
     ) -> None:
         self.title = title
         # Imported here, not at module scope: the bridge pulls in aiohttp, and
@@ -677,6 +678,11 @@ class WebApiUI:
         # operator may not want on a shared deployment: web_html_preview: false
         # leaves such files as source and a download.
         self.html_preview = html_preview
+        # Text to speech. Off by default: the first spoken word costs a
+        # model download, and a deployment that never asked for it should
+        # never pay it. The UI toggle sends its own per-request switch too,
+        # but the server-side gate is what keeps the endpoint out entirely.
+        self.tts_enabled = bool(tts)
         self.ga_measurement_id = self._resolve_ga_id(ga_measurement_id)
         self.theme = theme
         self.agent_cursor = agent_cursor
@@ -1673,6 +1679,10 @@ class WebApiUI:
                 # minutes to load).
                 "voice_enabled": self.voice_config.enabled,
                 "voice_sample_rate": self.voice_config.sample_rate,
+                # The speaker button is drawn when the local TTS engine is
+                # available; whether it is *loaded* is a separate question the
+                # first /api/tts call answers by taking a while.
+                "tts_enabled": self.tts_enabled,
             }
 
         @app.get("/api/voice/health")
@@ -1979,6 +1989,68 @@ class WebApiUI:
                 "url": f"/uploads/{sid}/{urllib.parse.quote(safe_name)}",
                 "session_id": sid,
             }
+
+        @app.post("/api/tts")
+        async def api_tts(request: Request):
+            """Speak *text* through the local Kokoro model; returns WAV bytes.
+
+            The UI's speaker toggle calls this with the final answer text so
+            the reply is read aloud. Synthesis runs in a thread: the ONNX
+            session is CPU-bound and would otherwise stall the event loop
+            that is streaming everything else. The engine loads (and on a
+            first run downloads ~330 MB of weights) on the first call, so a
+            cold call can take a while — hence the generous timeout.
+            """
+            if not self.tts_enabled:
+                return JSONResponse({"detail": "TTS is disabled"}, status_code=404)
+            body = await request.json()
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return JSONResponse({"detail": "text is required"}, status_code=400)
+            voice = str(body.get("voice") or "af_heart")
+            try:
+                speed = float(body.get("speed") or 1.0)
+            except (TypeError, ValueError):
+                speed = 1.0
+            from onit.mcp.servers.tasks.tools.tts import (
+                TTSError,
+                sanitize_text,
+                synthesize_to_wav,
+            )
+
+            text = sanitize_text(text)
+            if len(text) > 5000:
+                text = text[:5000]
+
+            import tempfile
+            import uuid as _uuid
+
+            fd, tmp_path = tempfile.mkstemp(prefix="tts_", suffix=".wav")
+            os.close(fd)
+            try:
+                meta = await asyncio.to_thread(synthesize_to_wav, text, tmp_path, voice, speed)
+                with open(tmp_path, "rb") as f:
+                    data = f.read()
+            except TTSError as e:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return JSONResponse({"detail": str(e)}, status_code=503)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            return Response(
+                content=data,
+                media_type="audio/wav",
+                headers={
+                    "Content-Disposition": f'inline; filename="speech_{_uuid.uuid4().hex[:8]}.wav"',
+                    "X-TTS-Duration": str(meta.get("duration_s", "")),
+                    "Cache-Control": "no-store",
+                },
+            )
 
         @app.post("/api/verify_links")
         async def api_verify_links(request: Request):

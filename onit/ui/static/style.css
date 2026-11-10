@@ -941,6 +941,19 @@ textarea { font-family: var(--font); }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
+/* ── Text to speech toggle ─────────────────────────────────────────────── */
+
+/* Same grammar as the mic button: muted when off, accent when on, and a
+   ring while the reply is actually being spoken. The wave paths in the
+   icon fade out when muted so off reads as "no sound", not just grey. */
+.tts-btn { transition: color 0.15s, background 0.15s; }
+.tts-btn .tts-wave { transition: opacity 0.15s; }
+.tts-btn:not(.tts-on) .tts-wave { opacity: 0.25; }
+.tts-btn.tts-on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tts-btn.tts-speaking {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
 .voice-bar {
   max-width: 760px;
   margin: 0 auto 8px;

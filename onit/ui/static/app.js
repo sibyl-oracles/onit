@@ -22,6 +22,8 @@
     logsTimer: null,
     pollTimer: null,
     ratingEnabled: false,  // set from /api/config
+    ttsEnabled: localStorage.getItem("onit.tts") === "1",  // speaker toggle
+    ttsAudio: null,        // one Audio element, app-wide
   };
 
   const $ = (id) => document.getElementById(id);
@@ -34,6 +36,7 @@
     attachBtn: $("attach-btn"), fileInput: $("file-input"),
     attachments: $("attachments"),
     micBtn: $("mic-btn"), voiceBar: $("voice-bar"),
+    ttsBtn: $("tts-btn"),
     voiceStatus: $("voice-status"), voiceMute: $("voice-mute"),
     voiceInterrupt: $("voice-interrupt"), voiceEnd: $("voice-end"),
     newChat: $("new-chat"), clearChat: $("clear-chat"), clearAll: $("clear-all"),
@@ -822,6 +825,64 @@
     return res;
   }
 
+  // ── Text to speech ─────────────────────────────────────────────────────
+  // The speaker toggle asks the server to read each final answer aloud
+  // through its local Kokoro model. One Audio element at a time: a new
+  // answer stops the previous clip, the same rule the attachment player
+  // follows. Text sent is the plain answer — markdown is stripped server
+  // side — and a failed synthesis stays silent rather than surfacing an
+  // error over a reply the user can already read.
+  function setTtsOn(on) {
+    state.ttsEnabled = !!on;
+    localStorage.setItem("onit.tts", on ? "1" : "0");
+    el.ttsBtn.classList.toggle("tts-on", !!on);
+    el.ttsBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    el.ttsBtn.title = on ? "Replies are read aloud — click to mute" : "Read replies aloud";
+    if (!on) stopSpeaking();
+  }
+
+  function stopSpeaking() {
+    if (state.ttsAudio) {
+      try { state.ttsAudio.pause(); } catch (e) { /* already stopped */ }
+      state.ttsAudio = null;
+    }
+    el.ttsBtn.classList.remove("tts-speaking");
+  }
+
+  async function speakAnswer(text) {
+    if (!state.ttsEnabled || !text || state.config && state.config.voice_enabled) return;
+    stopSpeaking();
+    const stripped = text
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/[#*_>`~|]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!stripped) return;
+    el.ttsBtn.classList.add("tts-speaking");
+    try {
+      const res = await api("/api/tts", {
+        method: "POST",
+        body: JSON.stringify({ text: stripped }),
+      });
+      if (!res.ok) throw new Error("tts " + res.status);
+      const blob = await res.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      audio.onended = audio.onerror = () => {
+        if (state.ttsAudio === audio) {
+          state.ttsAudio = null;
+          el.ttsBtn.classList.remove("tts-speaking");
+        }
+      };
+      state.ttsAudio = audio;
+      await audio.play();
+    } catch (e) {
+      el.ttsBtn.classList.remove("tts-speaking");
+    }
+  }
+
+  el.ttsBtn.addEventListener("click", () => setTtsOn(!state.ttsEnabled));
+
   // ── Analytics ──────────────────────────────────────────────────
   // Standard GA4 gtag snippet, injected only when the server config carries
   // a measurement ID (web_ga_measurement_id / ONIT_GA_MEASUREMENT_ID). The
@@ -876,6 +937,12 @@
     // Offered only where the answer will actually be kept: a deployment with
     // recording off gets no buttons rather than buttons that drop the click.
     state.ratingEnabled = config.rating_enabled !== false;
+    // The speaker toggle exists only when the server runs TTS at all; the
+    // on/off choice itself is the user's, kept across reloads.
+    if (config.tts_enabled) {
+      el.ttsBtn.hidden = false;
+      setTtsOn(state.ttsEnabled);
+    }
 
     await loadHistory();
     await refreshSessions();
@@ -1217,6 +1284,7 @@
         addActions(turn.root, {
           text: answer, node: turn.content, turn: d.turn, rating: null,
         });
+        speakAnswer(answer);
         streamBlock = null;
         // The answer is final and the composer unlocks here. The stream may
         // stay open a while longer for a `correction`, but nothing about that

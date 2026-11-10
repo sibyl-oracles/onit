@@ -73,12 +73,14 @@ struct OnItClient: Sendable {
         let authEnabled: Bool?
         let ratingEnabled: Bool?
         let showLogs: Bool?
+        let ttsEnabled: Bool?
 
         enum CodingKeys: String, CodingKey {
             case title, brand, agent
             case authEnabled = "auth_enabled"
             case ratingEnabled = "rating_enabled"
             case showLogs = "show_logs"
+            case ttsEnabled = "tts_enabled"
         }
     }
 
@@ -272,6 +274,18 @@ struct OnItClient: Sendable {
     @discardableResult
     func forgetIntegrationKey(keyName: String) async throws -> KeyStatus {
         try await delete("api/integrations/key", query: ["key_name": keyName], as: KeyStatus.self)
+    }
+
+    // MARK: - Text to speech
+
+    /// Speak *text* through the server's local Kokoro model.
+    ///
+    /// Returns the raw WAV bytes, played by `TtsCenter`. The server renders
+    /// the whole clip before answering — synthesis is not streamed — so the
+    /// caller decides what a wait is worth: this is called after a reply has
+    /// landed, never while the user is still reading it.
+    func tts(_ text: String) async throws -> Data {
+        try await send("api/tts", method: "POST", body: ["text": text])
     }
 
     func rate(session: String, turn: Int, rating: Int?) async throws {
