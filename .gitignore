@@ -64,3 +64,13 @@ tmp_commit_msg.txt
 
 # Local scratch / debug output
 data/
+
+# Model weights — large local artifacts, never source.  The Kokoro TTS
+# weights (kokoro-v1.0.onnx, voices-v1.0.bin) download on first use to
+# ~/.onit/models/kokoro and must never be committed.  A legitimate binary
+# fixture added later needs an explicit ! negation here.
+*.onnx
+*.bin
+
+# SwiftPM / Xcode build output
+.build/
