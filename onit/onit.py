@@ -920,6 +920,11 @@ class OnIt(BaseModel):
     # `onit serve web` unless web_tts is set; the desktop app passes
     # tts=True when it builds its UI.
     web_tts: bool = Field(default=True)
+    # Read-aloud speaks a model-written summary of each answer instead of
+    # the whole text: the listener hears the result and the key numbers,
+    # and reads the rest on screen. web_tts: false removes the endpoint
+    # entirely; tts_summarize: false keeps it but speaks answers verbatim.
+    web_tts_summarize: bool = Field(default=True)
     # Full-duplex speech-to-speech via a NemotronLabs VoiceChat container.
     # See onit/ui/voice.py:VoiceConfig for the keys.
     voice: dict[str, Any] = Field(default_factory=dict)
@@ -1029,6 +1034,7 @@ class OnIt(BaseModel):
                     html_preview=self.web_html_preview,
                     voice=self.voice,
                     tts=self.web_tts,
+                    tts_summarize=self.web_tts_summarize,
                 )
                 self.chat_ui._onit = self
             else:
@@ -1499,6 +1505,7 @@ class OnIt(BaseModel):
         # Kokoro weights only download when it is used. Set web_tts: false
         # to remove the endpoint and the toggle entirely.
         self.web_tts = bool(self.config_data.get("web_tts", True))
+        self.web_tts_summarize = bool(self.config_data.get("web_tts_summarize", True))
         _voice = self.config_data.get("voice") or {}
         self.voice = _voice if isinstance(_voice, dict) else {}
         self.agent_name = self.config_data.get("agent_name", "OnIt")

@@ -241,6 +241,120 @@ def sanitize_text(text: str) -> str:
     return re.sub(r"  +", " ", out).strip()
 
 
+# Below this length a reply is already short enough to speak in full —
+# summarizing "yes, done." would only add a model call and a delay.
+SUMMARY_SKIP_CHARS = 400
+# The spoken summary is cut here. A listener cannot skim audio: a summary
+# that runs past a minute is not a summary, it is the problem again.
+SUMMARY_MAX_CHARS = 600
+# Anything shorter than this from the model is not a summary, it is a
+# refusal or an empty string — speak the original text instead.
+SUMMARY_MIN_CHARS = 20
+# The summarizer must not hold the spoken reply hostage: a read-aloud that
+# waits half a minute for a condensation is worse than no condensation.
+SUMMARY_TIMEOUT_S = 30.0
+
+_SUMMARY_SYSTEM_PROMPT = (
+    "You condense text for a listener. Reply with ONLY a spoken summary of the "
+    "text, at most 60 words: the result or answer first, then the key numbers, "
+    'names and decisions. No preamble, no "Summary" heading, no markdown, no '
+    "lists. Plain sentences a person can hear once and follow."
+)
+
+
+def _clean_summary(raw: str) -> str:
+    """Strip the wrappers a model puts around a summary.
+
+    Fenced code, a "Summary:" heading, "Here is the summary:" — all
+    wrappers a listener should never hear. What survives is plain prose.
+    """
+    fences = re.findall(r"```[\s\S]*?```", raw)
+    out = re.sub(r"```[\s\S]*?```", " ", raw)
+    out = re.sub(r"```", " ", out)
+    if not out.strip() and fences:
+        # The whole reply was fenced. The fence was the wrapper, not the
+        # content — speak what was inside it.
+        out = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", fences[0].strip())
+        out = re.sub(r"```$", "", out)
+    out = re.sub(
+        r"^\s*(?:here(?:'s| is) (?:the |a )?(?:spoken |brief |short )?summary"
+        r"(?: for listening| of the text)?|summary)\s*[:\-—]\s*",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(r"\s+", " ", out)
+    return out.strip()
+
+
+def _is_structured(summary: str) -> bool:
+    """True when the summary is still markdown structure, not prose.
+
+    A table separator anywhere, or several list-marker lines, means the
+    model reformatted the answer instead of condensing it.
+    """
+    if re.search(r"\|\s*:?-{2,}", summary):
+        return True
+    lines = [ln.strip() for ln in summary.splitlines() if ln.strip()]
+    markers = sum(1 for ln in lines if re.match(r"^(?:[-*+]|\d+[.)])\s+", ln))
+    return markers >= 3
+
+
+async def summarize_for_speech(
+    text: str, config_data: dict | None = None, model: str | None = None
+) -> str:
+    """Return the short spoken form of *text*, or *text* itself.
+
+    Read-aloud should carry the parts a listener cannot get by glancing at
+    the screen: what the answer concluded, the numbers that matter, what
+    was decided. The full text stays on screen for everything else, so the
+    spoken form is a condensation, not a reading.
+
+    The model is the agent's own configured endpoint, reached through the
+    same plain, tool-less client the offline learn loops use — the
+    summarizer is a judgment about text that already exists, so it runs
+    non-streaming at temperature 0 with no tools and no conversation.
+    ``model`` is the agent's own model name when the caller knows it; left
+    unset, the endpoint's default is auto-detected, which on a multi-model
+    host can pick something the account cannot actually serve.
+
+    Every failure path returns *text* unchanged: a summarizer that cannot
+    run must not take the read-aloud down with it. The caller speaks
+    something either way.
+    """
+    if not text or len(text) <= SUMMARY_SKIP_CHARS:
+        return text
+    try:
+        from onit.learn.llm import make_ask
+
+        ask = await make_ask(config_data, model=model, timeout=SUMMARY_TIMEOUT_S)
+        raw = await ask(
+            [
+                {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ]
+        )
+    except Exception as e:
+        logger.warning("tts summarization failed, speaking full text: %s", e)
+        return text
+    summary = _clean_summary(str(raw or ""))
+    if len(summary) < SUMMARY_MIN_CHARS or len(summary) >= len(text):
+        # Not a usable condensation — a refusal, an empty reply, or
+        # something as long as the original. The original reads fine.
+        return text
+    if _is_structured(summary):
+        # A model that ignores "no markdown" and hands back a table or a
+        # list has not summarized — it has reformatted, and a listener
+        # cannot skim a table read aloud. The original is no worse.
+        return text
+    if len(summary) > SUMMARY_MAX_CHARS:
+        # Cut on a sentence boundary when one is in reach, so the clip
+        # does not end mid-word.
+        cut = summary.rfind(". ", 0, SUMMARY_MAX_CHARS)
+        summary = summary[: cut + 1] if cut > 0 else summary[:SUMMARY_MAX_CHARS]
+    return summary.strip()
+
+
 # Shared with the unified ToolsMCPServer re-registration (tools/mcp_server.py)
 TTS_TOOL_DESCRIPTION = """Convert text to spoken audio as a WAV file, using the local
 Kokoro TTS model (offline, no API key). Use this when the user asks to

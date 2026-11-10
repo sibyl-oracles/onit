@@ -1907,3 +1907,149 @@ class TestTokenStatsOnDone:
         from onit.ui.api import _timing_summary
 
         assert _timing_summary({}, 1.0) == {}
+
+
+# ─── /api/tts: read-aloud speaks a summary ───────────────────────────────────
+
+
+class TestTtsEndpoint:
+    """The speaker toggle's endpoint, with the summarizer in the path.
+
+    ``synthesize_to_wav`` is stubbed where the endpoint imports it, and the
+    text it receives is captured — the assertions are about what would be
+    spoken, not about audio.
+    """
+
+    @pytest.fixture
+    def tts_ui(self, tmp_path, bg_loop):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            title="Test Chat",
+            require_auth=False,
+            tts=True,
+        )
+        ui._onit = FakeOnit(config_data={"serving": {"model": "qwen"}})
+        ui._loop = bg_loop
+        ui.build_app()
+        return ui
+
+    @pytest.fixture
+    def tts_client(self, tts_ui):
+        return TestClient(tts_ui.app)
+
+    @pytest.fixture
+    def capture_speech(self, monkeypatch):
+        """Record the text the synthesizer is asked to speak."""
+
+        def fake_synthesize(text, out_path, voice, speed):
+            # Sync on purpose: the endpoint runs it through asyncio.to_thread.
+            fake_synthesize.spoken = text
+            return {"duration_s": 1.0, "sample_rate": 24000}
+
+        fake_synthesize.spoken = None
+        import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+        monkeypatch.setattr(tts_mod, "synthesize_to_wav", fake_synthesize)
+        return fake_synthesize
+
+    @pytest.fixture
+    def stub_summarizer(self, monkeypatch):
+        """A canned summarizer, installed where the endpoint imports it."""
+
+        def install(reply):
+            async def fake_summarize(text, config_data=None, model=None):
+                fake_summarize.seen_text = text
+                fake_summarize.seen_config = config_data
+                fake_summarize.seen_model = model
+                return reply
+
+            fake_summarize.seen_text = None
+            fake_summarize.seen_config = None
+            fake_summarize.seen_model = None
+            import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+            monkeypatch.setattr(tts_mod, "summarize_for_speech", fake_summarize)
+            return fake_summarize
+
+        return install
+
+    def test_disabled_returns_404(self, tmp_path, bg_loop):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            title="Test Chat",
+            require_auth=False,
+            tts=False,
+        )
+        ui._onit = FakeOnit()
+        ui._loop = bg_loop
+        ui.build_app()
+        client = TestClient(ui.app)
+        assert client.post("/api/tts", json={"text": "hi"}).status_code == 404
+
+    def test_missing_text_is_400(self, tts_client):
+        assert tts_client.post("/api/tts", json={}).status_code == 400
+
+    def test_long_answer_is_spoken_as_the_summary(
+        self, tts_client, capture_speech, stub_summarizer
+    ):
+        summary = "Today is sunny with a maximum temperature of 30 degrees."
+        fake = stub_summarizer(summary)
+        long_answer = "A very long weather report. " * 100
+        res = tts_client.post("/api/tts", json={"text": long_answer})
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "audio/wav"
+        assert capture_speech.spoken == summary
+        # The summarizer saw the sanitized text and the agent's config.
+        assert "A very long weather report." in fake.seen_text
+        assert fake.seen_config == {"serving": {"model": "qwen"}}
+        # FakeOnit has no load balancer, so the model is left to
+        # auto-detection.
+        assert fake.seen_model is None
+
+    def test_summarizer_failure_still_speaks(self, tts_client, capture_speech, monkeypatch):
+        """A summarizer crash must not take read-aloud down with it: the
+        endpoint falls back to the full text and the user still hears the
+        answer."""
+
+        async def boom(text, config_data=None):
+            raise RuntimeError("no model")
+
+        import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+        monkeypatch.setattr(tts_mod, "summarize_for_speech", boom)
+        full = "A long answer. " * 100
+        res = tts_client.post("/api/tts", json={"text": full})
+        assert res.status_code == 200
+        assert capture_speech.spoken.startswith("A long answer.")
+
+    def test_summarize_off_speaks_the_full_text(
+        self, tmp_path, bg_loop, capture_speech, stub_summarizer
+    ):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            title="Test Chat",
+            require_auth=False,
+            tts=True,
+            tts_summarize=False,
+        )
+        ui._onit = FakeOnit()
+        ui._loop = bg_loop
+        ui.build_app()
+        client = TestClient(ui.app)
+        fake = stub_summarizer("should never be used")
+        full = "A very long weather report. " * 100
+        res = client.post("/api/tts", json={"text": full})
+        assert res.status_code == 200
+        assert capture_speech.spoken != "should never be used"
+        assert "A very long weather report." in capture_speech.spoken
+        assert fake.seen_text is None
+
+    def test_short_answer_is_spoken_verbatim(self, tts_client, capture_speech):
+        # Short enough that summarize_for_speech skips the model; the stub
+        # is not installed, so a call into it would fail loudly.
+        res = tts_client.post("/api/tts", json={"text": "Done — 3 files written."})
+        assert res.status_code == 200
+        assert capture_speech.spoken == "Done — 3 files written."

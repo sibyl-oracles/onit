@@ -667,6 +667,7 @@ class WebApiUI:
         html_preview: bool = True,
         voice: Optional[dict] = None,
         tts: bool = False,
+        tts_summarize: bool = True,
     ) -> None:
         self.title = title
         # Imported here, not at module scope: the bridge pulls in aiohttp, and
@@ -683,6 +684,10 @@ class WebApiUI:
         # never pay it. The UI toggle sends its own per-request switch too,
         # but the server-side gate is what keeps the endpoint out entirely.
         self.tts_enabled = bool(tts)
+        # Read-aloud speaks a summary of the answer, not the whole thing:
+        # the user can read the rest on screen. Set tts_summarize: false to
+        # speak answers verbatim.
+        self.tts_summarize = bool(tts_summarize)
         self.ga_measurement_id = self._resolve_ga_id(ga_measurement_id)
         self.theme = theme
         self.agent_cursor = agent_cursor
@@ -1995,11 +2000,15 @@ class WebApiUI:
             """Speak *text* through the local Kokoro model; returns WAV bytes.
 
             The UI's speaker toggle calls this with the final answer text so
-            the reply is read aloud. Synthesis runs in a thread: the ONNX
-            session is CPU-bound and would otherwise stall the event loop
-            that is streaming everything else. The engine loads (and on a
-            first run downloads ~330 MB of weights) on the first call, so a
-            cold call can take a while — hence the generous timeout.
+            the reply is read aloud. When tts_summarize is on (the default)
+            the text is first condensed by the configured model: the spoken
+            form carries the result and the key numbers, while the full
+            answer stays on screen for the listener to read. Synthesis runs
+            in a thread: the ONNX session is CPU-bound and would otherwise
+            stall the event loop that is streaming everything else. The
+            engine loads (and on a first run downloads ~330 MB of weights)
+            on the first call, so a cold call can take a while — hence the
+            generous timeout.
             """
             if not self.tts_enabled:
                 return JSONResponse({"detail": "TTS is disabled"}, status_code=404)
@@ -2015,10 +2024,36 @@ class WebApiUI:
             from onit.mcp.servers.tasks.tools.tts import (
                 TTSError,
                 sanitize_text,
+                summarize_for_speech,
                 synthesize_to_wav,
             )
 
             text = sanitize_text(text)
+            if self.tts_summarize:
+                # The summarizer asks the configured chat model for a short
+                # spoken form. It runs before the 5000-char cap so the model
+                # sees the whole answer, and it returns the text unchanged
+                # when it cannot improve on it. It also catches its own
+                # failures; the guard here is the seatbelt under that, so a
+                # summarizer bug can never turn read-aloud into a 500.
+                try:
+                    # The agent's own model, from the endpoint it would use
+                    # for a new session — auto-detection on a multi-model
+                    # host can land on a model this account cannot serve.
+                    lb = getattr(self._onit, "load_balancer", None)
+                    model = None
+                    if lb is not None:
+                        try:
+                            model = lb.preferred.model
+                        except Exception:
+                            model = None
+                    text = await summarize_for_speech(
+                        text,
+                        getattr(self._onit, "config_data", None) or {},
+                        model=model,
+                    )
+                except Exception as e:
+                    logger.warning("tts summarizer raised; speaking full text: %s", e)
             if len(text) > 5000:
                 text = text[:5000]
 

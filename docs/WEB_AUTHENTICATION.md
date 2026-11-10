@@ -73,6 +73,8 @@ and survives server restarts.
 | `web_allowed_emails` | Extra allowlist: exact addresses or `"*@domain"` patterns | unset (any Gmail/Workspace account) |
 | `web_require_auth` | Set `false` to allow running without login | `true` |
 | `web_html_preview` | Run generated `.html` files in a sandboxed frame in the reply. Set `false` to serve them as source and a download only | `true` |
+| `web_tts` | Text-to-speech for the chat UIs: enables the `/api/tts` endpoint and the speaker toggle in the web UI and the desktop app. Synthesis is local (Kokoro, ~330 MB of weights downloaded on first use) | `true` |
+| `web_tts_summarize` | Read-aloud speaks a model-written summary of each answer — the result and key numbers — instead of the full text, which stays on screen. Set `false` to speak answers verbatim | `true` |
 
 A previewed page is framed with `sandbox` but never `allow-same-origin`, and
 the response repeats that as a CSP `sandbox` directive so a page opened in its

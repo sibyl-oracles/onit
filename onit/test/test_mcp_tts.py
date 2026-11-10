@@ -166,3 +166,120 @@ def test_disabled_by_env(monkeypatch):
     assert "speak" not in names
     monkeypatch.delenv("ONIT_DISABLE_TTS")
     importlib.reload(tools)
+
+
+# ─── Read-aloud summarization ────────────────────────────────────────────────
+
+
+class FakeSummarizer:
+    """Stand-in for the model behind ``make_ask``.
+
+    Records what it was asked and replies with a canned summary, so tests
+    can assert on the exchange without an endpoint.
+    """
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = []
+
+    async def __call__(self, config_data=None, timeout=None, model=None):
+        self.config_data = config_data
+        self.timeout = timeout
+        self.model = model
+
+        async def ask(messages):
+            self.calls.append(messages)
+            return self.reply
+
+        return ask
+
+
+@pytest.fixture()
+def patch_make_ask(monkeypatch):
+    """Point ``make_ask`` at a FakeSummarizer; returns the factory."""
+
+    def install(reply):
+        fake = FakeSummarizer(reply)
+        import onit.learn.llm as llm
+
+        monkeypatch.setattr(llm, "make_ask", fake)
+        return fake
+
+    return install
+
+
+LONG_TEXT = (
+    "The weather report for Tokyo on December 10 2026 shows a detailed breakdown. " * 12
+).strip()
+
+
+@pytest.mark.asyncio
+async def test_short_text_skips_the_model():
+    short = "Today is sunny with a max of 30 degrees."
+    assert await tts.summarize_for_speech(short) == short
+
+
+@pytest.mark.asyncio
+async def test_long_text_is_summarized_and_cleaned(patch_make_ask):
+    fake = patch_make_ask("Summary: Today is sunny with a maximum of 30 degrees.")
+    out = await tts.summarize_for_speech(LONG_TEXT, {"serving": {"model": "qwen"}})
+    assert out == "Today is sunny with a maximum of 30 degrees."
+    # The exchange the model saw: system prompt first, full text as the user.
+    assert fake.calls[0][0]["role"] == "system"
+    assert fake.calls[0][1]["content"] == LONG_TEXT
+    # The agent's own config and model reached the client builder.
+    assert fake.config_data == {"serving": {"model": "qwen"}}
+    assert fake.timeout == tts.SUMMARY_TIMEOUT_S
+    assert fake.model is None
+
+
+@pytest.mark.asyncio
+async def test_agent_model_is_passed_through(patch_make_ask):
+    fake = patch_make_ask("Today is sunny with a maximum of 30 degrees.")
+    await tts.summarize_for_speech(LONG_TEXT, {}, model="z-ai/glm-5.3-flash")
+    assert fake.model == "z-ai/glm-5.3-flash"
+
+
+@pytest.mark.asyncio
+async def test_fenced_summary_is_unwrapped(patch_make_ask):
+    patch_make_ask("```text\nToday is sunny with a maximum of 30 degrees.\n```")
+    out = await tts.summarize_for_speech(LONG_TEXT)
+    assert out == "Today is sunny with a maximum of 30 degrees."
+
+
+@pytest.mark.asyncio
+async def test_model_failure_speaks_the_full_text(monkeypatch):
+    import onit.learn.llm as llm
+
+    async def boom(config_data=None, timeout=None):
+        raise RuntimeError("endpoint down")
+
+    monkeypatch.setattr(llm, "make_ask", boom)
+    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+
+
+@pytest.mark.asyncio
+async def test_junk_summary_speaks_the_full_text(patch_make_ask):
+    patch_make_ask("ok")
+    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+
+
+@pytest.mark.asyncio
+async def test_summary_as_long_as_the_text_speaks_the_full_text(patch_make_ask):
+    patch_make_ask(LONG_TEXT + " and a little more on top of that.")
+    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+
+
+@pytest.mark.asyncio
+async def test_overlong_summary_is_capped_on_a_sentence(patch_make_ask):
+    patch_make_ask("Tokyo will be sunny with a high of 30 degrees and light winds all week. " * 10)
+    out = await tts.summarize_for_speech(LONG_TEXT)
+    assert len(out) <= tts.SUMMARY_MAX_CHARS
+    assert out.endswith(".")
+
+
+@pytest.mark.asyncio
+async def test_structured_summary_speaks_the_full_text(patch_make_ask):
+    """A model that answers with a table has reformatted, not summarized."""
+    patch_make_ask("| Property | Price |\n|---|---|\n| Unplan | 3,200 yen |\n| Oak | 3,600 yen |")
+    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
