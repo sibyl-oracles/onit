@@ -470,7 +470,22 @@ def _search_impl(query: str = None, type: str = "web", max_results: int = 5) -> 
             return search_tool.search(query)
 
     except Exception as e:
-        return json.dumps({"error": f"Search failed: {_redact_secrets(str(e))[:200]}"})
+        # Same contract as the no-results return below in web_search.py: a
+        # deterministic failure is flagged retryable=False so the harness's
+        # repeated-call guard can bail at two identical calls rather than
+        # five, and the guidance tells the model what to do instead.
+        return json.dumps(
+            {
+                "error": f"Search failed: {_redact_secrets(str(e))[:200]}",
+                "retryable": False,
+                "guidance": (
+                    "This search failed and the identical query will fail "
+                    "the same way. Do not repeat it unchanged. Reword or "
+                    "narrow the query, fetch a known URL with fetch_content "
+                    "instead, or tell the user the web search is unavailable."
+                ),
+            }
+        )
 
 
 # Shared with the unified ToolsMCPServer re-registration (tools/mcp_server.py)
@@ -483,6 +498,10 @@ verification of local results).
 
 Choosing `type`: "web" results carry NO date — use "news" (results carry a
 `date`) whenever the answer depends on recency; use "web" for facts that do not move.
+
+If a search returns an error or zero results, do not repeat the identical
+query — reword or narrow it, fetch a known URL with fetch_content instead,
+or tell the user the web search is unavailable.
 
 Args:
 - query: Search terms (e.g., "AI regulations 2024", "how to bake bread")

@@ -1774,28 +1774,42 @@ _REPEAT_STREAK_BAIL = 5
 # refused calls in a row is already proof the model is ignoring the refusal's
 # own guidance ("do not retry it"), so bail at 2 rather than 5 — the remaining
 # three turns were the loop the guard exists to stop.
+#
+# The same arithmetic covers a tool that *fails* deterministically and says so
+# (``retryable: false``): a search that found nothing will find nothing again
+# on the identical query, and five identical network round trips to prove that
+# is the loop too. Tools that do not flag their errors keep the ordinary
+# 5-streak — an intermittent failure is worth one retry, and the flag is the
+# only thing that tells the two apart.
 _REPEAT_REFUSAL_BAIL = 2
 
 
-def _policy_refusal_reason(tool_response: str) -> str:
-    """The policy reason in a tool result that is a refusal, else "".
+def _deterministic_failure(tool_response: str) -> tuple:
+    """Classify a tool result as a refusal or a flagged dead end.
 
-    Both refusal shapes are JSON with ``status == "blocked"``: the bash
-    server's ``_refusal`` and the harness's ``_approval_refused``. Detection
-    reads the raw text, which is what reaches this function — refusals are
-    short enough to sit far below the store threshold, so no handle wraps
-    them, and the steer notice below quotes the reason so the model reads
-    *why* it is stuck, not just that it is.
+    Returns ``(kind, reason)`` where kind is ``"refused"`` (a policy refusal,
+    ``status == "blocked"``), ``"failed"`` (a JSON error the tool itself
+    marked ``retryable: false`` — a deterministic failure the identical call
+    will reproduce), or ``""`` (everything else, including unflagged errors:
+    without the tool's own flag the harness cannot tell a dead end from a
+    transient one, so those keep the ordinary streak arithmetic).
+
+    The reason is the tool's own words — the bail and steer messages quote it
+    so the model reads *why* the call will not go, not just that it will not.
     """
-    if not tool_response or '"status": "blocked"' not in tool_response:
-        return ""
+    if not tool_response or '"error"' not in tool_response:
+        return "", ""
     try:
         payload = json.loads(tool_response)
     except (ValueError, TypeError):
-        return ""
-    if not isinstance(payload, dict) or payload.get("status") != "blocked":
-        return ""
-    return str(payload.get("error") or "")
+        return "", ""
+    if not isinstance(payload, dict) or not payload.get("error"):
+        return "", ""
+    if payload.get("status") == "blocked":
+        return "refused", str(payload.get("error") or "")
+    if payload.get("retryable") is False:
+        return "failed", str(payload.get("error") or "")
+    return "", ""
 
 
 # Compaction-transcript caps: the summarizer sees the newest window in full
@@ -2601,27 +2615,41 @@ async def _execute_tool(
     # A refused call is a different loop from a repeated result. The refusal
     # is deterministic — the same command is refused the same way every time —
     # so two in a row is the whole loop; waiting for five only spends three
-    # turns the model has already proven it will waste. The bail message
-    # carries the policy's own reason so the next turn (a resumed session
-    # reads this as its last response) starts from the cause, not from a
-    # bare "stopped".
-    _refusal_reason = _policy_refusal_reason(
+    # turns the model has already proven it will waste. A tool that flags its
+    # own error ``retryable: false`` (a search that found nothing, a fetch of
+    # a known-bad URL) is the same shape of loop: the identical call
+    # reproduces the identical failure, and the flag is the tool telling the
+    # harness so. Both bail at 2 with the tool's own reason in the message so
+    # the next turn (a resumed session reads this as its last response) starts
+    # from the cause, not from a bare "stopped".
+    _fail_kind, _fail_reason = _deterministic_failure(
         messages[-1]["content"]
         if messages
         and isinstance(messages[-1], dict)
         and isinstance(messages[-1].get("content"), str)
         else ""
     )
-    if _streak >= _REPEAT_REFUSAL_BAIL and _refusal_reason:
-        msg = (
-            f"Stopped: {function_name} was called {_streak} time(s) in a row "
-            f"({_lifetime} in this run) and refused by policy each time. "
-            f"The command did not run and will not run: {_refusal_reason} "
-            f"Do not retry it or reword it — take a different approach, or "
-            f"tell the user what is blocked and why."
-        )
+    if _streak >= _REPEAT_REFUSAL_BAIL and _fail_kind:
+        if _fail_kind == "refused":
+            msg = (
+                f"Stopped: {function_name} was called {_streak} time(s) in a row "
+                f"({_lifetime} in this run) and refused by policy each time. "
+                f"The command did not run and will not run: {_fail_reason} "
+                f"Do not retry it or reword it — take a different approach, or "
+                f"tell the user what is blocked and why."
+            )
+        else:
+            msg = (
+                f"Stopped: {function_name} was called {_streak} time(s) in a row "
+                f"({_lifetime} in this run) and failed with the same error each "
+                f"time, and the tool says the error is not retryable: "
+                f"{_fail_reason} Do not repeat the call unchanged — change the "
+                f"arguments or the approach, or tell the user what is failing "
+                f"and why."
+            )
         _log_to_ui_or_verbose(
-            f"Repeated policy refusal: {function_name} streak={_streak} — {_refusal_reason[:120]}",
+            f"Repeated {'policy refusal' if _fail_kind == 'refused' else 'deterministic failure'}: "
+            f"{function_name} streak={_streak} — {_fail_reason[:120]}",
             chat_ui,
             verbose,
             level="warning",
@@ -2645,11 +2673,12 @@ async def _execute_tool(
         # Steering, not termination: the notice rides in the tool message the
         # model is about to read, names the exact repetition, and points at the
         # cheaper recovery paths (the result already in context; result_read
-        # for anything a stored handle holds). When the last call was refused,
-        # the notice also carries the policy's reason — a model that keeps
-        # re-running a blocked command is ignoring the refusal's guidance, and
-        # the reason is the one thing it has not read in this shape yet.
-        _refusal_note = f" The refusal reason: {_refusal_reason}" if _refusal_reason else ""
+        # for anything a stored handle holds). When the last call was refused
+        # or flagged not-retryable, the notice also carries the tool's own
+        # reason — a model that keeps re-running a blocked command or a
+        # failing search is ignoring the guidance it already read, and the
+        # reason is the one thing it has not seen in this shape yet.
+        _refusal_note = f" The reason: {_fail_reason}" if _fail_reason else ""
         _notice = (
             f"[repeated call #{_lifetime}: this exact call has run {_streak} time(s) "
             f"in a row and returned the same result. Do not call it again with the "

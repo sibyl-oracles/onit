@@ -259,6 +259,33 @@ class TestSearchChain:
         assert out["query"] == "q"
         assert out["providers_tried"] == ["ollama", "duckduckgo"]
 
+    def test_total_failure_is_flagged_not_retryable_with_guidance(self):
+        """A total miss is deterministic: the same query hits the same empty
+        index every time. The ``retryable: false`` flag is what lets the
+        harness's repeated-call guard bail after two identical calls instead
+        of five, and the guidance is what the model reads instead of retrying.
+        """
+        ws = WebSearch()
+        with patch.object(ws, "_search_tavily", return_value=None):
+            with patch.object(ws, "_search_ollama", return_value=None):
+                with patch.object(ws, "_search_ddgs", return_value=None):
+                    out = json.loads(ws.search("q"))
+        assert out["retryable"] is False
+        assert "Do not repeat" in out["guidance"]
+
+    def test_exception_path_is_flagged_not_retryable(self):
+        """The _search_impl catch-all carries the same flag: a raised error is
+        as deterministic a dead end as an empty result set."""
+        import onit.mcp.servers.tasks.web.search.mcp_server as mod
+
+        with patch.object(
+            mod.WebSearch, "search", side_effect=RuntimeError("network down")
+        ):
+            out = json.loads(mod._search_impl(query="q"))
+        assert "Search failed" in out["error"]
+        assert out["retryable"] is False
+        assert "Do not repeat" in out["guidance"]
+
     def test_providers_tried_includes_tavily_when_configured(self, monkeypatch):
         monkeypatch.setenv("TAVILY_API_KEY", "k")
         ws = WebSearch()

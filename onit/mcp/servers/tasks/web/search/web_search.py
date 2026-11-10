@@ -282,6 +282,20 @@ class WebSearch:
                     "query": query,
                     "providers_tried": tried,
                     "reasons": reasons,
+                    # A total miss is deterministic: the same query hits the
+                    # same rate limits and the same empty index every time.
+                    # Flagging it is what lets the harness's repeated-call
+                    # guard bail after two identical calls instead of five —
+                    # without the flag the guard cannot tell a failing search
+                    # from a tool whose result just happened to repeat.
+                    "retryable": False,
+                    "guidance": (
+                        "This search found nothing and the identical query "
+                        "will find nothing again. Do not repeat it unchanged. "
+                        "Reword or narrow the query, fetch a known URL with "
+                        "fetch_content instead, or tell the user the web "
+                        "search is unavailable."
+                    ),
                 }
             )
 

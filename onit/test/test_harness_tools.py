@@ -499,8 +499,175 @@ class TestRefusalLoopBailsEarly:
                 )
             )
         assert "repeated call #" in messages[-1]["content"]
-        assert "The refusal reason:" in messages[-1]["content"]
+        assert "The reason:" in messages[-1]["content"]
         assert "env command is not allowed" in messages[-1]["content"]
+
+    def test_the_steer_notice_says_refusal_for_a_blocked_call(self):
+        """The notice's reason line is prefixed by the tool's own error text;
+        for a refusal the wording is unchanged from the policy-only days."""
+        messages: list = []
+        history: list = []
+        calls = [{"command": "cat .env"}, {"command": "printenv HOME"}]
+        for i, args in enumerate(calls):
+            asyncio.run(
+                _execute_tool(
+                    "bash",
+                    args,
+                    f"call_{i}",
+                    _RefusingRegistry(),
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=1,
+                )
+            )
+        assert "Command blocked: env command is not allowed." in messages[-1]["content"]
+
+
+_SEARCH_FAILURE = json.dumps(
+    {
+        "error": "Search failed - no results from any provider",
+        "query": "same query",
+        "providers_tried": ["ollama", "duckduckgo"],
+        "retryable": False,
+        "guidance": "This search found nothing and the identical query will find nothing again.",
+    }
+)
+
+
+class _FailingSearchRegistry:
+    """A registry whose search answers with the flagged dead-end shape."""
+
+    tools = {"search"}
+
+    def tool_accepts_param(self, name, param):
+        return False
+
+    def __getitem__(self, name):
+        async def handler(**kw):
+            return _SEARCH_FAILURE
+
+        return handler
+
+
+class TestFlaggedFailureLoopBailsEarly:
+    """A tool that marks its own error ``retryable: false`` is the refusal
+    case in different clothes: the identical call reproduces the identical
+    failure, and the tool has said so. Two identical calls is the whole loop —
+    the shape that produced 'search was called 5 times in a row' before the
+    flag existed."""
+
+    def _loop(self, registry, args, limit=8):
+        messages: list = []
+        history: list = []
+        bail = None
+        for i in range(limit):
+            bail = asyncio.run(
+                _execute_tool(
+                    "search",
+                    args,
+                    f"call_{i}",
+                    registry,
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=30,
+                )
+            )
+            if bail:
+                break
+        return bail, history, messages
+
+    def test_two_identical_flagged_failures_end_the_loop(self):
+        bail, history, _ = self._loop(
+            _FailingSearchRegistry(), {"query": "same query"}
+        )
+        assert bail is not None and len(history) == 2
+        assert "failed with the same error" in bail
+        # The tool's own reason rides in the bail message.
+        assert "no results from any provider" in bail
+
+    def test_an_unflagged_error_still_waits_for_five(self):
+        """Without the tool's own ``retryable: false`` the harness cannot tell
+        a dead end from a transient failure, so the ordinary streak applies."""
+
+        class _Unflagged(_FailingSearchRegistry):
+            def __getitem__(self, name):
+                async def handler(**kw):
+                    return json.dumps({"error": "transient hiccup"})
+
+                return handler
+
+        bail, history, _ = self._loop(_Unflagged(), {"query": "same query"})
+        assert bail is not None and len(history) == 5
+        assert "identical arguments" in bail
+
+    def test_interleaved_failures_do_not_trip_the_streak(self):
+        """Streak, not lifetime: fail, succeed, fail... is not one loop."""
+
+        class _Mixed(_FailingSearchRegistry):
+            def __getitem__(self, name):
+                async def handler(**kw):
+                    return _SEARCH_FAILURE if kw.get("query") == "same query" else "ok"
+
+                return handler
+
+        messages: list = []
+        history: list = []
+        bail = None
+        for i in range(6):
+            query = "same query" if i % 2 == 0 else "other query"
+            bail = asyncio.run(
+                _execute_tool(
+                    "search",
+                    {"query": query},
+                    f"call_{i}",
+                    _Mixed(),
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=30,
+                )
+            )
+            if bail:
+                break
+        assert bail is None, f"interleaved loop bailed early: {bail}"
+
+    def test_the_steer_notice_carries_the_failure_reason(self):
+        """On the steering path the model reads the tool's own reason in the
+        message it is about to get. Reached with two different failing
+        queries (streak stays 1, the lifetime threshold triggers steering)."""
+        messages: list = []
+        history: list = []
+        calls = [{"query": "same query"}, {"query": "narrowed query"}]
+        for i, args in enumerate(calls):
+            asyncio.run(
+                _execute_tool(
+                    "search",
+                    args,
+                    f"call_{i}",
+                    _FailingSearchRegistry(),
+                    timeout=5,
+                    data_path=None,
+                    chat_ui=None,
+                    verbose=False,
+                    messages=messages,
+                    tool_call_history=history,
+                    max_repeated=1,
+                )
+            )
+        assert "repeated call #" in messages[-1]["content"]
+        assert "The reason:" in messages[-1]["content"]
+        assert "no results from any provider" in messages[-1]["content"]
 
 
 # ── raw JSON tool calls ─────────────────────────────────────────────────────
