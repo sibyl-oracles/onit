@@ -2155,10 +2155,11 @@ class WebApiUI:
             if self.tts_summarize and summarize:
                 # The summarizer asks the configured chat model for a short
                 # spoken form. It runs before the 5000-char cap so the model
-                # sees the whole answer, and it returns the text unchanged
-                # when it cannot improve on it. It also catches its own
-                # failures; the guard here is the seatbelt under that, so a
-                # summarizer bug can never turn read-aloud into a 500.
+                # sees the whole answer, and it condenses on its own when it
+                # cannot improve on the text. The guard here is the seatbelt
+                # under that: a summarizer bug must never turn read-aloud
+                # into a 500 — or into the full text, which is the very
+                # reading this feature exists to avoid.
                 try:
                     # The agent's own model, from the endpoint it would use
                     # for a new session — auto-detection on a multi-model
@@ -2177,7 +2178,10 @@ class WebApiUI:
                         endpoint=self._tts_endpoint(),
                     )
                 except Exception as e:
-                    logger.warning("tts summarizer raised; speaking full text: %s", e)
+                    logger.warning("tts summarizer raised; speaking the lead: %s", e)
+                    from onit.mcp.servers.tasks.tools.tts import spoken_lead
+
+                    text = spoken_lead(text)
             if len(text) > 5000:
                 text = text[:5000]
 

@@ -258,6 +258,36 @@ SUMMARY_MIN_CHARS = 20
 # waits half a minute for a condensation is worse than no condensation.
 SUMMARY_TIMEOUT_S = 30.0
 
+# When the summarizer cannot run — no model, a timeout, a refusal — the
+# spoken form is the *lead* of the answer, not the whole answer. A listener
+# cannot skim audio: the full text is what read-aloud exists to avoid
+# speaking. The lead is the first sentences of the sanitized text, cut on a
+# sentence boundary near this cap.
+SPOKEN_LEAD_MAX_CHARS = 280
+
+
+def spoken_lead(text: str, max_chars: int = SPOKEN_LEAD_MAX_CHARS) -> str:
+    """The opening sentences of *text*, cut on a sentence boundary.
+
+    The fallback when condensation is impossible: what the listener hears is
+    the start of the answer — usually its conclusion — and never the whole
+    wall of text. ``text`` must already be sanitized; this only trims.
+    """
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    # ". " with a following capital is the safest sentence end in prose;
+    # a bare period inside "e.g." or "3.5" does not get one.
+    cut = text.rfind(". ", 0, max_chars)
+    if cut > 0:
+        return text[: cut + 1]
+    # No sentence end in reach — cut at the last space so a word is not
+    # severed, and close the fragment so it does not read as a mistake.
+    space = text.rfind(" ", 0, max_chars)
+    return text[:space].rstrip(" ,;:") + "…" if space > 0 else text[:max_chars] + "…"
+
+
 _SUMMARY_SYSTEM_PROMPT = (
     "You condense text for a listener. Reply with ONLY a spoken summary of the "
     "text, at most 40 words and always clearly shorter than the text itself: "
@@ -335,8 +365,9 @@ async def summarize_for_speech(
     gets spoken. Passing the endpoint the agent itself is on removes that
     whole failure class.
 
-    Every failure path returns *text* unchanged: a summarizer that cannot
-    run must not take the read-aloud down with it. The caller speaks
+    Every failure path returns a *short* spoken form — the lead of the text,
+    via ``spoken_lead`` — never the full text: a summarizer that cannot run
+    must not turn read-aloud back into a full reading. The caller speaks
     something either way.
     """
     if not text or len(text) <= SUMMARY_SKIP_CHARS:
@@ -352,18 +383,18 @@ async def summarize_for_speech(
             ]
         )
     except Exception as e:
-        logger.warning("tts summarization failed, speaking full text: %s", e)
-        return text
+        logger.warning("tts summarization failed, speaking the lead: %s", e)
+        return spoken_lead(text)
     summary = _clean_summary(str(raw or ""))
     if len(summary) < SUMMARY_MIN_CHARS or len(summary) >= len(text):
         # Not a usable condensation — a refusal, an empty reply, or
-        # something as long as the original. The original reads fine.
-        return text
+        # something as long as the original. The lead carries the start.
+        return spoken_lead(text)
     if _is_structured(summary):
         # A model that ignores "no markdown" and hands back a table or a
         # list has not summarized — it has reformatted, and a listener
-        # cannot skim a table read aloud. The original is no worse.
-        return text
+        # cannot skim a table read aloud. The lead is no worse.
+        return spoken_lead(text)
     if len(summary) > SUMMARY_MAX_CHARS:
         # Cut on a sentence boundary when one is in reach, so the clip
         # does not end mid-word.

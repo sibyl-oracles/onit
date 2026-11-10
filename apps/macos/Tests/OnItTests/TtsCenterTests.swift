@@ -137,4 +137,77 @@ final class TtsCenterTests: XCTestCase {
         center.stop()
         XCTAssertEqual(fired, [true, false])
     }
+
+    // MARK: - Phases: the composer shows Summarizing… / Speaking…, and the
+    // mic-mute callback must key off *speaking* only.
+
+    func testSpeakWithoutPrefetchStaysSilentInsteadOfReadingFullText() async {
+        let center = TtsCenter()
+        center.setEnabled(true)
+        // A dead URL: the prefetch never answers ready. The old fallback
+        // synthesized the full text here; the new contract is silence.
+        center.speak(
+            "A very long weather report that nobody wants read end to end.",
+            client: OnItClient(baseURL: URL(string: "http://127.0.0.1:1")!),
+            session: "s",
+            ttsId: 1
+        )
+        // The wait is visible while it lasts.
+        XCTAssertEqual(center.phase, .summarizing)
+        // Give the poll loop a moment to exhaust against the dead URL.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        center.stop()
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertFalse(center.isSpeaking)
+    }
+
+    func testSummarizingDoesNotMuteDictation() {
+        let center = TtsCenter()
+        var fired: [Bool] = []
+        center.onSpeakingChange = { fired.append($0) }
+        center.setEnabled(true)
+        center.speak(
+            "The answer.",
+            client: OnItClient(baseURL: URL(string: "http://127.0.0.1:1")!),
+            session: "s",
+            ttsId: 1
+        )
+        XCTAssertEqual(center.phase, .summarizing)
+        // Preparation is not audio: the recognizer keeps working.
+        XCTAssertEqual(fired, [])
+        center.stop()
+        XCTAssertEqual(fired, [])
+    }
+
+    func testStopDuringSummarizingResetsPhase() {
+        let center = TtsCenter()
+        center.setEnabled(true)
+        center.speak(
+            "The answer.",
+            client: OnItClient(baseURL: URL(string: "http://127.0.0.1:1")!),
+            session: "s",
+            ttsId: 1
+        )
+        XCTAssertEqual(center.phase, .summarizing)
+        center.stop()
+        XCTAssertEqual(center.phase, .idle)
+        // A stale poll must not resurrect the label after the user moved on.
+        center.setEnabled(false)
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    func testVerbatimOnDemandWhenNoPrefetchWasPromised() {
+        // ttsId == nil means the server has summarize off: the reply is
+        // spoken verbatim on demand. The phase starts idle — there is
+        // nothing to wait for — and the fetch failure leaves it silent.
+        let center = TtsCenter()
+        center.setEnabled(true)
+        center.speak(
+            "Done — 3 files written.",
+            client: OnItClient(baseURL: URL(string: "http://127.0.0.1:1")!)
+        )
+        XCTAssertEqual(center.phase, .idle)
+        center.stop()
+        XCTAssertEqual(center.phase, .idle)
+    }
 }

@@ -863,11 +863,12 @@
     try {
       // The server started condensing and synthesizing this answer the
       // moment it landed, so the clip usually already exists: poll for it
-      // briefly before falling back to on-demand synthesis, which is the
-      // plain-text path that never waits on a model.
+      // rather than cutting to the full text. The model call behind the
+      // summary can take longer than a beat, so the wait is generous —
+      // hearing the summary late beats hearing every word.
       let blob = null;
       if (ttsId != null) {
-        const deadline = Date.now() + 3000;
+        const deadline = Date.now() + 30000;
         while (Date.now() < deadline) {
           const res = await api("/api/tts/summary?id=" + encodeURIComponent(ttsId));
           if (res.status === 200) {
@@ -878,10 +879,20 @@
           await new Promise((r) => setTimeout(r, 250));
         }
       }
+      if (!blob && ttsId != null) {
+        // No summary arrived — the job failed or the server could not
+        // condense. Stay silent: reading the full answer aloud is the
+        // exact thing read-aloud exists to avoid. The user can read the
+        // reply on screen, or ask the speak tool for the long version.
+        el.ttsBtn.classList.remove("tts-speaking");
+        return;
+      }
       if (!blob) {
+        // No prefetch was ever promised (server summarize off): the
+        // verbatim clip is what the opt-out asks for.
         const res = await api("/api/tts", {
           method: "POST",
-          body: JSON.stringify({ text: stripped, summarize: ttsId == null }),
+          body: JSON.stringify({ text: stripped, summarize: false }),
         });
         if (!res.ok) throw new Error("tts " + res.status);
         blob = await res.blob();

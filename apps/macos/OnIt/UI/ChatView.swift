@@ -392,8 +392,14 @@ struct DictationButton: View {
 /// Live dictation status above the composer row: the hypothesis as it grows,
 /// or the error/denial that stopped the stream. Mirrors how `uploadError`
 /// is surfaced — close to the input, dismissible by the next attempt.
+///
+/// Read-aloud shares this row: "Summarizing…" while the spoken summary is
+/// being prepared and "Speaking…" while it plays, because a listener who
+/// just heard the answer land needs to know why the mic is quiet and when
+/// it will be live again. Dictation wins the row the moment it is on.
 struct DictationStatus: View {
     @Environment(DictationCenter.self) private var dictation
+    @Environment(TtsCenter.self) private var tts
 
     var body: some View {
         let snap = dictation.snapshot
@@ -412,6 +418,23 @@ struct DictationStatus: View {
                 .font(Typography.caption)
                 .foregroundStyle(snap.isDenied ? Palette.danger : Palette.secondaryText)
                 .textSelection(.enabled)
+        } else if tts.phase == .summarizing {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Summarizing…")
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.secondaryText)
+            }
+        } else if tts.isSpeaking {
+            HStack(spacing: 6) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.accentColor)
+                Text("Speaking…")
+                    .font(Typography.caption)
+                    .foregroundStyle(Palette.secondaryText)
+            }
         }
     }
 }

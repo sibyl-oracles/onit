@@ -282,26 +282,34 @@ async def test_fenced_summary_is_unwrapped(patch_make_ask):
 
 
 @pytest.mark.asyncio
-async def test_model_failure_speaks_the_full_text(monkeypatch):
+async def test_model_failure_speaks_the_lead(monkeypatch):
     import onit.learn.llm as llm
 
     async def boom(config_data=None, timeout=None):
         raise RuntimeError("endpoint down")
 
     monkeypatch.setattr(llm, "make_ask", boom)
-    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+    out = await tts.summarize_for_speech(LONG_TEXT)
+    # The fallback is the opening of the text, never the whole answer.
+    assert out.startswith("The weather report for Tokyo")
+    assert len(out) <= tts.SPOKEN_LEAD_MAX_CHARS
+    assert len(out) < len(LONG_TEXT)
 
 
 @pytest.mark.asyncio
-async def test_junk_summary_speaks_the_full_text(patch_make_ask):
+async def test_junk_summary_speaks_the_lead(patch_make_ask):
     patch_make_ask("ok")
-    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+    out = await tts.summarize_for_speech(LONG_TEXT)
+    assert out.startswith("The weather report for Tokyo")
+    assert len(out) <= tts.SPOKEN_LEAD_MAX_CHARS
 
 
 @pytest.mark.asyncio
-async def test_summary_as_long_as_the_text_speaks_the_full_text(patch_make_ask):
+async def test_summary_as_long_as_the_text_speaks_the_lead(patch_make_ask):
     patch_make_ask(LONG_TEXT + " and a little more on top of that.")
-    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+    out = await tts.summarize_for_speech(LONG_TEXT)
+    assert out.startswith("The weather report for Tokyo")
+    assert len(out) < len(LONG_TEXT)
 
 
 @pytest.mark.asyncio
@@ -313,7 +321,23 @@ async def test_overlong_summary_is_capped_on_a_sentence(patch_make_ask):
 
 
 @pytest.mark.asyncio
-async def test_structured_summary_speaks_the_full_text(patch_make_ask):
+async def test_structured_summary_speaks_the_lead(patch_make_ask):
     """A model that answers with a table has reformatted, not summarized."""
     patch_make_ask("| Property | Price |\n|---|---|\n| Unplan | 3,200 yen |\n| Oak | 3,600 yen |")
-    assert await tts.summarize_for_speech(LONG_TEXT) == LONG_TEXT
+    out = await tts.summarize_for_speech(LONG_TEXT)
+    assert out.startswith("The weather report for Tokyo")
+    assert len(out) <= tts.SPOKEN_LEAD_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_spoken_lead_cuts_on_a_sentence():
+    text = "First sentence here. " * 20
+    out = tts.spoken_lead(text, max_chars=200)
+    assert out.endswith(".")
+    assert len(out) <= 200
+
+
+@pytest.mark.asyncio
+async def test_spoken_lead_short_text_is_untouched():
+    text = "Short answer."
+    assert tts.spoken_lead(text) == text

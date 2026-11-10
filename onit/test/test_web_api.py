@@ -2012,8 +2012,8 @@ class TestTtsEndpoint:
 
     def test_summarizer_failure_still_speaks(self, tts_client, capture_speech, monkeypatch):
         """A summarizer crash must not take read-aloud down with it: the
-        endpoint falls back to the full text and the user still hears the
-        answer."""
+        endpoint falls back to the *lead* of the text — never the full text,
+        which is the reading read-aloud exists to avoid."""
 
         async def boom(text, config_data=None):
             raise RuntimeError("no model")
@@ -2025,10 +2025,14 @@ class TestTtsEndpoint:
         res = tts_client.post("/api/tts", json={"text": full})
         assert res.status_code == 200
         assert capture_speech.spoken.startswith("A long answer.")
+        # The fallback is the lead, not the whole answer.
+        assert len(capture_speech.spoken) <= 300
 
     def test_summarize_off_speaks_the_full_text(
         self, tmp_path, bg_loop, capture_speech, stub_summarizer
     ):
+        """An explicit tts_summarize: false is the user's opt-out: the
+        verbatim text is what they asked to hear, so it stays verbatim."""
         ui = WebApiUI(
             data_path=str(tmp_path / "data"),
             session_path=str(tmp_path / "sessions" / "current.jsonl"),
