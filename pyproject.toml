@@ -56,6 +56,14 @@ web = [
 voice = [
     "aiohttp",
 ]
+# Speech output (the `speak` tool). Optional because it drags in the TTS
+# runtime -- kokoro-onnx, onnxruntime, phonemizer -- a few hundred MB of
+# wheels a user who never wants audio should not pay for. The weights
+# themselves are not pip-managed: they download from GitHub releases to
+# ~/.onit/models/kokoro on first use (ensure_weights() in tts.py).
+tts = [
+    "kokoro-onnx>=0.6.1",
+]
 test = [
     "pytest",
     "pytest-asyncio",
@@ -90,7 +98,7 @@ bench = [
 # `test`, `lint` and `bench` stay out on purpose: asking for every *tool*
 # should not drag in pytest, a pinned ruff, or the inspect-ai stack.
 all = [
-    "onit[search,web,voice]",
+    "onit[search,web,voice,tts]",
 ]
 
 [project.scripts]

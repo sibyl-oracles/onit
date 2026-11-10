@@ -124,7 +124,15 @@ def _download(url: str, dest: str) -> None:
     req = urllib.request.Request(url)
     if resume_from:
         req.add_header("Range", f"bytes={resume_from}-")
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    try:
+        resp_ctx = urllib.request.urlopen(req, timeout=60)
+    except Exception as e:
+        # A first-use download that cannot reach the CDN must read as a
+        # clean tool error, not a raw URLError traceback: speak_impl
+        # catches only TTSError, and callers build user-visible JSON
+        # from it.
+        raise TTSError(f"Could not download {url}: {e}") from e
+    with resp_ctx as resp:
         append = resume_from and resp.status == 206
         mode = "ab" if append else "wb"
         offset = resume_from if append else 0
@@ -166,7 +174,8 @@ def _get_engine():
         from kokoro_onnx import Kokoro
     except ImportError as e:
         raise TTSError(
-            "kokoro-onnx is not installed. Install it with: pip install kokoro-onnx"
+            "kokoro-onnx is not installed. Install it with: pip install -e '.[tts]' "
+            "(from the repo) or pip install 'onit[tts]'"
         ) from e
     model_path, voices_path = ensure_weights()
     try:
