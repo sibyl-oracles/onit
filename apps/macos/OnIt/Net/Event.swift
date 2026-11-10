@@ -49,6 +49,24 @@ struct DonePayload: Sendable, Equatable {
     let turn: Int
     let ratingEnabled: Bool
     let timing: Timing
+    /// The server's prefetch job for this answer's spoken summary, when the
+    /// server runs TTS with summarization on. The clip is being made while
+    /// this event is in flight; the TTS center polls it by id.
+    let ttsId: Int?
+
+    init(
+        content: String, files: [FileInfo], elapsed: Double, tokensPerSecond: Double,
+        turn: Int, ratingEnabled: Bool, timing: Timing, ttsId: Int? = nil
+    ) {
+        self.content = content
+        self.files = files
+        self.elapsed = elapsed
+        self.tokensPerSecond = tokensPerSecond
+        self.turn = turn
+        self.ratingEnabled = ratingEnabled
+        self.timing = timing
+        self.ttsId = ttsId
+    }
 }
 
 struct Timing: Sendable, Equatable {
@@ -203,7 +221,8 @@ extension DonePayload {
                 promptTokensSum: (timingJSON["prompt_tokens_sum"] as? Int) ?? 0,
                 cachedTokens: (timingJSON["cached_tokens"] as? Int) ?? 0,
                 tokenStats: (timingJSON["token_stats"] as? String) ?? ""
-            )
+            ),
+            ttsId: json["tts_id"] as? Int
         )
     }
 }

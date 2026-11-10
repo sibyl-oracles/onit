@@ -638,6 +638,13 @@ class ApiSession:
     # whose question it is has to be part of the routing and not a detail the
     # request body gets to assert.
     pending_approvals: dict = field(default_factory=dict)
+    # turn id -> the spoken-summary job for that answer, or its finished
+    # bytes. Started the moment the answer is ready (see _run_task) so the
+    # client asking for read-aloud finds the clip already made instead of
+    # waiting seconds for a summary and a synthesis it did not know about.
+    # Only the latest answer keeps its clip; read-aloud is for the answer
+    # just given, not a replay shelf.
+    spoken_summaries: dict = field(default_factory=dict)
 
 
 class WebApiUI:
@@ -1375,6 +1382,17 @@ class WebApiUI:
             display, file_paths = self._extract_file_paths(
                 response, data_path=session.data_path, session_id=session.session_id
             )
+            # Which turn a rating on this answer refers to. The agent has
+            # already appended to the session file by now, so its line
+            # count is this answer's number.
+            turn = _session_turn_count(session.session_path)
+            # The spoken form of this answer starts being made now, not when
+            # the client asks: summarization plus synthesis take seconds the
+            # listener would otherwise spend in silence after the answer
+            # lands. The client polls /api/tts/summary with the id below and
+            # only falls back to on-demand synthesis when nothing shows up.
+            if self.tts_enabled and self.tts_summarize and display.strip():
+                self._start_spoken_summary(session, turn, display)
             events.put_nowait(
                 (
                     "done",
@@ -1391,10 +1409,10 @@ class WebApiUI:
                             provider_name=stats.get("provider_name", ""),
                             data_path=session.data_path,
                         ),
-                        # Which turn a rating on this answer refers to. The agent has
-                        # already appended to the session file by now, so its line
-                        # count is this answer's number.
-                        "turn": _session_turn_count(session.session_path),
+                        "turn": turn,
+                        # The prefetch job's id for this answer, null when no
+                        # spoken summary is being made for it.
+                        "tts_id": turn if turn in session.spoken_summaries else None,
                         "rating_enabled": _recording_enabled(self._settings().config_data),
                     },
                 )
@@ -1423,6 +1441,103 @@ class WebApiUI:
                 self._arm_open_stream_watchdog(session, events)
             else:
                 events.put_nowait(_END)
+
+    # ------------------------------------------------------------------
+    # Read-aloud prefetch
+    # ------------------------------------------------------------------
+    #
+    # The summary and the clip are made while the answer is still landing
+    # on screen, so the speaker toggle plays within a beat of the tap
+    # instead of seconds after it. One job per answer, owned by the
+    # session; the next answer replaces it.
+
+    def _tts_endpoint(self) -> dict:
+        """The endpoint the summarizer should call: the agent's own.
+
+        The load balancer's preferred endpoint is where a new session would
+        be served, so it is where a judgment about the answer belongs too.
+        Re-resolving from config instead breaks on a ``serving.endpoints``
+        list config — no ``serving.host`` key — and sends the call to the
+        localhost default, where nothing listens: the summary silently
+        fails and the full text gets spoken.
+        """
+        lb = getattr(self._onit, "load_balancer", None)
+        if lb is not None:
+            try:
+                ep = lb.preferred
+                return {"host": ep.host, "model": ep.model, "host_key": ep.host_key}
+            except Exception:
+                pass
+        return {}
+
+    def _start_spoken_summary(self, session: ApiSession, turn: int, display: str) -> None:
+        """Kick off the summarize-then-synthesize job for this answer."""
+        loop = self._loop or asyncio.get_running_loop()
+        # The next answer's job replaces this session's old one, clips and
+        # all — see ApiSession.spoken_summaries.
+        session.spoken_summaries.clear()
+        session.spoken_summaries[turn] = loop.create_task(
+            self._make_spoken_summary(session, turn, display)
+        )
+
+    async def _make_spoken_summary(self, session: ApiSession, turn: int, display: str) -> None:
+        from onit.mcp.servers.tasks.tools.tts import (
+            sanitize_text,
+            summarize_for_speech,
+            synthesize_to_wav,
+        )
+
+        me = asyncio.current_task()
+        try:
+            text = sanitize_text(display)
+            if self.tts_summarize:
+                # The agent's own model, from the endpoint it would use for
+                # a new session — auto-detection on a multi-model host can
+                # land on a model this account cannot serve.
+                lb = getattr(self._onit, "load_balancer", None)
+                model = None
+                if lb is not None:
+                    try:
+                        model = lb.preferred.model
+                    except Exception:
+                        model = None
+                text = await summarize_for_speech(
+                    text,
+                    getattr(self._onit, "config_data", None) or {},
+                    model=model,
+                    endpoint=self._tts_endpoint(),
+                )
+            if len(text) > 5000:
+                text = text[:5000]
+            if not text:
+                session.spoken_summaries.pop(turn, None)
+                return
+            import tempfile
+
+            fd, tmp_path = tempfile.mkstemp(prefix="tts_", suffix=".wav")
+            os.close(fd)
+            try:
+                await asyncio.to_thread(synthesize_to_wav, text, tmp_path, "af_heart", 1.0)
+                with open(tmp_path, "rb") as f:
+                    data = f.read()
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            # Store only if this job is still the one registered for the
+            # turn — a newer answer has replaced it, and its clip would
+            # only resurrect a stale entry.
+            if session.spoken_summaries.get(turn) is me:
+                session.spoken_summaries[turn] = data
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Nothing here is worth an error surface: the client falls back
+            # to on-demand synthesis, which is exactly the old path.
+            logger.warning("tts prefetch for turn %s failed: %s", turn, e)
+            if session.spoken_summaries.get(turn) is me:
+                session.spoken_summaries.pop(turn, None)
 
     # ------------------------------------------------------------------
     # Voice
@@ -2003,7 +2118,11 @@ class WebApiUI:
             the reply is read aloud. When tts_summarize is on (the default)
             the text is first condensed by the configured model: the spoken
             form carries the result and the key numbers, while the full
-            answer stays on screen for the listener to read. Synthesis runs
+            answer stays on screen for the listener to read. The normal
+            path never waits on that — the summary is prefetched when the
+            answer lands (GET /api/tts/summary) — so this endpoint with
+            ``summarize: false`` is the fallback for a client whose
+            prefetch never arrived. Synthesis runs
             in a thread: the ONNX session is CPU-bound and would otherwise
             stall the event loop that is streaming everything else. The
             engine loads (and on a first run downloads ~330 MB of weights)
@@ -2021,6 +2140,10 @@ class WebApiUI:
                 speed = float(body.get("speed") or 1.0)
             except (TypeError, ValueError):
                 speed = 1.0
+            # Clients that already tried the prefetched summary pass
+            # summarize: false — the clip they want is the plain one, and
+            # another model call would only add latency.
+            summarize = body.get("summarize") is not False
             from onit.mcp.servers.tasks.tools.tts import (
                 TTSError,
                 sanitize_text,
@@ -2029,7 +2152,7 @@ class WebApiUI:
             )
 
             text = sanitize_text(text)
-            if self.tts_summarize:
+            if self.tts_summarize and summarize:
                 # The summarizer asks the configured chat model for a short
                 # spoken form. It runs before the 5000-char cap so the model
                 # sees the whole answer, and it returns the text unchanged
@@ -2051,6 +2174,7 @@ class WebApiUI:
                         text,
                         getattr(self._onit, "config_data", None) or {},
                         model=model,
+                        endpoint=self._tts_endpoint(),
                     )
                 except Exception as e:
                     logger.warning("tts summarizer raised; speaking full text: %s", e)
@@ -2085,6 +2209,37 @@ class WebApiUI:
                     "X-TTS-Duration": str(meta.get("duration_s", "")),
                     "Cache-Control": "no-store",
                 },
+            )
+
+        @app.get("/api/tts/summary")
+        async def api_tts_summary(request: Request):
+            """The prefetched spoken summary for one answer.
+
+            The client polls this with the ``tts_id`` its ``done`` event
+            carried. 202 while the job is still running, 200 with the WAV
+            bytes once it is done, 404 when there is no clip — a job that
+            failed, a turn older than the one clip that is kept, or a
+            server with the summarizer off — which is the client's cue to
+            synthesize on demand instead.
+            """
+            if not self.tts_enabled:
+                return JSONResponse({"detail": "TTS is disabled"}, status_code=404)
+            _sid, session = self._resolve_session(request)
+            try:
+                turn = int(request.query_params.get("id") or "")
+            except ValueError:
+                return JSONResponse({"detail": "id is required"}, status_code=400)
+            entry = session.spoken_summaries.get(turn)
+            if entry is None or isinstance(entry, asyncio.Task) or not entry:
+                # A still-running job answers 202 below; anything else that
+                # is not finished bytes means no clip is coming.
+                if isinstance(entry, asyncio.Task) and not entry.done():
+                    return JSONResponse({"ready": False}, status_code=202)
+                return JSONResponse({"detail": "no spoken summary for this turn"}, status_code=404)
+            return Response(
+                content=entry,
+                media_type="audio/wav",
+                headers={"Cache-Control": "no-store"},
             )
 
         @app.post("/api/verify_links")

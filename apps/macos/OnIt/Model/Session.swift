@@ -202,7 +202,7 @@ final class Session: Identifiable, Equatable {
                 title = String(messages[max(0, index - 1)].content.prefix(60))
             }
             // The answer is complete and on screen; now it may be heard.
-            tts?.speak(payload.content, client: client)
+            tts?.speak(payload.content, client: client, session: id, ttsId: payload.ttsId)
 
         case let .error(message):
             messages[index].error = message

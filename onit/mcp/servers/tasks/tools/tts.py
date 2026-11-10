@@ -242,8 +242,12 @@ def sanitize_text(text: str) -> str:
 
 
 # Below this length a reply is already short enough to speak in full —
-# summarizing "yes, done." would only add a model call and a delay.
-SUMMARY_SKIP_CHARS = 400
+# summarizing "yes, done." would only add a model call. The bar is what a
+# listener hears, not what a reader sees: 160 chars is roughly ten seconds
+# of speech, about two short sentences. A 400-char answer reads in a glance
+# but plays for half a minute, which is exactly the "long version" the
+# read-aloud exists to avoid.
+SUMMARY_SKIP_CHARS = 160
 # The spoken summary is cut here. A listener cannot skim audio: a summary
 # that runs past a minute is not a summary, it is the problem again.
 SUMMARY_MAX_CHARS = 600
@@ -256,9 +260,11 @@ SUMMARY_TIMEOUT_S = 30.0
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You condense text for a listener. Reply with ONLY a spoken summary of the "
-    "text, at most 60 words: the result or answer first, then the key numbers, "
-    'names and decisions. No preamble, no "Summary" heading, no markdown, no '
-    "lists. Plain sentences a person can hear once and follow."
+    "text, at most 40 words and always clearly shorter than the text itself: "
+    "the result or answer first, then the key numbers, names and decisions. "
+    'No preamble, no "Summary" heading, no markdown, no lists. Plain sentences '
+    "a person can hear once and follow. When the text is already short, one "
+    "sentence carrying its core fact is enough."
 )
 
 
@@ -301,7 +307,10 @@ def _is_structured(summary: str) -> bool:
 
 
 async def summarize_for_speech(
-    text: str, config_data: dict | None = None, model: str | None = None
+    text: str,
+    config_data: dict | None = None,
+    model: str | None = None,
+    endpoint: dict | None = None,
 ) -> str:
     """Return the short spoken form of *text*, or *text* itself.
 
@@ -318,6 +327,14 @@ async def summarize_for_speech(
     unset, the endpoint's default is auto-detected, which on a multi-model
     host can pick something the account cannot actually serve.
 
+    ``endpoint`` pins where the summarization call goes - the caller's
+    known host/model/key, normally the load balancer's preferred endpoint.
+    Without it the config is re-resolved, and a ``serving.endpoints`` list
+    config (no ``serving.host`` key) resolves to the localhost default,
+    where nothing listens: the summary silently fails and the full text
+    gets spoken. Passing the endpoint the agent itself is on removes that
+    whole failure class.
+
     Every failure path returns *text* unchanged: a summarizer that cannot
     run must not take the read-aloud down with it. The caller speaks
     something either way.
@@ -327,7 +344,7 @@ async def summarize_for_speech(
     try:
         from onit.learn.llm import make_ask
 
-        ask = await make_ask(config_data, model=model, timeout=SUMMARY_TIMEOUT_S)
+        ask = await make_ask(config_data, model=model, timeout=SUMMARY_TIMEOUT_S, endpoint=endpoint)
         raw = await ask(
             [
                 {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 JUDGE_MAX_TOKENS = 64
 
 
-def resolve_endpoint(config_data: dict | None = None) -> dict:
+def resolve_endpoint(config_data: dict | None = None, endpoint: dict | None = None) -> dict:
     """The host, model and key a background loop should talk to.
 
     Read from the same places the agent reads them, in the same order:
@@ -50,11 +50,24 @@ def resolve_endpoint(config_data: dict | None = None) -> dict:
     config file.  Resolving it in one place means the loop and the agent
     cannot end up pointed at different models, which would make a
     reflection about a model the agent is not using.
+
+    ``endpoint`` is a caller-known host/model/key mapping that wins over
+    everything: a caller holding the endpoint the agent is actually
+    serving from - the load balancer's preferred one - should not have its
+    answer re-resolved through ``serving.host``, a key this config's
+    ``serving.endpoints`` list shape never fills, which would resolve to
+    the localhost default and send the call nowhere.
     """
     serving = dict((config_data or {}).get("serving") or {})
-    host = serving.get("host") or os.environ.get("ONIT_HOST") or "http://127.0.0.1:8001/v1"
-    model = serving.get("model") or os.environ.get("ONIT_MODEL") or None
-    host_key = serving.get("host_key") or "EMPTY"
+    known = dict(endpoint or {})
+    host = (
+        known.get("host")
+        or serving.get("host")
+        or os.environ.get("ONIT_HOST")
+        or "http://127.0.0.1:8001/v1"
+    )
+    model = known.get("model") or serving.get("model") or os.environ.get("ONIT_MODEL") or None
+    host_key = known.get("host_key") or serving.get("host_key") or "EMPTY"
     return {"host": host, "model": model, "host_key": host_key}
 
 
@@ -114,19 +127,27 @@ async def _resolve_model(
 
 
 async def make_ask(
-    config_data: dict | None = None, *, model: str | None = None, timeout: float | None = 120.0
+    config_data: dict | None = None,
+    *,
+    model: str | None = None,
+    timeout: float | None = 120.0,
+    endpoint: dict | None = None,
 ):
     """Build the ``ask(messages)`` callable the loops take.
 
     Returns a coroutine function that takes a message list and returns
     the model's text.  It carries no tools, so a model asked to compare
     two runs cannot go and run anything while it thinks about them.
+
+    ``endpoint`` pins the host/model/key the call lands on (see
+    :func:`resolve_endpoint`); callers that already know the serving
+    endpoint pass it instead of letting the config re-resolve it.
     """
-    endpoint = resolve_endpoint(config_data)
-    host = endpoint["host"]
-    client, ollama_client, is_ollama = _build_client(host, endpoint["host_key"], timeout)
+    resolved = resolve_endpoint(config_data, endpoint=endpoint)
+    host = resolved["host"]
+    client, ollama_client, is_ollama = _build_client(host, resolved["host_key"], timeout)
     model_id = await _resolve_model(
-        client, ollama_client, is_ollama, host, model or endpoint["model"]
+        client, ollama_client, is_ollama, host, model or resolved["model"]
     )
 
     async def ask(messages: list) -> str:

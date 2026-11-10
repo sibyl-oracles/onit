@@ -849,7 +849,7 @@
     el.ttsBtn.classList.remove("tts-speaking");
   }
 
-  async function speakAnswer(text) {
+  async function speakAnswer(text, ttsId) {
     if (!state.ttsEnabled || !text || state.config && state.config.voice_enabled) return;
     stopSpeaking();
     const stripped = text
@@ -861,12 +861,31 @@
     if (!stripped) return;
     el.ttsBtn.classList.add("tts-speaking");
     try {
-      const res = await api("/api/tts", {
-        method: "POST",
-        body: JSON.stringify({ text: stripped }),
-      });
-      if (!res.ok) throw new Error("tts " + res.status);
-      const blob = await res.blob();
+      // The server started condensing and synthesizing this answer the
+      // moment it landed, so the clip usually already exists: poll for it
+      // briefly before falling back to on-demand synthesis, which is the
+      // plain-text path that never waits on a model.
+      let blob = null;
+      if (ttsId != null) {
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          const res = await api("/api/tts/summary?id=" + encodeURIComponent(ttsId));
+          if (res.status === 200) {
+            blob = await res.blob();
+            break;
+          }
+          if (res.status !== 202) break;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (!blob) {
+        const res = await api("/api/tts", {
+          method: "POST",
+          body: JSON.stringify({ text: stripped, summarize: ttsId == null }),
+        });
+        if (!res.ok) throw new Error("tts " + res.status);
+        blob = await res.blob();
+      }
       const audio = new Audio(URL.createObjectURL(blob));
       audio.onended = audio.onerror = () => {
         if (state.ttsAudio === audio) {
@@ -1284,7 +1303,7 @@
         addActions(turn.root, {
           text: answer, node: turn.content, turn: d.turn, rating: null,
         });
-        speakAnswer(answer);
+        speakAnswer(answer, d.tts_id);
         streamBlock = null;
         // The answer is final and the composer unlocks here. The stream may
         // stay open a while longer for a `correction`, but nothing about that

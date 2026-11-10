@@ -54,12 +54,18 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
 
     /// Speak one finished reply. Markdown is stripped here, mirroring the
     /// web UI's client-side strip: code blocks and link syntax read badly.
-    func speak(_ text: String, client: OnItClient) {
+    ///
+    /// When the server reported a prefetch job for this answer, the clip
+    /// is already being made; a short poll picks it up the moment it is
+    /// done. Only when nothing shows up does this fall back to on-demand
+    /// synthesis — asked for with ``summarize: false``, because a second
+    /// model call would just add latency to the wait.
+    func speak(_ text: String, client: OnItClient, session: String? = nil, ttsId: Int? = nil) {
         guard isEnabled else { return }
         stop()
         let stripped = stripForSpeech(text)
         guard !stripped.isEmpty else { return }
-        Task { await self.speakStripped(stripped, client: client) }
+        Task { await self.speakStripped(stripped, client: client, session: session, ttsId: ttsId) }
     }
 
     /// The text actually sent to the synthesizer. Internal so tests can
@@ -92,10 +98,35 @@ final class TtsCenter: NSObject, AVAudioPlayerDelegate {
         setSpeaking(true)
     }
 
-    private func speakStripped(_ text: String, client: OnItClient) async {
+    private func speakStripped(
+        _ text: String, client: OnItClient, session: String? = nil, ttsId: Int? = nil
+    ) async {
         do {
-            let data = try await client.tts(text)
-            let player = try AVAudioPlayer(data: data)
+            var data: Data?
+            if let session, let ttsId {
+                // The prefetch has a head start on this loop; give it a
+                // moment before paying for on-demand synthesis.
+                let deadline = Date().addingTimeInterval(3)
+                while Date() < deadline {
+                    switch await client.ttsSummary(ttsId, session: session) {
+                    case let .ready(wav):
+                        data = wav
+                    case .pending:
+                        try await Task.sleep(nanoseconds: 250_000_000)
+                        continue
+                    case .missing:
+                        break
+                    }
+                    break
+                }
+            }
+            let wav: Data
+            if let data {
+                wav = data
+            } else {
+                wav = try await client.tts(text, session: session, summarize: false)
+            }
+            let player = try AVAudioPlayer(data: wav)
             player.delegate = self
             guard player.play() else { return }
             self.player = player

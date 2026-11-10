@@ -74,7 +74,7 @@ and survives server restarts.
 | `web_require_auth` | Set `false` to allow running without login | `true` |
 | `web_html_preview` | Run generated `.html` files in a sandboxed frame in the reply. Set `false` to serve them as source and a download only | `true` |
 | `web_tts` | Text-to-speech for the chat UIs: enables the `/api/tts` endpoint and the speaker toggle in the web UI and the desktop app. Synthesis is local (Kokoro, ~330 MB of weights downloaded on first use) | `true` |
-| `web_tts_summarize` | Read-aloud speaks a model-written summary of each answer — the result and key numbers — instead of the full text, which stays on screen. Set `false` to speak answers verbatim | `true` |
+| `web_tts_summarize` | Read-aloud speaks a model-written summary of each answer — the result and key numbers — instead of the full text, which stays on screen. The summary and its clip are made the moment the answer lands (the `done` event carries a `tts_id`; `GET /api/tts/summary?id=` serves the finished clip), so tapping the speaker plays within a beat instead of seconds later. A client whose prefetch never arrives falls back to `POST /api/tts` with `summarize: false`, which synthesizes the plain text without a model call. Set `false` to speak answers verbatim | `true` |
 
 A previewed page is framed with `sandbox` but never `allow-same-origin`, and
 the response repeats that as a CSP `sandbox` directive so a page opened in its

@@ -284,8 +284,46 @@ struct OnItClient: Sendable {
     /// the whole clip before answering — synthesis is not streamed — so the
     /// caller decides what a wait is worth: this is called after a reply has
     /// landed, never while the user is still reading it.
-    func tts(_ text: String) async throws -> Data {
-        try await send("api/tts", method: "POST", body: ["text": text])
+    func tts(_ text: String, session: String? = nil, summarize: Bool = true) async throws -> Data {
+        try await send(
+            "api/tts", method: "POST",
+            body: ["text": text, "summarize": summarize], session: session
+        )
+    }
+
+    /// The state of the server's prefetched spoken summary for one answer.
+    enum TtsSummaryState: Equatable {
+        /// The clip is finished; the data is the WAV.
+        case ready(Data)
+        /// The server is still condensing and synthesizing it.
+        case pending
+        /// No clip exists for this id — the job failed, or the answer is
+        /// older than the one clip the server keeps.
+        case missing
+    }
+
+    /// Poll the prefetched spoken summary for one answer.
+    ///
+    /// The server starts making the clip when the answer lands; polling
+    /// turns that head start into playback that begins within a beat of
+    /// the answer instead of seconds after it.
+    func ttsSummary(_ id: Int, session: String) async -> TtsSummaryState {
+        var components = URLComponents(
+            url: baseURL.appending(path: "api/tts/summary"), resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "id", value: String(id))]
+        var request = URLRequest(url: components.url!)
+        request.setValue(session, forHTTPHeaderField: "X-Session-Id")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            switch (response as? HTTPURLResponse)?.statusCode {
+            case 200: return .ready(data)
+            case 202: return .pending
+            default: return .missing
+            }
+        } catch {
+            return .missing
+        }
     }
 
     func rate(session: String, turn: Int, rating: Int?) async throws {

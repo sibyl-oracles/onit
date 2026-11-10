@@ -96,6 +96,28 @@ final class EventTests: XCTestCase {
 }
 
 final class AudioFileInfoTests: XCTestCase {
+    func testDonePayloadDecodesTtsId() {
+        let json = """
+        {"content": "ok", "files": [], "elapsed": 1, "tok_s": 0,
+         "turn": 4, "tts_id": 4, "rating_enabled": false, "timing": {}}
+        """
+        guard let json2 = JSON.object(from: json) else { return XCTFail("json") }
+        let payload = DonePayload(json2)
+        XCTAssertEqual(payload.ttsId, 4)
+    }
+
+    func testDonePayloadWithoutTtsIdDecodesNil() {
+        // A server without the prefetch (older, or summarization off)
+        // sends no tts_id; the field must stay optional, not crash.
+        let json = """
+        {"content": "ok", "files": [], "elapsed": 1, "tok_s": 0,
+         "turn": 1, "rating_enabled": false, "timing": {}}
+        """
+        guard let json2 = JSON.object(from: json) else { return XCTFail("json") }
+        let payload = DonePayload(json2)
+        XCTAssertNil(payload.ttsId)
+    }
+
     func testDonePayloadDecodesAudioKindAndMime() {
         let json = """
         {"content": "ok", "files": [{"name": "take.wav", "url": "/uploads/s/take.wav",

@@ -182,10 +182,11 @@ class FakeSummarizer:
         self.reply = reply
         self.calls = []
 
-    async def __call__(self, config_data=None, timeout=None, model=None):
+    async def __call__(self, config_data=None, timeout=None, model=None, endpoint=None):
         self.config_data = config_data
         self.timeout = timeout
         self.model = model
+        self.endpoint = endpoint
 
         async def ask(messages):
             self.calls.append(messages)
@@ -238,6 +239,39 @@ async def test_agent_model_is_passed_through(patch_make_ask):
     fake = patch_make_ask("Today is sunny with a maximum of 30 degrees.")
     await tts.summarize_for_speech(LONG_TEXT, {}, model="z-ai/glm-5.3-flash")
     assert fake.model == "z-ai/glm-5.3-flash"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_is_passed_through(patch_make_ask):
+    """A caller-known endpoint reaches the model call untouched.
+
+    Without it a ``serving.endpoints`` list config re-resolves to the
+    localhost default, where nothing listens - the bug that made every
+    summary silently fall back to the full text.
+    """
+    fake = patch_make_ask("Today is sunny with a maximum of 30 degrees.")
+    endpoint = {"host": "https://openrouter.ai/api/v1", "model": "m", "host_key": "k"}
+    await tts.summarize_for_speech(LONG_TEXT, {}, endpoint=endpoint)
+    assert fake.endpoint == endpoint
+
+
+def test_resolve_endpoint_prefers_the_caller_known_one():
+    from onit.learn.llm import resolve_endpoint
+
+    # A serving.endpoints list config has no serving.host key; the explicit
+    # endpoint must win over the localhost default it would otherwise fall
+    # back to.
+    resolved = resolve_endpoint(
+        {"serving": {"endpoints": [{"host": "https://x", "model": "a"}]}},
+        endpoint={"host": "https://openrouter.ai/api/v1", "model": "m", "host_key": "k"},
+    )
+    assert resolved == {
+        "host": "https://openrouter.ai/api/v1",
+        "model": "m",
+        "host_key": "k",
+    }
+    # No endpoint given: the old behavior stands.
+    assert resolve_endpoint({})["host"] == "http://127.0.0.1:8001/v1"
 
 
 @pytest.mark.asyncio

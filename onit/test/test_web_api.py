@@ -1958,15 +1958,17 @@ class TestTtsEndpoint:
         """A canned summarizer, installed where the endpoint imports it."""
 
         def install(reply):
-            async def fake_summarize(text, config_data=None, model=None):
+            async def fake_summarize(text, config_data=None, model=None, endpoint=None):
                 fake_summarize.seen_text = text
                 fake_summarize.seen_config = config_data
                 fake_summarize.seen_model = model
+                fake_summarize.seen_endpoint = endpoint
                 return reply
 
             fake_summarize.seen_text = None
             fake_summarize.seen_config = None
             fake_summarize.seen_model = None
+            fake_summarize.seen_endpoint = None
             import onit.mcp.servers.tasks.tools.tts as tts_mod
 
             monkeypatch.setattr(tts_mod, "summarize_for_speech", fake_summarize)
@@ -2053,3 +2055,184 @@ class TestTtsEndpoint:
         res = tts_client.post("/api/tts", json={"text": "Done — 3 files written."})
         assert res.status_code == 200
         assert capture_speech.spoken == "Done — 3 files written."
+
+    def test_summarize_false_skips_the_model(self, tts_client, capture_speech, stub_summarizer):
+        # The client-side fallback asks for the plain clip: no model call,
+        # no summary, the sanitized text as-is.
+        fake = stub_summarizer("should never be used")
+        full = "A very long weather report. " * 100
+        res = tts_client.post("/api/tts", json={"text": full, "summarize": False})
+        assert res.status_code == 200
+        assert "A very long weather report." in capture_speech.spoken
+        assert fake.seen_text is None
+
+
+# ─── /api/tts/summary: the clip is made when the answer lands ───────────
+
+
+class TestTtsSummaryPrefetch:
+    """The spoken summary is prefetched at answer time, not on request.
+
+    The point of the endpoint pair: by the time the listener taps the
+    speaker, the clip already exists. The chat stream's ``done`` event
+    carries ``tts_id``; polling GET /api/tts/summary with it returns 202
+    while the job runs and the WAV bytes when it is done.
+    """
+
+    @pytest.fixture
+    def ui(self, tmp_path, bg_loop):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            title="Test Chat",
+            require_auth=False,
+            tts=True,
+        )
+        ui._onit = FakeOnit(config_data={"serving": {"model": "qwen"}})
+        ui._loop = bg_loop
+        ui.build_app()
+        return ui
+
+    @pytest.fixture
+    def client(self, ui):
+        return TestClient(ui.app)
+
+    def _chat(self, client, message="hello", sid=None):
+        headers = {"X-Session-Id": sid} if sid else {}
+        sid = client.get("/api/history", headers=headers).json()["session_id"]
+        with client.stream(
+            "POST", "/api/chat", json={"message": message}, headers={"X-Session-Id": sid}
+        ) as res:
+            assert res.status_code == 200
+            text = "".join(chunk.decode() for chunk in res.iter_bytes())
+        done = [d for e, d in parse_sse(text) if e == "done"][-1]
+        return sid, done
+
+    def test_done_carries_the_prefetch_id(self, client, monkeypatch):
+        import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+        async def fake_summarize(text, config_data=None, model=None, endpoint=None):
+            return text[:50]
+
+        def fake_synthesize(text, out_path, voice, speed):
+            return {"duration_s": 1.0, "sample_rate": 24000}
+
+        monkeypatch.setattr(tts_mod, "summarize_for_speech", fake_summarize)
+        monkeypatch.setattr(tts_mod, "synthesize_to_wav", fake_synthesize)
+        _sid, done = self._chat(client, "hi there")
+        assert done["tts_id"] == done["turn"]
+        assert done["tts_id"] is not None
+
+    def test_summary_lifecycle_202_then_wav(self, client, bg_loop, monkeypatch):
+        import asyncio as _asyncio
+
+        import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+        release = _asyncio.Event()
+
+        async def slow_summarize(text, config_data=None, model=None, endpoint=None):
+            await release.wait()
+            return "Short spoken summary."
+
+        def fake_synthesize(text, out_path, voice, speed):
+            with open(out_path, "wb") as f:
+                f.write(b"RIFFfake")
+            return {"duration_s": 1.0, "sample_rate": 24000}
+
+        monkeypatch.setattr(tts_mod, "summarize_for_speech", slow_summarize)
+        monkeypatch.setattr(tts_mod, "synthesize_to_wav", fake_synthesize)
+        sid, done = self._chat(client, "hi there")
+        turn = done["tts_id"]
+        # Still running: 202, not the bytes, not an error.
+        pending = client.get("/api/tts/summary", params={"id": turn}, headers={"X-Session-Id": sid})
+        assert pending.status_code == 202
+        # Let the job finish, then the same id answers with the clip. The
+        # event lives on the prefetch loop, so it is set from that loop.
+        bg_loop.call_soon_threadsafe(release.set)
+        ready = None
+        for _ in range(100):
+            ready = client.get(
+                "/api/tts/summary", params={"id": turn}, headers={"X-Session-Id": sid}
+            )
+            if ready.status_code == 200:
+                break
+            time.sleep(0.05)
+        assert ready.status_code == 200
+        assert ready.headers["content-type"] == "audio/wav"
+        assert ready.content == b"RIFFfake"
+
+    def test_failed_job_answers_404(self, client, monkeypatch):
+        import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+        async def boom(text, config_data=None, model=None, endpoint=None):
+            raise RuntimeError("endpoint down")
+
+        monkeypatch.setattr(tts_mod, "summarize_for_speech", boom)
+        sid, done = self._chat(client, "hi there")
+        turn = done["tts_id"]
+        res = None
+        for _ in range(100):
+            res = client.get("/api/tts/summary", params={"id": turn}, headers={"X-Session-Id": sid})
+            if res.status_code != 202:
+                break
+            time.sleep(0.05)
+        # The job died; the client's cue to synthesize on demand instead.
+        assert res.status_code == 404
+
+    def test_unknown_or_missing_id_is_404(self, client):
+        assert client.get("/api/tts/summary", params={"id": 99}).status_code == 404
+        assert client.get("/api/tts/summary").status_code == 400
+
+    def test_next_answer_replaces_the_previous_clip(self, client, monkeypatch):
+        import onit.mcp.servers.tasks.tools.tts as tts_mod
+
+        async def fake_summarize(text, config_data=None, model=None, endpoint=None):
+            return text[:50]
+
+        def fake_synthesize(text, out_path, voice, speed):
+            with open(out_path, "wb") as f:
+                f.write(b"RIFFfake")
+            return {"duration_s": 1.0, "sample_rate": 24000}
+
+        monkeypatch.setattr(tts_mod, "summarize_for_speech", fake_summarize)
+        monkeypatch.setattr(tts_mod, "synthesize_to_wav", fake_synthesize)
+        sid, first = self._chat(client, "first question")
+        sid, second = self._chat(client, "second question", sid=sid)
+        # Only the latest answer keeps a clip: the first one is gone the
+        # moment the second answer lands, replaced clips and all.
+        assert (
+            client.get(
+                "/api/tts/summary",
+                params={"id": first["tts_id"]},
+                headers={"X-Session-Id": sid},
+            ).status_code
+            == 404
+        )
+        # The second clip is a job the loop still has to run to completion.
+        ready = None
+        for _ in range(100):
+            ready = client.get(
+                "/api/tts/summary",
+                params={"id": second["tts_id"]},
+                headers={"X-Session-Id": sid},
+            )
+            if ready.status_code == 200:
+                break
+            time.sleep(0.05)
+        assert ready.status_code == 200
+
+    def test_prefetch_off_when_summarize_disabled(self, tmp_path, bg_loop):
+        ui = WebApiUI(
+            data_path=str(tmp_path / "data"),
+            session_path=str(tmp_path / "sessions" / "current.jsonl"),
+            title="Test Chat",
+            require_auth=False,
+            tts=True,
+            tts_summarize=False,
+        )
+        ui._onit = FakeOnit(config_data={})
+        ui._loop = bg_loop
+        ui.build_app()
+        raw = TestClient(ui.app)
+        sid, done = self._chat(raw)
+        assert done["tts_id"] is None
