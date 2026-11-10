@@ -5,12 +5,15 @@
 OnIt is an agent harness: it hands a language model a set of tools — shell, file
 editing, web search, weather, search over your own documents — a working directory,
 and a memory of what it has already done, then runs the loop until the task is
-finished. The same agent is reachable from a terminal or a browser chat UI.
+finished. The same agent is reachable from a terminal, a browser, or a native
+macOS app — one `pip install` covers the first two, one build script adds the
+third (Xcode required).
 
 ## Quick Start (~10 minutes)
 
 Install, point OnIt at a model, run. Steps 2 and 3 take two minutes; step 1 is the
-rest of the clock.
+rest of the clock. The one install covers the text UI *and* the web UI — both are
+below. A native macOS app is one build script more (step 3).
 
 ### 1. Install
 
@@ -88,12 +91,46 @@ so a dead key or an unreachable server is reported once, here, instead of mid-ta
 
 ### 3. Run
 
+**Text UI** — the agent in your terminal:
+
 ```bash
 onit
 ```
 
-That's the text UI. Tools start automatically, the agent works out of `~/sandbox`,
-and `\bye` leaves. Run `onit` again and the conversation picks up where it left off.
+Tools start automatically, the agent works out of `~/sandbox`, and `\bye` leaves.
+Run `onit` again and the conversation picks up where it left off.
+
+**Web UI** — the same agent, same sessions, in the browser:
+
+```bash
+onit serve web --no-login     # trusted network (LAN, localhost)
+```
+
+Then open <http://localhost:9000>. There is no build step: the interface ships as
+static files inside the package you just installed. For anything reachable beyond
+your machine, add Google login (~5 minutes): create an OAuth client at
+[console.cloud.google.com](https://console.cloud.google.com/) → *APIs & Services*
+→ *Credentials*, add `http://localhost:9000/auth/callback` as an authorized
+redirect URI (a mismatch there is the classic `Error 400: redirect_uri_mismatch`),
+then set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. For a public server you
+also need HTTPS — the full path, including Docker Compose and reverse proxy, is
+in [docs/DEPLOYMENT_WEB.md](docs/DEPLOYMENT_WEB.md), with session isolation and
+command approvals in [docs/ISOLATION.md](docs/ISOLATION.md) and
+[docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
+
+**macOS app** — the same agent in a native window. Xcode 15+ is the one
+prerequisite pip cannot install (`xcodebuild -version` to check); after that it
+is one script:
+
+```bash
+cd apps/macos
+./Scripts/build.sh --run     # builds (~10 s), then launches OnIt.app
+```
+
+No Xcode project needed. On first launch the app finds a Python that can import
+`onit`, starts the harness on a free port, and shows the session list and the
+transcript. Build variants, `--bundle-harness`, and troubleshooting live in
+[apps/macos/README.md](apps/macos/README.md).
 
 ## Three things to try
 
@@ -178,25 +215,6 @@ A typical delegation once it's stored:
 Pushed to main.
 ```
 
-## From text UI to web UI
-
-Same agent, same sessions — now in the browser.
-
-```bash
-onit serve web --no-login     # trusted network (LAN, localhost)
-```
-
-For anything reachable beyond your machine, add Google login (~5 minutes):
-create an OAuth client at [console.cloud.google.com](https://console.cloud.google.com/)
-→ *APIs & Services* → *Credentials*, add `http://localhost:9000/auth/callback` as an
-authorized redirect URI (a mismatch there is the classic
-`Error 400: redirect_uri_mismatch`), then set `GOOGLE_CLIENT_ID` and
-`GOOGLE_CLIENT_SECRET`. For a public server you also need HTTPS — the full path,
-including Docker Compose and reverse proxy, is in
-[docs/DEPLOYMENT_WEB.md](docs/DEPLOYMENT_WEB.md), with session isolation and
-command approvals in [docs/ISOLATION.md](docs/ISOLATION.md) and
-[docs/WEB_AUTHENTICATION.md](docs/WEB_AUTHENTICATION.md).
-
 ## Inside a session
 
 Lines starting with `\` are answered by OnIt itself: `\help`, `\setup` (endpoints in
@@ -225,7 +243,8 @@ onit sessions --delete "chapter 3 draft"        # ...or by name
 
 | | |
 |---|---|
-| `onit serve web` | Browser chat UI — [above](#from-text-ui-to-web-ui) |
+| `onit serve web` | Browser chat UI — [Quick Start §3](#3-run) |
+| `apps/macos` | Native macOS app — [its README](apps/macos/README.md) |
 | `onit serve loop "task" --period 60` | Repeat a task on a timer |
 | `onit --container` | Hardened Docker container ([docs/DOCKER.md](docs/DOCKER.md)) |
 
@@ -237,6 +256,7 @@ them, and their tests lived apart from the suite.
 ## Documentation
 
 [CLI](docs/CLI.md) · [Configuration](docs/CONFIGURATION.md) · [Tools](docs/TOOLS.md) ·
+[macOS app](apps/macos/README.md) ·
 [Local document search](docs/LOCAL_SEARCH.md) · [Run a Model Server](docs/RUN_A_MODEL_SERVER.md) ·
 [Model Serving](docs/MODEL_SERVING.md) · [Web deployment](docs/DEPLOYMENT_WEB.md) ·
 [HTTPS](docs/HTTPS_DEPLOYMENT.md) · [Isolation](docs/ISOLATION.md) ·
