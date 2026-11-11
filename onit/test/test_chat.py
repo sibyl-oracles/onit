@@ -16,6 +16,7 @@ from onit.model.serving.interpreter import shutdown_session
 from onit.model.serving.state import RunState
 from onit.model.serving.chat import (
     _resolve_api_key,
+    _looks_like_raw_tool_call,
     _parse_tool_call_from_content,
     _is_planning_response,
     _build_messages,
@@ -214,6 +215,53 @@ class TestParseToolCallFromContent:
 
     def test_none_registry_returns_none(self):
         assert _parse_tool_call_from_content('{"name":"x","arguments":{}}', None) is None
+
+    # --- reasoning text leaking into a parsed call (the "bash not found" bug) ---
+
+    @staticmethod
+    def _think_tags():
+        # Built with chr() because tag-like literals do not survive every
+        # transport between the author and this file.
+        lt, gt = chr(60), chr(62)
+        return lt + "think" + gt, lt + "/think" + gt
+
+    def test_quoted_call_in_prose_does_not_mask_the_real_call(self):
+        _open, _close = self._think_tags()
+        quoted = '{"name": "bash", "arguments": {"command": "echo quoted"}}'
+        real = '{"name": "bash", "arguments": {"command": "echo real"}}'
+        content = "The error was: " + quoted + " -- so the real call:" + real
+        result = _parse_tool_call_from_content(content, self._registry(["bash"]))
+        assert result is not None
+        assert result["arguments"]["command"] == "echo real"
+
+    def test_unclosed_think_block_is_not_scanned_for_calls(self):
+        _open, _close = self._think_tags()
+        draft = (
+            _open + " I will test both enable_thinking settings via "
+            '{"name": "bash", "arguments": {"command": "echo draft"}}'
+        )
+        assert _parse_tool_call_from_content(draft, self._registry(["bash"])) is None
+        assert _looks_like_raw_tool_call(draft) is False
+
+    def test_closed_think_block_then_call_still_parses(self):
+        _open, _close = self._think_tags()
+        real = '{"name": "bash", "arguments": {"command": "echo real"}}'
+        content = _open + " draft " + _close + real
+        result = _parse_tool_call_from_content(content, self._registry(["bash"]))
+        assert result is not None
+        assert result["arguments"]["command"] == "echo real"
+
+    def test_prose_in_name_field_is_rejected(self):
+        content = (
+            'So: {"name": "bash under BOTH enable_thinking settings", '
+            '"arguments": {"command": "x"}}'
+        )
+        assert _parse_tool_call_from_content(content, self._registry(["bash"])) is None
+
+    def test_truncated_call_is_still_rescued(self):
+        content = '{"name": "bash", "arguments": {"command": "echo trun'
+        result = _parse_tool_call_from_content(content, self._registry(["bash"]))
+        assert result == {"name": "bash", "arguments": {}}
 
 
 # ── chat (async) ────────────────────────────────────────────────────────────

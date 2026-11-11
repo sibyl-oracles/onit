@@ -1484,32 +1484,45 @@ def _parse_commands_format(obj: dict, tool_registry, harness=None) -> Optional[l
     return results if results else None
 
 
-def _parse_tool_call_from_content(
-    content: str, tool_registry, harness=None
-) -> Optional[dict | list[dict]]:
-    """Detect a raw JSON tool call in message content.
+def _post_think_text(content: str) -> str:
+    """The part of a response that is not still-in-progress thinking.
 
-    Some models return tool calls as plain JSON in the response body instead of
-    using the structured tool_calls field.  This function tries to parse the
-    content and, if it looks like a valid tool call for a known tool, returns
-    a dict with 'name' and 'arguments' (or a list of such dicts for the
-    commands format).
+    Complete think blocks are stripped wherever they sit; a trailing unclosed
+    opener is the thinking still in progress, and everything from it on is
+    inside the thinking -- a tool call there is a draft, not a request.
+    Splitting on the last closing tag (the old behavior) could not see that:
+    with no closing tag in the text at all the split was a no-op and the
+    whole thinking tail, draft JSON included, got scanned for tool calls.
     """
-    if not content or (not tool_registry and harness is None):
-        return None
-    # Strip thinking tags if present
-    text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
-    # Try to find a JSON object in the text
-    start = text.find("{")
-    if start == -1:
-        return None
-    # Find the matching closing brace, respecting JSON string literals
+    _open = chr(60) + "think" + chr(62)
+    _close = chr(60) + "/think" + chr(62)
+    text = content.strip()
+    while _open in text and _close in text:
+        before, _, rest = text.partition(_open)
+        _, _, after = rest.partition(_close)
+        text = (before + after).strip()
+    if text.endswith(_close):
+        # A closing tag with no opener: the answer is whatever follows it.
+        text = text.rsplit(_close, 1)[-1].strip()
+    elif _open in text:
+        text = text.split(_open, 1)[0].strip()
+    return text
+
+
+def _top_level_json_spans(text: str) -> list[tuple[int, int]]:
+    """Every balanced top-level brace-delimited span in ``text``.
+
+    Returns (start, end) pairs, end exclusive; a span that never closes is
+    reported with end -1 (the caller decides whether that is genuine
+    truncation at the tail of the text).  Only braces outside string literals
+    count, so JSON quoted inside a string does not unbalance the scan.
+    """
+    spans: list[tuple[int, int]] = []
+    start = -1
     depth = 0
     in_string = False
     escape = False
-    end = -1
-    for i in range(start, len(text)):
-        ch = text[i]
+    for i, ch in enumerate(text):
         if escape:
             escape = False
             continue
@@ -1523,28 +1536,64 @@ def _parse_tool_call_from_content(
         if in_string:
             continue
         if ch == "{":
+            if depth == 0:
+                start = i
             depth += 1
         elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    if end == -1:
-        # JSON may be truncated (e.g. max_tokens cut it off).
-        # Try regex fallback to extract tool name and arguments.
-        return _parse_truncated_tool_call(text[start:], tool_registry, harness)
-    try:
-        obj = json.loads(text[start:end])
-    except json.JSONDecodeError:
-        return _parse_truncated_tool_call(text[start:end], tool_registry, harness)
-    if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
-        if not _known_tool_name(obj["name"], tool_registry, harness):
-            return None
-        return obj
-    # Try commands-style format: {"commands": [{"keystrokes": "tool\n", ...}]}
-    commands_result = _parse_commands_format(obj, tool_registry, harness)
-    if commands_result:
-        return commands_result
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    spans.append((start, i + 1))
+                    start = -1
+    if start != -1:
+        spans.append((start, -1))
+    return spans
+
+
+def _parse_tool_call_from_content(
+    content: str, tool_registry, harness=None
+) -> Optional[dict | list[dict]]:
+    """Detect a raw JSON tool call in message content.
+
+    Some models return tool calls as plain JSON in the response body instead of
+    using the structured tool_calls field.  This function tries to parse the
+    content and, if it looks like a valid tool call for a known tool, returns
+    a dict with 'name' and 'arguments' (or a list of such dicts for the
+    commands format).
+    """
+    if not content or (not tool_registry and harness is None):
+        return None
+    text = _post_think_text(content)
+    if not text:
+        return None
+    # A model that talks about a call before making one -- or that drafts
+    # the call inside thinking it never closes -- puts decoy JSON ahead of
+    # the real call.  Collect every top-level span and try the LAST one
+    # first: commentary precedes the call, so the last candidate is the
+    # one the model meant to run.  Only a span that parses and names a
+    # known tool is accepted, so prose that merely resembles JSON cannot
+    # manufacture a phantom call with the model's reasoning as arguments.
+    for span_start, span_end in reversed(_top_level_json_spans(text)):
+        span = text[span_start:] if span_end == -1 else text[span_start:span_end]
+        try:
+            obj = json.loads(span)
+        except json.JSONDecodeError:
+            # Unparseable span: prose wearing JSON's clothes, or a call cut
+            # off mid-string.  The truncated rescue only answers for a span
+            # whose name field holds a bare identifier -- never for prose.
+            rescued = _parse_truncated_tool_call(span, tool_registry, harness)
+            if rescued:
+                return rescued
+            continue
+        if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
+            if _known_tool_name(obj["name"], tool_registry, harness):
+                return obj
+            continue
+        # Try commands-style format:
+        # {"commands": [{"keystrokes": "tool\n", ...}]}
+        commands_result = _parse_commands_format(obj, tool_registry, harness)
+        if commands_result:
+            return commands_result
     return None
 
 
@@ -1560,6 +1609,12 @@ def _parse_truncated_tool_call(text: str, tool_registry, harness=None) -> Option
     if not name_match:
         return None
     tool_name = name_match.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", tool_name):
+        # A tool name is always a bare identifier.  Anything else between the
+        # quotes -- e.g. reasoning text the model wrote next to a drafted
+        # call -- is prose that leaked into the JSON, and mining arguments
+        # out of it manufactures calls that never existed.
+        return None
     if not _known_tool_name(tool_name, tool_registry, harness):
         return None
     # Try to extract arguments object - find where "arguments" value starts
@@ -1613,7 +1668,7 @@ def _looks_like_raw_tool_call(content: str) -> bool:
     """
     if not content:
         return False
-    text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
+    text = _post_think_text(content)
     # Quick heuristic: standard format or commands format
     has_standard = bool(
         re.search(r'"name"\s*:\s*"[^"]+"', text) and re.search(r'"arguments"\s*:', text)
@@ -2409,9 +2464,28 @@ async def _execute_tool(
             print(f"{function_name}({function_arguments}) returned: {harness_result[:500]}")
         _log(_ok, len(harness_result))
     elif not tool_registry or function_name not in tool_registry.tools:
+        _name = function_name if isinstance(function_name, str) else str(function_name)
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", _name):
+            _content = f"Error: tool {_name} not found"
+        else:
+            # A name that is not a bare identifier is not a mistyped tool --
+            # it is reasoning text that leaked into the call (a model that
+            # thinks in content and drafts the call inside the thinking).
+            # "not found" alone would send the model hunting a tool that
+            # never existed; name the real failure and the actual choices.
+            _offered = sorted(
+                (harness.names if harness is not None else ())
+                + (tuple(tool_registry.tools) if tool_registry else ())
+            )
+            _content = (
+                'Error: the tool call\'s "name" field held reasoning text, not '
+                "a tool name -- the thinking channel leaked into the call. No "
+                'tool was run. Send the call again with "name" set to '
+                f"exactly one of: {', '.join(_offered)}."
+            )
         tool_message = {
             "role": "tool",
-            "content": f"Error: tool {function_name} not found",
+            "content": _content,
             "name": function_name,
             "tool_call_id": tool_call_id,
         }
