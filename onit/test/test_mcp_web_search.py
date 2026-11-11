@@ -278,9 +278,7 @@ class TestSearchChain:
         as deterministic a dead end as an empty result set."""
         import onit.mcp.servers.tasks.web.search.mcp_server as mod
 
-        with patch.object(
-            mod.WebSearch, "search", side_effect=RuntimeError("network down")
-        ):
+        with patch.object(mod.WebSearch, "search", side_effect=RuntimeError("network down")):
             out = json.loads(mod._search_impl(query="q"))
         assert "Search failed" in out["error"]
         assert out["retryable"] is False

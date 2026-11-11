@@ -585,9 +585,7 @@ class TestFlaggedFailureLoopBailsEarly:
         return bail, history, messages
 
     def test_two_identical_flagged_failures_end_the_loop(self):
-        bail, history, _ = self._loop(
-            _FailingSearchRegistry(), {"query": "same query"}
-        )
+        bail, history, _ = self._loop(_FailingSearchRegistry(), {"query": "same query"})
         assert bail is not None and len(history) == 2
         assert "failed with the same error" in bail
         # The tool's own reason rides in the bail message.
