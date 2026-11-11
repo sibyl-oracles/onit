@@ -1938,9 +1938,13 @@ def _adapt_messages_for_ollama(messages: list) -> list:
     results and sub-agent instructions - and both crash the Ollama path with
     ``ValidationError: content - Input should be a valid string``.
 
-    Also strips Rich markup tags (e.g. ``[bold]``, ``[/]``) from text content.
-    Ollama treats ``[/]`` as a stop token, so leaving it in the prompt causes
-    the model to echo it and terminate the response early.
+    Also strips the literal ``[/]`` sequence from text content.  Ollama
+    treats ``[/]`` as a stop token, so leaving it in the prompt causes the
+    model to echo it and terminate the response early.  Only that exact
+    sequence is removed: a general Rich-markup regex also matches code
+    subscripts (``arr[i]``, ``row[i][j]``, ``GENERATORS[family]`` all fit
+    Rich's tag grammar), and deleting them from tool output sent the model
+    chasing corrupted code it could not reproduce.
 
     Returns a new list; the caller's history is left untouched.  A data-URL
     part (``data:<mime>;base64,<payload>``) is unwrapped to the bare base64
@@ -1949,12 +1953,14 @@ def _adapt_messages_for_ollama(messages: list) -> list:
     it (newer clients type ``images`` as a sequence of Image models); older
     clients that take raw base64 strings get strings.
     """
-    # Rich markup pattern: [tag] or [/tag]
-    _rich_markup = re.compile(r"\[/?[a-zA-Z_][a-zA-Z0-9_-]*(\s+[a-zA-Z_]+=[^ ]+)*\]")
+    # Ollama's default stop tokens include "[/]"; strip just that sequence
+    # so a prompt quoting it cannot end the stream early.  (The chat calls
+    # below also pass stop: [] - this covers paths that do not.)
+    _ollama_stop_token = re.compile(re.escape("[/]"))
 
     def _strip_rich_markup(text: str) -> str:
-        """Remove Rich markup tags from text, keeping the content."""
-        return _rich_markup.sub("", text)
+        """Remove the Ollama stop-token sequence, keeping everything else."""
+        return _ollama_stop_token.sub("", text)
 
     adapted = []
     for msg in messages:

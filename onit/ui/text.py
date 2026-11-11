@@ -1182,7 +1182,8 @@ class ChatUI:
         t.append(f"┌─ {self.agent_cursor} (revised) ", style=f"bold {style}")
         t.append(f"[{ts}]", style=self.theme.styles.get("timestamp", "cyan"))
         self.console.print(t)
-        self.console.print(self._strip_markdown_links(answer))
+        t = Text(self._strip_markdown_links(answer), style="bright_white")
+        self.console.print(t)
         self.console.print("└" + "─" * 40, style=style)
 
     # ── Inline tool-call display (streaming mode) ──────────────────
@@ -1222,7 +1223,7 @@ class ChatUI:
             if level == "error"
             else "bright_cyan"
         )
-        self.console.print(f"  [{name}] {data}", style=style)
+        self.console.print(f"  [{name}] {data}", style=style, markup=False, highlight=False)
 
     def tool_progress(self, name: str, elapsed_seconds: int) -> None:
         """No-op for text UI; spinner already indicates progress."""
@@ -1461,7 +1462,7 @@ class ChatUI:
                 f"┌─ 💭 Thinking [{self.format_timestamp()}]",
                 style="bright_white",
             )
-        self.console.print(token, end="", style="bright_white")
+        self.console.print(token, end="", style="bright_white", markup=False, highlight=False)
 
     def stream_think_end(self) -> None:
         """Close the thinking block if it is open."""

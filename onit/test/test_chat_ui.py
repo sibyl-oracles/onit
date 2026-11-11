@@ -373,6 +373,56 @@ class TestStreamedAnswerIsComplete:
         assert "done" in out
 
 
+class TestThinkTokensAreLiteralText:
+    """Reasoning tokens are printed with markup parsing off.
+
+    Rich reads square brackets as style tags, so a reasoning token that
+    quotes markup or code - a bare closing tag, [i], [bold red] - was parsed
+    as markup: unbalanced tags raised MarkupError, which the generic
+    API-error handler caught three times and then ended the whole run
+    ("Unexpected error (MarkupError)"), and balanced tags were silently
+    deleted from the screen.  Tokens are fragments, not documents: even
+    balanced markup cannot survive per-token parsing, because each print()
+    sees only its own slice.
+    """
+
+    def _think_then_answer(self, chat_ui, capsys, *think_tokens):
+        chat_ui.console = Console(file=sys.stdout, width=120)
+        chat_ui.stream_start()
+        for tok in think_tokens:
+            chat_ui.stream_think_token(tok)
+        chat_ui.stream_think_end()
+        chat_ui.stream_token("done\n")
+        chat_ui.stream_end()
+        out = capsys.readouterr().out
+        return re.sub(r"\x1b\[[0-9;? ]*|[\r\x08]", "", out)
+
+    def test_bare_closing_tag_does_not_crash_the_stream(self, chat_ui, capsys):
+        """The exact shape from the 2026-11-11 crash log: a reasoning token
+        containing a bare closing tag with nothing open.  Used to raise
+        MarkupError, which call_turn caught and turned into a dead run."""
+        out = self._think_then_answer(chat_ui, capsys, "the closing tag [/] at position 37")
+        assert "MarkupError" not in out
+        assert "closing tag [/] at position 37" in out
+
+    def test_bracketed_code_in_reasoning_prints_verbatim(self, chat_ui, capsys):
+        """Subscripts the model reads aloud must reach the screen un-eaten."""
+        out = self._think_then_answer(
+            chat_ui, capsys, "arr[i] and row[i][j] and GENERATORS[family]"
+        )
+        assert "arr[i]" in out
+        assert "row[i][j]" in out
+        assert "GENERATORS[family]" in out
+
+    def test_balanced_markup_is_not_interpreted_across_tokens(self, chat_ui, capsys):
+        """[bold] in one token and [/bold] in the next parse as two
+        fragments, not one document; neither may crash or vanish."""
+        out = self._think_then_answer(chat_ui, capsys, "[bold]", "text", "[/bold]")
+        assert "[bold]" in out
+        assert "[/bold]" in out
+        assert "text" in out
+
+
 class TestNotice:
     def test_a_warning_is_printed_not_just_logged(self, chat_ui):
         buf = io.StringIO()

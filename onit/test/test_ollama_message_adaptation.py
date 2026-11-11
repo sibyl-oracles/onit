@@ -123,3 +123,40 @@ def test_adapted_messages_validate_against_ollama_message_model():
     ]
     for m in _adapt_messages_for_ollama(msgs):
         ollama.Message.model_validate(m)
+
+
+# --- the 2026-11-11 corruption: a general Rich-markup regex ate code ----
+
+
+def test_code_subscripts_survive_adaptation():
+    """Subscripts are ordinary code; the Ollama path must send them verbatim.
+
+    The old stripper used a Rich-tag regex that matches any bracketed
+    lowercase word, so tool output like these arrived at the model with the
+    subscripts deleted and the model wrote corrupted code back."""
+    L, R = chr(91), chr(93)
+    cases = [
+        f"GENERATORS{L}family{R}",
+        f"arr{L}i{R} = data{L}0{R}",
+        f"row{L}i{R}{L}j{R}",
+        f"lst{L}idx{R}",
+        f"a{L}NOTES{R}",
+        f"see {L}link{R} for details",
+    ]
+    msgs = [{"role": "tool", "content": c, "name": "bash"} for c in cases]
+    out = _adapt_messages_for_ollama(msgs)
+    for sent, original in zip(out, cases):
+        assert sent["content"] == original
+
+
+def test_only_the_ollama_stop_sequence_is_stripped():
+    """The stripper exists for one sequence: [/] is an Ollama stop token, so
+    a prompt quoting it ends the stream early.  It - and only it - goes."""
+    L, R = chr(91), chr(93)
+    msg = {"role": "user", "content": f"the tag {L}/{R} closes nothing"}
+    (sent,) = _adapt_messages_for_ollama([msg])
+    assert sent["content"] == "the tag  closes nothing"
+    # a longer closing tag is not the stop sequence and stays
+    msg2 = {"role": "user", "content": f"{L}/bold{R}text"}
+    (sent2,) = _adapt_messages_for_ollama([msg2])
+    assert sent2["content"] == f"{L}/bold{R}text"
