@@ -57,6 +57,7 @@ from .state import (
     STOP_REPEATED_TOOL_CALL,
     STOP_REPETITION_LOOP,
     STOP_SAFETY_ABORT,
+    STOP_TRUNCATED,
     STOP_TURN_LIMIT,
 )
 
@@ -3036,94 +3037,113 @@ async def _process_streaming_response(
     finish_reason: str | None = None
     in_think = think  # True if we expect <think>...</think> in delta.content
 
-    async for chunk in chat_completion:
-        if safety_queue is not None and not safety_queue.empty():
-            if ui_streaming and chat_ui:
-                chat_ui.stream_end()
-            return None
-        # Capture usage from the final chunk (stream_options include_usage=True).
-        # This must be read before stream_end() so set_context_usage can fire first.
-        if chunk.usage is not None:
-            usage = chunk.usage
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        # Capture finish_reason when it arrives (usually the final chunk)
-        if choice.finish_reason is not None:
-            finish_reason = choice.finish_reason
-        delta = choice.delta
+    try:
+        async for chunk in chat_completion:
+            if safety_queue is not None and not safety_queue.empty():
+                if ui_streaming and chat_ui:
+                    chat_ui.stream_end()
+                return None
+            # Capture usage from the final chunk (stream_options include_usage=True).
+            # This must be read before stream_end() so set_context_usage can fire first.
+            if chunk.usage is not None:
+                usage = chunk.usage
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            # Capture finish_reason when it arrives (usually the final chunk)
+            if choice.finish_reason is not None:
+                finish_reason = choice.finish_reason
+            delta = choice.delta
 
-        if on_first_token and (delta.tool_calls or delta.content or _reasoning_text(delta)):
-            on_first_token()
-            on_first_token = None
+            if on_first_token and (delta.tool_calls or delta.content or _reasoning_text(delta)):
+                on_first_token()
+                on_first_token = None
 
-        # Accumulate structured tool-call deltas
-        if delta.tool_calls:
-            # The first tool-call delta marks everything streamed so far as
-            # narration, not the answer -- fold it before it can read as one.
-            if chat_ui and not folded:
-                folded = True
-                chat_ui.stream_fold(_step_summary(full_content))
-            for tc in delta.tool_calls:
-                idx = tc.index
-                if idx not in full_tool_calls:
-                    full_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
-                if tc.id:
-                    full_tool_calls[idx]["id"] = tc.id
-                if tc.function:
-                    if tc.function.name:
-                        full_tool_calls[idx]["name"] += tc.function.name
-                    if tc.function.arguments:
-                        full_tool_calls[idx]["arguments"] += tc.function.arguments
+            # Accumulate structured tool-call deltas
+            if delta.tool_calls:
+                # The first tool-call delta marks everything streamed so far as
+                # narration, not the answer -- fold it before it can read as one.
+                if chat_ui and not folded:
+                    folded = True
+                    chat_ui.stream_fold(_step_summary(full_content))
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in full_tool_calls:
+                        full_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                    if tc.id:
+                        full_tool_calls[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            full_tool_calls[idx]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            full_tool_calls[idx]["arguments"] += tc.function.arguments
 
-        # vLLM/OpenAI: thinking tokens in a dedicated field, named differently
-        # from one host to the next -- see _REASONING_FIELDS.
-        reasoning_tok = _reasoning_text(delta)
-        if reasoning_tok and not full_tool_calls:
-            full_reasoning += reasoning_tok
-            if chat_ui:
-                if not ui_streaming:
-                    chat_ui.stream_start()
-                    ui_streaming = True
-                chat_ui.stream_think_token(reasoning_tok)
+            # vLLM/OpenAI: thinking tokens in a dedicated field, named differently
+            # from one host to the next -- see _REASONING_FIELDS.
+            reasoning_tok = _reasoning_text(delta)
+            if reasoning_tok and not full_tool_calls:
+                full_reasoning += reasoning_tok
+                if chat_ui:
+                    if not ui_streaming:
+                        chat_ui.stream_start()
+                        ui_streaming = True
+                    chat_ui.stream_think_token(reasoning_tok)
 
-        # Stream content (answer) tokens to UI
-        if delta.content:
-            token = delta.content
-            full_content += token
-            if chat_ui and not full_tool_calls:
-                if in_think:
-                    # Three cases:
-                    # 1. vLLM sends thinking via reasoning_content -> no <think> in content
-                    # 2. Model chose not to think -> no <think> in content
-                    # 3. Model embeds <think>...</think> inside content
-                    if "<think>" not in full_content:
-                        # Cases 1 & 2 -- stream answer directly
-                        in_think = False
+            # Stream content (answer) tokens to UI
+            if delta.content:
+                token = delta.content
+                full_content += token
+                if chat_ui and not full_tool_calls:
+                    if in_think:
+                        # Three cases:
+                        # 1. vLLM sends thinking via reasoning_content -> no <think> in content
+                        # 2. Model chose not to think -> no <think> in content
+                        # 3. Model embeds <think>...</think> inside content
+                        if "<think>" not in full_content:
+                            # Cases 1 & 2 -- stream answer directly
+                            in_think = False
+                            if not ui_streaming:
+                                chat_ui.stream_start()
+                                ui_streaming = True
+                            chat_ui.stream_token(token)
+                        elif "</think>" in full_content:
+                            # Case 3 end: think block closed, stream the answer part
+                            in_think = False
+                            post_think = full_content.split("</think>", 1)[1]
+                            if post_think:
+                                if not ui_streaming:
+                                    chat_ui.stream_start()
+                                    ui_streaming = True
+                                chat_ui.stream_token(post_think)
+                        else:
+                            # Case 3 mid: inside inline <think> block
+                            if not ui_streaming:
+                                chat_ui.stream_start()
+                                ui_streaming = True
+                            chat_ui.stream_think_token(token.replace("<think>", ""))
+                    else:
                         if not ui_streaming:
                             chat_ui.stream_start()
                             ui_streaming = True
                         chat_ui.stream_token(token)
-                    elif "</think>" in full_content:
-                        # Case 3 end: think block closed, stream the answer part
-                        in_think = False
-                        post_think = full_content.split("</think>", 1)[1]
-                        if post_think:
-                            if not ui_streaming:
-                                chat_ui.stream_start()
-                                ui_streaming = True
-                            chat_ui.stream_token(post_think)
-                    else:
-                        # Case 3 mid: inside inline <think> block
-                        if not ui_streaming:
-                            chat_ui.stream_start()
-                            ui_streaming = True
-                        chat_ui.stream_think_token(token.replace("<think>", ""))
-                else:
-                    if not ui_streaming:
-                        chat_ui.stream_start()
-                        ui_streaming = True
-                    chat_ui.stream_token(token)
+
+    except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS):
+        # A read timeout is the transport handler's case: it retries the
+        # call whole, with older tool results decayed — a smarter retry
+        # than continuing from a partial.  Re-raise so it gets there.
+        raise
+    except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
+        # A stream that died mid-answer must not look like one that never
+        # happened.  The partial already reached the screen, the retries
+        # below would regenerate it from scratch (minutes, sometimes an
+        # hour of decoding, on a run that had already finished its work),
+        # and when every retry dies the same way the turn returns
+        # api_error and the run throws the partial away.  Salvage instead:
+        # hand back what arrived with finish_reason="error", which the
+        # resume machinery treats like finish_reason=length — one
+        # continuation ask, stitched onto what is already on screen.
+        logging.getLogger(__name__).warning("Chat-completions stream interrupted: %s", e)
+        finish_reason = "error"
 
     return full_content, full_reasoning, full_tool_calls, ui_streaming, usage, finish_reason
 
@@ -3159,6 +3179,12 @@ async def _process_responses_streaming_response(
     async for event in _responses_events(events, safety_queue):
         if event is None:
             return None
+        if event is _RESPONSES_STREAM_DEAD:
+            # The stream died mid-flight: whatever accumulated is a partial,
+            # not an answer.  "error" feeds the same resume machinery as
+            # finish_reason=length — see _cut_short.
+            finish_reason = "error"
+            break
         etype = getattr(event, "type", "")
         if on_first_token and etype in (
             "response.output_text.delta",
@@ -3237,6 +3263,13 @@ async def _process_responses_streaming_response(
     return full_content, full_reasoning, full_tool_calls, ui_streaming, usage, finish_reason
 
 
+# Yielded by _responses_events after a mid-stream disconnect, in place of an
+# event.  The consumer maps it to finish_reason="error" — the same verdict the
+# Ollama processor sets when its stream dies — so a partial answer from a dead
+# stream cannot pass every truncation guard as a clean finish.
+_RESPONSES_STREAM_DEAD = object()
+
+
 async def _responses_events(events, safety_queue: asyncio.Queue):
     """Iterate a Responses-API event source, honouring the safety queue.
 
@@ -3251,8 +3284,15 @@ async def _responses_events(events, safety_queue: asyncio.Queue):
                 yield None
                 return
             yield event
+    except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS):
+        raise  # the transport handler retries this whole, with decay
     except Exception as e:  # noqa: BLE001 — a mid-stream disconnect ends the turn
         logging.getLogger(__name__).warning("Responses stream interrupted: %s", e)
+        # Mark the stream dead so the consumer cannot read the partial as a
+        # clean finish: with no response.completed event there is no
+        # finish_reason, and None means "no evidence" to every guard
+        # downstream.  See the matching "error" in the Ollama processor.
+        yield _RESPONSES_STREAM_DEAD
 
 
 def _responses_finish_reason(response) -> str:
@@ -3374,8 +3414,17 @@ async def _ollama_process_streaming_response(
                         chat_ui.stream_start()
                         ui_streaming = True
                     chat_ui.stream_token(content_tok)
+    except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS):
+        raise  # the transport handler retries this whole, with decay
     except Exception as e:  # noqa: BLE001 — httpx.RemoteProtocolError or similar mid-stream disconnect
         logging.getLogger(__name__).warning("Ollama stream interrupted: %s", e)
+        # The disconnect must not read as a clean finish.  With no final
+        # chunk there is no done_reason, and None downstream means "no
+        # evidence" — every truncated-answer guard then falls through and
+        # the partial is handed back as a complete reply.  "error" is the
+        # caller's sign the turn ended without the host's verdict; the
+        # resume machinery treats it like finish_reason=length.
+        done_reason = "error"
 
     return (
         full_content,
@@ -7632,7 +7681,7 @@ async def chat(
                 state.final_answer_prefix
             )
             _cut_short = (
-                _finish_reason == "length"
+                _finish_reason in ("length", "error")
                 or _looks_incomplete(_stitched)
                 or _swallowed
                 or _empty_resume
@@ -7673,6 +7722,8 @@ async def chat(
                 messages.append({"role": "user", "content": _FINAL_CONTINUATION_PROMPT})
                 if _finish_reason == "length":
                     _why = "finish_reason=length"
+                elif _finish_reason == "error":
+                    _why = "the stream ended without the host's verdict (connection dropped)"
                 elif _swallowed:
                     _why = (
                         f"finish_reason={_finish_reason}, {_completion_tokens:,} "
@@ -7766,9 +7817,13 @@ async def chat(
             if _cut_short:
                 # No resume, or no more of them.  The answer that follows stops
                 # mid-thought and the run has no way to finish it — say so, and
-                # say which of the three reasons it was, rather than let it read
+                # say which of the reasons it was, rather than let it read
                 # as a complete reply.  Budget first: a run that has spent its
                 # resumes stopped for that reason whatever else is also true.
+                # The stop reason records the truncation either way: a session
+                # resumed after this must not read the partial as a finished
+                # reply (see STOP_TRUNCATED).
+                state.stop_reason = STOP_TRUNCATED
                 if state.final_continuation_count >= MAX_FINAL_CONTINUATIONS:
                     _stop_why = (
                         f"Answer is still incomplete after {MAX_FINAL_CONTINUATIONS} "
@@ -7802,7 +7857,7 @@ async def chat(
             if (
                 tools
                 and tool_registry
-                and _finish_reason != "length"
+                and _finish_reason not in ("length", "error")
                 and _is_planning_response(_content)
                 and state.planning_continuation_count < MAX_PLANNING_CONTINUATIONS
             ):
@@ -7828,7 +7883,7 @@ async def chat(
             if (
                 tools
                 and tool_registry
-                and _finish_reason != "length"
+                and _finish_reason not in ("length", "error")
                 and _is_planning_response(_content)
                 and state.planning_continuation_count >= MAX_PLANNING_CONTINUATIONS
             ):
@@ -7867,7 +7922,7 @@ async def chat(
                 and _is_content_free_response(_content, data_path)
             )
             if (
-                _finish_reason != "length"
+                _finish_reason not in ("length", "error")
                 and (_is_ack or _is_meta or _is_empty)
                 and state.ack_continuation_count < MAX_ACK_CONTINUATIONS
             ):
@@ -7953,7 +8008,7 @@ async def chat(
                     level="warning",
                     notify=True,
                 )
-            else:
+            elif state.stop_reason != STOP_TRUNCATED:
                 state.stop_reason = STOP_ANSWERED
             if not _final.strip() and state.final_answer_prefix.strip():
                 # The last turn said nothing and the budget is spent.  The
