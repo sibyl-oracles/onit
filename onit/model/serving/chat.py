@@ -4305,17 +4305,45 @@ def _strip_think_blocks(text: str) -> str:
     return text
 
 
+def _ends_with_unclosed_think(text: str) -> bool:
+    """True when ``text`` holds a think opener no closer ever shut.
+
+    Paired blocks do not count -- _strip_think_blocks already removes
+    those.  What is left is an opener the host never saw closed: the model
+    was still thinking when the turn ended, or it was quoting a template
+    and the host mistook the quoted opener for a real one (glm-5.3-flash
+    explaining the Qwen3.5 template loses its tail this way).  Both are a
+    turn that stopped mid-thought, whatever ``finish_reason`` said.
+    """
+    if not text:
+        return False
+    body = _THINK_BLOCK_RE.sub("", text)
+    return "<think>" in body
+
+
 def _extract_final_response(content: str | None, full_reasoning: str, full_content: str) -> str:
     """Clean up the final text response, stripping think tags and applying fallbacks."""
     last_response = content or ""
     if "</think>" in last_response:
         last_response = _strip_think_blocks(last_response)
+    elif "<think>" in last_response:
+        # An opener with no closer.  Two readings: the model was still
+        # thinking when the turn ended (everything from the opener on is
+        # reasoning), or it was *quoting* a template and the host treated
+        # the quoted opener as a real one -- glm-5.3-flash:cloud explaining
+        # the Qwen3.5 chat template loses its tail this way, done_reason
+        # "stop" and all.  Either way the text after the opener is not the
+        # answer: cut there.  The cut is what makes the turn read as
+        # incomplete downstream (_looks_incomplete) and earn a resume;
+        # leaving the opener in the answer would end the run on a sentence
+        # that stops mid-quote with no evidence anything went wrong.
+        last_response = last_response.rsplit("<think>", 1)[0]
     # Fallback: if the content was empty but the thinking field had the answer,
     # surface the reasoning so the user gets a non-empty reply.
     if not last_response or not last_response.strip():
         if full_reasoning and full_reasoning.strip():
             last_response = full_reasoning.strip()
-        elif full_content and "<think>" in full_content:
+        elif full_content and "<think>" in full_content and "</think>" in full_content:
             # Model put entire answer inside inline <think> tags
             think_body = full_content.split("<think>", 1)[1].split("</think>", 1)[0].strip()
             if think_body:
@@ -7725,6 +7753,12 @@ async def chat(
                 or _swallowed
                 or _empty_resume
                 or _stalled
+                # A think opener the host never saw closed: the tail was
+                # reasoning, or a quoted template opener the host took for
+                # real (see _ends_with_unclosed_think).  Judged on the turn
+                # itself -- the extraction above has already cut the opener
+                # out of the answer, so the stitched text cannot show it.
+                or _ends_with_unclosed_think(_full_content or _content or "")
             )
             # Two turns that look truncated but that resuming cannot mend, and
             # that resuming actively makes worse — each pass costs a full
