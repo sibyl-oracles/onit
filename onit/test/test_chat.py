@@ -1089,6 +1089,57 @@ class TestIsPlanningResponse:
         """Past-tense reports of finished work must reach the user."""
         assert not _is_planning_response(content)
 
+    # ── reconstruction after a context compaction ─────────────────────────
+    # The harness itself asks the model to rebuild its state after a
+    # compaction, and every such reply opens with a planning prefix —
+    # "Let me reconstruct ...", "I need to continue ...".  Firing the
+    # planning continuation on them forced a JSON-only reply onto a model
+    # that was mid-analysis, twice, then ended the run with
+    # "unable to complete the task" — six turns, all dead at the same
+    # boundary.  A state rebuild names work already done; it is not a plan.
+
+    def test_reconstruction_opener_is_not_a_plan(self):
+        """The compaction-recovery openers must not trigger the planning loop."""
+        assert not _is_planning_response(
+            "I was mid-analysis. Let me continue exactly where I stopped."
+        )
+        assert not _is_planning_response(
+            "Let me reconstruct what I know and what the next step is."
+        )
+        assert not _is_planning_response(
+            "Let me reconstruct exactly where I was. The probe output showed:"
+        )
+        assert not _is_planning_response(
+            "I need to continue exactly where I stopped. I was mid-analysis of the packer bug."
+        )
+        assert not _is_planning_response(
+            "I need to continue the work. I was analyzing the packer bug."
+        )
+
+    def test_reconstruction_with_probe_output_is_not_a_plan(self):
+        """A state rebuild that quotes tool output is mid-task, whatever its opener."""
+        rebuild = (
+            "Let me reconstruct what I know and what the next step is.\n"
+            "\n"
+            "The situation:\n"
+            "- Working directory: /data/rowel\n"
+            "- I probed the B-row failure. Findings from the probe:\n"
+            "\n"
+            "FULL render tail: ...<|im_end|>\n"
+            "<|im_start|>assistant\n"
+            "\n"
+            "src/schedule_39.md: 69\n"
+            "data/config_25.txt: 285\n"
+            "docs/budget_43.yaml: 150\n"
+            "69 + 285 + 150 = 504\n"
+        )
+        assert not _is_planning_response(rebuild)
+
+    def test_plan_announcement_still_fires(self):
+        """Real forward-looking plans must still be caught."""
+        assert _is_planning_response("Let me create the files and push them.")
+        assert _is_planning_response("Alright, so first let me check the repository structure.")
+
 
 # ── _is_acknowledgment_response ────────────────────────────────────────────
 

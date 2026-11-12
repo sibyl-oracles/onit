@@ -3481,6 +3481,36 @@ def _unify_streaming_result(
     return full_content, None, {"role": "assistant", "content": full_content}
 
 
+# Evidence a reply is mid-task rather than announcing work: the reconstruction
+# openers after a compaction ("Let me reconstruct where I was") are planning
+# prefixes, but the body that follows them quotes probe output and arithmetic
+# already done.  Any of these phrases in the lead window marks the reply as a
+# state rebuild, and _is_planning_response declines to fire on it.
+_RECONSTRUCTION_PHRASES = (
+    "findings from the probe",
+    "the probe showed",
+    "the probe output",
+    "full render tail",
+    "pre tail",
+    "i was mid-analysis",
+    "i was analyzing",
+    "i was working on",
+    "i was in the middle of",
+    "let me reconstruct",
+    "where i stopped",
+    "where i left off",
+    "reconstruct what i know",
+    "reconstruct exactly where",
+    "reconstruct the state",
+    "rebuild the state",
+    "recap of the situation",
+    "the situation:",
+    "working directory:",
+    "the task: continue",
+    "next step (item",
+    "blocked on the",
+)
+
 _PLANNING_PREFIXES = (
     "let me ",
     "let's ",
@@ -3563,6 +3593,15 @@ def _is_planning_response(content: str) -> bool:
     # Strip thinking blocks
     text = content.split("</think>")[-1].strip() if "</think>" in content else content.strip()
     lower = text.lower()
+    # A reconstruction opener is not a plan announcement.  After a context
+    # compaction the harness itself asks the model to rebuild its state, and
+    # every such reply opens with "Let me reconstruct ..." or "I need to
+    # continue ..." -- planning prefixes, every one.  What separates the two
+    # is what follows: a plan announces work and stops; a reconstruction
+    # names work already done.  The pending-work phrases are that evidence,
+    # and a reply holding any of them is mid-task by definition.
+    if any(p in lower for p in _RECONSTRUCTION_PHRASES):
+        return False
 
     # Every sentence or line start inside the lead window is a candidate opener,
     # each checked with its connectives stripped.  Matching on sentence starts

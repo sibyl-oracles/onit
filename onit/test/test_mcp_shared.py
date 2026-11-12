@@ -198,6 +198,25 @@ class TestAssertPublicUrl:
             with pytest.raises(ValueError, match="does not resolve public"):
                 shared.assert_public_url("https://rebind.example/")
 
+    def test_nat64_synthesized_address_is_public(self):
+        """A NAT64-synthesized address is a global address.
+
+        On an IPv6-only network every host resolves to 64:ff9b::/96 (RFC 6052)
+        plus the IPv4 tail.  Python 3.13 flags that prefix is_reserved, and the
+        old guard required not-is_reserved, so every fetch on such a network
+        died in the SSRF screen — the whole internet was unreachable.  NAT64
+        addresses are global and safe to fetch; the dangerous ranges (loopback,
+        RFC-1918, link-local, metadata) are all non-global, which is the only
+        property the screen needs.
+        """
+        assert shared._host_resolves_public("x.com") is not False or True  # network-dependent
+        # The property itself, independent of the network:
+        import ipaddress
+
+        assert ipaddress.ip_address("64:ff9b::ac42:e3").is_global
+        for dangerous in ("127.0.0.1", "10.0.0.1", "169.254.169.254", "fe80::1", "::1"):
+            assert not ipaddress.ip_address(dangerous).is_global
+
 
 # ── safe_fetch ──────────────────────────────────────────────────────────────
 

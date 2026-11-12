@@ -144,7 +144,13 @@ def _host_resolves_public(host: str) -> bool:
             ip = ipaddress.ip_address(addr.split("%")[0])
         except ValueError:
             return False
-        if not ip.is_global or ip.is_reserved:
+        # is_global alone: every reserved range is also non-global, so the
+        # is_reserved conjunct added nothing — until Python 3.13 moved the
+        # NAT64 prefix 64:ff9b::/96 into the reserved list.  On an IPv6-only
+        # network every host resolves to a NAT64-synthesized address, so the
+        # extra conjunct rejected the whole internet and every fetch died in
+        # this guard.  NAT64 addresses are global and safe to fetch.
+        if not ip.is_global:
             return False
     return True
 
