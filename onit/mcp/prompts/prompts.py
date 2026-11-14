@@ -498,6 +498,7 @@ When an answer includes a table, format it so it survives being copy-pasted as p
 4. If something critical is missing and you cannot infer it, ask exactly one clarifying question before you go on.
 5. If you create a file, give the user a download link for it.
 6. End with your final answer.
+7. When quoting or explaining a chat template, never write the literal reasoning-block tag (the angle-bracket tag that opens a think block) — write the tag name without its angle brackets or describe it in words. Some servers strip that tag from your reply and everything after it, silently losing the rest of your answer.
 """
 
     task_block = f"""

@@ -358,6 +358,24 @@ class TestInstructionSplit:
         assert "## Research and citations" in static
 
     @pytest.mark.asyncio
+    async def test_the_think_tag_rule_rides_in_the_static_half(self, tmp_path):
+        """Ollama's server-side think parser strips the literal reasoning-block
+        tag from the model's output -- and everything after it when the tag is
+        unclosed -- with done_reason "stop" and usage figures that match the
+        delivered text.  The harness has no signal to detect the loss, so the
+        only fix is to keep the model from emitting the tag while quoting a
+        template.  The rule is standing knowledge, so it belongs in the static
+        half: it must reach the system message on every request, and it must
+        not break the prefix cache by moving."""
+        result = await _assistant_fn(task="status of training", data_path=str(tmp_path / "data"))
+        static, volatile = split_instruction(result)
+        assert "reasoning-block tag" in static
+        assert "reasoning-block tag" not in volatile
+        # The rule itself must not contain the literal tag it forbids: a model
+        # that reads it verbatim would echo the tag back.
+        assert chr(60) + "think" + chr(62) not in static
+
+    @pytest.mark.asyncio
     async def test_a_task_cannot_forge_the_split(self, tmp_path):
         """A task containing the sentinel would otherwise hand part of itself to
         the caller as standing rules."""
