@@ -510,6 +510,27 @@ class TestOllamaHostDetectionIsOneRule:
         assert not balancer_mod.is_ollama_host("http://host:114340/v1")
         assert not balancer_mod.is_ollama_host("http://localhost:9999/v1")
 
+    def test_the_local_port_alone_is_detected(self):
+        """The narrow rule: the Ollama port, and nothing else about the host.
+
+        A ``/v1`` suffix is the *prescribed* local spelling -- the OpenAI
+        path is where OnIt's requests actually go -- so the suffix must not
+        decide this, and a non-Ollama server on another port must not match.
+        """
+        assert balancer_mod.is_local_ollama_port("http://localhost:11434/v1")
+        assert balancer_mod.is_local_ollama_port("http://localhost:11434")
+        assert balancer_mod.is_local_ollama_port("127.0.0.1:11434")
+        assert not balancer_mod.is_local_ollama_port("http://localhost:8000/v1")
+        assert not balancer_mod.is_local_ollama_port("https://ollama.com/v1")
+        # ``:11434`` as a substring also matches ``:114340``; the port is
+        # parsed, not searched for.
+        assert not balancer_mod.is_local_ollama_port("http://localhost:114340")
+        # Out-of-range ports raise in urlsplit; a routing-adjacent check
+        # must not raise.
+        assert not balancer_mod.is_local_ollama_port("http://localhost:99999/v1")
+        assert not balancer_mod.is_local_ollama_port("")
+        assert not balancer_mod.is_local_ollama_port(None)
+
     def test_an_ollama_domain_is_matched_by_suffix(self):
         assert balancer_mod.is_ollama_host("https://ollama.com")
         assert balancer_mod.is_ollama_host("https://api.ollama.ai/v1")

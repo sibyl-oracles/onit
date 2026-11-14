@@ -75,6 +75,28 @@ MAX_STICKY_KEYS = 1024
 OLLAMA_LOCAL_PORT = 11434
 
 
+def is_local_ollama_port(host: str) -> bool:
+    """True when the host points at the port a local Ollama listens on.
+
+    The port, not the path, is what identifies a local Ollama: its
+    OpenAI-compatible surface sits under ``/v1`` exactly like vLLM's, so a
+    ``/v1`` suffix says nothing about the server.  This is the narrow check
+    for the port alone -- ``is_ollama_host`` above also counts the cloud
+    domains, which a caller distinguishing "local Ollama" from everything
+    else must not.
+    """
+    host = (host or "").strip()
+    if not host:
+        return False
+    try:
+        parsed = urlsplit(host if "//" in host else f"//{host}")
+        return parsed.port == OLLAMA_LOCAL_PORT
+    except ValueError:
+        # An unparseable URL (an out-of-range port, a malformed IPv6 literal)
+        # is not a local Ollama endpoint.
+        return False
+
+
 def _is_ollama_domain(hostname: str) -> bool:
     """True when the hostname is ollama.com/ollama.ai or a subdomain of one.
 

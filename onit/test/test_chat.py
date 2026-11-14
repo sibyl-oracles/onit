@@ -3,6 +3,7 @@
 import asyncio
 import itertools
 import json
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -632,6 +633,87 @@ class TestNormalizeOllamaBaseUrl:
         ):
             _create_ollama_client("https://ollama.com/v1", "k", 30, stream=False)
         assert ctor.call_args.kwargs["host"] == "https://ollama.com"
+
+
+class TestOllamaTrimLogging:
+    """The /v1 suffix is prescribed for local Ollama, so it must not warn.
+
+    ``_normalize_ollama_base_url`` runs per request, so a warning keyed to
+    the suffix fires every turn for the spelling the presets, README and
+    serving docs all hand out -- the 2026-11-14 report.  A local port is
+    protocol selection (debug); any other host warns once per host, because
+    a trim there is still worth a look.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_warning_state(self):
+        """Tests above populate the once-per-host set; keep this isolated."""
+        chat_mod._OLLAMA_TRIM_WARNED.clear()
+        yield
+        chat_mod._OLLAMA_TRIM_WARNED.clear()
+
+    @staticmethod
+    def _records(host, calls=3):
+        """Call the normalizer `calls` times; return the records it emitted."""
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        capture = _Capture(level=logging.DEBUG)
+        root = logging.getLogger()
+        root.addFilter(lambda r: r.name == "onit.model.serving.chat")
+        root.addHandler(capture)
+        try:
+            for _ in range(calls):
+                _normalize_ollama_base_url(host)
+        finally:
+            root.removeHandler(capture)
+            root.removeFilter(root.filters[-1]) if root.filters else None
+        return records
+
+    def test_the_prescribed_local_spelling_does_not_warn(self):
+        assert not [
+            r for r in self._records("http://localhost:11434/v1") if r.levelno >= logging.WARNING
+        ]
+
+    def test_a_local_port_with_an_api_suffix_does_not_warn_either(self):
+        assert not [
+            r for r in self._records("http://localhost:11434/api") if r.levelno >= logging.WARNING
+        ]
+
+    def test_a_cloud_host_still_warns_but_only_once(self):
+        first = [
+            r
+            for r in self._records("https://ollama.com/v1", calls=3)
+            if r.levelno >= logging.WARNING
+        ]
+        assert len(first) == 1
+        assert "carries an OpenAI-style path" in first[0].getMessage()
+        # A second sequence on the same host stays silent.
+        assert not [
+            r for r in self._records("https://ollama.com/v1") if r.levelno >= logging.WARNING
+        ]
+
+    def test_a_distinct_host_gets_its_own_warning(self):
+        self._records("https://ollama.com/v1")
+        warned = [
+            r for r in self._records("https://api.ollama.com/v1") if r.levelno >= logging.WARNING
+        ]
+        assert len(warned) == 1
+
+    def test_the_local_trim_still_trims(self):
+        """Silence must not become a behavior change: /v1 is still dropped."""
+        assert _normalize_ollama_base_url("http://localhost:11434/v1") == "http://localhost:11434"
+
+    def test_the_client_applies_the_quiet_local_trim(self):
+        with (
+            patch.object(chat_mod, "OLLAMA_SDK_AVAILABLE", True),
+            patch.object(chat_mod, "OllamaAsyncClient") as ctor,
+        ):
+            _create_ollama_client("http://localhost:11434/v1", "", 30, stream=False)
+        assert ctor.call_args.kwargs["host"] == "http://localhost:11434"
 
 
 class TestChat:

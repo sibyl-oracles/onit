@@ -48,6 +48,7 @@ from .verify import (
 
 from .harness import COMPACTION_NOTICE, HarnessTools
 from .balancer import is_ollama_host as _balancer_is_ollama_host
+from .balancer import is_local_ollama_port
 from .results import CONTINUATION_PREFIX, handle_of, is_continued, is_decayed
 from .interpreter import DEFAULT_CODE_TIMEOUT, DEFAULT_TOOL_TIMEOUT
 from .state import (
@@ -975,14 +976,26 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     return host_key
 
 
+#: Hosts _normalize_ollama_base_url has already trimmed a suffix from.  The
+#: trim runs per request, so the warning keys on the host as configured --
+#: the same host keeps its one warning, a different spelling warns again.
+_OLLAMA_TRIM_WARNED: set[str] = set()
+
+
 def _normalize_ollama_base_url(host: str) -> str:
-    """Drop an OpenAI-style path suffix from an Ollama cloud host.
+    """Drop an OpenAI-style path suffix from an Ollama host.
 
     The native SDK appends ``/api/...`` to whatever host it is given, so a
-    host carrying ``/v1`` or ``/api`` -- the form the OpenAI-compatible docs
-    use, and the form a user copying an example will paste -- asks the server
-    for ``/v1/api/chat`` and 404s on every call.  Only the scheme and
-    authority are meaningful here; the catalogue lives at the root.
+    host carrying ``/v1`` or ``/api`` asks the server for ``/v1/api/chat``
+    and 404s on every call.  Only the scheme and authority are meaningful
+    here; the catalogue lives at the root.
+
+    The suffix is not user error, though: ``http://localhost:11434/v1`` is
+    the spelling every preset, README and serving doc hands out for a local
+    Ollama, because the native root 404s the OpenAI-style path a request
+    actually takes.  So for a host on the Ollama port the trim is protocol
+    selection and logs at debug; a suffix on any other host is still worth
+    a look, and warns -- once per host, because this runs per request.
     """
     if not host:
         return host
@@ -990,7 +1003,14 @@ def _normalize_ollama_base_url(host: str) -> str:
     for suffix in ("/v1", "/api"):
         if base.lower().endswith(suffix):
             trimmed = base[: -len(suffix)]
-            logger.warning("Ollama host %s carries an OpenAI-style path; using %s.", host, trimmed)
+            if is_local_ollama_port(host):
+                logger.debug("Local Ollama host %s: using the native root %s.", host, trimmed)
+            else:
+                if host not in _OLLAMA_TRIM_WARNED:
+                    _OLLAMA_TRIM_WARNED.add(host)
+                    logger.warning(
+                        "Ollama host %s carries an OpenAI-style path; using %s.", host, trimmed
+                    )
             return trimmed
     return base
 
