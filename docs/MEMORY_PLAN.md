@@ -181,6 +181,15 @@ rigorous path finishes behind it.
    delivered to the user *and* the contradiction enters the dream queue --
    phase 5's feedback loop becomes load-bearing here.
 
+**Retrieval order within the corpus.** `wiki/*.md` and `sessions/*.md` are
+searched in one `local_search` pass -- no separate general-then-session
+queries. On conflict, the **session page wins**: it is fresher and may hold
+a fact from earlier in this same session that dreaming has not yet
+consolidated, possibly superseding the topic wiki. The conflict itself is
+logged as a signal for the next dream pass to reconcile. Verified-but-older
+loses to fresh-but-unconsolidated at answer time; dreaming then decides
+which claim survives.
+
 **Non-negotiables:**
 
 - **A memory answer is a claim with provenance, never a verified answer.**
