@@ -80,10 +80,22 @@ _RUBRIC = (
 # and the playbook injected.
 ARM_CONTROL = "off"
 ARM_TREATMENT = "adapt"
-
 # The arm names that are autonomy levels.  The wiki gate's arms are
 # labels, not levels, and must not be coerced through ``autonomy()``.
 _LEVEL_ARMS = frozenset({ARM_CONTROL, ARM_TREATMENT})
+
+
+def _wiki_agent_factory(config: dict):
+    """Build the real agent for a wiki-gate arm, off the event loop.
+
+    A thin re-export of ``ab._make_agent`` kept at module level so a
+    test can patch it: the CLI passes no ``make_agent``, and the
+    fallback must be reachable without importing ``ab`` at module load
+    (``ab`` imports ``onit.onit`` lazily, inside its factory).
+    """
+    from .ab import _make_agent
+
+    return _make_agent(config)
 
 
 # ── the grader ──────────────────────────────────────────────────────────────
@@ -648,9 +660,18 @@ async def run_wiki_ab(
     ``seed_ask`` is the extraction client the seeding pass thinks with,
     and ``ask`` the grader's.  Both default to ``make_ask`` when a
     grader is available, which keeps a real run to one model; a test
-    passes a stub for either or both.
+    passes a stub for either or both.  ``make_agent`` defaults the same
+    way ``run_ab``'s does: absent, the real factory builds an ``OnIt``
+    per arm in a worker thread.  A caller who passes none -- the CLI
+    does -- still gets an arm that runs the agent, rather than one that
+    raises before the first item.
     """
     from .llm import make_ask
+
+    def factory(config: dict):
+        if make_agent is not None:
+            return make_agent(config)
+        return _wiki_agent_factory(config)
 
     base_config = dict(base_config or {})
     if ask is None and with_grader:
@@ -668,7 +689,7 @@ async def run_wiki_ab(
             enabled=enabled,
             root=root,
             base_config=base_config,
-            make_agent=make_agent,
+            make_agent=factory,
             ask=ask,
             limit=limit,
             seed_ask=seed_ask,

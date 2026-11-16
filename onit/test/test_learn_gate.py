@@ -23,6 +23,7 @@ What is being protected here:
 import asyncio
 import json
 import os
+import unittest.mock
 
 import pytest
 
@@ -294,11 +295,11 @@ class TestInheritance:
 
 class TestWikiArms:
     async def _run(self, tmp_path, items, **kwargs):
+        kwargs.setdefault("make_agent", lambda config: StubAgent(config=config))
         return await runner.run_wiki_ab(
             items,
             root=str(tmp_path),
             base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
-            make_agent=lambda config: StubAgent(config=config),
             ask=_ask_ok,
             seed_ask=_ask([]),
             **kwargs,
@@ -353,6 +354,30 @@ class TestWikiArms:
         result = await self._run(tmp_path, [_item()] * 6, limit=2)
         assert result["summaries"]["wiki-off"]["n"] == 2
         assert result["summaries"]["wiki-on"]["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_make_agent_still_runs_the_real_factory(self, tmp_path):
+        """The CLI calls run_wiki_ab without make_agent.
+
+        The factory must fall back to the real one the way run_ab's
+        does -- a caller who passes none gets arms that run the agent,
+        not a ValueError before the first item.  The fallback itself is
+        exercised by the CLI; here the contract under test is that a
+        make_agent-less call runs to a verdict instead of raising.
+        """
+        called = []
+
+        def real_factory(config):
+            called.append(config)
+            return StubAgent(config=config)
+
+        with unittest.mock.patch.object(runner, "_wiki_agent_factory", real_factory):
+            result = await self._run(tmp_path, [_item()] * 2, make_agent=None)
+        assert called, "the fallback factory never built an agent"
+        assert result["summaries"]["wiki-off"]["n"] == 2
+        assert result["summaries"]["wiki-on"]["n"] == 2
+        assert result["summaries"]["wiki-off"]["correct"] == 2
+        assert result["summaries"]["wiki-on"]["correct"] == 2
 
 
 # ── the verdict ──────────────────────────────────────────────────────────
