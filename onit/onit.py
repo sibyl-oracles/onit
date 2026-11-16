@@ -1618,6 +1618,9 @@ class OnIt(BaseModel):
             kwargs["prompt_intro"] = self.prompt_intro
         if background_verify is not None:
             kwargs["background_verify"] = background_verify
+        # The config rides to chat() so the harness tool set can gate
+        # wiki_search on the same autonomy ladder everything else reads.
+        kwargs["config_data"] = self.config_data
         self._attach_learned_context(run_state, session_id, task)
         self._attach_playbook(run_state, session_id)
         return kwargs
@@ -1660,10 +1663,36 @@ class OnIt(BaseModel):
             context = build_context(
                 task or "", config_data=self.config_data, owner=owner, model=model
             )
-            if not context["text"]:
+            # The memory wiki rides with the recall block, in the same
+            # volatile half and under the same untrusted-marker
+            # discipline.  On a hit the block carries the page's facts
+            # under the provisional-answer banner; otherwise the index
+            # digest.  Appended rather than replacing: the episodes are
+            # history, the wiki is distilled state, and both belong in
+            # front of the task.
+            wiki = ""
+            wiki_hit = False
+            try:
+                from .learn import memory as _memory
+
+                wiki_context = _memory.build_context(task or "", self.config_data)
+                wiki = wiki_context["text"]
+                wiki_hit = bool(wiki_context["hit"])
+            except Exception as wiki_error:
+                logger.debug("memory wiki not attached: %s", wiki_error)
+            if not context["text"] and not wiki:
                 return
-            run_state.learned_context = context["text"]
+            run_state.learned_context = (
+                context["text"] + ("\n" + wiki if wiki else "")
+            ).strip() + "\n"
             run_state.learned_episodes = context["ids"]
+            if wiki_hit:
+                # The fast-path flag: chat() reads it to schedule the
+                # deep check even when the fast fact-check pass would
+                # otherwise skip a run with no gathered evidence.  A
+                # memory answer is a claim with provenance, never a
+                # verified answer.
+                run_state.wiki_hit = True
         except Exception as e:
             logger.debug("learned context not attached: %s", e)
 
@@ -1742,6 +1771,24 @@ class OnIt(BaseModel):
         except Exception as e:
             logger.debug("playbook not pinned: %s", e)
             return ""
+
+    def _wiki_available(self) -> bool:
+        """Whether this run offers wiki_search.
+
+        The same gate the harness tool set applies (chat() resolves it
+        again for its own payload): autonomy >= adapt, and the store has
+        pages.  Best-effort -- a store that cannot be read offers no
+        tool, and a prompt that promised one would be a lie.
+        """
+        try:
+            from .learn import memory as _memory
+            from .learn.config import ADAPT, autonomy
+
+            return autonomy(self.config_data) >= ADAPT and bool(
+                _memory.list_pages(self.config_data)
+            )
+        except Exception:
+            return False
 
     def _attach_playbook(self, run_state: Any, session_id: str) -> None:
         """Put the pinned playbook on the run state, for the record.
@@ -1973,6 +2020,15 @@ class OnIt(BaseModel):
             _adapter,
             run_state=_run_state,
         )
+        # The agent just finished a task.  If the queue is empty, this is
+        # the idle window the dreaming pass runs in: the trigger is
+        # "idle > N episodes", the lock keeps two instances out of one
+        # pass, and a task that arrives mid-dream preempts it (the
+        # watermark makes the next pass pick up where this one stopped).
+        # Fire-and-forget: a dream pass is background maintenance, and a
+        # task that answered must not wait on bookkeeping.
+        if effective_safety_queue.empty():
+            self._schedule_dream()
         # The answer is saved, so the check behind it now has something to
         # correct.  Anything the run collected earlier belonged to an attempt
         # that was retried over, and is closed rather than run.
@@ -2038,6 +2094,54 @@ class OnIt(BaseModel):
         """End every one of them — shutdown, or a session being torn down."""
         for session_id in list(self.background_checks):
             self._cancel_background_check(session_id)
+
+    # ── dreaming: the consolidation pass that runs when the agent is idle ────
+    #
+    # The wiki is written by exactly one writer — the dream pass — and the
+    # pass runs exactly when nothing else is.  A task that starts mid-dream
+    # preempts it: the lock is released by the pass's own completion, the
+    # watermark says what was processed, and the next idle window resumes.
+    # One dream task per process, replaced rather than queued: two queued
+    # passes would both wake to an idle queue and both try to consolidate
+    # the same window.
+
+    _dream_task: Any = PrivateAttr(default=None)
+
+    def _schedule_dream(self) -> None:
+        """Kick a dream pass if one is owed and none is running."""
+        try:
+            from .learn import dream as _dream
+            from .learn.config import ADAPT, autonomy
+
+            if autonomy(self.config_data) < ADAPT:
+                return
+            if self._dream_task is not None and not self._dream_task.done():
+                return
+            if not _dream.should_dream(self.config_data):
+                return
+            self._dream_task = asyncio.ensure_future(self._run_dream())
+        except Exception as e:
+            logger.debug("dream not scheduled: %s", e)
+
+    async def _run_dream(self) -> None:
+        """The dream pass itself.  Best-effort: a failed pass is a pass
+        that did less, never a failed task — no task is running."""
+        try:
+            from .learn import dream as _dream
+
+            result = await _dream.run_dream(self.config_data)
+            if result.get("ran"):
+                logger.info(
+                    "Dream pass %s: %s session(s), %s fact(s), %s page(s) created",
+                    result.get("pass"),
+                    result.get("sessions"),
+                    result.get("verified"),
+                    result.get("pages_created"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("dream pass failed: %s", e)
 
     @staticmethod
     def _amend_last_response(session_path: str, answer: str) -> None:
@@ -2406,6 +2510,11 @@ class OnIt(BaseModel):
                 self.model_serving.get("harness_tools", True)
                 and self.model_serving.get("code_execution", False)
             ),
+            # The memory wiki: offered when the dreaming pass has written
+            # pages and the autonomy level admits them.  Resolved here --
+            # the same gate the harness tool set uses -- so the prompt
+            # never describes a tool the run does not carry.
+            "wiki_search_available": self._wiki_available(),
             "agent_name": self.agent_name,
             "developer": self.developer,
             "max_documents": self.max_documents,

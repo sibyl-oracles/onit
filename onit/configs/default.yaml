@@ -170,6 +170,15 @@ learn:
   # Parameter *names* are kept either way; it is the values that carry file
   # paths, search queries and the occasional pasted credential.
   redact_tool_args: true
+  # The memory wiki (docs/MEMORY_PLAN.md).  Written only by the dreaming
+  # pass, which runs when the agent is idle at autonomy adapt or higher.
+  # The gates below are the fast path's: a page serves answers only
+  # inside its TTL and only with no open contradiction on it.
+  memory:
+    # path: "~/.onit/learned/memory"   # default: <learn.path>/memory
+    ttl_days: 30                       # how long a page serves answers
+    prune_after_days: 45               # how long untouched detail survives
+    min_idle_episodes: 1               # idle tasks before a dream pass fires
 
 verbose: false
 show_logs: false

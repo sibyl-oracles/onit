@@ -193,6 +193,13 @@ TRUSTED_TOOLS = frozenset(
     }
 )
 
+# The memory wiki is deliberately NOT here.  Its facts are distilled from
+# earlier runs, not read from a primary source, so they can never clear a
+# claim -- an answer that matches the wiki has matched a summary of what
+# the agent believed last week.  What wiki evidence *can* do is surface a
+# contradiction: an answer that disagrees with the wiki is a finding, and
+# the disagreement is recorded for the next dreaming pass to reconcile.
+
 # Domains taken at their word.  Deliberately short and boring: reference works,
 # primary sources, and the places that publish the record rather than report on
 # it.  Entries beginning with a dot match any host ending in them, so ".gov"
@@ -719,6 +726,7 @@ async def verify_answer(
     revision_max_tokens: int = REVISION_MAX_TOKENS,
     allow_revision: bool = True,
     trusted_domains: tuple = DEFAULT_TRUSTED_DOMAINS,
+    wiki_evidence: str = "",
     log: Optional[Callable] = None,
 ) -> tuple[str, str, list[dict]]:
     """Check a finished answer against its evidence and correct it if needed.
@@ -746,7 +754,18 @@ async def verify_answer(
             log(message, level)
 
     with_tools = bool(run_tools and tools and max_tool_turns > 0)
-    if covered_by_trusted_sources(answer, messages, trusted_domains):
+    # The memory wiki's facts join the evidence pool when the caller
+    # handed them in.  They are labeled unverified at the source, so a
+    # claim that matches them is *not* cleared by them -- but an answer
+    # that contradicts the wiki is now checkable, which is the point:
+    # the checker gets a prior instead of verifying from scratch.
+    if wiki_evidence:
+        wiki_messages = list(messages or []) + [
+            {"role": "tool", "name": "wiki_search", "content": wiki_evidence}
+        ]
+    else:
+        wiki_messages = messages
+    if covered_by_trusted_sources(answer, wiki_messages, trusted_domains):
         # Every figure in the answer is already sitting in a document the run
         # read or on a source that is authoritative about it.  Nothing a model
         # could add here, so nothing is spent asking one.
@@ -756,7 +775,7 @@ async def verify_answer(
         )
         return answer, "", []
 
-    evidence = evidence_digest(messages, focus=claim_tokens(answer))
+    evidence = evidence_digest(wiki_messages, focus=claim_tokens(answer))
     if not evidence and not with_tools:
         # Nothing gathered and no way to gather anything: the only thing left to
         # check the draft against is the same weights that wrote it, which is a

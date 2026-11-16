@@ -30,6 +30,7 @@ import re
 import time
 import types
 import uuid
+from datetime import datetime, timezone
 import httpx
 from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError, APITimeoutError, NotFoundError
@@ -6503,6 +6504,9 @@ class _FactChecker:
         ]
         self.tool_registry = tool_registry
         self.metrics = metrics
+        # The harness carries the run's wiki flag: a run whose memory
+        # answered must be deep-checked even with no gathered evidence.
+        self.harness = harness
         self.host = host
         self.model = model
         self.is_ollama = is_ollama
@@ -6681,13 +6685,30 @@ class _FactChecker:
         """
         if not self.verify_answers or not answer or not needs_verification(answer):
             return answer
-        # No tool results in the conversation means the draft was written from
-        # the model's own knowledge: the fast verdict could only re-report that
-        # knowledge back, so it is skipped and the deep check (which may look
-        # things up) still runs behind the answer.  This removes a serial LLM
-        # call from the tail of every knowledge-answer turn.
-        if not has_tool_evidence(msgs):
+        # A wiki hit must be checked even when the run gathered nothing:
+        # the answer was served from memory, which is a claim with
+        # provenance, never a verified answer.  The deep check behind it
+        # is what turns "from memory" into "confirmed" or "corrected".
+        wiki_hit = bool(getattr(self.harness, "wiki_hit", False))
+        if not wiki_hit and not has_tool_evidence(msgs):
             return answer
+        # The wiki consult (plan §5, phase 5): when memory answered, the
+        # wiki's own facts ride into the check as evidence.  They are
+        # labeled unverified, so they can never *clear* a claim -- but an
+        # answer that contradicts the wiki is a finding, and the
+        # contradiction is recorded for the next dream pass to reconcile.
+        wiki_evidence = ""
+        wiki_slug = ""
+        if wiki_hit:
+            try:
+                from ...learn import memory as _memory
+
+                _task = (self.task_instruction or "").strip()
+                _ev = _memory.evidence_for(_task)
+                wiki_evidence = _ev["text"]
+                wiki_slug = _ev["slug"]
+            except Exception as e:
+                logger.debug("wiki evidence unavailable: %s", e)
         if self.chat_ui:
             self.chat_ui.verification_start()
         _t0 = time.monotonic()
@@ -6706,6 +6727,7 @@ class _FactChecker:
                     allow_revision=False,
                     verdict_max_tokens=self.verdict_budget(),
                     trusted_domains=self.verify_trusted_domains,
+                    wiki_evidence=wiki_evidence,
                     log=self.log,
                 ),
                 timeout=(self.verify_timeout_s if self.verify_timeout_s > 0 else None),
@@ -6726,6 +6748,29 @@ class _FactChecker:
             logger.warning("Fact-check pass failed: %s", e)
             checked, note, issues = answer, "", []
         self.metrics.add_verification(time.monotonic() - _t0, len(issues), bool(note))
+        # A finding that contradicts the wiki is recorded where the next
+        # dream pass finds it.  The contradiction is *recorded*, never
+        # applied: the checker found that the world disagrees with the
+        # wiki, and deciding which one survives is the dreaming pass's
+        # job, with the transcript in hand.  The page then fails its
+        # contradiction gate, so the fast path stops serving it until
+        # the pass resolves the dispute -- which is exactly the
+        # "unless contradicted by changed circumstances" rule, enforced.
+        if wiki_hit and wiki_slug and issues:
+            try:
+                from ...learn import memory as _memory
+
+                _stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                for issue in issues[:3]:
+                    _memory.record_contradiction(
+                        wiki_slug,
+                        claim=str(issue.get("claim") or ""),
+                        correction=str(issue.get("correction") or ""),
+                        provenance=["fact-check %s" % _stamp],
+                    )
+                logger.info("Recorded %d wiki contradiction(s) on %s", len(issues[:3]), wiki_slug)
+            except Exception as e:
+                logger.debug("contradiction not recorded: %s", e)
         if self.chat_ui:
             self.chat_ui.verification_end(checked, note)
         self.schedule_deep_check(checked, msgs, already_found=bool(issues))
@@ -6883,7 +6928,22 @@ async def chat(
             kwargs.get("code_timeout", DEFAULT_CODE_TIMEOUT), DEFAULT_CODE_TIMEOUT
         ),
         approval_resolver=_harness_approval,
+        config_data=kwargs.get("config_data") or None,
     )
+    # The memory wiki, offered as a tool when the store has pages and the
+    # autonomy level admits it.  The gate is here rather than in the
+    # constructor because the config rides on the run state's caller, not
+    # in chat()'s kwargs -- so it is read off the run state's wiki flag,
+    # which _attach_learned_context set only when a page actually hit.
+    try:
+        from ...learn import memory as _memory
+        from ...learn.config import ADAPT, autonomy as _autonomy
+
+        _cfg = kwargs.get("config_data") or None
+        if _autonomy(_cfg or {}) >= ADAPT and _memory.list_pages():
+            harness.wiki_available = True
+    except Exception as e:  # a store that cannot be read offers no tool
+        logger.debug("wiki_search not offered: %s", e)
     tools = tools + _api_tool_payload(harness.tool_items())
     # Optional caller-owned dict, filled in turn by turn (see TurnMetrics).
     # Accounting always runs: with no caller sink it fills a throwaway dict, so
@@ -6936,6 +6996,12 @@ async def chat(
     # a run at autonomy 0 or 1 sends exactly the bytes it always did.
     _run_state = kwargs.get("run_state", None)
     _learned_context = getattr(_run_state, "learned_context", "") or ""
+    # The fast-path flag: the memory wiki answered this task, so the
+    # answer the user is about to read is provisional until the deep
+    # check confirms or corrects it.  Carried on the harness because the
+    # fact-checker already holds that object.
+    if harness is not None:
+        harness.wiki_hit = bool(getattr(_run_state, "wiki_hit", False))
     messages = _build_messages(
         task_instruction,
         images_bytes,

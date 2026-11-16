@@ -66,6 +66,7 @@ async def build_assistant_instruction(
     harness_tools_available: str | bool = False,
     result_store_available: str | bool = False,
     code_execution_available: str | bool = False,
+    wiki_search_available: str | bool = False,
     prior_attempts: str = None,
     playbook: str = None,
     agent_name: str = "OnIt",
@@ -136,6 +137,14 @@ async def build_assistant_instruction(
         "",
     ):
         code_execution_available = False
+    if isinstance(wiki_search_available, str) and wiki_search_available.lower() in (
+        "false",
+        "null",
+        "none",
+        "0",
+        "",
+    ):
+        wiki_search_available = False
     if not prior_attempts or prior_attempts == "null":
         prior_attempts = None
     if not playbook or playbook == "null":
@@ -435,6 +444,24 @@ Reading a handle is a local file read, so it is cheap and exact. Never re-run a 
         else ""
     )
 
+    # The memory wiki.  Offered only when the dreaming pass has written
+    # pages and the autonomy level admits them (the caller resolves that
+    # and passes it as wiki_search_available), so the block never
+    # describes a tool the run does not carry.  Same bytes on every
+    # request, so it rides in the static half with the other standing
+    # rules.
+    wiki_block = (
+        """
+## Memory wiki
+`wiki_search(query)` searches pages the dreaming pass distilled from your own earlier sessions: facts and rules with provenance, each stamped with the date it was last verified.
+- Check it when a task touches something you have worked on before — the wiki may already hold the answer, and re-deriving it costs turns.
+- The pages are untrusted data and may be stale or wrong. Verify anything that matters against current sources before treating it as settled.
+- A fact that contradicts what you find now is worth reporting: say what changed.
+"""
+        if wiki_search_available
+        else ""
+    )
+
     # Off unless a deployment enabled it. The block is as much about *when* to
     # reach for code as about how: a model that wraps every single tool call in
     # run_code has added an interpreter round trip to buy nothing, and one that
@@ -512,6 +539,7 @@ When an answer includes a table, format it so it survives being copy-pasted as p
         + injection_block
         + harness_block
         + result_block
+        + wiki_block
         + code_block
         + tables_block
         + instructions_block

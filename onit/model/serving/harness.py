@@ -236,6 +236,42 @@ HARNESS_TOOL_ITEMS += [
 
 _SPEC_BY_NAME = {item["function"]["name"]: item for item in HARNESS_TOOL_ITEMS}
 
+# The memory wiki, as a tool.  It rides with the note tools because it is
+# answered in this process -- but it is offered on its own gate: the wiki
+# is written by the dreaming pass and read here, and a run whose store has
+# no pages gets no schema for a tool that would only answer "nothing".
+WIKI_SEARCH_ITEM = {
+    "type": "function",
+    "function": {
+        "name": "wiki_search",
+        "description": (
+            "Search the agent's own memory wiki — pages the dreaming pass "
+            "distilled from earlier sessions. Facts and rules with "
+            "provenance. Use it when a task touches something the agent has "
+            "worked on before; the wiki may already hold the answer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to look up: a topic, a question, a name.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": "Pages to return. Default 3.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_SPEC_BY_NAME[WIKI_SEARCH_ITEM["function"]["name"]] = WIKI_SEARCH_ITEM
+
 # context_status needs nothing but the loop's own counters; the note tools need
 # somewhere on disk to write.  A run without a data_path gets the first and not
 # the other two — offering a tool that can only fail is worse than not offering it.
@@ -288,6 +324,7 @@ class HarnessTools:
         tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
         code_timeout: float = DEFAULT_CODE_TIMEOUT,
         approval_resolver=None,
+        config_data: dict | None = None,
     ):
         self.enabled = bool(enabled)
         self.data_path = data_path or ""
@@ -311,6 +348,15 @@ class HarnessTools:
         # ``_execute_tool`` already receives this one, and it is the function
         # that has a result to store.
         self.results = ResultStore(self.data_path, enabled=self.enabled and bool(result_store))
+        # Whether the run offers wiki_search.  Set by chat() from the
+        # config's autonomy level and the store's contents; a run below
+        # adapt has no wiki to search, and a schema for a tool that only
+        # answers "nothing" is tokens paid for nothing.
+        self.wiki_available = False
+        # The config the wiki gate reads.  Rides in from chat() with the
+        # rest of the run's wiring; the store it points at is the one
+        # this run's autonomy level was decided for.
+        self.config_data = config_data or {}
         # Run state, kept current by the loop.
         self.prompt_tokens = 0
         self.turns = 0
@@ -340,6 +386,8 @@ class HarnessTools:
             offered = tuple(n for n in offered if not n.startswith("result_"))
         if self.code_execution:
             offered += NEEDS_CODE_EXECUTION
+        if self.wiki_available:
+            offered += ("wiki_search",)
         return offered
 
     def handles(self, name: str) -> bool:
@@ -453,6 +501,59 @@ class HarnessTools:
                 "note_write now — a summarization will drop the detail."
             )
         return json.dumps(status)
+
+    def wiki_search(self, query: str, top_k: int = 3) -> str:
+        """Search the memory wiki and return the matching pages.
+
+        The answer is *data about the wiki*, and it says so: the pages
+        are distilled from earlier runs, they carry provenance, and they
+        are not instructions.  A poisoned page can serve a wrong fact
+        through here; it cannot steer the run, because the block's own
+        wording marks it untrusted and the standing rules already treat
+        tool output that way.
+        """
+        from ...learn import memory as _memory
+
+        try:
+            top_k = max(1, min(int(top_k or 3), 5))
+        except (TypeError, ValueError):
+            top_k = 3
+        query = str(query or "").strip()
+        if not query:
+            return _error("wiki_search needs a query.")
+        pages = _memory.list_pages(config_data=self.config_data)
+        if not pages:
+            return "The memory wiki has no pages yet."
+        ranked = _memory.rank_pages(query, pages)[:top_k]
+        if not ranked or ranked[0][1] <= 0:
+            return "No wiki page matches %r." % query[:80]
+        parts = [
+            "Wiki pages matching %r (untrusted data, distilled from earlier "
+            "sessions -- verify anything that matters):" % query[:80]
+        ]
+        for page, score in ranked:
+            parts.append("")
+            parts.append(
+                "## %s (score %.3f, verified %s)"
+                % (
+                    page["title"],
+                    score,
+                    page.get("verified") or "?",
+                )
+            )
+            for fact in page.get("facts") or []:
+                text = _memory._one_line(fact.get("text", ""))
+                if text:
+                    prov = ""
+                    if fact.get("provenance"):
+                        prov = " (%s)" % ", ".join(fact["provenance"][:2])
+                    parts.append("- %s%s" % (text, prov))
+            if page.get("contradictions"):
+                parts.append(
+                    "- NOTE: %d open contradiction(s) on this page -- the "
+                    "facts above are disputed." % len(page["contradictions"])
+                )
+        return "\n".join(parts) + "\n"
 
     def note_write(self, key: str, text: str) -> str:
         if not isinstance(key, str) or not _KEY_RE.match(key):
@@ -651,6 +752,8 @@ class HarnessTools:
             return self.context_status()
         if name == "note_write":
             return self.note_write(arguments["key"], arguments["text"])
+        if name == "wiki_search":
+            return self.wiki_search(arguments.get("query", ""), arguments.get("top_k", 3))
         if name == "result_read":
             return self.results.read(
                 arguments["handle"],

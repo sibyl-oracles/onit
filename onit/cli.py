@@ -383,6 +383,88 @@ def _learn_draw_holdout(args, config_data: dict) -> None:
         )
 
 
+def _learn_dream(args, config_data: dict) -> None:
+    """One memory-consolidation pass, by hand.
+
+    The pass normally fires on idle; this is the operator's way to run it
+    now -- after a burst of work, before pinning a baseline, or to see
+    what the dreaming loop does with a corpus it has never read.
+    """
+    from .learn import dream
+    from .learn import memory as memory_module
+
+    try:
+        result = dream.run_dream_sync(config_data)
+    except Exception as e:
+        print("Dream pass failed: %s" % e, file=sys.stderr)
+        sys.exit(1)
+    if not result.get("ran"):
+        print("Dream pass did not run: %s." % result.get("reason", "unknown"))
+        return
+    print(
+        "Dream pass %s: %s session(s) read, %s fact(s) verified, "
+        "%s page(s) created, %s page(s) updated, %s fact(s) pruned, "
+        "%s contradiction(s) resolved (%.1fs)"
+        % (
+            result.get("pass"),
+            result.get("sessions"),
+            result.get("verified"),
+            result.get("pages_created"),
+            result.get("pages_updated"),
+            result.get("pruned"),
+            result.get("contradictions_cleared"),
+            result.get("seconds", 0.0),
+        )
+    )
+    log = memory_module.log_path(config_data)
+    if os.path.isfile(log):
+        print("\nWhat changed (tail of %s):" % log)
+        with open(log, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for line in lines[-12:]:
+            print("  %s" % line)
+
+
+def _learn_memory(args, config_data: dict) -> None:
+    """The memory wiki, as text: pages, facts, freshness, last pass."""
+    from .learn import memory as _memory
+
+    pages = _memory.list_pages(config_data)
+    print("Memory wiki: %s (%d page(s))" % (_memory.memory_dir(config_data), len(pages)))
+    if not pages:
+        print(
+            "\nThe wiki is empty. It fills when a dream pass runs -- "
+            "'onit learn --dream', or automatically after a quiet period "
+            "at autonomy adapt or higher."
+        )
+        return
+    for page in pages:
+        stale = (
+            len(page.get("contradictions") or []),
+            _memory._days_since(page.get("verified") or ""),
+        )
+        print(
+            "\n  %s  (%s)\n    verified %s, %d fact(s)%s"
+            % (
+                page["slug"],
+                page["title"],
+                page.get("verified") or "?",
+                len(page.get("facts") or []),
+                "  -- %d OPEN CONTRADICTION(S)" % stale[0] if stale[0] else "",
+            )
+        )
+        for fact in (page.get("facts") or [])[:8]:
+            print("    - %s" % fact.get("text", ""))
+        if len(page.get("facts") or []) > 8:
+            print("    ... and %d more" % (len(page["facts"]) - 8))
+    state = _memory.load_state(config_data)
+    if state:
+        print(
+            "\nLast dream pass: %s (watermark %s)"
+            % (state.get("last_run") or "?", state.get("watermark_ts") or "(start)")
+        )
+
+
 def _learn_playbook(args, config_data: dict) -> None:
     """Show, reflect over, or roll back the playbook (Loop B).
 
@@ -1019,6 +1101,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     learn_parser.add_argument(
         "--rollback", action="store_true", help="Restore the previous playbook version."
+    )
+    learn_parser.add_argument(
+        "--dream",
+        action="store_true",
+        help="Run one memory-consolidation pass now: extract what recent "
+        "sessions established, verify it against the transcripts, and "
+        "reconcile the wiki. Normally idle-triggered; this runs it by hand.",
+    )
+    learn_parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="Show the memory wiki: the pages, their facts and their "
+        "freshness, and what the last dream pass changed.",
     )
     learn_parser.add_argument(
         "--lifecycle",
@@ -2236,6 +2331,12 @@ def main():
             return
         if args.eval_run:
             _learn_eval_run(args, config_data)
+            return
+        if getattr(args, "dream", False):
+            _learn_dream(args, config_data)
+            return
+        if getattr(args, "memory", False):
+            _learn_memory(args, config_data)
             return
         if args.playbook or args.reflect or args.rollback:
             _learn_playbook(args, config_data)

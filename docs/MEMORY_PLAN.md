@@ -123,14 +123,19 @@ for the edge case of a task starting mid-dream).
 
 ## 6. Implementation phases
 
-| Phase | Work | Size | Touches |
-|---|---|---|---|
-| 1 | Memory store: `~/.onit/memory/` layout, `INDEX.md` format, provenance schema | ~2 days | new `onit/learn/memory.py` |
-| 2 | Session capture: write `sessions/<id>.md` from `note_write` calls + end-of-session distillation | ~2 days | `harness.py` note tools, `trajectory.py` |
-| 3 | Dreaming job: extract → verify → reconcile → prune → reindex, triggered by idle; **auto-creates wiki pages** (§7) | ~1 week | new `onit/learn/dream.py`, `lifecycle.py`, `llm.py` |
-| 4 | Injection: `INDEX.md` into Loop A recall; `wiki_search` tool for the agent; **wiki-first fast path with provisional answers** (§8) | ~3 days | `recall.py`, `chat.py`, harness tool registry |
-| 5 | Verification hook: fact-check consults wiki first, reports contradictions back to the dream queue | ~3 days | fact-check path in harness |
-| 6 | Measurement: A/B in `runner.py` — control = no wiki, treatment = wiki; replay the pinned holdout | ~2 days | `runner.py`, `eval.py` |
+| Phase | Work | Size | Touches | Status |
+|---|---|---|---|---|
+| 1 | Memory store: `~/.onit/memory/` layout, `INDEX.md` format, provenance schema | ~2 days | new `onit/learn/memory.py` | **done** |
+| 2 | Session capture: write `sessions/<id>.md` from `note_write` calls + end-of-session distillation | ~2 days | `harness.py` note tools, `trajectory.py` | **done** (`dream.stage_session_note`, expiry in the pass) |
+| 3 | Dreaming job: extract → verify → reconcile → prune → reindex, triggered by idle; **auto-creates wiki pages** (§7) | ~1 week | new `onit/learn/dream.py`, `lifecycle.py`, `llm.py` | **done** (`onit.py` `_schedule_dream` fires it; `onit learn --dream` runs it by hand) |
+| 4 | Injection: `INDEX.md` into Loop A recall; `wiki_search` tool for the agent; **wiki-first fast path with provisional answers** (§8) | ~3 days | `recall.py`, `chat.py`, harness tool registry | **done** (`onit.py` `_attach_learned_context` appends the block; `harness.py` carries the tool; `run_state.wiki_hit` forces the deep check) |
+| 5 | Verification hook: fact-check consults wiki first, reports contradictions back to the dream queue | ~3 days | fact-check path in harness | **done** (`verify.py` `wiki_evidence`; `chat.py` records contradictions via `memory.record_contradiction`) |
+| 6 | Measurement: A/B in `runner.py` — control = no wiki, treatment = wiki; replay the pinned holdout | ~2 days | `runner.py`, `eval.py` | not started — the gate before default-on |
+
+Phases 1–5 are implemented and tested (`test_learn_memory.py`,
+`test_learn_dream.py`, `test_memory_chain.py` — 102 tests).  The wiki is
+**default OFF**: it activates only at autonomy `adapt` or higher, and phase 6's
+A/B delta is the gate for raising the default.
 
 Phase 6 is not optional: the article's numbers (13% → 48%, 61% vs 53%) came
 from measuring, and `runner.py` exists precisely so "the agent is better" is a
@@ -223,3 +228,22 @@ which claim survives.
   trust neither. Mitigation: corrections state what changed and why
   (provenance), and the measured A/B gate exists precisely to kill the
   fast path if corrections outweigh the latency win.
+
+## 10. What landed, and where to look
+
+| Piece | File | Entry points |
+|---|---|---|
+| Store, gates, fast path | `onit/learn/memory.py` | `build_context` (injection), `lookup` (the three gates), `evidence_for` (checker), `apply_deltas`/`prune_page` (dream writes) |
+| Dreaming pass | `onit/learn/dream.py` | `run_dream` (trigger + lock + pass), `should_dream`/`idle_episodes` (trigger), `extract` (model step), `stage_session_note` (capture) |
+| Idle trigger | `onit/onit.py` | `_schedule_dream` / `_run_dream`, fired from `process_task` when the safety queue is empty |
+| Injection | `onit/onit.py` | `_attach_learned_context` appends the wiki block to `run_state.learned_context`; sets `run_state.wiki_hit` |
+| `wiki_search` tool | `onit/model/serving/harness.py` | `wiki_search` method, `WIKI_SEARCH_ITEM` spec, `wiki_available` gate |
+| Fast-path deep check | `onit/model/serving/chat.py` | `_FactChecker.fact_check` reads `harness.wiki_hit` and runs the check even with no gathered evidence |
+| Checker consult | `onit/model/serving/verify.py` | `verify_answer(wiki_evidence=...)`; wiki facts join the evidence pool, never `TRUSTED_TOOLS` |
+| Contradiction loop | `chat.py` → `memory.record_contradiction` | a finding on a wiki page closes the page's fast path until the next dream pass resolves it |
+| CLI | `onit/cli.py` | `onit learn --dream` (run a pass now), `onit learn --memory` (show the wiki) |
+| Config | `onit/configs/default.yaml` | `learn.memory.{path,ttl_days,prune_after_days,min_idle_episodes}` |
+
+Tests: `onit/test/test_learn_memory.py` (31), `onit/test/test_learn_dream.py` (19),
+`onit/test/test_memory_chain.py` (8) — the chain test runs dream → wiki →
+inject → fast path → contradiction → resolve end to end.

@@ -168,6 +168,11 @@ class RunState:
     # loop is live.
     learned_context: str = ""
     learned_episodes: list = field(default_factory=list)
+    # Whether the memory wiki answered this task (the fast path fired).
+    # Read by the fact-checker to force the deep check behind a
+    # provisional answer; a memory answer is a claim with provenance,
+    # never a verified answer.
+    wiki_hit: bool = False
     playbook_version: Optional = None
 
     # The playbook (Loop B) and the bullets it was made of.
