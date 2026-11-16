@@ -405,3 +405,55 @@ class TestVerdict:
         text = runner.format_wiki_verdict(self._result(10, 25))
         assert "wiki-off" in text and "wiki-on" in text
         assert "delta" in text
+
+
+# ── the arm announces its seeding ────────────────────────────────────
+
+
+class TestSeedingAnnouncesItself:
+    """Seeding is minutes of model calls; silence reads as a hang."""
+
+    async def _run(self, tmp_path, items, **kwargs):
+        kwargs.setdefault("make_agent", lambda config: StubAgent(config=config))
+        return await runner.run_wiki_ab(
+            items,
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            ask=_ask_ok,
+            seed_ask=_ask([]),
+            **kwargs,
+        )
+
+    async def test_seeding_is_announced_when_it_runs(self, tmp_path, capsys):
+        # The stub records no trajectories of its own, so stage one in
+        # the control's store -- what a real control run leaves behind.
+        trajectories = tmp_path / "store" / "wiki-off" / "trajectories"
+        trajectories.mkdir(parents=True, exist_ok=True)
+        (trajectories / "123e4567-e89b-42d3-a456-426614174000.jsonl").write_text("{}\n")
+        await self._run(tmp_path, [_item()])
+        out = capsys.readouterr().out
+        assert "seeding: inherited" in out
+        assert "seeding: distilling" in out
+        assert "seeding: done" in out
+
+    async def test_a_skipped_seeding_is_announced(self, tmp_path, capsys):
+        """An empty wiki must never masquerade as a measured treatment.
+
+        ``seed_ask=None`` means "default the extraction client to the
+        grader", so the skip only happens when there is no client at
+        all -- no grader, no seeding client.
+        """
+        result = await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=lambda config: StubAgent(config=config),
+            ask=None,
+            seed_ask=None,
+            with_grader=False,
+        )
+        out = capsys.readouterr().out
+        assert "seeding skipped" in out
+        assert "empty wiki" in out
+        # The run itself still completes and reports.
+        assert result["summaries"]["wiki-on"]["n"] == 1

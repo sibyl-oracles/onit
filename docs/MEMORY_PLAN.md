@@ -182,6 +182,35 @@ Run it: `onit learn --eval-run --wiki-ab [--eval-split holdout]
 [--eval-limit N] [--eval-out DIR]`.  Spend the holdout only on the run
 whose number will be acted on.
 
+#### The first real run, and what it fixed
+
+The gate's first live replay (20 dev items, control arm first) looked
+stuck.  It was not: it was running, minutes per item, and printing
+nothing.  Three defects came out of that run, and all three are fixed in
+the same commit:
+
+- **The jail and the workdir disagreed.**  The user's config names no
+  `data_path`, so `_ensure_mcp_servers` sent the tool servers to the
+  default `~/sandbox` while every item ran under `<root>/data` inside
+  the throwaway eval dir.  The servers' jail refused every filesystem
+  tool call ("data_path must be within the server data directory"), and
+  both arms would have scored on how well they described the refusals.
+  `run_arm` now resolves the item workdir and stamps it into the arm
+  config *before* the factory runs, so `ONIT_DATA_PATH` and the
+  per-item `data_path` cannot disagree again.  This fixed the classic
+  `--ab` replay too, which shares `run_arm`.
+- **Silence read as a hang.**  `run_arm` printed nothing between items,
+  and seeding, the grader-unavailable warning and trajectory
+  inheritance were `logger.info` at an invisible level.  Progress now
+  prints per item, and the seeding and grader notices print as well as
+  log.  A skipped seeding -- a treatment that would run with an empty
+  wiki -- is announced loudly rather than passed over.
+- **The run's scratch dir is not where you look for it.**  `default_root()`
+  is `tempfile.mkdtemp()`, so the arm stores live under
+  `$TMPDIR/onit-evalrun-*` (macOS: `/var/folders/...`), not under
+  `~/.onit` -- by design, to keep benchmark traffic out of the
+  operator's corpus.  The "Replaying N items" line now says where.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

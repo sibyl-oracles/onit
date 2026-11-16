@@ -521,3 +521,82 @@ class TestTheArmHandsTheAgentAWorkableEnvironment:
             "the arm must run where the tool servers were registered, "
             "not in a store directory they do not serve"
         )
+
+
+# ── the run announces itself ─────────────────────────────────────────
+
+
+class TestRunArmAnnouncesItself:
+    """A replay runs for minutes; silence reads as a hang."""
+
+    async def test_each_item_is_announced(self, tmp_path, capsys):
+        items = [_item("q1", "r", "s1#1"), _item("q2", "r", "s1#2")]
+        await runner.run_arm(
+            items,
+            arm="off",
+            root=str(tmp_path),
+            make_agent=lambda config: StubAgent(),
+            ask=_ask_ok,
+        )
+        out = capsys.readouterr().out
+        assert "item 1/2" in out and "item 2/2" in out
+        assert "s1#1" in out and "s1#2" in out
+
+    async def test_the_config_is_stamped_with_the_resolved_data_path(self, tmp_path):
+        """The factory sees the jail root the items will run under.
+
+        ``_ensure_mcp_servers`` reads ``config["data_path"]`` at factory
+        time to set ``ONIT_DATA_PATH``; a config without its own
+        ``data_path`` used to leave the servers on the default sandbox
+        while every item ran under ``<root>/data`` -- every filesystem
+        tool call refused, silently.
+        """
+        seen = {}
+
+        def factory(config):
+            seen["config"] = config
+            return StubAgent()
+
+        await runner.run_arm(
+            [_item()],
+            arm="off",
+            root=str(tmp_path),
+            make_agent=factory,
+            ask=_ask_ok,
+        )
+        data_path = seen["config"]["data_path"]
+        assert os.path.realpath(data_path) == data_path
+        assert data_path == os.path.realpath(str(tmp_path / "data"))
+
+    async def test_an_operator_data_path_is_stamped_unmoved(self, tmp_path):
+        seen = {}
+
+        def factory(config):
+            seen["config"] = config
+            return StubAgent()
+
+        await runner.run_arm(
+            [_item()],
+            arm="off",
+            root=str(tmp_path),
+            base_config={"data_path": str(tmp_path / "served")},
+            make_agent=factory,
+            ask=_ask_ok,
+        )
+        assert seen["config"]["data_path"] == os.path.realpath(str(tmp_path / "served"))
+
+    async def test_a_missing_grader_is_announced(self, tmp_path, capsys, monkeypatch):
+        import onit.learn.llm as llm
+        from onit.learn import ab as ab_module
+
+        async def broken(config=None, **kwargs):
+            raise RuntimeError("no endpoint")
+
+        monkeypatch.setattr(llm, "make_ask", broken)
+        await ab_module.run_ab(
+            [_item()],
+            root=str(tmp_path),
+            make_agent=lambda config: StubAgent(),
+            with_grader=True,
+        )
+        assert "no grader available" in capsys.readouterr().out

@@ -98,6 +98,13 @@ async def run_ab(
             ask = await make_ask(base_config)
         except Exception as e:
             logger.warning("no grader available (%s); answers will be recorded but not graded", e)
+            # Printed as well as logged: a replay without a grader still
+            # runs for minutes and then reports "ungraded" everywhere,
+            # and a number nobody can interpret should say why up front.
+            print(
+                "  no grader available (%s); answers will be recorded but not graded" % e,
+                flush=True,
+            )
 
     def factory(config: dict):
         if make_agent is not None:

@@ -244,9 +244,21 @@ async def run_arm(
     store = _arm_store(root, arm)
     if data_path is None:
         data_path = base_config.get("data_path") or os.path.join(root, "data")
-    data_path = os.path.abspath(os.path.expanduser(str(data_path)))
+    data_path = os.path.realpath(os.path.abspath(os.path.expanduser(str(data_path))))
     os.makedirs(data_path, exist_ok=True)
     config = _config_for_arm(base_config, arm, store)
+    # The data_path the factory resolves must be the data_path the items
+    # run in.  ``_ensure_mcp_servers`` sets ``ONIT_DATA_PATH`` from the
+    # config at factory time, and the MCP servers' jail accepts only
+    # paths under that root -- so the resolved directory is stamped into
+    # the config *before* ``make_agent`` runs.  A config without its own
+    # ``data_path`` used to send the servers to the default sandbox while
+    # every item ran under ``<root>/data``: every filesystem tool call
+    # refused, both arms answering from the refusals, and a comparison
+    # between two piles of refusals.  (``realpath`` because the jail
+    # compares against the server's own resolved root; /private/var vs
+    # /var on macOS must not decide this.)
+    config["data_path"] = data_path
     # The ruler must be visible to the arm but not writable by it, and
     # the arm's own store must not be the operator's corpus.
     config.setdefault("learn", {})
@@ -266,9 +278,19 @@ async def run_arm(
 
     results = []
     subset = items[:limit] if limit else items
-    for item in subset:
+    label = getattr(agent, "label", arm)
+    for index, item in enumerate(subset, 1):
         task = item.get("task") or ""
         reference = item.get("response") or ""
+        # Progress, not decoration: an item takes minutes, and a run
+        # that prints nothing between items is indistinguishable from
+        # a hung one -- which is exactly what happened on the first
+        # real wiki-gate run.  ``flush`` because stdout buffers when it
+        # is not a terminal, and the point is to be visible.
+        print(
+            "  [%s] item %d/%d  %s" % (label, index, len(subset), (item.get("id") or "?")[:40]),
+            flush=True,
+        )
         started = time.time()
         answer = ""
         error = ""
@@ -278,16 +300,20 @@ async def run_arm(
                 session_path=os.path.join(
                     store, "sessions", "%s.jsonl" % (item.get("id") or "item")
                 ),
-                # The working directory must be the one the MCP tool servers
-                # were registered with.  They take it from the config's
-                # ``data_path`` at launch (``cli._ensure_mcp_servers`` sets
-                # ``ONIT_DATA_PATH``), and every filesystem tool refuses a
-                # path outside that root.  This used to pass
-                # ``<store>/data`` -- a directory the servers never heard of
-                # -- so every tool call in every item was refused and the
-                # agent answered from the refusal instead of from the task.
-                # Both arms then scored on how well they described the
-                # refusal.
+                # The working directory must be the one the MCP tool
+                # servers were registered with.  They take it from the
+                # config's ``data_path`` at launch (``cli._ensure_mcp_servers``
+                # sets ``ONIT_DATA_PATH``), and the servers' jail accepts
+                # only paths under that root.  Two bugs lived here.  The
+                # first passed ``<store>/data`` -- a directory the servers
+                # never heard of -- so every tool call was refused.  The
+                # second left the config's ``data_path`` unset, so the
+                # servers went to the default sandbox while the items ran
+                # under ``<root>/data``: the same refusal with a subtler
+                # cause, and a run that looked healthy while both arms
+                # scored on how well they described the refusals.  The
+                # stamp above pins the config to this directory, so the
+                # two sides cannot disagree again.
                 data_path=data_path,
             )
         except Exception as e:
@@ -615,7 +641,27 @@ async def run_wiki_arm(
             inherited = _inherit_trajectories(seed_from, store)
             if inherited:
                 logger.info("wiki arm inherited %d session file(s) from %s", inherited, seed_from)
+                print(
+                    "  seeding: inherited %d episode file(s) from the control arm" % inherited,
+                    flush=True,
+                )
+        # A dream pass is minutes of model calls, and this used to be
+        # silent -- the run looked stuck exactly here.
+        print(
+            "  seeding: distilling the control's episodes into the wiki (one dream pass)...",
+            flush=True,
+        )
         await seed_wiki(seed_ask, config)
+        print("  seeding: done", flush=True)
+    elif enabled:
+        # A treatment seeded with nothing is the control under another
+        # name.  That must never happen silently: say why the wiki is
+        # empty before reporting a number that depends on it.
+        message = (
+            "seeding skipped: no client to distil with; the treatment will run with an empty wiki"
+        )
+        logger.warning(message)
+        print("  " + message, flush=True)
     return await run_arm(
         items,
         arm=arm,
@@ -679,6 +725,11 @@ async def run_wiki_ab(
             ask = await make_ask(base_config)
         except Exception as e:
             logger.warning("no grader available (%s); answers will be recorded but not graded", e)
+            # Printed as well as logged -- see run_ab.
+            print(
+                "  no grader available (%s); answers will be recorded but not graded" % e,
+                flush=True,
+            )
     if seed_ask is None:
         seed_ask = ask
 

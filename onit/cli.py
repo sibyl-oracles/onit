@@ -245,6 +245,11 @@ def _learn_eval_run(args, config_data: dict) -> None:
 
     root = getattr(args, "eval_out", None) or default_root()
     owned = not getattr(args, "eval_out", None)
+    # Where the run's scratch dir goes.  It is a temp directory by
+    # default, not under ~/.onit -- by design, to keep benchmark traffic
+    # out of the operator's corpus -- but a default nobody can find is
+    # its own problem, so say where it is.
+    print("Run directory: %s" % os.path.abspath(os.path.expanduser(root)))
     base = base_config_for_run(config_data)
 
     try:
