@@ -63,6 +63,66 @@ class TestResolveEndpoint:
         assert llm.resolve_endpoint({})["host_key"] == "EMPTY"
 
 
+class TestTheEndpointsListShape:
+    """The config's serving block can be an ``endpoints`` list.
+
+    The resolver used to read only ``serving.host``, a key the list
+    shape never fills, so every background loop on such a config
+    resolved to the localhost default -- a host nothing listens on --
+    and every grading call died silently.  The list's preferred entry
+    (lowest priority number) must resolve instead.
+    """
+
+    def test_the_preferred_listed_endpoint_wins(self):
+        config = {
+            "serving": {
+                "endpoints": [
+                    {"host": "http://b/v1", "model": "b-model", "priority": 1},
+                    {"host": "http://a/v1", "model": "a-model", "priority": 0},
+                ]
+            }
+        }
+        endpoint = llm.resolve_endpoint(config)
+        assert endpoint["host"] == "http://a/v1"
+        assert endpoint["model"] == "a-model"
+
+    def test_list_ties_break_by_order(self):
+        config = {
+            "serving": {
+                "endpoints": [
+                    {"host": "http://first/v1", "model": "first", "priority": 0},
+                    {"host": "http://second/v1", "model": "second", "priority": 0},
+                ]
+            }
+        }
+        endpoint = llm.resolve_endpoint(config)
+        assert endpoint["host"] == "http://first/v1"
+
+    def test_a_flat_host_still_beats_the_list(self):
+        """An operator pinning one endpoint keeps the pin."""
+        config = {
+            "serving": {
+                "host": "http://pinned/v1",
+                "endpoints": [{"host": "http://listed/v1", "priority": 0}],
+            }
+        }
+        assert llm.resolve_endpoint(config)["host"] == "http://pinned/v1"
+
+    def test_the_listed_key_is_carried(self):
+        config = {
+            "serving": {"endpoints": [{"host": "http://a/v1", "host_key": "secret", "priority": 0}]}
+        }
+        assert llm.resolve_endpoint(config)["host_key"] == "secret"
+
+    def test_an_empty_or_malformed_list_falls_through(self):
+        config = {"serving": {"endpoints": []}}
+        assert llm.resolve_endpoint(config)["host"]
+        config = {"serving": {"endpoints": "not-a-list"}}
+        assert llm.resolve_endpoint(config)["host"]
+        config = {"serving": {"endpoints": [None, "string"]}}
+        assert llm.resolve_endpoint(config)["host"]
+
+
 class TestTheClientCarriesNoTools:
     """The judge has no hands."""
 

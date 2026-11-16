@@ -407,6 +407,60 @@ class TestVerdict:
         assert "delta" in text
 
 
+class TestAnUngradedRunIsNotAMeasurement:
+    """A run whose every grade came back empty is not a tie.
+
+    The grader used to swallow its failures at debug level, and a run
+    against a dead endpoint printed 0.000 vs 0.000 with the verdict
+    "no measurable effect" -- which reads as a clean null result about
+    the wiki.  It is not: nothing was measured.  The summary counts the
+    grader's failures separately, and the verdict refuses to speak.
+    """
+
+    def _raw(self, n=20):
+        return [dict(grade="", error="", grading_error="APIConnectionError: x") for _ in range(n)]
+
+    def _result(self, n=20):
+        control = self._raw(n)
+        treatment = [
+            dict(grade="", error="", grading_error="APIConnectionError: x") for _ in range(n)
+        ]
+        return runner.compare(control, treatment)
+
+    def test_the_verdict_says_not_measured(self):
+        text = runner.format_wiki_verdict(self._result())
+        assert "NOT MEASURED" in text
+        assert "no measurable effect" not in text
+
+    def test_the_summary_counts_grading_errors(self):
+        summary = runner.summarise(self._raw())
+        assert summary["grading_errors"] == 20
+        assert summary["ungraded"] == 20
+        assert summary["accuracy"] == 0.0
+
+    def test_the_comparison_prints_the_grading_errors(self):
+        text = runner.format_comparison(self._result(), label="Wiki gate:")
+        assert "grade-err=20" in text
+        assert "NOTHING WAS GRADED" in text
+
+    def test_a_partially_graded_run_still_gets_a_normal_verdict(self):
+        """One dead grader call must not void a run that measured."""
+        results = [dict(grade="C", error="", grading_error="") for _ in range(19)]
+        results.append(dict(grade="", error="", grading_error="timeout"))
+        text = runner.format_wiki_verdict(runner.compare(results, results))
+        assert "NOT MEASURED" not in text
+
+    def test_the_grader_failure_is_recorded_on_the_item(self):
+        """The exception text lands in results.json, not just the log."""
+
+        async def dead_ask(messages):
+            raise ConnectionError("connection refused")
+
+        verdict = asyncio.run(runner.grade(dead_ask, "task", "ref", "an answer"))
+        assert verdict["grade"] == ""
+        assert "ConnectionError" in verdict["grading_error"]
+
+
 # ── the arm announces its seeding ────────────────────────────────────
 
 

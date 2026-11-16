@@ -148,11 +148,22 @@ async def grade(ask, task: str, reference: str, answer: str) -> dict:
     try:
         raw = await ask(messages)
     except Exception as e:  # pragma: no cover - network failure
-        logger.debug("grading call failed: %s", e)
-        return {"grade": "", "raw": ""}
+        # Counted, not just logged: a grader that cannot be reached used
+        # to leave only a debug line nobody read, and a run whose every
+        # grade came back empty still printed a tidy 0.000 vs 0.000.  The
+        # count surfaces in the summary as ``grading_errors`` and in the
+        # verdict, which refuses to call an all-empty run a measurement.
+        logger.warning("grading call failed: %s", e)
+        return {
+            "grade": "",
+            "raw": "",
+            "grading_error": "%s: %s" % (type(e).__name__, str(e)[:200]),
+        }
     if isinstance(raw, tuple):
         raw = raw[0]
     raw = str(raw or "")
+    if not raw.strip():
+        logger.warning("grading call returned no text; item left ungraded")
     return {"grade": parse_grade(raw), "raw": raw[:500]}
 
 
@@ -322,6 +333,9 @@ async def run_arm(
         results.append(
             {
                 "id": item.get("id"),
+                "grade": verdict["grade"],
+                "grading_error": verdict.get("grading_error", ""),
+                "raw": verdict.get("raw", ""),
                 "task": task,
                 "answer": answer,
                 "grade": verdict["grade"],
@@ -352,6 +366,10 @@ def summarise(results: list) -> dict:
     incorrect = sum(1 for r in graded if r["grade"] == GRADE_INCORRECT)
     abstained = sum(1 for r in graded if r["grade"] == GRADE_NOT_ATTEMPTED)
     errors = sum(1 for r in results if r.get("error"))
+    # A grader that could not be reached is not the same as an answer
+    # that was not given.  Counted separately so an unreachable grader
+    # can be told apart from a hedging agent in the summary.
+    grading_errors = sum(1 for r in results if r.get("grading_error"))
     accuracy = (correct / total) if total else 0.0
     return {
         "n": total,
@@ -361,6 +379,7 @@ def summarise(results: list) -> dict:
         "not_attempted": abstained,
         "ungraded": total - len(graded),
         "errors": errors,
+        "grading_errors": grading_errors,
         "accuracy": accuracy,
     }
 
@@ -452,9 +471,22 @@ def format_comparison(
     lines = []
     if label:
         lines.append(label)
+    # An ungraded run is not a tie.  When nothing was graded -- a grader
+    # that could not be reached, a rubric the model would not follow --
+    # the honest verdict is "not measured", not "no effect": a 0.000 vs
+    # 0.000 with every item ungraded once read as a clean null result,
+    # and the reader walked away believing the wiki had been tested.
+    ungraded_both = c["ungraded"] == c["n"] and t["ungraded"] == t["n"]
+    if ungraded_both and c["n"] > 0:
+        lines.append("  *** NOTHING WAS GRADED -- this is not a measurement. ***")
+        lines.append("  Every item in both arms came back ungraded. The most common cause")
+        lines.append("  is an unreachable grader endpoint (grading_errors in results.json);")
+        lines.append("  the second is a grader model that never emits a GRADE: line.")
+        lines.append("  Fix the grader and re-run: no conclusion about the arms can be")
+        lines.append("  drawn from this run.")
     lines.append(
         "  control  (%s): %.3f  n=%d  correct=%d  wrong=%d  "
-        "not-attempted=%d  ungraded=%d  errors=%d"
+        "not-attempted=%d  ungraded=%d  errors=%d  grade-err=%d"
         % (
             control_name,
             c["accuracy"],
@@ -464,11 +496,12 @@ def format_comparison(
             c["not_attempted"],
             c["ungraded"],
             c["errors"],
+            c.get("grading_errors", 0),
         )
     )
     lines.append(
         "  treatment(%s): %.3f  n=%d  correct=%d  wrong=%d  "
-        "not-attempted=%d  ungraded=%d  errors=%d"
+        "not-attempted=%d  ungraded=%d  errors=%d  grade-err=%d"
         % (
             treatment_name,
             t["accuracy"],
@@ -478,6 +511,7 @@ def format_comparison(
             t["not_attempted"],
             t["ungraded"],
             t["errors"],
+            t.get("grading_errors", 0),
         )
     )
     verdict = "SIGNIFICANT" if result["significant"] else "not significant"
@@ -772,6 +806,16 @@ def format_wiki_verdict(result: dict) -> str:
             arm_names=(WIKI_CONTROL, WIKI_TREATMENT),
         )
     ]
+    c, t = result.get("control", {}), result.get("treatment", {})
+    if c.get("ungraded") == c.get("n") and t.get("ungraded") == t.get("n") and c.get("n"):
+        # format_comparison has already said nothing was graded.  The
+        # verdict must agree: "no measurable effect" is a finding about
+        # the wiki, and this run contains no finding.
+        lines.append(
+            "  verdict: NOT MEASURED -- the grader produced no grades."
+            " Fix the grader and re-run; this run says nothing about the wiki."
+        )
+        return "\n".join(lines)
     if result["significant"] and result["delta"] > 0:
         lines.append("  verdict: the wiki earns its default. Raise learn.memory.enabled.")
     elif result["significant"]:

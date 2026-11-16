@@ -60,14 +60,45 @@ def resolve_endpoint(config_data: dict | None = None, endpoint: dict | None = No
     """
     serving = dict((config_data or {}).get("serving") or {})
     known = dict(endpoint or {})
+
+    # The config's serving block comes in two shapes: a flat
+    # ``host``/``model`` pair, or an ``endpoints`` list the load balancer
+    # rotates over.  The list shape used to fall through every lookup
+    # here and land on the localhost default -- a host nothing listens
+    # on -- so the Reflector wrote nothing and the grader graded nothing,
+    # both silently.  When the list is present, take from it the entry
+    # the balancer would prefer: lowest priority number, ties broken by
+    # list order.  A single flat ``host`` still wins over the list, so an
+    # operator pinning one endpoint keeps that pin.
+    listed = serving.get("endpoints") or []
+    preferred = {}
+    if isinstance(listed, list) and listed:
+
+        def _rank(pair):
+            index, entry = pair
+            return (entry.get("priority", 0) if isinstance(entry, dict) else 0, index)
+
+        preferred = min(enumerate(listed), key=_rank)[1] if listed else {}
+        if not isinstance(preferred, dict):
+            preferred = {}
+
     host = (
         known.get("host")
         or serving.get("host")
+        or preferred.get("host")
         or os.environ.get("ONIT_HOST")
         or "http://127.0.0.1:8001/v1"
     )
-    model = known.get("model") or serving.get("model") or os.environ.get("ONIT_MODEL") or None
-    host_key = known.get("host_key") or serving.get("host_key") or "EMPTY"
+    model = (
+        known.get("model")
+        or serving.get("model")
+        or preferred.get("model")
+        or os.environ.get("ONIT_MODEL")
+        or None
+    )
+    host_key = (
+        known.get("host_key") or serving.get("host_key") or preferred.get("host_key") or "EMPTY"
+    )
     return {"host": host, "model": model, "host_key": host_key}
 
 

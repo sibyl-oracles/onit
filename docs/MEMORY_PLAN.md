@@ -210,6 +210,20 @@ the same commit:
   `$TMPDIR/onit-evalrun-*` (macOS: `/var/folders/...`), not under
   `~/.onit` -- by design, to keep benchmark traffic out of the
   operator's corpus.  The "Replaying N items" line now says where.
+- **The grader read the wrong config shape, and its failures were
+  silent.**  The first completed run graded nothing: `resolve_endpoint`
+  read only `serving.host`, but the config's serving block is an
+  `endpoints` list, so the grader resolved to the localhost default
+  (`127.0.0.1:8001`, nothing listening) and all 39 grading calls died
+  on a closed port, swallowed at `debug` level.  The output was
+  0.000 vs 0.000 with the verdict "no measurable effect" -- which
+  reads as a null result about the wiki and is nothing of the kind.
+  Fixed three ways: the resolver takes the listed entry the balancer
+  would prefer when the flat `host` is absent; a failed grading call
+  logs at warning and records its exception on the item, and the
+  summary counts `grading_errors`; an all-ungraded run now prints
+  "NOTHING WAS GRADED -- this is not a measurement" and the verdict
+  "NOT MEASURED" instead of a tie.  A tie requires grades.
 
 ## 7. Building the wiki automatically
 
