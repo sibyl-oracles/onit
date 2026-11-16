@@ -214,7 +214,11 @@ def _learn_eval_run(args, config_data: dict) -> None:
     Without ``--ab`` it runs one arm and reports the numbers, which is
     how you find out whether the instrument works before spending a
     second arm on it.  With ``--ab`` it runs the control and the
-    treatment and prints the difference with an error bar.
+    treatment and prints the difference with an error bar.  With
+    ``--wiki-ab`` it runs the memory plan's phase 6 gate instead: both
+    arms at the same autonomy level, differing only in the wiki's
+    master switch, so the delta is the wiki's own effect rather than
+    the whole learn stack's.
 
     The split is the dev split unless asked otherwise.  The holdout is
     read once per candidate, at promotion time: a first run that spends
@@ -244,7 +248,23 @@ def _learn_eval_run(args, config_data: dict) -> None:
     base = base_config_for_run(config_data)
 
     try:
-        if getattr(args, "ab", False):
+        if getattr(args, "wiki_ab", False):
+            from .learn.runner import (
+                format_wiki_verdict,
+                run_wiki_ab,
+            )
+
+            result = asyncio.run(run_wiki_ab(items, root=root, base_config=base, limit=limit))
+            print()
+            print(format_wiki_verdict(result))
+            out = os.path.join(root, "comparison.json")
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(
+                    {k: v for k, v in result.items() if k != "results"}, f, indent=2, default=str
+                )
+            print()
+            print("Results: %s" % out)
+        elif getattr(args, "ab", False):
             result = asyncio.run(run_ab(items, root=root, base_config=base, limit=limit))
             print()
             print(format_comparison(result, label="A/B on the %s split:" % split))
@@ -388,13 +408,16 @@ def _learn_dream(args, config_data: dict) -> None:
 
     The pass normally fires on idle; this is the operator's way to run it
     now -- after a burst of work, before pinning a baseline, or to see
-    what the dreaming loop does with a corpus it has never read.
+    what the dreaming loop does with a corpus it has never read.  The
+    operator's explicit command is a forced pass: the idle trigger and
+    the memory switch are not consulted, so the command works even when
+    the store is disabled or the idle counter is at zero.
     """
     from .learn import dream
     from .learn import memory as memory_module
 
     try:
-        result = dream.run_dream_sync(config_data)
+        result = dream.run_dream_sync(config_data, force=True)
     except Exception as e:
         print("Dream pass failed: %s" % e, file=sys.stderr)
         sys.exit(1)
@@ -1089,6 +1112,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "control at autonomy off and the "
         "treatment at adapt -- and compare "
         "them with an error bar.",
+    )
+    learn_parser.add_argument(
+        "--wiki-ab",
+        action="store_true",
+        help="With --eval-run, run the wiki gate: both "
+        "arms at the same autonomy level, one "
+        "with the memory wiki and one without, "
+        "so the delta is the wiki's own effect. "
+        "The wiki arm is seeded from its own "
+        "store's runs before it replays.",
     )
     learn_parser.add_argument(
         "--eval-out",

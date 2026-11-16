@@ -6940,7 +6940,11 @@ async def chat(
         from ...learn.config import ADAPT, autonomy as _autonomy
 
         _cfg = kwargs.get("config_data") or None
-        if _autonomy(_cfg or {}) >= ADAPT and _memory.list_pages():
+        if (
+            _autonomy(_cfg or {}) >= ADAPT
+            and _memory.enabled(_cfg or {})
+            and _memory.list_pages()
+        ):
             harness.wiki_available = True
     except Exception as e:  # a store that cannot be read offers no tool
         logger.debug("wiki_search not offered: %s", e)

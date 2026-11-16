@@ -39,7 +39,7 @@ def world(tmp_path):
         "learn": {
             "autonomy": "adapt",
             "path": str(learned),
-            "memory": {"path": str(learned / "memory")},
+            "memory": {"path": str(learned / "memory"), "enabled": True},
         }
     }
 

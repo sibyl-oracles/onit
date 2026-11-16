@@ -96,6 +96,15 @@ MIN_FACTS_FOR_PAGE = 3
 # TTL a hit downgrades to a hint: the world may have moved.
 DEFAULT_TTL_DAYS = 30
 
+# The wiki's master switch.  Default OFF until phase 6's measured A/B
+# delta says otherwise (docs/MEMORY_PLAN.md §6): the wiki is live code
+# behind a switch, not a default-on behaviour.
+DEFAULT_ENABLED = False
+
+# Env spellings that mean "off", where everything is a string and "0" is
+# not falsy on its own.  Anything else -- including a bare name -- is on.
+_FALSE_ENV_VALUES = ("0", "false", "no", "off", "none", "")
+
 # How long an untouched page keeps its detail before the dreaming pass
 # collapses it to a summary line (plan §4 step 5).
 DEFAULT_PRUNE_AFTER_DAYS = 45
@@ -236,6 +245,32 @@ def min_idle_episodes(config_data: dict | None = None) -> int:
         return max(1, int(_memory_config(config_data).get("min_idle_episodes", 1)))
     except (TypeError, ValueError):
         return 1
+
+
+def enabled(config_data: dict | None = None) -> bool:
+    """Whether the memory wiki is switched on at all.
+
+    The master switch behind phase 6's A/B gate.  The plan gates the
+    wiki's default on a measured delta, so the wiki needs an off
+    position that is *not* the autonomy level: the A/B arms must sit at
+    the same autonomy and differ only in this switch, or the comparison
+    measures the whole learn stack and the wiki's own effect is
+    unmeasurable.
+
+    Config wins over the environment, the environment over the default
+    -- the same order ``memory_dir`` established: the level is a
+    per-run choice, the path is deployment layout.
+    """
+    memory_config = _memory_config(config_data)
+    value = memory_config.get("enabled")
+    if value is not None:
+        if isinstance(value, str):
+            return value.strip().lower() not in _FALSE_ENV_VALUES
+        return bool(value)
+    env = os.environ.get("ONIT_MEMORY_ENABLED")
+    if env is not None:
+        return env.strip().lower() not in _FALSE_ENV_VALUES
+    return DEFAULT_ENABLED
 
 
 # ── the page and fact schema ──────────────────────────────────────────────────

@@ -192,6 +192,22 @@ def should_dream(config_data: dict | None = None) -> bool:
     return idle_episodes(config_data) >= memory.min_idle_episodes(config_data)
 
 
+def dream_enabled(config_data: dict | None = None) -> bool:
+    """Whether dreaming is switched on at all.
+
+    Separate from :func:`should_dream` on purpose.  ``should_dream``
+    answers "is an idle window owed a pass"; this answers "may the
+    store change at all".  The A/B gate (phase 6 of the memory plan)
+    needs the second answer: a replay must not dream mid-run, or the
+    treatment arm's wiki grows from the very items being scored --
+    training on the test set.  A caller that wants a pass *now*
+    (``onit learn --dream``, or the gate's own seeding between arms)
+    passes ``min_idle_episodes`` high to defer the trigger without
+    also having to lie about the switch.
+    """
+    return memory.enabled(config_data)
+
+
 # ── the transcript ────────────────────────────────────────────────────────────
 
 
@@ -607,19 +623,29 @@ async def run_dream(
     *,
     ask=None,
     root: str | None = None,
+    force: bool = False,
 ) -> dict:
     """Trigger check, lock, pass.  The entry point an idle watcher calls.
 
     Builds its own model client when none is handed in -- the same
     ``make_ask`` the Reflector uses, which carries no tools, so a
     dreaming model cannot run anything while it thinks.
+
+    ``force`` runs a pass with the idle trigger and the memory switch
+    unconsulted -- the A/B gate seeds a treatment store between arms,
+    and a seeded pass must not wait for an idle window that a replay
+    will never provide.  The autonomy gate and the lock still apply: a
+    forced pass is an out-of-band pass, not an unsupervised one.
     """
     from .config import ADAPT, autonomy
 
     if autonomy(config_data) < ADAPT:
         return {"ran": False, "reason": "autonomy below adapt"}
-    if not should_dream(config_data):
-        return {"ran": False, "reason": "not idle enough"}
+    if not force:
+        if not dream_enabled(config_data):
+            return {"ran": False, "reason": "memory disabled"}
+        if not should_dream(config_data):
+            return {"ran": False, "reason": "not idle enough"}
     try:
         with _Lock(config_data, root=root):
             if ask is None:

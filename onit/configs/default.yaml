@@ -175,6 +175,8 @@ learn:
   # The gates below are the fast path's: a page serves answers only
   # inside its TTL and only with no open contradiction on it.
   memory:
+    # enabled: false                  # the wiki's master switch; default off
+    #                                 # until the wiki gate's A/B says otherwise
     # path: "~/.onit/learned/memory"   # default: <learn.path>/memory
     ttl_days: 30                       # how long a page serves answers
     prune_after_days: 45               # how long untouched detail survives

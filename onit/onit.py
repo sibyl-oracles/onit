@@ -1646,9 +1646,10 @@ class OnIt(BaseModel):
         byte-for-byte what they were before any of this existed.
         """
         try:
+            from .learn import memory as _memory
             from .learn.config import ADAPT, autonomy
 
-            if autonomy(self.config_data) < ADAPT:
+            if autonomy(self.config_data) < ADAPT or not _memory.enabled(self.config_data):
                 return
             from .learn.recall import build_context
 
@@ -2114,6 +2115,8 @@ class OnIt(BaseModel):
             from .learn.config import ADAPT, autonomy
 
             if autonomy(self.config_data) < ADAPT:
+                return
+            if not _dream.dream_enabled(self.config_data):
                 return
             if self._dream_task is not None and not self._dream_task.done():
                 return

@@ -130,7 +130,7 @@ for the edge case of a task starting mid-dream).
 | 3 | Dreaming job: extract → verify → reconcile → prune → reindex, triggered by idle; **auto-creates wiki pages** (§7) | ~1 week | new `onit/learn/dream.py`, `lifecycle.py`, `llm.py` | **done** (`onit.py` `_schedule_dream` fires it; `onit learn --dream` runs it by hand) |
 | 4 | Injection: `INDEX.md` into Loop A recall; `wiki_search` tool for the agent; **wiki-first fast path with provisional answers** (§8) | ~3 days | `recall.py`, `chat.py`, harness tool registry | **done** (`onit.py` `_attach_learned_context` appends the block; `harness.py` carries the tool; `run_state.wiki_hit` forces the deep check) |
 | 5 | Verification hook: fact-check consults wiki first, reports contradictions back to the dream queue | ~3 days | fact-check path in harness | **done** (`verify.py` `wiki_evidence`; `chat.py` records contradictions via `memory.record_contradiction`) |
-| 6 | Measurement: A/B in `runner.py` — control = no wiki, treatment = wiki; replay the pinned holdout | ~2 days | `runner.py`, `eval.py` | not started — the gate before default-on |
+| 6 | Measurement: A/B in `runner.py` — control = no wiki, treatment = wiki; replay the pinned holdout | ~2 days | `runner.py`, `eval.py` | **done** (`onit learn --eval-run --wiki-ab`; `test_learn_gate.py`) |
 
 Phases 1–5 are implemented and tested (`test_learn_memory.py`,
 `test_learn_dream.py`, `test_memory_chain.py` — 102 tests).  The wiki is
@@ -140,6 +140,47 @@ A/B delta is the gate for raising the default.
 Phase 6 is not optional: the article's numbers (13% → 48%, 61% vs 53%) came
 from measuring, and `runner.py` exists precisely so "the agent is better" is a
 delta with an error bar, not a vibe. Gate phase 4's default-on on that delta.
+
+### Phase 6 as built (§6a)
+
+The gate lives in `runner.py` next to the classic A/B, and it is a
+*different* experiment: the classic arms differ in autonomy, which moves
+recall, playbooks, the wiki and the dream trigger at once, so their delta
+cannot say what the wiki alone is worth.  The gate's arms sit at the same
+autonomy (`adapt`) and differ only in the wiki's master switch:
+
+- **The switch.**  `learn.memory.enabled` (env `ONIT_MEMORY_ENABLED`),
+  default **off**.  Every wiki gate reads it: injection
+  (`onit.py` `_attach_learned_context`), the `wiki_search` tool offer
+  (`chat.py`), and the dream trigger (`dream.dream_enabled`).  The CLI's
+  `--dream` is a forced pass and ignores the switch, so an operator can
+  build the store by hand before turning it on.
+- **The freeze.**  A replay sets `min_idle_episodes` to 1,000,000: the
+  dream trigger cannot fire mid-run, so the wiki cannot grow from the
+  items being scored.  Deferred, not disabled — the gate's own seeding
+  calls `run_dream(force=True)`, which consults neither the switch nor
+  the idle count, but keeps the autonomy gate and the lock.
+- **The seeding.**  A fresh store has no episodes, so a treatment seeded
+  from itself would have nothing to distil.  The control runs first; its
+  recorded trajectories are copied into the treatment's store and one
+  forced dream pass distils them into the treatment's wiki — the same
+  pass production runs, hallucination check included.  Both arms then
+  recall the same corpus; the treatment additionally holds it in
+  distilled form.  A win is the wiki beating raw recall on identical
+  experience, which is exactly the claim the default has to survive.
+- **The isolation.**  Each arm's `learn.path` *and* `learn.memory.path`
+  are pinned under the arm's own directory, so an operator config that
+  names a memory path cannot point both arms at one wiki.  The control's
+  wiki stays empty by configuration, not by luck.
+- **The verdict.**  `format_wiki_verdict` prints the delta with its error
+  bar and the decision the plan ties to it: a significant non-negative
+  delta raises the default; a significant negative one is the poisoning
+  signal (keep it off, inspect the pages the treatment served); anything
+  else keeps the default off until a bigger run says otherwise.
+
+Run it: `onit learn --eval-run --wiki-ab [--eval-split holdout]
+[--eval-limit N] [--eval-out DIR]`.  Spend the holdout only on the run
+whose number will be acted on.
 
 ## 7. Building the wiki automatically
 
@@ -241,9 +282,11 @@ which claim survives.
 | Fast-path deep check | `onit/model/serving/chat.py` | `_FactChecker.fact_check` reads `harness.wiki_hit` and runs the check even with no gathered evidence |
 | Checker consult | `onit/model/serving/verify.py` | `verify_answer(wiki_evidence=...)`; wiki facts join the evidence pool, never `TRUSTED_TOOLS` |
 | Contradiction loop | `chat.py` → `memory.record_contradiction` | a finding on a wiki page closes the page's fast path until the next dream pass resolves it |
-| CLI | `onit/cli.py` | `onit learn --dream` (run a pass now), `onit learn --memory` (show the wiki) |
-| Config | `onit/configs/default.yaml` | `learn.memory.{path,ttl_days,prune_after_days,min_idle_episodes}` |
+| CLI | `onit/cli.py` | `onit learn --dream` (run a pass now), `onit learn --memory` (show the wiki), `onit learn --eval-run --wiki-ab` (the gate) |
+| Config | `onit/configs/default.yaml` | `learn.memory.{path,enabled,ttl_days,prune_after_days,min_idle_episodes}` |
+| Wiki gate (phase 6) | `onit/learn/runner.py` | `run_wiki_ab`, `run_wiki_arm`, `seed_wiki`, `format_wiki_verdict`; switch in `memory.enabled` |
 
 Tests: `onit/test/test_learn_memory.py` (31), `onit/test/test_learn_dream.py` (19),
-`onit/test/test_memory_chain.py` (8) — the chain test runs dream → wiki →
-inject → fast path → contradiction → resolve end to end.
+`onit/test/test_memory_chain.py` (8), `onit/test/test_learn_gate.py` (24) —
+the chain test runs dream → wiki → inject → fast path → contradiction →
+resolve end to end; the gate test runs the A/B itself with stub agents.
