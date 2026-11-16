@@ -550,6 +550,24 @@ for them; these are the variables it would otherwise fill.
 | `ONIT_SECURITY_CONTACT` | Disclosure contact published at `/.well-known/security.txt`; unset, the endpoint stays 404. |
 | `ONIT_GA_MEASUREMENT_ID` | Google Analytics 4 ID for the web UI (`web_ga_measurement_id` in the config wins). |
 | `ONIT_SETTINGS` | Path to the bash tool's settings file. |
+| `ONIT_ALLOWED_COMMANDS` | Comma-separated extension of the bash tool's curated default command allowlist (see `onit/mcp/servers/tasks/os/bash/command_policy.py`). |
+
+## Benchmark environment variables
+
+`python -m benchmarks.run` resolves its own serving block before the agent's
+config (`benchmarks/config.py`). These override everything else, so a
+benchmark can be pointed at a different endpoint than the one the agent chats
+through.
+
+| variable | what it does |
+|---|---|
+| `ONIT_BENCH_HOST` | Serving host for the run; beats `ONIT_HOST`, the agent's `~/.onit/config.yaml`, and the local-vLLM default. |
+| `ONIT_BENCH_MODEL` | Pins the model under test. Unset, the agent's configured model is kept so unannotated runs stay comparable; set it to `""` to defer to the endpoint's `/v1/models` auto-detection. |
+| `ONIT_BENCH_HOST_KEY` | Key passed through to the endpoint only when explicitly set. |
+| `ONIT_BENCH_THINK` | Truthy values set `serving.think` for the run (default off). |
+| `ONIT_BENCH_MAX_CONNECTIONS` | Caps agent requests in flight (`0` = uncapped, the default). |
+| `ONIT_BENCH_TIMEOUT` | Per-request timeout in seconds (default 600; `-1` disables — use only on a reliable endpoint). The sample limit is 4× this value. |
+| `ONIT_BENCH_LEARN_PATH` | Where the bench learn store lives (default `<bench data root>/learned`, a directory beside the agent's own corpus so the arm under test never recalls from it). |
 
 A few more (`ONIT_STDIO_SPAWNED`, `ONIT_WEB_UI`, `ONIT_CONTAIN_THRESHOLD`,
 `ONIT_CONTAIN_WINDOW`, `ONIT_TARGET_ENV_BIN`, `ONIT_FILE_SERVER_URL`) are set
