@@ -264,6 +264,30 @@ commit:
   and `paired` stats, and the verdict prints a PLACEBO line when the
   treatment wiki has no pages, the paired line always, and an
   incomplete-ruler note when >20% of items are ungraded.
+- **The third placebo: extraction worked and the page policy starved
+  it** (2026-11-17 afternoon run, `n9olwlr6`).  The seed pass
+  extracted 6 verified facts from the control's whole replay day --
+  and created 0 pages, because a replay day is a tour of unrelated
+  tasks: clustering put every fact in its own one-fact cluster, and
+  every cluster fell below `MIN_FACTS_FOR_PAGE = 3`.  The gate's
+  single forced pass cannot accumulate across passes the way
+  production dreaming does, so the production threshold is wrong for
+  it.  The seed pass now runs with `SEED_MIN_FACTS_FOR_PAGE = 1`
+  (`dream.SEED_MIN_FACTS_FOR_PAGE`, threaded through `run_dream` and
+  `dream_once`; production keeps the 3-fact policy).  The pass stats
+  ride into the comparison as `wiki_seed`, and the verdict names the
+  zero-page cause: extraction failure (0 candidates), policy
+  starvation (candidates but no pages), or a pass that never ran.
+  Two smaller fixes from the same run: `extract` logs a warning when
+  the model returns an empty reply (the morning run's 12 silent
+  extraction drops), and the verdict flags a graded-count asymmetry
+  that could account for the whole headline delta -- that run's +0.05
+  was exactly 1/20, manufactured by one control grading error on an
+  item the treatment graded correct; the paired line showed the truth
+  (6 vs 7 correct, net zero).  "Staged only" in the dream log was
+  also a lie -- `dream_once` never wrote staging files -- so the
+  message now says "dropped", and `stage_session_note` remains dead
+  phase-2 code with no caller.
 
 ## 7. Building the wiki automatically
 

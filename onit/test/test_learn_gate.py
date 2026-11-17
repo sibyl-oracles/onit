@@ -697,3 +697,149 @@ class TestSeedingReportsItsYield:
         out = capsys.readouterr().out
         assert "seeding: done" in out
         assert "NO wiki pages" not in out
+
+class TestSeedYieldDiagnosis:
+    """The third placebo: facts extracted, pages still zero.
+
+    The 2026-11-17 run extracted 6 verified facts and created 0 pages:
+    a replay day is a tour of unrelated tasks, so clustering put every
+    fact in its own one-fact cluster and the 3-fact creation threshold
+    starved them all.  The gate's seed pass now runs with a threshold
+    of 1, and the verdict names which of the two zero-page causes fired.
+    """
+
+    @pytest.mark.asyncio
+    async def test_seed_threshold_override_creates_pages_from_single_facts(
+        self, tmp_path, capsys
+    ):
+        import json as json_module
+        import os as os_module
+
+        # Three tasks, three DIFFERENT topics -- the shape of a replay
+        # day.  Under the production threshold this seeds nothing; the
+        # gate's override must turn each fact into its own page.
+        traj_dir = tmp_path / "store" / "wiki-off" / "trajectories"
+        os_module.makedirs(traj_dir, exist_ok=True)
+        tasks = [
+            ("deploy the service", "deployed; host is stg-7.internal"),
+            ("check the queue", "queue is clear; broker is mq-2.internal"),
+            ("rotate the key", "rotated; new fingerprint starts ab12"),
+        ]
+        with open(traj_dir / "s1.jsonl", "w", encoding="utf-8") as f:
+            for index, (task, response) in enumerate(tasks):
+                f.write(
+                    json_module.dumps(
+                        {
+                            "kind": "task",
+                            "session_id": "s1",
+                            "turn": index,
+                            "task": task,
+                            "response": response,
+                            "model": "m1",
+                            "owner": None,
+                            "ts": "2026-11-17T10:00:00",
+                            "trajectory": [],
+                        }
+                    )
+                    + "\n"
+                )
+        seed_ask = _ask(
+            [
+                {
+                    "text": "the deploy host is stg-7.internal",
+                    "kind": "fact",
+                    "topic": "deploy host",
+                    "cites": [2],
+                },
+                {
+                    "text": "the message broker is mq-2.internal",
+                    "kind": "fact",
+                    "topic": "message broker",
+                    "cites": [4],
+                },
+                {
+                    "text": "the new key fingerprint starts ab12",
+                    "kind": "fact",
+                    "topic": "key fingerprint",
+                    "cites": [6],
+                },
+            ]
+        )
+
+        result = await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=lambda config: StubAgent(config=config),
+            ask=_ask_ok,
+            seed_ask=seed_ask,
+        )
+        out = capsys.readouterr().out
+        # Every one-fact cluster earns its page under the override.
+        assert result["wiki_seed"]["candidates"] == 3
+        assert result["wiki_seed"]["pages_created"] == 3
+        assert result["wiki_pages"] == 3
+        assert "seeding: 3 page(s) in the treatment wiki" in out
+        assert "NO wiki pages" not in out
+
+    def _result(self, **seed):
+        """A comparison dict shaped the way format_wiki_verdict reads it."""
+        return {
+            "control": {
+                "n": 20,
+                "graded": 19,
+                "correct": 6,
+                "incorrect": 9,
+                "wrong": 9,
+                "not_attempted": 4,
+                "ungraded": 1,
+                "errors": 0,
+                "grading_errors": 1,
+                "accuracy": 0.3,
+            },
+            "treatment": {
+                "n": 20,
+                "graded": 20,
+                "correct": 7,
+                "incorrect": 12,
+                "wrong": 12,
+                "not_attempted": 1,
+                "ungraded": 0,
+                "errors": 0,
+                "grading_errors": 0,
+                "accuracy": 0.35,
+            },
+            "delta": 0.05,
+            "stderr": 0.29,
+            "significant": False,
+            "n_items": 20,
+            "wiki_pages": 0,
+            "wiki_seed": dict({"ran": True, "candidates": 6, "pages_created": 0}, **seed),
+            "paired": {"pairs": 19, "control_correct": 6, "treatment_correct": 7, "discordant": 4},
+        }
+
+    def test_verdict_names_policy_starvation(self):
+        out = runner.format_wiki_verdict(self._result())
+        assert "PLACEBO" in out
+        assert "page policy starved" in out
+
+    def test_verdict_names_extraction_failure(self):
+        out = runner.format_wiki_verdict(self._result(candidates=0))
+        assert "PLACEBO" in out
+        assert "extraction produced 0 candidates" in out
+        assert "extractor failed" in out
+
+    def test_verdict_names_a_pass_that_never_ran(self):
+        out = runner.format_wiki_verdict(
+            self._result(ran=False, reason="autonomy below adapt", candidates=0)
+        )
+        assert "PLACEBO" in out
+        assert "did not run" in out
+        assert "autonomy below adapt" in out
+
+    def test_verdict_flags_graded_asymmetry(self):
+        # The 2026-11-17 run's +0.05: one arm graded an item the other
+        # could not, and the headline delta counted it as a miss.  The
+        # verdict must point at the paired line instead.
+        out = runner.format_wiki_verdict(self._result(wiki_pages=4))
+        assert "read the paired line" in out

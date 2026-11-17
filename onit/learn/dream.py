@@ -65,6 +65,8 @@ logger = logging.getLogger(__name__)
 # The most characters of one session's transcript handed to the model.
 # Enough to see what was established, not enough to drown in.
 MAX_SESSION_CHARS = 6000
+# The A/B gate's seeding pass lifts this (SEED_MAX_SESSION_CHARS in
+# runner.py), because a replay's whole day lands in one session file.
 
 # The most candidates one session may produce.  Three is the point at
 # which a contrast starts to look like a list of everything (the same
@@ -85,6 +87,15 @@ MAX_PAGES_PER_PASS = 3
 # The most deltas one pass applies to one page.  The rest wait for the
 # next pass; the watermark only advances over what was actually applied.
 MAX_DELTAS_PER_PAGE = 8
+
+# The page-creation threshold, overridable per pass.  Production keeps
+# the plan's 3: a page is a topic that earned it.  The A/B gate's
+# seeding pass passes 1 -- it gets ONE dream pass over ONE replay day,
+# and a replay day is a tour of unrelated tasks, one fact each.  Under
+# the production threshold every fact lands in its own cluster, nothing
+# earns a page, and the gate measures a placebo -- the 2026-11-17 run
+# extracted 6 verified facts and created 0 pages exactly this way.
+SEED_MIN_FACTS_FOR_PAGE = 1
 
 # The output budget for one extraction call.
 MAX_TOKENS = 900
@@ -351,6 +362,14 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> lis
     except Exception as e:  # pragma: no cover - network failure
         logger.debug("dream extraction failed: %s", e)
         return []
+    if not (response or "").strip():
+        # The model answered with nothing -- a reasoning model under a
+        # tight output cap spends its budget thinking before writing.
+        # A silent empty here used to look identical to "the session
+        # established nothing", which is how the 2026-11-17 morning run
+        # lost 12 of 40 grades invisibly.  Say it, at warning level.
+        logger.warning("dream extraction returned no text; session left unextracted")
+        return []
     candidates = []
     for item in _extract_json(response)[:MAX_CANDIDATES_PER_SESSION]:
         cleaned = _clean_candidate(item, transcript)
@@ -408,6 +427,7 @@ async def dream_once(
     root: str | None = None,
     now: float | None = None,
     max_session_chars: int | None = None,
+    min_facts_for_page: int | None = None,
 ) -> dict:
     """One consolidation pass.  Returns what it did, for tests and logs.
 
@@ -477,9 +497,18 @@ async def dream_once(
         deltas = []
         if page is None:
             # The creation policy: a page is something a topic *earns*.
-            if len(cands) < memory.MIN_FACTS_FOR_PAGE:
+            # The threshold is the plan's 3 unless the caller overrides
+            # it -- the A/B gate's seeding pass does, because one pass
+            # over one replay day cannot accumulate across passes.
+            threshold = (
+                memory.MIN_FACTS_FOR_PAGE
+                if min_facts_for_page is None
+                else max(1, int(min_facts_for_page))
+            )
+            if len(cands) < threshold:
                 log_lines.append(
-                    "  %s: %d fact(s) below the page threshold; staged only" % (slug, len(cands))
+                    "  %s: %d fact(s) below the page threshold (%d); dropped"
+                    % (slug, len(cands), threshold)
                 )
                 continue
             page = memory.make_page(slug, _title_from(cands))
@@ -632,6 +661,7 @@ async def run_dream(
     root: str | None = None,
     force: bool = False,
     max_session_chars: int | None = None,
+    min_facts_for_page: int | None = None,
 ) -> dict:
     """Trigger check, lock, pass.  The entry point an idle watcher calls.
 
@@ -644,6 +674,13 @@ async def run_dream(
     and a seeded pass must not wait for an idle window that a replay
     will never provide.  The autonomy gate and the lock still apply: a
     forced pass is an out-of-band pass, not an unsupervised one.
+
+    ``min_facts_for_page`` overrides the page-creation threshold for
+    this pass only.  The A/B gate's seeding pass passes 1: it gets one
+    pass over one replay day, and a replay day is a tour of unrelated
+    tasks -- under the production threshold of 3, every extracted fact
+    landed in its own one-fact cluster and nothing earned a page, so
+    the gate measured a placebo twice (2026-11-16 and 2026-11-17).
     """
     from .config import ADAPT, autonomy
 
@@ -660,7 +697,13 @@ async def run_dream(
                 from .llm import make_ask
 
                 ask = await make_ask(config_data)
-            return await dream_once(ask, config_data, root=root, max_session_chars=max_session_chars)
+            return await dream_once(
+                ask,
+                config_data,
+                root=root,
+                max_session_chars=max_session_chars,
+                min_facts_for_page=min_facts_for_page,
+            )
     except DreamBusy:
         return {"ran": False, "reason": "another pass holds the lock"}
 

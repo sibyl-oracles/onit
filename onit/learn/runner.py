@@ -640,10 +640,21 @@ async def seed_wiki(ask, config_data: dict | None = None, **kwargs) -> dict:
     uses ``max_session_chars`` to lift the transcript cap, because a
     replay's whole day lands in one session file and the production
     budget would show the pass only the first two items.
+
+    Returns the dream pass's own stats (``candidates``,
+    ``pages_created``, ...), so the gate can tell an extraction failure
+    from a policy starvation -- the two ways a seed yields zero pages,
+    which want different fixes.
     """
     from . import dream
 
-    return await dream.run_dream(config_data, ask=ask, force=True, **kwargs)
+    return await dream.run_dream(
+        config_data,
+        ask=ask,
+        force=True,
+        min_facts_for_page=dream.SEED_MIN_FACTS_FOR_PAGE,
+        **kwargs,
+    )
 
 
 def _inherit_trajectories(src_store: str, dst_store: str) -> int:
@@ -706,10 +717,18 @@ async def run_wiki_arm(
     would put two numbers under one label.  The store is pinned to the
     arm's own directory *before* seeding, so the dream pass reads and
     writes this arm's store and nothing else.
+
+    Returns ``(results, seed_stats)``: the per-item rows, and the
+    seeding pass's own stats for the treatment arm (``{}`` for the
+    control, which is never seeded).  The gate carries the seed stats
+    into the comparison so the verdict can tell an extraction failure
+    from a policy starvation -- the two zero-page seeds want different
+    fixes.
     """
     arm = WIKI_TREATMENT if enabled else WIKI_CONTROL
     store = _arm_store(root, arm)
     config = _config_for_wiki_arm(base_config or {}, enabled, store=store)
+    seed_stats: dict = {}
     if enabled and seed_ask is not None:
         if seed_from:
             inherited = _inherit_trajectories(seed_from, store)
@@ -725,8 +744,15 @@ async def run_wiki_arm(
             "  seeding: distilling the control's episodes into the wiki (one dream pass)...",
             flush=True,
         )
-        await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
+        seed_stats = await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
         print("  seeding: done", flush=True)
+        if seed_stats.get("ran") is False:
+            # The pass never ran at all -- autonomy below adapt, or the
+            # lock was held.  The wiki is empty for a third reason, and
+            # the verdict needs to know this one too.
+            message = "seeding pass did not run: %s" % seed_stats.get("reason", "?")
+            logger.warning(message)
+            print("  *** %s ***" % message, flush=True)
         from .memory import list_pages
 
         pages = list_pages(config)
@@ -760,7 +786,7 @@ async def run_wiki_arm(
         ask=ask,
         limit=limit,
         data_path=data_path,
-    )
+    ), seed_stats
 
 
 async def run_wiki_ab(
@@ -823,8 +849,9 @@ async def run_wiki_ab(
         seed_ask = ask
 
     per_arm = {}
+    seed_stats = {}
     for enabled in (False, True):
-        results = await run_wiki_arm(
+        results, seed_stats = await run_wiki_arm(
             items,
             enabled=enabled,
             root=root,
@@ -844,6 +871,7 @@ async def run_wiki_ab(
     result["results"] = per_arm
     result["summaries"] = {arm: summarise(r) for arm, r in per_arm.items()}
     result["wiki_pages"] = _wiki_page_count(root)
+    result["wiki_seed"] = seed_stats
     result["paired"] = _paired_stats(control, treatment)
     return result
 
@@ -925,6 +953,30 @@ def format_wiki_verdict(result: dict) -> str:
         lines.append(
             "  *** PLACEBO: the treatment wiki has 0 pages -- the delta is not about the wiki. ***"
         )
+        seed = result.get("wiki_seed") or {}
+        if seed.get("ran") is False:
+            # Third way to an empty wiki: the pass never ran at all.
+            lines.append(
+                "  seed diagnosis: the seeding pass did not run (%s)."
+                % seed.get("reason", "unknown")
+            )
+        elif seed.get("candidates", 0) == 0:
+            # Extraction produced nothing to cluster: the extractor
+            # never answered, or answered empty.  Fix the extractor.
+            lines.append(
+                "  seed diagnosis: extraction produced 0 candidates --"
+                " the extractor failed, not the page policy."
+            )
+        elif seed.get("pages_created", 0) == 0:
+            # Facts existed and every cluster fell below the threshold.
+            # Production keeps the 3-fact policy; the gate's seed pass
+            # now runs at 1, so this line should not survive the fix --
+            # if it does, the threshold override did not reach the pass.
+            lines.append(
+                "  seed diagnosis: %d candidate(s) extracted but 0 pages created --"
+                " the page policy starved them."
+                % seed.get("candidates", 0)
+            )
     paired = result.get("paired") or {}
     if paired.get("pairs"):
         lines.append(
@@ -943,6 +995,22 @@ def format_wiki_verdict(result: dict) -> str:
         lines.append(
             "  note: %d of %d items ungraded -- the delta leans on an incomplete ruler."
             % (items_total - graded_total, items_total)
+        )
+    graded_gap = abs(c.get("graded", 0) - t.get("graded", 0))
+    n = c.get("n", 0) or t.get("n", 0) or 1
+    if graded_gap and abs(result["delta"]) <= graded_gap / n and not result["significant"]:
+        # The headline delta divides by every item, so an item graded
+        # in one arm and not the other is a miss in one and nothing in
+        # the other.  One such item swings the delta by 1/n -- and the
+        # 2026-11-17 run's +0.05 was exactly 1/20, manufactured by the
+        # control's single grading error on an item the treatment
+        # graded correct.  When the asymmetry could account for the
+        # whole delta, the paired line is the honest comparison.
+        lines.append(
+            "  note: %d more item(s) graded in one arm than the other --"
+            " enough to account for the whole delta;"
+            " read the paired line, not the headline."
+            % graded_gap
         )
     if result["significant"] and result["delta"] > 0:
         lines.append("  verdict: the wiki earns its default. Raise learn.memory.enabled.")
