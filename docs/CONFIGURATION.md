@@ -534,7 +534,9 @@ web_tts_summarize: true  # a long answer is summarized before being spoken, so
 
 ```yaml
 session_path: "~/.onit/sessions"  # where session transcripts live
-template_path: ~                  # custom prompt template YAML (examples in
+template_path: ~                  # custom prompt template YAML; the file
+                                  # holds one key, instruction_template
+                                  # (examples shipped in
                                   # onit/mcp/prompts/prompt_templates)
 
 messages:
@@ -588,6 +590,19 @@ developer: "Rowel Atienza"
 # task: ~
 # period: 20.0
 ```
+
+`template_path` points at a YAML file with one key, `instruction_template` —
+the text that opens the system prompt in place of the shipped default. Five
+placeholders interpolate: `{agent_name}`, `{developer}`, `{task}`,
+`{current_date}`, `{data_path}`. A template that leaves `{task}` out gets the
+task appended after it anyway, so write it where you want it — the shipped
+templates keep it at the bottom, because what the model reads last is what a
+weak model answers. Where the preamble itself lands follows what it
+interpolates: one naming the task, the date or the working directory differs
+on every request and rides in the volatile half of the prompt, while a fixed
+preamble — what an optimizer produces — is as cacheable as the default. A
+custom template also states its own working directory: the standard context
+block is not added to it.
 
 
 ## Environment variable reference
