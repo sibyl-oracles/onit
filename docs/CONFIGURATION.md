@@ -41,7 +41,14 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 onit --config configs/default.yaml
 ```
 
-Priority order: CLI flags > environment variables > `~/.onit/config.yaml` > project config file.
+Priority order: CLI flags > the config file you name (`--config`, or
+`configs/default.yaml` in the working directory) > `~/.onit/config.yaml` >
+environment variables. Setup values fill gaps but never override a config
+file, and an environment variable supplies what no file named: `ONIT_HOST`
+applies only when the config has neither `serving.host` nor
+`serving.endpoints`, `ONIT_MODEL` only when `serving.model` is unset. The
+deliberate exception is `ONIT_LEARN`, which beats the file so a benchmark
+baseline can pin a run without editing anyone's config.
 
 The environment variables OnIt reads are listed in full at the bottom of this
 page.
@@ -75,8 +82,12 @@ serving:
   # temperature: 1.0
   # top_p: 0.95
   # top_k: 20
+  # min_p: 0.0            # tail cut relative to the top token; off at 0.0
   # presence_penalty: 1.5
   # repetition_penalty: 1.0
+  # num_ctx: 131072       # Ollama's KV-cache window. Sized from
+  #                       # max_context_tokens when that is set explicitly
+  #                       # and this is not; a value here keeps precedence
   # Additional model servers (any mix of vLLM / local Ollama or MLX /
   # OpenRouter / Ollama cloud) go in an endpoints list — see MODEL_SERVING.md.
   # load_balancer: sticky          # or: round_robin, random, least_busy
@@ -186,11 +197,22 @@ serving:
   # past a content-free acknowledgment, before accepting either.
   max_planning_continuations: 2
   max_ack_continuations: 2
+  # Breaks of a verbatim repetition loop inside one turn — the reply is
+  # trimmed and the model asked to continue — before the trimmed reply is
+  # accepted as-is. Bounded low: a model that loops once will loop again,
+  # and each attempt costs a full generation.
+  max_repetition_continuations: 2
   # Resumes of a final answer that stopped before it was finished — the
   # output token budget ran out, or the host dropped the tail of the answer
   # and still reported a clean stop. Each resume grants another max_tokens,
   # so a long answer is bounded at ~(N+1)*max_tokens.
   max_final_continuations: 3
+  # Consecutive resumes above that added nothing — an empty or byte-identical
+  # reply — before the run stops on the stall warning instead of spending the
+  # remaining resume budget on copies of text already on screen. One stall is
+  # retried, since a hiccup turn must not end the answer mid-sentence; a
+  # second in a row is a model that cannot continue from the prefix.
+  max_final_stalls: 1
   # Repeated-call stops (the same tool call with the same arguments returning
   # the same result) converted into a strategy-change prompt instead of
   # ending the run. The first bail asks the model to change course and the
@@ -408,11 +430,13 @@ At `observe` every request is byte-for-byte what it would have been with this
 off; the only difference is a JSONL line per task under `path` recording what
 the run did — which tools ran, how they went, tokens per turn, retries.
 
-Environment overrides exist for benchmark baselines and one-off reproductions
-that pin a run to a known level without editing the file: `ONIT_LEARN` (the
-level), `ONIT_LEARN_PATH`, `ONIT_LEARN_REDACT`, and `ONIT_LEARN_AUTONOMY` —
-the level as the spawned MCP servers see it, since a stdio server has no
-config file of its own.
+`ONIT_LEARN` overrides the file — the one environment variable that does — so
+a benchmark baseline can pin a run to a known level without editing anyone's
+config. `ONIT_LEARN_PATH` and `ONIT_LEARN_REDACT` work the other way round:
+they fill in for a config that is silent, and the file wins where it speaks,
+because the store's location and what it records are deployment layout, not a
+per-run choice. `ONIT_LEARN_AUTONOMY` is the level as the spawned MCP servers
+see it, set by OnIt, since a stdio server has no config file of its own.
 
 
 ## Speaking the answer aloud (TTS)
@@ -568,13 +592,15 @@ developer: "Rowel Atienza"
 
 ## Environment variable reference
 
-Everything above can also be set — or overridden — from the environment.
-`onit setup` writes the API keys to the OS keychain, which is the better place
-for them; these are the variables it would otherwise fill.
+Everything above can also be set from the environment. A variable supplies
+what the config left unset rather than overriding it — the one exception is
+`ONIT_LEARN`, which wins over the file. `onit setup` writes the API keys to
+the OS keychain, which is the better place for them; these are the variables
+it would otherwise fill.
 
 | variable | what it does |
 |---|---|
-| `ONIT_HOST` | Serving host, same as `--host`. |
+| `ONIT_HOST` | Serving host when the config names none; `--host` beats it. |
 | `ONIT_MODEL` | Model for the learn loop's own LLM calls, when `serving.model` is unset. |
 | `OPENROUTER_API_KEY` | OpenRouter endpoints. |
 | `VLLM_API_KEY` | vLLM endpoints; also a fallback key for the embedding endpoint. |
@@ -594,7 +620,8 @@ for them; these are the variables it would otherwise fill.
 | `ONIT_DISABLE_TTS` | `1` withdraws the `speak` tool. |
 | `ONIT_DISABLE_WEB_SEARCH`, `ONIT_DISABLE_WEATHER`, `ONIT_DISABLE_LOCAL_SEARCH` | `1` removes that tool. Web search and weather are also disabled automatically when their key is missing. |
 | `ONIT_KOKORO_DIR` | Where the TTS model files are cached. |
-| `ONIT_LEARN`, `ONIT_LEARN_PATH`, `ONIT_LEARN_REDACT` | `learn:` overrides. |
+| `ONIT_LEARN` | Learn autonomy level; the one variable that overrides the config file. |
+| `ONIT_LEARN_PATH`, `ONIT_LEARN_REDACT` | Defaults for `learn.path` / `learn.redact_tool_args` where the config is silent; the config wins when it names them. |
 | `ONIT_LEARN_AUTONOMY` | The autonomy level as the spawned MCP servers see it. |
 | `ONIT_EVAL_PATH` | Where the learn loop writes evaluation output (default `<repo>/benchmarks/eval`). |
 | `ONIT_UNRESTRICTED` | Set by `--unrestricted`: the bash tool runs with the container's relaxed policy on the host. Catastrophic operations stay blocked either way. |
