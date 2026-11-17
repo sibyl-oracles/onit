@@ -311,6 +311,29 @@ a client fix, while "the control's day established no reusable facts"
 (a real reply holding no items) is not a failure at all -- but the run
 is still a placebo, and the verdict says so either way.
 
+#### The hang: an unbounded request timeout stalled a run for hours
+(2026-11-17 16:33 run, `xa7fqj6k`)
+
+The fifth failure was not a placebo but a stall: the run never printed
+a verdict because it never finished.  The control arm completed 15 of
+20 items at a healthy pace (2-3 minutes each, trajectories clean), then
+went silent at 17:15 -- the agent had finished tool call #47 (a bash
+call writing a slide-deck proposal) and the next LLM call never came
+back.  2h40m of nothing.  The cause was the operator's config:
+``timeout: '-1'`` -- wait forever, defensible interactively where a
+human sees a hang and interrupts it -- flows through
+``base_config_for_run`` into ``OnIt.timeout`` and then
+``chat(timeout=None)``, and the OpenAI client's default is no timeout.
+A request that never returns never raises, so the balancer never fails
+over (failover is error-driven), the arm never advances, and the run
+stalls indefinitely.  Fixed: ``base_config_for_run`` now caps the
+agent's request timeout at ``REPLAY_TIMEOUT_S = 600`` -- a replay has
+no human to interrupt a stalled call, and its observed calls run under
+20 seconds, so a 10-minute ceiling is generous against real work and a
+floor against the hang; a shorter operator timeout is kept, a longer
+or unbounded one is capped.  The same ceiling now also bounds the
+grader and extractor calls.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

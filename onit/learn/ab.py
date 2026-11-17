@@ -53,6 +53,18 @@ DEFAULT_LIMIT = 20
 # against.
 DEFAULT_SPLIT = "dev"
 
+# The request timeout a replay run gives its agent, in seconds.  The
+# operator's config may set ``timeout: -1`` -- wait forever -- which is
+# defensible in an interactive session where the human can see a hang
+# and interrupt it, and indefensible in an unattended replay: a request
+# that never returns never raises, so the balancer never fails over and
+# the run stalls for hours on one dead call (the 2026-11-17 run hung
+# for 2h40m exactly this way).  A replay's calls are short -- the
+# observed model_s per turn was under 20s -- so a ceiling generous
+# against that is a floor against the hang.  An operator who sets a
+# finite timeout keeps their own value if it is shorter.
+REPLAY_TIMEOUT_S = 600
+
 
 def _agent_factory(config: dict):
     """Build an agent for one arm, off the event loop."""
@@ -148,11 +160,21 @@ def base_config_for_run(config_data: dict | None = None) -> dict:
 
     The operator's own configuration, with the parts that would make
     the run non-reproducible taken out: the terminal UI, streaming, and
-    the loop's interactive mode.
+    the loop's interactive mode -- and with the parts that would make
+    it hang unattended taken out too: an unbounded request timeout
+    becomes the replay ceiling, because a replay has no human to
+    interrupt a stalled call.
     """
     config = dict(config_data or {})
     config["loop"] = True
     config["stream"] = False
     config["verbose"] = False
     config["show_logs"] = False
+    timeout = config.get("timeout")
+    try:
+        timeout = int(timeout) if timeout is not None else None
+    except (TypeError, ValueError):
+        timeout = None
+    if timeout is None or timeout <= 0 or timeout > REPLAY_TIMEOUT_S:
+        config["timeout"] = REPLAY_TIMEOUT_S
     return config

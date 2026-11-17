@@ -140,6 +140,32 @@ class TestBaseConfigForRun:
         config = ab.base_config_for_run({"serving": {"host": "http://x/v1"}})
         assert config["serving"]["host"] == "http://x/v1"
 
+    def test_an_unbounded_timeout_is_capped(self):
+        """timeout: -1 means "wait forever" interactively; a replay cannot.
+
+        A request that never returns never raises, so the balancer never
+        fails over and the run stalls for hours -- the 2026-11-17 run
+        hung for 2h40m on one call with this exact config.
+        """
+        config = ab.base_config_for_run({"timeout": "-1"})
+        assert config["timeout"] == ab.REPLAY_TIMEOUT_S
+
+    def test_a_missing_timeout_gets_the_ceiling(self):
+        config = ab.base_config_for_run({})
+        assert config["timeout"] == ab.REPLAY_TIMEOUT_S
+
+    def test_a_finite_timeout_is_kept_when_shorter(self):
+        config = ab.base_config_for_run({"timeout": 120})
+        assert config["timeout"] == 120
+
+    def test_a_finite_timeout_is_capped_when_longer(self):
+        config = ab.base_config_for_run({"timeout": 99999})
+        assert config["timeout"] == ab.REPLAY_TIMEOUT_S
+
+    def test_a_non_numeric_timeout_gets_the_ceiling(self):
+        config = ab.base_config_for_run({"timeout": "soon"})
+        assert config["timeout"] == ab.REPLAY_TIMEOUT_S
+
 
 # ── the reflector, end to end ───────────────────────────────────────────────
 
