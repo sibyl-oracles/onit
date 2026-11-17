@@ -84,6 +84,10 @@ serving:
   # vLLM/OpenRouter endpoint is healthy they stay out of rotation. Set false
   # to load-balance across them equally:
   # ollama_fallback_only: true
+  # Legacy: serving.host2 / model2 / host2_key (and the ONIT_HOST2 env var)
+  # are no longer read. A config that still carries them is warned about and
+  # the second server is ignored — move the pair into serving.endpoints
+  # (see MODEL_SERVING.md).
 
 verbose: false
 timeout: 600
@@ -521,6 +525,8 @@ for them; these are the variables it would otherwise fill.
 | `OPENROUTER_API_KEY` | OpenRouter endpoints. |
 | `VLLM_API_KEY` | vLLM endpoints; also a fallback key for the embedding endpoint. |
 | `OLLAMA_API_KEY` | Ollama cloud and the web-search backend. Without it (and without a keychain entry) web search is disabled for the session. |
+| `OPENAI_API_KEY` | Key for `https://api.openai.com` endpoints (legacy fallback name; `onit setup` stores it in the keychain). |
+| `ONIT_ENDPOINT_KEY_<SLUG>` | Per-endpoint key, for containers and deployments that ship secrets as environment and have no keychain. The slug is the endpoint URL with punctuation replaced by `_` and uppercased — `https://ollama.com` becomes `ONIT_ENDPOINT_KEY_HTTPS_OLLAMA_COM`. Read ahead of the keychain entry. |
 | `TAVILY_API_KEY` | Optional first-tier web-search provider; without it search still works via Ollama / DuckDuckGo. |
 | `OPENWEATHERMAP_API_KEY` | Weather tool (`OPENWEATHER_API_KEY` also read). Without it the weather tool is unavailable. |
 | `GITHUB_TOKEN` | GitHub repository tools. |
@@ -570,5 +576,6 @@ through.
 | `ONIT_BENCH_LEARN_PATH` | Where the bench learn store lives (default `<bench data root>/learned`, a directory beside the agent's own corpus so the arm under test never recalls from it). |
 
 A few more (`ONIT_STDIO_SPAWNED`, `ONIT_WEB_UI`, `ONIT_CONTAIN_THRESHOLD`,
-`ONIT_CONTAIN_WINDOW`, `ONIT_TARGET_ENV_BIN`, `ONIT_FILE_SERVER_URL`) are set
-by OnIt for its own subprocesses and are not meant to be set by hand.
+`ONIT_CONTAIN_WINDOW`, `ONIT_TARGET_ENV_BIN`, `ONIT_FILE_SERVER_URL`,
+`ONIT_GITHUB_TOKEN_FILE`, `ONIT_SESSION_ID`) are set by OnIt for its own
+subprocesses and are not meant to be set by hand.
