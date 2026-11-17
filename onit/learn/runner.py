@@ -960,12 +960,26 @@ def format_wiki_verdict(result: dict) -> str:
                 "  seed diagnosis: the seeding pass did not run (%s)."
                 % seed.get("reason", "unknown")
             )
-        elif seed.get("candidates", 0) == 0:
-            # Extraction produced nothing to cluster: the extractor
-            # never answered, or answered empty.  Fix the extractor.
+        elif seed.get("candidates", 0) == 0 and seed.get("empty_replies", 0) > 0:
+            # The extractor never got a usable reply: the endpoint
+            # returned hollow responses through every retry -- the
+            # 2026-11-17 14:55 seed lost its only call this way and
+            # cost a three-hour placebo run.  Fix the extractor's
+            # client, or re-run; nothing about the wiki was measured.
             lines.append(
-                "  seed diagnosis: extraction produced 0 candidates --"
-                " the extractor failed, not the page policy."
+                "  seed diagnosis: extraction got %d empty reply(ies) and 0 candidates --"
+                " the endpoint failed the extractor, not the page policy."
+                % seed.get("empty_replies", 0)
+            )
+        elif seed.get("candidates", 0) == 0:
+            # Real replies came back and held nothing: the day the
+            # control recorded established nothing worth keeping.  Not
+            # a failure -- but the treatment still runs without a wiki,
+            # so the run is still a placebo.
+            lines.append(
+                "  seed diagnosis: extraction read the day and kept nothing --"
+                " the control's day established no reusable facts,"
+                " so the treatment still ran with an empty wiki."
             )
         elif seed.get("pages_created", 0) == 0:
             # Facts existed and every cluster fell below the threshold.

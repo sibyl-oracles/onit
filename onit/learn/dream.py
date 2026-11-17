@@ -100,6 +100,13 @@ SEED_MIN_FACTS_FOR_PAGE = 1
 # The output budget for one extraction call.
 MAX_TOKENS = 900
 
+# The attempts one extraction call gets.  The endpoint behind the gate
+# intermittently returns an empty reply -- the same flakiness the
+# grader's retry absorbs -- and the 2026-11-17 14:55 seed pass lost its
+# only call to it: 0 candidates, 0 pages, a three-hour placebo run.
+# An extraction that gets one attempt is a coin flip; three is a policy.
+EXTRACT_ATTEMPTS = 3
+
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
 _THINK_RE = re.compile(r"think.*?/think", re.DOTALL | re.IGNORECASE)
 
@@ -335,12 +342,16 @@ def _clean_candidate(item: dict, transcript: str) -> dict | None:
     }
 
 
-async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> list:
+async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tuple:
     """What one session established, verified.  Empty when nothing did.
 
-    Returns candidates of the shape ``{"text", "kind", "topic", "cites"}``
-    with ``cites`` resolved to transcript lines -- the provenance every
-    written fact carries.
+    Returns ``(candidates, empty_replies)``.  Candidates are of the shape
+    ``{"text", "kind", "topic", "cites"}`` with ``cites`` resolved to
+    transcript lines -- the provenance every written fact carries.
+    ``empty_replies`` counts the hollow responses the retries burned: a
+    pass over a day that established nothing and a pass whose extractor
+    the endpoint failed must not look the same in the stats, because
+    they want different fixes.
 
     ``max_chars`` bounds the transcript the model reads.  The default is
     the production trigger's budget; the A/B gate's seeding pass raises
@@ -349,27 +360,43 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> lis
     pass then "extracts" from an experience the treatment never saw.
     """
     if not records:
-        return []
+        return [], 0
     transcript = _transcript_text(records, limit=max_chars)
     if not transcript.strip():
-        return []
+        return [], 0
     messages = [
         {"role": "system", "content": _EXTRACT_SYSTEM},
         {"role": "user", "content": "Transcript:\n%s" % transcript},
     ]
-    try:
-        response = await ask(messages)
-    except Exception as e:  # pragma: no cover - network failure
-        logger.debug("dream extraction failed: %s", e)
-        return []
+    # The endpoint behind the gate intermittently returns an empty reply
+    # -- the grader in the same run hit it and absorbed it with a retry,
+    # while this call used to get exactly one attempt.  One flaky reply
+    # at seed time was a whole placebo run (the 2026-11-17 14:55 seed:
+    # 0 candidates, 0 pages, three hours of measurement of nothing).
+    # Retry the empties; an exception still aborts -- a network that is
+    # down is a different failure than a reply that came back hollow.
+    response = ""
+    for attempt in range(1, EXTRACT_ATTEMPTS + 1):
+        try:
+            response = await ask(messages)
+        except Exception as e:  # pragma: no cover - network failure
+            logger.debug("dream extraction failed: %s", e)
+            return [], 0
+        if (response or "").strip():
+            break
+        logger.warning(
+            "dream extraction returned no text (attempt %d/%d)", attempt, EXTRACT_ATTEMPTS
+        )
+        response = ""
     if not (response or "").strip():
-        # The model answered with nothing -- a reasoning model under a
-        # tight output cap spends its budget thinking before writing.
-        # A silent empty here used to look identical to "the session
-        # established nothing", which is how the 2026-11-17 morning run
-        # lost 12 of 40 grades invisibly.  Say it, at warning level.
-        logger.warning("dream extraction returned no text; session left unextracted")
-        return []
+        # Every attempt came back empty.  This is not "the session
+        # established nothing" -- that is a reply that parsed and held
+        # no items.  Say which, so a seed of zero candidates can be
+        # told apart from a day that genuinely established nothing.
+        logger.warning(
+            "dream extraction: %d empty replies; session left unextracted", EXTRACT_ATTEMPTS
+        )
+        return [], EXTRACT_ATTEMPTS
     candidates = []
     for item in _extract_json(response)[:MAX_CANDIDATES_PER_SESSION]:
         cleaned = _clean_candidate(item, transcript)
@@ -378,7 +405,7 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> lis
                 "%s#%s" % (records[0].get("session_id", "?"), c) for c in cleaned["cites"]
             ]
             candidates.append(cleaned)
-    return candidates
+    return candidates, attempt - 1
 
 
 # ── clustering and promotion ──────────────────────────────────────────────────
@@ -478,12 +505,22 @@ async def dream_once(
 
     # 2. Extract per session, verified against its own transcript.
     candidates: list = []
+    empty_replies = 0
     for session_id, fresh in todo:
-        found = await extract(ask, fresh, max_chars=max_session_chars or MAX_SESSION_CHARS)
+        found, empties = await extract(
+            ask, fresh, max_chars=max_session_chars or MAX_SESSION_CHARS
+        )
+        empty_replies += empties
         changes["candidates"] += len(found)
         changes["rejected"] += max(0, min(len(fresh), MAX_CANDIDATES_PER_SESSION) - len(found))
         candidates.extend(found)
     changes["verified"] = changes["candidates"]
+    # An empty reply is the extractor failing, not the day having
+    # established nothing -- the distinction the gate's zero-candidate
+    # diagnosis needs (two causes, two fixes).  A day that established
+    # nothing is a real reply holding no items; a failed extractor is
+    # hollow replies all the way down.
+    changes["empty_replies"] = empty_replies
 
     # 3. Reconcile into the wiki.
     pages = memory.list_pages(config_data, root=root)

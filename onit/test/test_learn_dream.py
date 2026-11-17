@@ -85,7 +85,7 @@ class TestExtraction:
     def test_a_cited_candidate_survives(self, world):
         _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
         records = _read(world, "s1")
-        found = asyncio.run(
+        found, empties = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -106,7 +106,7 @@ class TestExtraction:
     def test_an_uncited_candidate_is_rejected(self, world):
         _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
         records = _read(world, "s1")
-        found = asyncio.run(
+        found, empties = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -126,7 +126,7 @@ class TestExtraction:
     def test_a_candidate_that_shares_no_token_with_its_cite_is_rejected(self, world):
         _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
         records = _read(world, "s1")
-        found = asyncio.run(
+        found, empties = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -146,7 +146,7 @@ class TestExtraction:
     def test_a_meta_comment_is_rejected(self, world):
         _session(world, "s1", [("deploy the service", "deployed")])
         records = _read(world, "s1")
-        found = asyncio.run(
+        found, empties = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -170,7 +170,62 @@ class TestExtraction:
         async def broken(messages):
             raise RuntimeError("down")
 
-        assert asyncio.run(dream.extract(broken, records)) == []
+        found, empties = asyncio.run(dream.extract(broken, records))
+        assert found == [] and empties == 0
+
+    def test_an_empty_reply_is_retried_and_a_later_one_wins(self, world):
+        # The 2026-11-17 14:55 seed lost its only extraction call to an
+        # endpoint that intermittently returns hollow replies -- the same
+        # flakiness the grader's retry absorbs -- and a three-hour gate
+        # run measured a placebo.  One empty must not be the end.
+        _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
+        records = _read(world, "s1")
+        item = {
+            "text": "the staging host is stg-7.internal",
+            "kind": "fact",
+            "topic": "staging",
+            "cites": [2],
+        }
+        calls = {"n": 0}
+
+        async def flaky(messages):
+            calls["n"] += 1
+            if calls["n"] < dream.EXTRACT_ATTEMPTS:
+                return ""
+            return json.dumps({"items": [item]})
+
+        found, empties = asyncio.run(dream.extract(flaky, records))
+        assert calls["n"] == dream.EXTRACT_ATTEMPTS
+        assert empties == dream.EXTRACT_ATTEMPTS - 1
+        assert len(found) == 1
+        assert found[0]["provenance"] == ["s1#2"]
+
+    def test_every_reply_empty_reports_the_extractor_not_the_day(self, world):
+        # All attempts hollow: the stats must say the extractor failed,
+        # not that the day established nothing -- the two zero-candidate
+        # seeds want different fixes.
+        _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
+        records = _read(world, "s1")
+        calls = {"n": 0}
+
+        async def hollow(messages):
+            calls["n"] += 1
+            return ""
+
+        found, empties = asyncio.run(dream.extract(hollow, records))
+        assert calls["n"] == dream.EXTRACT_ATTEMPTS
+        assert found == []
+        assert empties == dream.EXTRACT_ATTEMPTS
+
+    def test_a_real_reply_holding_no_items_is_not_an_empty(self, world):
+        # A day that established nothing is a real reply with no items:
+        # zero empties, zero candidates -- distinguishable from a failed
+        # extractor at the same candidate count.
+        _session(world, "s1", [("deploy the service", "deployed")])
+        records = _read(world, "s1")
+        found, empties = asyncio.run(dream.extract(_ask([]), records))
+        assert found == []
+        assert empties == 0
 
     def test_an_unparseable_reply_yields_nothing(self, world):
         _session(world, "s1", [("deploy the service", "deployed")])
@@ -179,7 +234,8 @@ class TestExtraction:
         async def prose(messages):
             return "I found three facts worth keeping."
 
-        assert asyncio.run(dream.extract(prose, records)) == []
+        found, empties = asyncio.run(dream.extract(prose, records))
+        assert found == [] and empties == 0
 
 
 def _read(world, session_id):

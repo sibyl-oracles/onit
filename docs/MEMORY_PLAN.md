@@ -289,6 +289,28 @@ commit:
   message now says "dropped", and `stage_session_note` remains dead
   phase-2 code with no caller.
 
+#### The fourth placebo: the endpoint failed the extractor, once
+(2026-11-17 evening run, `9c_agxy2`)
+
+The seed pass got exactly one extraction call, the endpoint returned a
+hollow reply -- the same intermittent empty-reply flakiness the grader
+absorbed with its retry (the control's one grading error in the same
+run reads "grading call returned no text (retried once)") -- and the
+pass recorded `candidates=0, rejected=6, pages_created=0`: 0 candidates,
+0 pages, and three hours of replay measuring nothing.  The diagnosis
+line named extraction failure correctly; what was missing was
+resilience.  Reproducing the call offline against the kept run's own
+transcript returned 7 verified candidates on the first try -- the
+pipeline was never broken, the attempt count was.  Fixed: `extract`
+retries an empty reply up to `EXTRACT_ATTEMPTS = 3` (an exception still
+aborts -- a network that is down is a different failure than a reply
+that came back hollow), `dream_once` carries `empty_replies` in its
+stats, and the verdict now splits the zero-candidate cause in two:
+"the endpoint failed the extractor" (empty replies) wants a re-run or
+a client fix, while "the control's day established no reusable facts"
+(a real reply holding no items) is not a failure at all -- but the run
+is still a placebo, and the verdict says so either way.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

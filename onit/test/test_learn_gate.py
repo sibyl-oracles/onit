@@ -823,11 +823,22 @@ class TestSeedYieldDiagnosis:
         assert "PLACEBO" in out
         assert "page policy starved" in out
 
-    def test_verdict_names_extraction_failure(self):
-        out = runner.format_wiki_verdict(self._result(candidates=0))
+    def test_verdict_names_an_endpoint_that_failed_the_extractor(self):
+        # The 2026-11-17 14:55 seed: hollow replies through every
+        # attempt, zero candidates, zero pages, a three-hour placebo.
+        # The verdict must name the endpoint, not the day.
+        out = runner.format_wiki_verdict(self._result(candidates=0, empty_replies=3))
         assert "PLACEBO" in out
-        assert "extraction produced 0 candidates" in out
-        assert "extractor failed" in out
+        assert "empty reply(ies)" in out
+        assert "endpoint failed the extractor" in out
+
+    def test_verdict_names_a_day_that_established_nothing(self):
+        # Real replies, zero items: not a failure, but still a placebo
+        # -- the treatment ran with an empty wiki either way.
+        out = runner.format_wiki_verdict(self._result(candidates=0, empty_replies=0))
+        assert "PLACEBO" in out
+        assert "established no reusable facts" in out
+        assert "endpoint failed" not in out
 
     def test_verdict_names_a_pass_that_never_ran(self):
         out = runner.format_wiki_verdict(
