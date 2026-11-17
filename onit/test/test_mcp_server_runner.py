@@ -93,7 +93,6 @@ class TestToolProfiles:
             "serve",
             "grep",
             "send_file",
-            "search_document",
             "fetch_content",
             "index_documents",
             "local_search",

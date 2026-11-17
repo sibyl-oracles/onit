@@ -74,7 +74,6 @@ STOP_TURN_LIMIT = "turn_limit"
 STOP_REPEATED_TOOL_CALL = "repeated_tool_call"
 STOP_PLANNING_EXHAUSTED = "planning_exhausted"
 STOP_REPETITION_LOOP = "repetition_loop"
-STOP_SAFETY_ABORT = "safety_abort"
 # Every resume attempt was spent and the answer still is not whole — the
 # stream died or the output budget cut it one time too many.  Distinct from
 # STOP_ANSWERED so a session resumed after this knows the last attempt ended
@@ -87,7 +86,6 @@ _STOP_PHRASES = {
     STOP_REPEATED_TOOL_CALL: "it kept making the same tool call and was stopped",
     STOP_PLANNING_EXHAUSTED: "it described a plan but never called a tool",
     STOP_REPETITION_LOOP: "it repeated the same text and was stopped",
-    STOP_SAFETY_ABORT: "it was stopped by the user",
     STOP_TRUNCATED: "its answer was cut off mid-stream and could not be finished",
 }
 

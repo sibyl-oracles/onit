@@ -24,7 +24,6 @@ from onit.test.fake_voicechat import FakeVoiceChat
 from onit.ui import auth as ui_auth
 from onit.ui.api import WebApiUI
 from onit.ui.voice import (
-    CANCELLED_MESSAGE,
     EV,
     FRAME_BYTES,
     VoiceConfig,
@@ -44,7 +43,6 @@ class FakeVoiceOnit:
         self.response = response
         self.delay = delay
         self.calls = []
-        self.cancelled = False
         self.config_data = config_data if config_data is not None else {}
 
     async def process_task(
@@ -52,7 +50,6 @@ class FakeVoiceOnit:
         task,
         session_path=None,
         data_path=None,
-        safety_queue=None,
         tool_status_callback=None,
         tool_result_callback=None,
         session_id=None,
@@ -61,13 +58,8 @@ class FakeVoiceOnit:
         self.calls.append(task)
         if tool_status_callback:
             tool_status_callback("web_search(query)")
-        # Poll the safety queue the way the real agent loop does, so a stop
-        # request lands as a short-circuit rather than a hard cancellation.
         waited = 0.0
         while waited < self.delay:
-            if safety_queue is not None and not safety_queue.empty():
-                self.cancelled = True
-                return ""
             await asyncio.sleep(0.02)
             waited += 0.02
         if tool_status_callback:
@@ -291,7 +283,6 @@ class TestVoiceRoute:
         assert [t["name"] for t in update["tools"]] == [
             "ask_onit",
             "get_current_datetime",
-            "stop_current_task",
         ]
         assert update["instructions"].isascii()
 
@@ -322,17 +313,6 @@ class TestVoiceRoute:
             "final": True,
         }
         assert agent["role"] == "assistant" and agent["delta"] == "It is "
-
-    def test_speech_started_triggers_a_flush(self, make_ui):
-        # The browser may be holding a second of queued agent audio; draining
-        # it would talk over the user who just interrupted.
-        ui, server = make_ui()
-        with TestClient(ui.app).websocket_connect("/api/voice") as ws:
-            ws.receive_json()
-            server.emit(EV["speech_started"])
-            msg = ws.receive_json()
-        assert msg["type"] == "barge_in"
-        assert msg["reason"] == "speech_started"
 
     def test_malformed_frame_does_not_kill_the_call(self, make_ui):
         ui, server = make_ui()
@@ -459,75 +439,6 @@ class TestToolDispatch:
             call_tool(server, "ask_onit", {"request": "hang forever"})
             assert wait_for(lambda: server.of_type(EV["item_create"]), timeout=5)
         assert "too long" in server.first(EV["item_create"])["item"]["output"]
-
-
-# ── Barge-in ────────────────────────────────────────────────────────────────
-
-
-class TestBargeIn:
-    def test_speech_during_a_tool_call_cancels_the_task(self, make_ui):
-        # The model cannot be interrupted while a tool call is outstanding,
-        # and an agent task occupies exactly that window — so OnIt measures
-        # the microphone itself and cancels through the safety queue.
-        onit = FakeVoiceOnit(delay=5.0)
-        ui, server = make_ui(onit=onit, tool_timeout=10)
-        with TestClient(ui.app).websocket_connect("/api/voice") as ws:
-            ws.receive_json()
-            call_tool(server, "ask_onit", {"request": "a long search"})
-            for _ in range(10):
-                ws.send_json({"type": "audio", "data": SPEECH})
-            assert wait_for(lambda: server.of_type(EV["item_create"]), timeout=5)
-
-        assert onit.cancelled is True
-        assert server.first(EV["item_create"])["item"]["output"].startswith("The user interrupted")
-        assert CANCELLED_MESSAGE.startswith("The user interrupted")
-
-    def test_silence_during_a_tool_call_does_not_cancel(self, make_ui):
-        onit = FakeVoiceOnit(delay=0.4)
-        ui, server = make_ui(onit=onit, tool_timeout=10)
-        with TestClient(ui.app).websocket_connect("/api/voice") as ws:
-            ws.receive_json()
-            call_tool(server, "ask_onit", {"request": "a short search"})
-            for _ in range(10):
-                ws.send_json({"type": "audio", "data": SILENCE})
-            assert wait_for(lambda: server.of_type(EV["item_create"]), timeout=5)
-        assert onit.cancelled is False
-        assert server.first(EV["item_create"])["item"]["output"] == "The answer is 42."
-
-    def test_barge_in_can_be_turned_off(self, make_ui):
-        onit = FakeVoiceOnit(delay=0.4)
-        ui, server = make_ui(onit=onit, barge_in=False, tool_timeout=10)
-        with TestClient(ui.app).websocket_connect("/api/voice") as ws:
-            ws.receive_json()
-            call_tool(server, "ask_onit", {"request": "search"})
-            for _ in range(10):
-                ws.send_json({"type": "audio", "data": SPEECH})
-            assert wait_for(lambda: server.of_type(EV["item_create"]), timeout=5)
-        assert onit.cancelled is False
-
-    def test_stop_message_cancels_and_flushes(self, make_ui):
-        onit = FakeVoiceOnit(delay=5.0)
-        ui, server = make_ui(onit=onit, tool_timeout=10)
-        with TestClient(ui.app).websocket_connect("/api/voice") as ws:
-            ws.receive_json()
-            call_tool(server, "ask_onit", {"request": "a long search"})
-            time.sleep(0.1)
-            ws.send_json({"type": "stop"})
-            seen = read_until(ws, {"barge_in"})
-            assert wait_for(lambda: server.of_type(EV["item_create"]), timeout=5)
-        assert onit.cancelled is True
-        assert seen[-1]["reason"] == "stop"
-
-    def test_stop_current_task_tool_cancels(self, make_ui):
-        onit = FakeVoiceOnit(delay=5.0)
-        ui, server = make_ui(onit=onit, tool_timeout=10)
-        with TestClient(ui.app).websocket_connect("/api/voice") as ws:
-            ws.receive_json()
-            call_tool(server, "ask_onit", {"request": "a long search"}, call_id="a")
-            time.sleep(0.1)
-            call_tool(server, "stop_current_task", {}, call_id="b")
-            assert wait_for(lambda: len(server.of_type(EV["item_create"])) == 2, timeout=5)
-        assert onit.cancelled is True
 
 
 # ── History ─────────────────────────────────────────────────────────────────

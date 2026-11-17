@@ -1,8 +1,8 @@
 /* OnIt voice call — browser half of the full-duplex bridge.
  *
  * Talks to /api/voice (WebSocket) in src/ui/voice.py:
- *   out: {type:"audio",data:b64} {type:"stop"} {type:"bye"}
- *   in:  ready | audio | transcript | barge_in | speech_stopped
+ *   out: {type:"audio",data:b64} {type:"bye"}
+ *   in:  ready | audio | transcript | speech_stopped
  *        status | answer | error | end
  *
  * Audio is PCM16 mono 24 kHz both ways, ~80 ms per frame, base64 on the wire.
@@ -178,10 +178,6 @@
       case "transcript":
         emit("transcript", msg);
         break;
-      case "barge_in":
-        // Drop queued agent audio outright rather than letting it drain.
-        flushPlayback();
-        break;
       case "status":
         emit("status", msg.text || "");
         break;
@@ -203,13 +199,6 @@
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify(obj));
     }
-  }
-
-  /* Stop whatever the agent is doing without ending the call: flushes the
-   * speaker queue here and cancels any running agent task server-side. */
-  function interrupt() {
-    flushPlayback();
-    send({ type: "stop" });
   }
 
   function stop() {
@@ -241,7 +230,7 @@
   }
 
   window.OnItVoice = {
-    start, stop, interrupt, setMuted, status,
+    start, stop, setMuted, status,
     on(event, fn) { state.handlers[event] = fn; },
     get active() { return state.active || state.connecting; },
   };

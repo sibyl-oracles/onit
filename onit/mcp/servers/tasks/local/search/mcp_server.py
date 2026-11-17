@@ -699,9 +699,8 @@ that document's opening — its title and usually the summary under it — which
 is what identifies the document and what its matched excerpts routinely do
 not show. `results` are the individual matched chunks, ranked; repeated hits
 on one long document measure document length, not relevance. When openings
-plus excerpts do not answer the question, call `search_document` with
-mode="context" to pull the relevant passages out of a specific file; reserve
-`read_file` for short documents."""
+plus excerpts do not answer the question, reserve `read_file` for short
+documents."""
 
 
 # Register as MCP tools only when local search is not disabled

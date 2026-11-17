@@ -1,7 +1,7 @@
 /* OnIt web UI — vanilla JS single-page app.
  * Talks to the FastAPI backend in src/ui/api.py:
  *   GET  /api/config /api/history /api/sessions /api/logs
- *   POST /api/chat (SSE) /api/chat/stop /api/clear /api/upload /api/sessions/new
+ *   POST /api/chat (SSE) /api/clear /api/upload /api/sessions/new
  * SSE events: token, phase_end, status, answer_start, done, correction, error.
  * The stream can outlive `done`: a fact-check may still be running behind the
  * answer, and `correction` is how it reports back.
@@ -32,13 +32,13 @@
     sidebar: $("sidebar"), sessionList: $("session-list"),
     messages: $("messages"), welcome: $("welcome"),
     chatScroll: $("chat-scroll"),
-    input: $("input"), sendBtn: $("send-btn"), stopBtn: $("stop-btn"),
+    input: $("input"), sendBtn: $("send-btn"),
     attachBtn: $("attach-btn"), fileInput: $("file-input"),
     attachments: $("attachments"),
     micBtn: $("mic-btn"), voiceBar: $("voice-bar"),
     ttsBtn: $("tts-btn"),
     voiceStatus: $("voice-status"), voiceMute: $("voice-mute"),
-    voiceInterrupt: $("voice-interrupt"), voiceEnd: $("voice-end"),
+    voiceEnd: $("voice-end"),
     newChat: $("new-chat"), clearChat: $("clear-chat"), clearAll: $("clear-all"),
     themeToggle: $("theme-toggle"),
     logsToggle: $("logs-toggle"), logsDrawer: $("logs-drawer"),
@@ -1186,7 +1186,6 @@
   // ── Sending / SSE ──────────────────────────────────────────────
   function setProcessing(on) {
     state.processing = on;
-    el.stopBtn.hidden = !on;
     el.sendBtn.hidden = on;
     updateSendEnabled();
   }
@@ -1505,7 +1504,6 @@
     });
     el.voiceEnd.addEventListener("click", () => V.stop());
     el.voiceMute.addEventListener("click", () => V.setMuted(!V.status().muted));
-    el.voiceInterrupt.addEventListener("click", () => V.interrupt());
   }
 
   function loadScript(src) {
@@ -1649,10 +1647,6 @@
     }
   }
 
-  async function stop() {
-    try { await api("/api/chat/stop", { method: "POST" }); } catch (e) { /* ignore */ }
-  }
-
   // ── Attachments ────────────────────────────────────────────────
   function renderAttachments() {
     el.attachments.innerHTML = "";
@@ -1746,7 +1740,6 @@
     }
   });
   el.sendBtn.addEventListener("click", send);
-  el.stopBtn.addEventListener("click", stop);
   el.attachBtn.addEventListener("click", () => el.fileInput.click());
   el.fileInput.addEventListener("change", () => {
     if (el.fileInput.files.length) uploadFile(el.fileInput.files[0]);

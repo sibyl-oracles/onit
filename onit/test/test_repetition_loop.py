@@ -80,7 +80,6 @@ async def test_repetition_loop_terminates_and_is_trimmed():
                 host="http://localhost:8000/v1",
                 instruction="Write the file.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
                 max_ack_continuations=0,
                 verify_answers=False,
             ),

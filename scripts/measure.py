@@ -473,15 +473,10 @@ async def run(args, cfg: dict) -> dict:
             agent._playbook_pinned = False
             agent._playbook_context = ""
         try:
-            # The safety queue is not optional.  process_task drains it
-            # before the run, and a caller that leaves it unset is the
-            # difference between a run that answers and a run that raises.
-            queue = asyncio.Queue(maxsize=10)
             answer = await agent.process_task(
                 task,
                 session_path=os.path.join(sessions, "m%04d.jsonl" % index),
                 data_path=data_path,
-                safety_queue=queue,
             )
         except Exception as exc:
             error = "%s: %s" % (type(exc).__name__, str(exc)[:200])

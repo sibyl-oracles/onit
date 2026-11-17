@@ -120,21 +120,16 @@ class TestResearchHierarchy:
     first, then the documents it points at, and the web only for what is left."""
 
     @pytest.mark.asyncio
-    async def test_search_tools_are_ordered_corpus_document_web(self, tmp_path):
+    async def test_search_tools_are_ordered_corpus_web(self, tmp_path):
         result = await _assistant_fn(
             task="what scholarships exist",
             data_path=str(tmp_path / "data"),
             local_search_available=True,
-            document_search_available=True,
             web_search_available=True,
         )
         section = result[result.index("## Research and citations") :]
         steps = section[: section.index("###")]
-        assert (
-            steps.index("`local_search`")
-            < steps.index("`search_document`")
-            < steps.index("Search the web")
-        )
+        assert steps.index("`local_search`") < steps.index("Search the web")
 
     @pytest.mark.asyncio
     async def test_web_search_is_gated_on_an_incomplete_local_answer(self, tmp_path):
@@ -142,7 +137,6 @@ class TestResearchHierarchy:
             task="what scholarships exist",
             data_path=str(tmp_path / "data"),
             local_search_available=True,
-            document_search_available=True,
             web_search_available=True,
         )
         section = result[result.index("## Research and citations") :]
@@ -164,7 +158,6 @@ class TestResearchHierarchy:
             task="what scholarships exist",
             data_path=str(tmp_path / "data"),
             local_search_available=True,
-            document_search_available=True,
             web_search_available=True,
         )
         # Line-wrap-insensitive: the rule is what is asserted, not where the
@@ -174,33 +167,15 @@ class TestResearchHierarchy:
         assert "one wait instead of two" in section
 
     @pytest.mark.asyncio
-    async def test_a_missing_document_tool_is_never_named(self, tmp_path):
-        """The tool is registered separately from local_search and can be absent.
-        Naming a tool the model does not have earns a failed call, not an answer."""
-        result = await _assistant_fn(
-            task="what scholarships exist",
-            data_path=str(tmp_path / "data"),
-            local_search_available=True,
-            document_search_available=False,
-            web_search_available=True,
-        )
-        # Scoped to the instructions: data_path is echoed into the prompt, and a
-        # pytest tmp dir carries the test's own name.
-        section = result[result.index("## Research and citations") :]
-        assert "search_document" not in section
-        assert "`read_file`" in section
-
-    @pytest.mark.asyncio
     async def test_hierarchy_holds_without_web_search(self, tmp_path):
         result = await _assistant_fn(
             task="what scholarships exist",
             data_path=str(tmp_path / "data"),
             local_search_available=True,
-            document_search_available=True,
             web_search_available=False,
         )
         section = result[result.index("## Research and citations") :]
-        assert section.index("`local_search`") < section.index("`search_document`")
+        assert "`local_search`" in section
         assert "Search the web" not in section
 
 
@@ -328,7 +303,7 @@ class TestInstructionSplit:
     @pytest.mark.asyncio
     async def test_static_half_is_identical_across_sessions_and_tasks(self, tmp_path):
         kwargs = dict(
-            local_search_available=True, web_search_available=True, document_search_available=True
+            local_search_available=True, web_search_available=True
         )
         a = await _assistant_fn(
             task="what scholarships exist", data_path=str(tmp_path / "session-a"), **kwargs
@@ -436,7 +411,6 @@ class TestResearchFanOut:
             task="what scholarships exist",
             data_path=str(tmp_path / "data"),
             local_search_available=True,
-            document_search_available=True,
             web_search_available=True,
             max_documents=2,
         )
@@ -451,7 +425,6 @@ class TestResearchFanOut:
             task="what scholarships exist",
             data_path=str(tmp_path / "data"),
             local_search_available=True,
-            document_search_available=True,
             web_search_available=True,
         )
         section = result[result.index("## Research and citations") :]

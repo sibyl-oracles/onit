@@ -60,7 +60,6 @@ from .model.serving.balancer import DEFAULT_PRIORITY, LoadBalancer, ServerEndpoi
 
 AGENT_CURSOR = "OnIt"
 USER_CURSOR = "You"
-STOP_TAG = "<stop></stop>"
 
 # Whole-run failover attempts across the load balancer, on top of the
 # transport retries chat() itself does inside a turn.  One initial attempt
@@ -152,7 +151,6 @@ async def _chat_with_failover(
     *,
     instruction: str,
     kwargs: dict,
-    safety_queue: asyncio.Queue,
     session_key: str | None,
     images: list | None = None,
 ) -> str | None:
@@ -170,7 +168,6 @@ async def _chat_with_failover(
         onit: The OnIt instance, for its load_balancer, model_serving,
             timeout and tool_registry.
         kwargs: The chat() kwargs from OnIt._chat_kwargs().
-        safety_queue: The queue whose non-emptiness means "stop now".
         session_key: Sticky-session key for the load balancer.
         images: Optional images for the instruction.
 
@@ -179,8 +176,6 @@ async def _chat_with_failover(
     """
     last_response = None
     for attempt in range(1, MAX_FAILOVER_ATTEMPTS + 1):
-        if not safety_queue.empty():
-            break
         endpoint = onit.load_balancer.acquire(key=session_key)
         _usable = None
         try:
@@ -191,7 +186,6 @@ async def _chat_with_failover(
                 instruction=instruction,
                 images=images,
                 tool_registry=onit.tool_registry,
-                safety_queue=safety_queue,
                 think=onit.model_serving.get("think", DEFAULT_THINK),
                 timeout=onit.timeout,
                 **kwargs,
@@ -199,11 +193,10 @@ async def _chat_with_failover(
             # Treat empty/whitespace-only responses as failures too.
             _usable = last_response and remove_tags(last_response).strip()
         finally:
-            # A stop request is not an endpoint failure — don't cool down.
-            onit.load_balancer.release(endpoint, success=bool(_usable) or not safety_queue.empty())
+            onit.load_balancer.release(endpoint, success=bool(_usable))
         if _usable:
             break
-        if attempt < MAX_FAILOVER_ATTEMPTS and safety_queue.empty():
+        if attempt < MAX_FAILOVER_ATTEMPTS:
             kind = "Empty" if last_response is not None else "No"
             retry_msg = (
                 f"{kind} response from {endpoint.name or endpoint.host}, "
@@ -334,7 +327,6 @@ _STATUS_ARG_KEYS = ("query", "path", "file", "file_path", "url", "command")
 
 _TOOL_VERBS = {
     "read_file": "Reading",
-    "search_document": "Reading",
     "get_document_context": "Reading",
     "extract_tables": "Reading",
     "local_search": "Searching documents for",
@@ -354,7 +346,6 @@ _TOOL_ACTIVITIES = {
     "search": "searching the web",
     "fetch_content": "reading web pages",
     "local_search": "searching your documents",
-    "search_document": "reading documents",
     "get_document_context": "reading documents",
     "extract_tables": "reading documents",
     "read_file": "reading files",
@@ -848,7 +839,6 @@ class OnIt(BaseModel):
     model_serving: dict[str, Any] = Field(default_factory=dict)
     input_queue: asyncio.Queue | None = Field(default=None, exclude=True)
     output_queue: asyncio.Queue | None = Field(default=None, exclude=True)
-    safety_queue: asyncio.Queue | None = Field(default=None, exclude=True)
     verbose: bool = Field(default=True)
     session_id: str | None = Field(default=None)
     session_path: str = Field(default="~/.onit/sessions")
@@ -971,11 +961,6 @@ class OnIt(BaseModel):
     def local_search_available(self) -> bool:
         """Check if the local document search tool was discovered."""
         return self.tool_registry is not None and "local_search" in self.tool_registry.tools
-
-    @property
-    def document_search_available(self) -> bool:
-        """Check if the within-document search tool was discovered."""
-        return self.tool_registry is not None and "search_document" in self.tool_registry.tools
 
     @property
     def web_search_available(self) -> bool:
@@ -1784,8 +1769,6 @@ class OnIt(BaseModel):
         try:
             self.input_queue = asyncio.Queue(maxsize=10)
             self.output_queue = asyncio.Queue(maxsize=10)
-            self.safety_queue = asyncio.Queue(maxsize=10)
-            # safety_queue is used by non-web modes; web uses per-session queues
             self.status = "running"
             if self.loop:
                 await self.run_loop()
@@ -1809,7 +1792,6 @@ class OnIt(BaseModel):
         images: list[str] | None = None,
         session_path: str | None = None,
         data_path: str | None = None,
-        safety_queue: asyncio.Queue | None = None,
         stream_callback=None,
         stream_complete_callback=None,
         stream_throttle: int = 0,
@@ -1829,7 +1811,6 @@ class OnIt(BaseModel):
             images: Optional list of image file paths.
             session_path: Optional override for session history file path.
             data_path: Optional override for data directory path.
-            safety_queue: Optional per-session safety queue (e.g. per-tab in web UI).
             stream_callback: Optional callback ``(token, full_content) -> None``
                 called for each streamed token so callers can deliver incremental
                 updates to their clients (web UI, A2A, etc.).
@@ -1865,22 +1846,6 @@ class OnIt(BaseModel):
         # Use per-chat overrides if provided, otherwise fall back to instance defaults
         effective_session_path = session_path or self.session_path
         effective_data_path = data_path or self.data_path
-        effective_safety_queue = safety_queue or self.safety_queue
-        # An agent built outside ``run()`` has no instance queue -- ``run()``
-        # is what creates one, and a caller that builds the agent directly
-        # (the eval runner, ``scripts/measure.py``, a test) never goes
-        # through it.  ``safety_queue=None`` from such a caller used to
-        # raise AttributeError on the line below, which the runner caught
-        # as a per-item error: every item in both arms scored 0 with
-        # "'NoneType' object has no attribute 'empty'", and an A/B on a
-        # headless agent measured nothing at all.  A caller with no queue
-        # is a caller nobody can interrupt, so the empty queue is the
-        # honest stand-in: nothing is pending, and nothing ever will be.
-        if effective_safety_queue is None:
-            effective_safety_queue = asyncio.Queue(maxsize=10)
-
-        while not effective_safety_queue.empty():
-            effective_safety_queue.get_nowait()
 
         # Still timed: it sits in front of the first token of every task, and
         # nothing else measures it.
@@ -1939,14 +1904,9 @@ class OnIt(BaseModel):
             self,
             instruction=instruction,
             kwargs=kwargs,
-            safety_queue=effective_safety_queue,
             session_key=effective_session_id,
             images=images,
         )
-
-        # If the safety queue fired, stop the sandbox container.
-        if not effective_safety_queue.empty():
-            await _call_sandbox_stop(self.tool_registry, effective_session_id)
 
         # Flush any pending async streaming events (e.g. A2A) before
         # returning, so the client sees all partial updates before the
@@ -2018,7 +1978,7 @@ class OnIt(BaseModel):
         # that was retried over, and is closed rather than run.
         for _stale in _deep_checks[:-1]:
             _stale.close()
-        if _deep_checks and effective_safety_queue.empty():
+        if _deep_checks:
             self._schedule_background_check(
                 effective_session_id, _deep_checks[-1], effective_session_path
             )
@@ -2311,10 +2271,6 @@ class OnIt(BaseModel):
                 iteration += 1
                 start_time = asyncio.get_event_loop().time()
 
-                # clear safety queue
-                while not self.safety_queue.empty():
-                    self.safety_queue.get_nowait()
-
                 print(f"--- Iteration {iteration} ---")
                 instruction = await self._assistant_instruction(self.task)
 
@@ -2345,7 +2301,6 @@ class OnIt(BaseModel):
                         model=endpoint.model,
                         instruction=instruction,
                         tool_registry=self.tool_registry,
-                        safety_queue=self.safety_queue,
                         think=self.model_serving.get("think", DEFAULT_THINK),
                         timeout=self.timeout,
                         **kwargs,
@@ -2431,7 +2386,6 @@ class OnIt(BaseModel):
             "topic": self.topic,
             "sandbox_available": self.sandbox_available,
             "local_search_available": self.local_search_available,
-            "document_search_available": self.document_search_available,
             "web_search_available": self.web_search_available,
             # Only claimed when chat() will actually offer them: the note tools
             # need a data_path to write under, and the toolset as a whole is
@@ -2474,58 +2428,6 @@ class OnIt(BaseModel):
         async with Client(_transport_for(self.prompt_url, shared=False)) as prompt_client:
             result = await prompt_client.get_prompt("assistant", args)
         return result.messages[0].content.text
-
-    def _setup_enter_key_listener(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Set up Enter-key stop listener for text UI.
-
-        Returns ``None`` in web mode (no listener needed). The reader is
-        removed again by ``_cleanup_enter_key_listener``.
-        """
-        if self.web:
-            return None
-        import sys
-
-        safety_warning = self.messages.get("safety_warning", "Press 'Enter' key to stop all tasks.")
-        self.chat_ui.console.print(safety_warning, style="dim")
-        self.chat_ui.start_thinking()
-        fd = sys.stdin.fileno()
-
-        def _on_enter():
-            # Drain the available bytes with a raw, non-buffered read. Two reasons:
-            #   1. ``sys.stdin.readline()`` *blocks* until a full line is available;
-            #      running it inside this event-loop callback would freeze the loop
-            #      (and the streaming UI) whenever stdin is readable mid-line.
-            #   2. ``sys.stdin`` is buffered — readline() pulls bytes into a Python
-            #      userspace buffer that the raw ``os.read(fd, 1)`` input reader can
-            #      never see, silently swallowing the start of the user's next message.
-            #   ``os.read`` on a fd the selector just reported readable returns
-            #   immediately and leaves any unconsumed bytes in the kernel tty buffer,
-            #   where the text-UI input reader can still pick them up.
-            try:
-                data = os.read(fd, 4096)
-            except OSError:
-                return
-            if b"\n" in data or b"\r" in data:
-                self.safety_queue.put_nowait(STOP_TAG)
-
-        try:
-            loop.add_reader(fd, _on_enter)
-        except NotImplementedError:
-            pass  # Windows ProactorEventLoop does not support add_reader
-        return _on_enter
-
-    def _cleanup_enter_key_listener(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Clean up Enter-key listener for text UI."""
-        if self.web:
-            return
-        import sys
-
-        if hasattr(self, "chat_ui") and self.chat_ui and hasattr(self.chat_ui, "stop_thinking"):
-            self.chat_ui.stop_thinking()
-        try:
-            loop.remove_reader(sys.stdin.fileno())
-        except Exception:
-            pass
 
     def _handle_successful_response(
         self, response: str, task: str, elapsed_time: str, loop: asyncio.AbstractEventLoop
@@ -2681,12 +2583,8 @@ class OnIt(BaseModel):
                 self.input_queue.get_nowait()
             while not self.output_queue.empty():
                 self.output_queue.get_nowait()
-            while not self.safety_queue.empty():
-                self.safety_queue.get_nowait()
 
             instruction = await self._assistant_instruction(task)
-
-            self._setup_enter_key_listener(loop)
 
             # submit instruction with retry on API error
             start_time = loop.time()
@@ -2695,9 +2593,6 @@ class OnIt(BaseModel):
             if hasattr(self.chat_ui, "turn_start"):
                 self.chat_ui.turn_start()
             while True:
-                while not self.safety_queue.empty():
-                    self.safety_queue.get_nowait()
-
                 agent_task = asyncio.create_task(self.agent_session())
                 await self.input_queue.put(instruction)
 
@@ -2709,19 +2604,7 @@ class OnIt(BaseModel):
                 for t in pending:
                     t.cancel()
 
-                if final_answer_task not in done:
-                    await self.safety_queue.put(STOP_TAG)
-                    while not agent_task.done():
-                        await asyncio.sleep(0.1)
-                    break
-
                 response = final_answer_task.result()
-
-                # User-initiated stop
-                if response == STOP_TAG:
-                    await _call_sandbox_stop(self.tool_registry, self.session_id)
-                    self.chat_ui.add_message("system", "Task stopped by user.")
-                    break
 
                 if response is None:
                     # API error — auto-retry with backoff before giving up
@@ -2740,10 +2623,6 @@ class OnIt(BaseModel):
                         )
                         await asyncio.sleep(delay)
 
-                        # Clear queues before retry
-                        while not self.safety_queue.empty():
-                            self.safety_queue.get_nowait()
-
                         agent_task = asyncio.create_task(self.agent_session())
                         await self.input_queue.put(instruction)
 
@@ -2756,12 +2635,8 @@ class OnIt(BaseModel):
 
                         if final_answer_task in done:
                             response = final_answer_task.result()
-                            if response is not None and response != STOP_TAG:
+                            if response is not None:
                                 retry_succeeded = True
-                                break
-                            if response == STOP_TAG:
-                                await _call_sandbox_stop(self.tool_registry, self.session_id)
-                                self.chat_ui.add_message("system", "Task stopped by user.")
                                 break
 
                     if retry_succeeded:
@@ -2770,11 +2645,7 @@ class OnIt(BaseModel):
                         self._handle_successful_response(response, task, elapsed_time, loop)
                         break
 
-                    if response == STOP_TAG:
-                        break
-
                     # All retries exhausted — give up
-                    self._cleanup_enter_key_listener(loop)
                     self.chat_ui.add_message(
                         "system",
                         f"Unable to get a response from the model{error_detail} after {len(retry_delays)} retries. Giving up.",
@@ -2786,17 +2657,11 @@ class OnIt(BaseModel):
                 self._handle_successful_response(response, task, elapsed_time, loop)
                 break
 
-            self._cleanup_enter_key_listener(loop)
-
     async def agent_session(self) -> None:
         """Start the agent session with automatic failover on empty responses."""
         while True:
             try:
                 instruction = await self.input_queue.get()
-                if not self.safety_queue.empty():
-                    await _call_sandbox_stop(self.tool_registry, self.session_id)
-                    await self.output_queue.put(STOP_TAG)
-                    break
                 self.last_metrics.clear()
                 self.last_run_state = RunState()
                 # The terminal is handed its correction by chat() itself — the
@@ -2821,7 +2686,6 @@ class OnIt(BaseModel):
                     self,
                     instruction=instruction,
                     kwargs=kwargs,
-                    safety_queue=self.safety_queue,
                     session_key=self.session_id,
                 )
 
@@ -2829,13 +2693,9 @@ class OnIt(BaseModel):
                 if not last_response or not remove_tags(last_response).strip():
                     last_response = None
 
-                if last_response is None and self.safety_queue.empty():
+                if last_response is None:
                     await self.output_queue.put(None)
                     return
-                if not self.safety_queue.empty():
-                    await _call_sandbox_stop(self.tool_registry, self.session_id)
-                    await self.output_queue.put(STOP_TAG)
-                    break
                 await self.output_queue.put(f"<answer>{last_response}</answer>")
                 return
             except asyncio.CancelledError:

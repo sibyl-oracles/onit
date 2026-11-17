@@ -432,7 +432,7 @@ Event types, from the emit sites at `api.py:1098–1277`:
 
 ### 4.4 Other endpoints
 
-`POST /api/chat/stop`, `POST /api/approval`, `POST /api/clear`, `POST /api/rating`, `POST /api/upload`, `GET /api/config`, `GET /api/logs`, `GET /uploads/{sid}/{file}`, `GET /preview/{sid}/{path}`.
+`POST /api/approval`, `POST /api/clear`, `POST /api/rating`, `POST /api/upload`, `GET /api/config`, `GET /api/logs`, `GET /uploads/{sid}/{file}`, `GET /preview/{sid}/{path}`.
 
 ---
 

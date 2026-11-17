@@ -123,9 +123,9 @@ class TestBuildParameters:
 
 
 class TestConsolidatedToolContracts:
-    """`read_file` and `search_document` are each registered by two servers.
+    """`read_file` is registered by two servers.
 
-    They used to be *different tools sharing a name*: the bash server's
+    It used to be *different tools sharing a name*: the bash server's
     read_file had no `mode`, so `read_file(mode="tables")` succeeded or failed
     depending which server the registry picked, and both schemas were shown to
     the model at once. Both now register one shared definition, which makes
@@ -153,19 +153,10 @@ class TestConsolidatedToolContracts:
         tools, bash = self._schemas("read_file").values()
         assert tools == bash
 
-    def test_search_document_signatures_match(self):
-        tools, bash = self._schemas("search_document").values()
-        assert tools == bash
-
     def test_read_file_covers_all_three_modes(self):
         params = self._schemas("read_file")["bash"]
         # tables and images used to be reachable only through the Tools server
         for p in ("mode", "table_index", "output_format", "output_dir", "min_size"):
-            assert p in params
-
-    def test_search_document_covers_both_modes(self):
-        params = self._schemas("search_document")["bash"]
-        for p in ("mode", "query", "keywords", "context_chars", "max_sections"):
             assert p in params
 
     def test_descriptions_are_the_same_object(self):
@@ -178,8 +169,6 @@ class TestConsolidatedToolContracts:
         bash = importlib.import_module("onit.mcp.servers.tasks.os.bash.mcp_server")
         assert tools.READ_FILE_DESCRIPTION is shared.READ_FILE_DESCRIPTION
         assert bash.READ_FILE_DESCRIPTION is shared.READ_FILE_DESCRIPTION
-        assert tools.SEARCH_DOCUMENT_DESCRIPTION is shared.SEARCH_DOCUMENT_DESCRIPTION
-        assert bash.SEARCH_DOCUMENT_DESCRIPTION is shared.SEARCH_DOCUMENT_DESCRIPTION
 
     def test_read_file_description_documents_every_parameter(self):
         """The `offset`/`limit` hallucination in the recorded trajectories was a

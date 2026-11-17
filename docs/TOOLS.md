@@ -31,7 +31,6 @@ The tools servers register these by default (required parameters in **bold**; de
 | `grep` | **`path`**, **`pattern`**, `file_pattern` (`*`), `case_sensitive` (false), `include_hidden` (false), `max_results` (100) | Recursive regex search across files in a directory. Returns file, line number, and matching content. |
 | `send_file` | **`path`**, `callback_url` | Send a file to a remote client — via HTTP POST when `callback_url` is given, otherwise as base64 (max 10MB). |
 | `github_repo` | **`action`** (`create`\|`get`\|`list`\|`fork`\|`delete`), `name`, `description`, `private` (false), `auto_init` (true), `gitignore_template`, `license_template`, `org`, `per_page` (30) | Create, inspect, list, fork, or delete GitHub repositories. Requires `GITHUB_TOKEN`. |
-| `search_document` | **`path`**, `mode` (`pattern`\|`context`, `pattern`), `pattern`, `query`, `keywords`, `case_sensitive` (false), `context_lines` (3), `max_matches` (50), `context_chars` (500), `max_sections` (5) | Search within a single document (text, PDF, markdown) by regex or by keyword/query relevance. |
 | `index_documents` | `path` (`documents_path`, else `data_path`), `recursive` (true), `rebuild` (false), `chunk_size` (1600), `chunk_overlap` (200), `status_only` (false) | Ingest in-house documents (pdf, md, txt, csv, docx, xlsx) into the local search index. Incremental. |
 | `local_search` | **`query`**, `top_k` (5), `method` (`hybrid`\|`bm25`\|`dense`, `hybrid`), `path` | Search indexed in-house documents. Auto-ingests the default corpus on first use. |
 | `speak` | **`text`**, `voice` (`af_heart`), `speed` (1.0), `lang` (`en-us`) | Convert text to spoken audio as a WAV file, using the local Kokoro TTS model — offline, no API key. Weights (~330 MB) download once to `~/.onit/models/kokoro` on first use. Requires `pip install -e '.[tts]'` (or `onit[tts]`); included in `.[all]`. |
@@ -48,7 +47,7 @@ Legacy A2A server sessions each work in their own subdirectory `<data_path>/<ses
 | Tools | Allowed roots |
 |-------|---------------|
 | `write_file`, `edit_file` | `data_path` only |
-| `read_file`, `send_file`, `search_document` | `data_path` or `ONIT_DOCUMENTS_PATH` |
+| `read_file`, `send_file` | `data_path` or `ONIT_DOCUMENTS_PATH` |
 | `grep` (`path`), `bash` (`cwd`) | `data_path` or `ONIT_DOCUMENTS_PATH` |
 | `index_documents`, `local_search` (`path`) | `data_path` or `ONIT_DOCUMENTS_PATH`; when `path` is omitted the corpus defaults to `ONIT_DOCUMENTS_PATH` if set, else `data_path` |
 

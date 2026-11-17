@@ -28,12 +28,11 @@ Requires:
 5. serve - Run anything slower than 300s in the background: builds, installs,
    test suites, training runs, plus web servers and daemons
 6. send_file - Send a file to a remote client via callback URL
-7. search_document - Search for patterns in a document (text, PDF, markdown)
-8. search_directory - Search for patterns across files in a directory
-9. extract_tables - Extract tables from documents (PDF, markdown)
-10. find_files - Find files matching patterns
-11. transform_text - Transform text using sed/awk/tr operations
-12. get_document_context - Extract relevant context from a document
+7. search_directory - Search for patterns across files in a directory
+8. extract_tables - Extract tables from documents (PDF, markdown)
+9. find_files - Find files matching patterns
+10. transform_text - Transform text using sed/awk/tr operations
+11. get_document_context - Extract relevant context from a document
 """
 
 import asyncio
@@ -60,7 +59,6 @@ from onit.mcp.servers.tasks.shared import (
     validate_required as _validate_required,
     assert_public_url,
     safe_fetch,
-    search_document_impl,
     search_directory_impl,
     extract_tables_impl,
     extract_pdf_images_impl,
@@ -68,9 +66,7 @@ from onit.mcp.servers.tasks.shared import (
     transform_text_impl,
     get_document_context_impl,
     read_file_impl,
-    search_document_dispatch_impl,
     READ_FILE_DESCRIPTION,
-    SEARCH_DOCUMENT_DESCRIPTION,
     SERVE_DESCRIPTION,
 )
 from onit.mcp.servers.tasks.os.bash.command_policy import (
@@ -2830,57 +2826,7 @@ def _run_command(
 
 
 # =============================================================================
-# TOOL 5: SEARCH DOCUMENT
-# =============================================================================
-
-
-@mcp.tool(
-    title="Search Document",
-    description=SEARCH_DOCUMENT_DESCRIPTION,
-)
-def search_document(
-    path: Optional[str] = None,
-    mode: str = "pattern",
-    pattern: Optional[str] = None,
-    query: Optional[str] = None,
-    keywords: Optional[str] = None,
-    case_sensitive: bool = False,
-    context_lines: int = 3,
-    max_matches: int = 50,
-    context_chars: int = 500,
-    max_sections: int = 5,
-    data_path: str = "",
-) -> str:
-    """Regex or keyword search within one document.
-
-    This used to take only the regex parameters, while the consolidated Tools
-    server registered a `search_document` that also took `query`,
-    `context_chars` and `max_sections`.  The description here had grown three
-    "Do NOT use 'query'" warnings to cope — a prompt-level patch for a model
-    that had been shown both tools under one name and could not tell which it
-    would get.  Both now accept all of them, so the warnings are gone with the
-    condition that caused them.
-    """
-    base = _session_base(data_path)
-    _validate = lambda p: _validate_read_path(p, base=base)
-    return search_document_dispatch_impl(
-        path=path,
-        mode=mode,
-        pattern=pattern,
-        query=query,
-        keywords=keywords,
-        case_sensitive=case_sensitive,
-        context_lines=context_lines,
-        max_matches=max_matches,
-        context_chars=context_chars,
-        max_sections=max_sections,
-        search_pattern=lambda **kw: search_document_impl(**kw, validate_read_path=_validate),
-        search_context=lambda **kw: get_document_context_impl(**kw, validate_read_path=_validate),
-    )
-
-
-# =============================================================================
-# TOOL 6: SEARCH DIRECTORY
+# TOOL 5: SEARCH DIRECTORY
 # =============================================================================
 
 
@@ -2925,7 +2871,7 @@ def search_directory(
 
 
 # =============================================================================
-# TOOL 7: EXTRACT TABLES
+# TOOL 6: EXTRACT TABLES
 # =============================================================================
 
 
@@ -2958,7 +2904,7 @@ def extract_tables(
 
 
 # =============================================================================
-# TOOL 8: FIND FILES
+# TOOL 7: FIND FILES
 # =============================================================================
 
 
@@ -3006,7 +2952,7 @@ def find_files(
 
 
 # =============================================================================
-# TOOL 9: TRANSFORM TEXT
+# TOOL 8: TRANSFORM TEXT
 # =============================================================================
 
 
@@ -3053,7 +2999,7 @@ def transform_text(
 
 
 # =============================================================================
-# TOOL 10: GET DOCUMENT CONTEXT
+# TOOL 9: GET DOCUMENT CONTEXT
 # =============================================================================
 
 
@@ -3164,7 +3110,7 @@ def run(
     logger.info(f"Starting Bash MCP Server at {host}:{port}{path}")
     logger.info(f"Data path: {DATA_PATH}")
     logger.info(
-        "10 Core Tools: bash, read_file, write_file, send_file, search_document, search_directory, extract_tables, find_files, transform_text, get_document_context"
+        "9 Core Tools: bash, read_file, write_file, send_file, search_directory, extract_tables, find_files, transform_text, get_document_context"
     )
 
     quiet = "verbose" not in options

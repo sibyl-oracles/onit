@@ -54,18 +54,6 @@ import time
 logger = logging.getLogger(__name__)
 
 
-def _safety_queue():
-    """The stop-queue an item runs with.
-
-    ``process_task`` drains it before the run and checks it between
-    turns; a caller that hands it nothing used to crash on the first
-    line.  Nothing can be pushed into a queue the runner creates, which
-    is the right answer for an unattended replay: no person is present
-    to interrupt it.
-    """
-    return asyncio.Queue(maxsize=10)
-
-
 # The result file's name inside an arm's directory.
 RESULTS_NAME = "results.json"
 
@@ -278,7 +266,6 @@ async def run_arm(
                 # Both arms then scored on how well they described the
                 # refusal.
                 data_path=data_path,
-                safety_queue=_safety_queue(),
             )
         except Exception as e:
             error = str(e)[:300]

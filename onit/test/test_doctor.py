@@ -377,34 +377,6 @@ class TestToolGrepCheck:
         assert r.state == "skip"
 
 
-class TestToolSearchDocumentCheck:
-    async def test_a_found_marker_passes_and_cleans_up(self, tmp_path):
-        agent = _agent()
-        agent.data_path = str(tmp_path)
-        marker = "DOCTOR-DOC-TEST"
-
-        async def fake_call(reg, name, **kw):
-            assert name == "search_document" and kw["mode"] == "pattern"
-            with open(kw["path"]) as f:
-                text = f.read()
-            hits = [
-                {"line": i} for i, line in enumerate(text.splitlines(), 1) if kw["pattern"] in line
-            ]
-            return json.dumps({"matches": hits, "total_matches": len(hits)})
-
-        with patch.object(doctor, "_call_tool", side_effect=fake_call):
-            r = await doctor.check_tool_search_document(agent)
-        assert r.state == "pass", r.detail
-        assert not list(tmp_path.iterdir())  # probe file removed
-
-    async def test_a_miss_fails(self, tmp_path):
-        agent = _agent()
-        agent.data_path = str(tmp_path)
-        with patch.object(doctor, "_call_tool", return_value=json.dumps({"total_matches": 0})):
-            r = await doctor.check_tool_search_document(agent)
-        assert r.state == "fail" and "missed" in r.detail
-
-
 class TestToolLocalSearchCheck:
     async def test_index_then_search_passes_and_cleans_up(self, tmp_path):
         agent = _agent()
@@ -989,7 +961,6 @@ class TestRunChecks:
             "write_file": "tool-files",
             "edit_file": "tool-files",
             "grep": "tool-grep",
-            "search_document": "tool-search-document",
             "local_search": "tool-local-search",
             "index_documents": "tool-local-search",
             "send_file": "tool-send-file",

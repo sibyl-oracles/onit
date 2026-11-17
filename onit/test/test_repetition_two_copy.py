@@ -176,7 +176,6 @@ async def test_chat_terminates_on_the_reported_loop():
                 host="http://localhost:8000/v1",
                 instruction="Write the file.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
                 max_ack_continuations=0,
                 verify_answers=False,
             ),

@@ -39,10 +39,8 @@ Two documented constraints of the model shape the rest of the design:
    ``ask_onit`` — one door through which the whole agent is reachable.
 
 2. "User cannot interrupt the agent during tool calling execution."  An OnIt
-   task can run for a minute.  Barge-in across that window is therefore ours to
-   implement, not the model's: the client pump keeps measuring inbound audio
-   while a tool runs and cancels the task through the same safety queue the
-   web UI's stop button uses.
+   task can run for a minute; the voice call waits it out rather than
+   cancelling it, and the agent's answer is spoken when it arrives.
 """
 
 import array
@@ -127,7 +125,6 @@ DEFAULT_SYSTEM_PROMPT = (
 # not by a stable key name, and a wrong key risks a session.update rejection.
 DEFAULT_ON_HOLD = "Give me a moment while I look that up."
 
-CANCELLED_MESSAGE = "The user interrupted, so the task was cancelled."
 TIMEOUT_MESSAGE = "That took too long, so I stopped it. Ask me to try again."
 
 
@@ -259,12 +256,9 @@ class VoiceConfig:
     on_hold_message: str = DEFAULT_ON_HOLD
     max_spoken_chars: int = MAX_SPOKEN_CHARS
     tool_timeout: float = 90.0
-    barge_in: bool = True
     # Sustained level and frame count that count as "the user started talking"
     # while a tool is running.  Five frames is ~400 ms — long enough to ignore
     # a chair creak, short enough that cancelling still feels immediate.
-    barge_in_rms: float = 900.0
-    barge_in_frames: int = 5
     # The model is prone to continuing on its own; cap how many turns it may
     # take without the user having said anything in between.
     max_unprompted_turns: int = 3
@@ -321,14 +315,6 @@ def tool_specs(on_hold: str = DEFAULT_ON_HOLD) -> list[dict]:
             ),
             "parameters": {"type": "object", "properties": {}},
         },
-        {
-            "name": "stop_current_task",
-            "description": (
-                "Cancel the work started by ask_onit. Call this when the user "
-                "says stop, cancel, never mind, or forget it."
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
     ]
 
 
@@ -341,7 +327,7 @@ class VoiceBridge:
     Instantiated per connection by the ``/api/voice`` route.  The caller owns
     authentication and session resolution; by the time a bridge exists the
     session is already the same ``ApiSession`` the typed UI uses, so voice and
-    text share history, files and the stop button.
+    text share history and files.
     """
 
     def __init__(
@@ -369,7 +355,6 @@ class VoiceBridge:
         self._task_running = False
         self._task_future = None
         self._loud_frames = 0
-        self._cancelled = False
         self._tool_tasks: set = set()
 
         # Transcript of the turn in flight, flushed to the session JSONL when
@@ -422,7 +407,6 @@ class VoiceBridge:
                     logger.error("voice: pump failed: %s", exc)
         finally:
             self._closing = True
-            await self._cancel_running_task()
             await self._drain(writer)
             await self._close_upstream()
             self.ui.add_log("Voice call ended")
@@ -473,7 +457,7 @@ class VoiceBridge:
     # ── browser -> container ───────────────────────────────────────────
 
     async def _pump_client(self) -> None:
-        """Relay mic frames upstream, and watch them for barge-in."""
+        """Relay mic frames upstream."""
         while not self._closing:
             try:
                 msg = await self.client.receive_json()
@@ -485,49 +469,16 @@ class VoiceBridge:
                 b64 = msg.get("data") or ""
                 if not b64:
                     continue
-                self._watch_for_barge_in(b64)
                 await self._send_upstream(
                     {
                         "type": EV["audio_append"],
                         "audio": b64,
                     }
                 )
-            elif mtype == "stop":
-                # The composer's stop button, pressed mid-call.
-                await self._cancel_running_task()
-                await self._send_client("barge_in", {"reason": "stop"})
             elif mtype == "bye":
                 return
             elif mtype == "ping":
                 await self._send_client("pong", {})
-
-    def _watch_for_barge_in(self, b64: str) -> None:
-        """Cancel a running agent task once the user talks over it.
-
-        This is the documented hole in the model: while a tool call is
-        outstanding it will not accept an interruption, and an OnIt task can
-        easily outlast the user's patience.  So the level is measured here and
-        the cancellation goes through ``safety_queue`` — the very mechanism
-        behind /api/chat/stop — which unwinds the agent loop and stops the
-        sandbox container on its way out.
-        """
-        if not (self.cfg.barge_in and self._task_running) or self._cancelled:
-            return
-        try:
-            raw = base64.b64decode(b64, validate=False)
-        except Exception:
-            return
-        if rms_pcm16(raw) >= self.cfg.barge_in_rms:
-            self._loud_frames += 1
-        else:
-            self._loud_frames = 0
-        if self._loud_frames >= self.cfg.barge_in_frames:
-            logger.info("voice: barge-in during tool call, cancelling task")
-            self._request_cancel()
-            self._send_client_nowait("barge_in", {"reason": "speech"})
-            self._send_client_nowait("status", {"text": ""})
-
-    # ── container -> browser ───────────────────────────────────────────
 
     async def _pump_server(self) -> None:
         """Translate container events onto OnIt's wire."""
@@ -577,7 +528,6 @@ class VoiceBridge:
                 # Draining it would have the agent talking over the user, so
                 # the client flushes the ring buffer outright.
                 self._loud_frames = 0
-                await self._send_client("barge_in", {"reason": "speech_started"})
 
             elif etype == EV["speech_stopped"]:
                 await self._send_client("speech_stopped", {})
@@ -663,9 +613,6 @@ class VoiceBridge:
                 output = await self._ask_onit(str(args.get("request") or "").strip())
             elif name == "get_current_datetime":
                 output = datetime.now().strftime("It is %A, %B %d, %Y at %I:%M %p.")
-            elif name == "stop_current_task":
-                await self._cancel_running_task()
-                output = "Stopped."
             else:
                 output = f"There is no tool called {name}."
         except Exception as exc:
@@ -698,15 +645,7 @@ class VoiceBridge:
 
         self._turn_used_tool = True
         self._task_running = True
-        self._cancelled = False
-        self._loud_frames = 0
         self.session.processing = True
-        # A stop pressed before this task must not cancel it.
-        while not self.session.safety_queue.empty():
-            try:
-                self.session.safety_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
 
         started = time.monotonic()
         try:
@@ -714,7 +653,6 @@ class VoiceBridge:
                 request,
                 session_path=self.session.session_path,
                 data_path=self.session.data_path,
-                safety_queue=self.session.safety_queue,
                 tool_status_callback=self._on_tool_status,
                 tool_result_callback=self._on_tool_result,
                 session_id=self.session.session_id,
@@ -725,7 +663,6 @@ class VoiceBridge:
                 timeout=self.cfg.tool_timeout,
             )
         except asyncio.TimeoutError:
-            self._request_cancel()
             return TIMEOUT_MESSAGE
         except Exception as exc:
             logger.error("voice: ask_onit failed: %s", exc)
@@ -735,9 +672,6 @@ class VoiceBridge:
             self._task_future = None
             self.session.processing = False
             await self._send_client("status", {"text": ""})
-
-        if self._cancelled:
-            return CANCELLED_MESSAGE
 
         elapsed = time.monotonic() - started
         logger.info("voice: ask_onit answered in %.1fs", elapsed)
@@ -769,19 +703,6 @@ class VoiceBridge:
             self.ui._record_email_sources(self.session, result or "")
         except Exception:
             pass
-
-    async def _cancel_running_task(self) -> None:
-        if self._task_running:
-            self._request_cancel()
-
-    def _request_cancel(self) -> None:
-        """Fill the session's safety queue, the way the stop button does."""
-        if self._cancelled or not self._task_running:
-            return
-        self._cancelled = True
-        loop = getattr(self.ui, "_loop", None)
-        if loop is not None:
-            loop.call_soon_threadsafe(self.session.safety_queue.put_nowait, True)
 
     # ── history ────────────────────────────────────────────────────────
 
@@ -858,7 +779,7 @@ class VoiceBridge:
             logger.debug("voice: client queue full, dropping %s", etype)
 
     def _send_client_threadsafe(self, etype: str, payload: dict) -> None:
-        """Enqueue from OnIt's loop (or the barge-in path) onto ours."""
+        """Enqueue from OnIt's loop onto ours."""
         loop = self._client_loop
         if loop is None or loop.is_closed():
             return

@@ -70,7 +70,6 @@ MINABLE_TOOLS = frozenset(
         "read_file",
         "write_file",
         "grep",
-        "search_document",
         "fetch_content",
         "search",
         "serve",

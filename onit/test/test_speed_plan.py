@@ -281,7 +281,6 @@ class TestCachedTokens:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 chat_ui=_UI(),
             )
         assert result == "Done."
@@ -356,7 +355,6 @@ class TestTimeoutRetryPolicy:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 max_api_retries=3,
             )
         assert result is None
@@ -397,7 +395,6 @@ class TestRepeatedCallSteering:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
             )
         assert result == "Finally done."
@@ -426,7 +423,6 @@ class TestRepeatedCallSteering:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 max_repeat_recoveries=0,
             )
@@ -466,7 +462,6 @@ class TestRepeatRecovery:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 run_state=state,
                 **kwargs,
@@ -527,7 +522,6 @@ class TestRepeatRecovery:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 run_state=state,
             )
@@ -560,7 +554,6 @@ class TestRepeatRecovery:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 run_state=state,
                 max_repeat_recoveries=0,
@@ -684,7 +677,6 @@ class TestIncrementalCompaction:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 max_context_tokens=10_000,
                 max_tokens=1024,
@@ -732,7 +724,6 @@ class TestIncrementalCompaction:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 max_context_tokens=10_000,
                 max_tokens=1024,

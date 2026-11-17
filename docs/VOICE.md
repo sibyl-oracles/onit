@@ -1,6 +1,6 @@
 # Voice — full-duplex speech to speech
 
-Talk to OnIt out loud, interrupt it mid-sentence, and have it run its real MCP
+Talk to OnIt out loud and have it run its real MCP
 tools while you listen.
 
 Speech is handled end to end by NVIDIA's
@@ -97,7 +97,7 @@ A microphone button appears in the composer — but only once
 rather than a socket that fails for reasons the browser cannot explain.
 
 Click it, allow the microphone, and talk. The bar above the composer shows
-**Listening / Speaking**, plus **Interrupt**, **Mute** and **End**.
+**Listening / Speaking**, plus **Mute** and **End**.
 
 ---
 
@@ -115,8 +115,6 @@ All keys live under `voice:` in your config (defaults in
 | `on_hold_message` | "Give me a moment…" | Spoken when a tool call starts. |
 | `max_spoken_chars` | `600` | Where a spoken answer is cut. |
 | `tool_timeout` | `90` | Seconds before a runaway `ask_onit` is cancelled. |
-| `barge_in` | `true` | Cancel the agent when you talk over it. |
-| `barge_in_rms` / `barge_in_frames` | `900` / `5` | What counts as speech (~400 ms). |
 | `max_unprompted_turns` | `3` | End the call if the model talks to itself. |
 
 ## How the agent is reachable
@@ -124,13 +122,12 @@ All keys live under `voice:` in your config (defaults in
 The model documents a ceiling of **five tools per session** and cannot call
 tools in parallel. OnIt's registry is far larger than that, and its value is the
 *multi-step* loop rather than any one tool. So the voice model is handed a
-three-tool facade:
+two-tool facade:
 
 | tool | what it does |
 |---|---|
 | `ask_onit(request)` | Runs the full agent loop — the whole registry behind one door. |
 | `get_current_datetime()` | The commonest question, answered without a round trip. |
-| `stop_current_task()` | "Stop", "never mind", "forget it". |
 
 `ask_onit` runs `OnIt.process_task` against the same session as the typed UI, so
 a voice call and a chat share one history, one working directory and one set of
@@ -141,22 +138,6 @@ ASCII (the model card requires it) and cut at a sentence boundary near
 `max_spoken_chars`; code fences, tables and URLs become brief stand-ins. The
 full markdown answer — links, file chips, previews — still lands in the
 transcript, which is where it belongs.
-
-## Interruption
-
-Handled at three levels, because barge-in is the part most likely to feel
-broken:
-
-1. **While the agent speaks.** The model is full duplex and the server decides.
-   The client is the failure point: the browser holds up to a second of queued
-   audio, so on `barge_in` the playback ring buffer is *discarded*, not drained.
-2. **While a tool runs.** NVIDIA documents that the model cannot be interrupted
-   during tool execution — which is exactly the window an agent task occupies.
-   OnIt therefore measures the microphone itself and, on sustained speech, fills
-   the session's safety queue: the same mechanism as the stop button, which
-   unwinds the agent loop and stops the sandbox container on its way out.
-3. **Explicitly.** The **Interrupt** button does both at once. **Mute** gates
-   the microphone at the worklet for noisy rooms.
 
 ## Known limitations
 
@@ -186,14 +167,13 @@ use the compose service name (`ws://voicechat:9000/v1/realtime`).
 **The agent answers itself.** Echo cancellation is off, or output is on speakers
 loud enough to defeat it. Use headphones.
 
-**The agent talks over you.** Barge-in flushes on `speech_started`; if audio
-continues, the worklet failed to load — check for a
-`/static/pcm-worklet.js` 404.
+**The agent talks over you.** The model is full duplex, so this is usually
+echo — output on speakers loud enough to defeat cancellation. Use headphones.
 
 ## Testing without a GPU
 
 `onit/test/fake_voicechat.py` is a protocol-accurate stand-in that speaks the
-same event vocabulary as the container, so the bridge, tool dispatch, barge-in,
+same event vocabulary as the container, so the bridge, tool dispatch,
 sanitiser and auth are all covered without hardware:
 
 ```bash

@@ -99,7 +99,6 @@ DEFAULT_TOOLS = (
     "write_file",
     "edit_file",
     "grep",
-    "search_document",
     "local_search",
     "index_documents",
     "send_file",
@@ -470,57 +469,6 @@ async def check_tool_grep(agent) -> CheckResult:
         )
     finally:
         shutil.rmtree(probe_dir, ignore_errors=True)
-
-
-async def check_tool_search_document(agent) -> CheckResult:
-    """search_document regex mode over a planted file — no index involved."""
-    start = time.monotonic()
-    if early := _reg_skip(agent, "tool-search-document", ("search_document",), start):
-        return early
-    reg = agent.tool_registry
-    data_path = getattr(agent, "data_path", "") or ""
-    if not data_path:
-        return _result(
-            "tool-search-document",
-            False,
-            "no data_path this session — nowhere to probe",
-            start,
-            skip=True,
-        )
-    marker = f"DOCTOR-DOC-{os.getpid()}"
-    probe = os.path.join(data_path, f".doctor-doc-{os.getpid()}.md")
-    try:
-        with open(probe, "w", encoding="utf-8") as f:
-            f.write(f"# probe\n\nThe {marker} token lives here.\n")
-        out = _tool_json_safe(
-            await _call_tool(
-                reg,
-                "search_document",
-                path=probe,
-                mode="pattern",
-                pattern=marker,
-                data_path=data_path,
-            ),
-            "search_document",
-        )
-        if out.get("total_matches", 0) < 1:
-            return _result(
-                "tool-search-document",
-                False,
-                f"pattern search missed the planted marker: {_short(str(out))}",
-                start,
-            )
-        return _result(
-            "tool-search-document",
-            True,
-            f"pattern search found the planted marker ({out.get('total_matches')} match)",
-            start,
-        )
-    finally:
-        try:
-            os.remove(probe)
-        except OSError:
-            pass
 
 
 async def check_tool_index_and_search(agent) -> CheckResult:
@@ -1031,7 +979,6 @@ async def check_model_reply(agent) -> CheckResult:
         model=ep.model,
         instruction=REPLY_PROBE,
         tool_registry=None,  # no tools: one plain turn
-        safety_queue=asyncio.Queue(),
         chat_ui=None,
         verbose=False,
         stream=False,
@@ -1075,7 +1022,6 @@ async def check_model_tool_turn(agent) -> CheckResult:
         model=ep.model,
         instruction=TOOL_TURN_INSTRUCTION,
         tool_registry=reg,
-        safety_queue=asyncio.Queue(),
         chat_ui=None,
         verbose=False,
         stream=False,
@@ -1140,7 +1086,6 @@ async def check_model_file_turn(agent) -> CheckResult:
             model=ep.model,
             instruction=FILE_TURN_INSTRUCTION.format(path=os.path.join(data_path, probe)),
             tool_registry=reg,
-            safety_queue=asyncio.Queue(),
             chat_ui=None,
             verbose=False,
             stream=False,
@@ -1183,7 +1128,6 @@ CHECKS = (
     ("tool-bash", check_tool_bash, TOOL_CALL_TIMEOUT_S),
     ("tool-files", check_tool_files, TOOL_CALL_TIMEOUT_S),
     ("tool-grep", check_tool_grep, TOOL_CALL_TIMEOUT_S),
-    ("tool-search-document", check_tool_search_document, TOOL_CALL_TIMEOUT_S),
     ("tool-local-search", check_tool_index_and_search, RAG_TIMEOUT_S),
     ("tool-send-file", check_tool_send_file, TOOL_CALL_TIMEOUT_S),
     ("tool-serve", check_tool_serve, SERVE_TIMEOUT_S),

@@ -336,7 +336,6 @@ class TestOpenAIRequestShaping:
                 host=host,
                 instruction="Reply with one word.",
                 tool_registry=kw.pop("tool_registry", None),
-                safety_queue=asyncio.Queue(),
                 **kw,
             )
         return mock_client.chat.completions.create.call_args.kwargs
@@ -404,7 +403,6 @@ class TestOpenAIRequestShaping:
                 host="https://api.openai.com/v1",
                 instruction="hi",
                 harness_tools=False,
-                safety_queue=asyncio.Queue(),
             )
         assert result == "ok"
         _first, _second = mock_client.chat.completions.create.call_args_list
@@ -439,7 +437,6 @@ class TestOpenAIRequestShaping:
                 host="https://api.openai.com/v1",
                 instruction="hi",
                 harness_tools=False,
-                safety_queue=asyncio.Queue(),
             )
         assert result == ""  # the responses mock returns nothing usable
         mock_client.chat.completions.create.assert_not_called()
@@ -468,7 +465,6 @@ class TestOpenAIRequestShaping:
                 host="https://api.openai.com/v1",
                 instruction="hi",
                 harness_tools=False,
-                safety_queue=asyncio.Queue(),
             )
         assert result == "ok"
         _first, _second = mock_client.chat.completions.create.call_args_list
@@ -507,7 +503,7 @@ class TestOpenAIRequestShaping:
                 ),
             ):
                 await chat(
-                    host="https://api.openai.com/v1", instruction="hi", safety_queue=asyncio.Queue()
+                    host="https://api.openai.com/v1", instruction="hi"
                 )
         probe.assert_not_awaited()
 
@@ -533,7 +529,6 @@ class TestOpenAIRequestShaping:
             await chat(
                 host="https://api.openai.com/v1/chat/completions",
                 instruction="hi",
-                safety_queue=asyncio.Queue(),
             )
         base_url = mock_ctor.call_args.kwargs["base_url"]
         assert str(base_url).rstrip("/") == "https://api.openai.com/v1"
@@ -554,7 +549,6 @@ class TestOpenAIRequestShaping:
             await chat(
                 host="https://api.openai.com/v1/completions",
                 instruction="hi",
-                safety_queue=asyncio.Queue(),
             )
         base_url = mock_ctor.call_args.kwargs["base_url"]
         assert str(base_url).rstrip("/") == "https://api.openai.com/v1"
@@ -736,7 +730,6 @@ class TestChat:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="What is 6*7?",
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == "The answer is 42."
@@ -759,36 +752,9 @@ class TestChat:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == "Result here"
-
-    @pytest.mark.asyncio
-    async def test_safety_queue_aborts(self):
-        sq = asyncio.Queue()
-        sq.put_nowait("stop")
-
-        mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            return_value=_mock_completion("should not reach")
-        )
-
-        with (
-            patch("onit.model.serving.chat.AsyncOpenAI", return_value=mock_client),
-            patch(
-                "onit.model.serving.chat._resolve_model_id",
-                new_callable=AsyncMock,
-                return_value="test-model",
-            ),
-        ):
-            result = await chat(
-                host="http://localhost:8000/v1",
-                instruction="test",
-                safety_queue=sq,
-            )
-
-        assert result is None
 
     @pytest.mark.asyncio
     async def test_api_timeout_returns_none(self):
@@ -810,7 +776,6 @@ class TestChat:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
-                safety_queue=asyncio.Queue(),
             )
 
         assert result is None
@@ -833,7 +798,6 @@ class TestChat:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="test",
-                safety_queue=asyncio.Queue(),
             )
 
         assert result is None
@@ -928,7 +892,6 @@ class TestChat:
                 host="http://localhost:8000/v1",
                 instruction="test",
                 stream=True,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result is None
@@ -961,7 +924,6 @@ class TestChat:
                 host="http://localhost:8000/v1",
                 instruction="test",
                 stream=True,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == "Hello"
@@ -1016,7 +978,6 @@ class TestChat:
                 host="http://localhost:8000/v1",
                 instruction="What is the weather?",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == "It's sunny!"
@@ -1041,7 +1002,6 @@ class TestChat:
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="follow up",
-                safety_queue=asyncio.Queue(),
                 session_history=history,
             )
 
@@ -1073,7 +1033,6 @@ class TestChat:
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="hello",
-                safety_queue=asyncio.Queue(),
                 prompt_intro="I am a custom bot.",
             )
 
@@ -1858,7 +1817,6 @@ class TestApiToolPayload:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
             )
 
         sent = mock_client.chat.completions.create.call_args.kwargs["tools"]
@@ -1906,7 +1864,6 @@ class TestHarnessToolsInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 **kwargs,
             )
@@ -1948,7 +1905,6 @@ class TestHarnessToolsInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=self._registry(),
-                safety_queue=asyncio.Queue(),
             )
         sent = [
             t["function"]["name"] for t in client.chat.completions.create.call_args.kwargs["tools"]
@@ -1986,7 +1942,6 @@ class TestHarnessToolsInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
             )
         assert result == "Plenty of room left."
@@ -2024,7 +1979,6 @@ class TestHarnessToolsInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 max_context_tokens=10_000,
                 max_tokens=1024,
@@ -2058,7 +2012,6 @@ class TestHarnessToolsInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=self._registry(),
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
             )
         assert (tmp_path / ".onit" / "notes" / "findings.md").read_text() == "the port is 8001"
@@ -2395,7 +2348,6 @@ class TestPlanningContinuation:
                 host="http://localhost:8000/v1",
                 instruction="Create a README and push it.",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
                 think=False,
             )
 
@@ -2436,7 +2388,6 @@ class TestPlanningContinuation:
                 host="http://localhost:8000/v1",
                 instruction="Think about it.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == planning_text
@@ -2469,7 +2420,6 @@ class TestPlanningContinuation:
                 host="http://localhost:8000/v1",
                 instruction="Explain at length.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == part1 + part2
@@ -2510,7 +2460,6 @@ class TestPlanningContinuation:
                 host="http://localhost:8000/v1",
                 instruction="Explain forever.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
             )
 
         # 1 initial + MAX_FINAL_CONTINUATIONS (3) resumes = 4 calls.
@@ -2547,7 +2496,6 @@ class TestPlanningContinuation:
                 host="http://localhost:8000/v1",
                 instruction="Write a review.",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
             )
 
         # Should return an error message, not the planning text
@@ -2598,7 +2546,6 @@ class TestPlanningContinuation:
                     host="http://localhost:8000/v1",
                     instruction="Analyze the repository.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -2642,7 +2589,6 @@ class TestPlanningContinuation:
                 host="http://localhost:8000/v1",
                 instruction="Run the tests and explain the failures.",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == "All 3 failures were path-jail bugs."
@@ -2734,7 +2680,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Page through everything.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                     max_chat_iterations=5,
                 ),
                 timeout=30,
@@ -2766,7 +2711,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Page through everything.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                     max_chat_iterations=3,
                 ),
                 timeout=30,
@@ -2812,7 +2756,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Run the tests.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                     max_chat_iterations=2,
                 ),
                 timeout=30,
@@ -2845,7 +2788,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Page through everything.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                     chat_ui=ui,
                     max_chat_iterations=3,
                 ),
@@ -2896,7 +2838,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Rewrite the caption builder.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=60,
             )
@@ -2936,7 +2877,6 @@ class TestLoopPolicy:
                 host="http://localhost:8000/v1",
                 instruction="List the files.",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
                 max_chat_iterations=-1,
             )
 
@@ -2972,7 +2912,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Analyze the repository.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                     max_planning_continuations=4,
                 ),
                 timeout=30,
@@ -3002,7 +2941,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Explain forever.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_final_continuations=1,
                 ),
                 timeout=30,
@@ -3040,7 +2978,6 @@ class TestLoopPolicy:
                     host="http://localhost:8000/v1",
                     instruction="Analyze the repository.",
                     tool_registry=mock_registry,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -3080,87 +3017,6 @@ class TestHangPrevention:
         assert isinstance(cfg, httpx.Timeout)
         assert cfg.connect == CONNECT_TIMEOUT
         assert cfg.read is None
-
-    @pytest.mark.asyncio
-    async def test_safety_queue_aborts_blocked_api_call(self):
-        """Pressing stop must interrupt an API call that never returns."""
-        from onit.model.serving.chat import _await_with_safety, _SAFETY_ABORT
-
-        async def never_returns():
-            await asyncio.sleep(3600)
-
-        safety_queue = asyncio.Queue()
-        safety_queue.put_nowait("stop")
-        result = await asyncio.wait_for(
-            _await_with_safety(never_returns(), safety_queue, poll=0.05), timeout=5
-        )
-        assert result is _SAFETY_ABORT
-
-    @pytest.mark.asyncio
-    async def test_safety_race_returns_result_when_call_completes(self):
-        from onit.model.serving.chat import _await_with_safety
-
-        async def quick():
-            return "ok"
-
-        result = await _await_with_safety(quick(), asyncio.Queue(), poll=0.05)
-        assert result == "ok"
-
-    @pytest.mark.asyncio
-    async def test_safety_race_propagates_exceptions(self):
-        from onit.model.serving.chat import _await_with_safety
-        from openai import APITimeoutError
-        import httpx
-
-        async def boom():
-            raise APITimeoutError(request=httpx.Request("POST", "http://localhost:8000/v1"))
-
-        with pytest.raises(APITimeoutError):
-            await _await_with_safety(boom(), asyncio.Queue(), poll=0.05)
-
-    @pytest.mark.asyncio
-    async def test_cancelled_gather_does_not_log_unretrieved_exception(self):
-        """Tearing down a parallel tool batch must not dump a stack at ERROR.
-
-        A gather() resolves a requested cancellation by *setting* CancelledError
-        once its children unwind, so nothing is left to retrieve it and asyncio
-        logs the whole tool stack as "exception was never retrieved".
-        """
-        import gc
-        from onit.model.serving.chat import _await_with_safety
-
-        logged: list[str] = []
-        loop = asyncio.get_running_loop()
-        previous = loop.get_exception_handler()
-        loop.set_exception_handler(lambda _loop, ctx: logged.append(ctx.get("message", "")))
-        try:
-
-            async def slow_tool():
-                try:
-                    await asyncio.sleep(3600)
-                except asyncio.CancelledError:
-                    await asyncio.sleep(0.05)  # child unwinds after the cancel
-                    raise
-
-            outer = asyncio.ensure_future(
-                _await_with_safety(
-                    asyncio.gather(*(slow_tool() for _ in range(3)), return_exceptions=True),
-                    asyncio.Queue(),
-                    poll=0.05,
-                )
-            )
-            await asyncio.sleep(0.2)
-            outer.cancel()  # request torn down, e.g. the client disconnected
-            with pytest.raises(asyncio.CancelledError):
-                await outer
-            await asyncio.sleep(0.3)  # children unwind, gather resolves
-            gc.collect()
-            await asyncio.sleep(0)
-        finally:
-            loop.set_exception_handler(previous)
-
-        assert not [m for m in logged if "never retrieved" in m], logged
-
 
 # ── answer text written alongside tool calls ────────────────────────────────
 
@@ -3276,7 +3132,6 @@ class TestProseAlongsideToolCalls:
                 host="http://localhost:8000/v1",
                 instruction="Summarize the quarter and save it.",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
             )
 
         assert answer.strip() in result
@@ -3322,7 +3177,6 @@ class TestProseAlongsideToolCalls:
                 host="http://localhost:8000/v1",
                 instruction="UPD AI Program scholarships",
                 tool_registry=mock_registry,
-                safety_queue=asyncio.Queue(),
             )
 
         assert answer.strip() in result
@@ -3391,7 +3245,6 @@ class TestResultStoreInChat:
                 host="http://localhost:8000/v1",
                 instruction="find it",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 verify_answers=False,
             )
@@ -3455,7 +3308,6 @@ class TestResultStoreInChat:
                 host="http://localhost:8000/v1",
                 instruction="find it",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 verify_answers=False,
             )
@@ -3496,7 +3348,6 @@ class TestResultStoreInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 verify_answers=False,
             )
@@ -3535,7 +3386,6 @@ class TestResultStoreInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 verify_answers=False,
             )
 
@@ -3569,7 +3419,6 @@ class TestResultStoreInChat:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 result_store=False,
                 verify_answers=False,
@@ -3632,7 +3481,6 @@ class TestResultStoreInChat:
                 host="http://localhost:8000/v1",
                 instruction="research it",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 metrics=metrics,
                 verify_answers=False,
@@ -3703,7 +3551,6 @@ class TestRunCodeInChat:
                 host="http://localhost:8000/v1",
                 instruction="do it",
                 tool_registry=self._registry(),
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 verify_answers=False,
                 **kwargs,
@@ -3857,7 +3704,6 @@ class TestRunState:
                 host="http://localhost:8000/v1",
                 instruction="List the files.",
                 tool_registry=_bash_registry(),
-                safety_queue=asyncio.Queue(),
                 run_state=state,
                 verify_answers=False,
             )
@@ -3901,7 +3747,6 @@ class TestRunState:
                     host="http://localhost:8000/v1",
                     instruction="Page through everything.",
                     tool_registry=_bash_registry(),
-                    safety_queue=asyncio.Queue(),
                     max_chat_iterations=3,
                     run_state=state,
                 ),
@@ -3931,7 +3776,6 @@ class TestRunState:
                 host="http://localhost:8000/v1",
                 instruction="Hi.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == "Hello!"
@@ -3968,7 +3812,6 @@ class TestRunState:
                 host="http://localhost:8000/v1",
                 instruction="Create a README.",
                 tool_registry=_bash_registry(),
-                safety_queue=asyncio.Queue(),
                 max_planning_continuations=2,
                 run_state=state,
             )
@@ -4003,7 +3846,6 @@ class TestRunState:
                 host="http://localhost:8000/v1",
                 instruction="Create a README.",
                 tool_registry=_bash_registry(),
-                safety_queue=asyncio.Queue(),
                 max_planning_continuations=2,
                 run_state=state,
                 verify_answers=False,
@@ -4036,7 +3878,6 @@ class TestRunState:
                 host="http://localhost:8000/v1",
                 instruction="Create a README.",
                 tool_registry=_bash_registry(),
-                safety_queue=asyncio.Queue(),
                 run_state=RunState(force_tool_call=True),
                 verify_answers=False,
             )
@@ -4066,7 +3907,6 @@ class TestRunState:
                 host="http://localhost:8000/v1",
                 instruction="Hi.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
                 max_tokens=4096,
                 run_state=RunState(active_max_tokens=256),
                 verify_answers=False,
@@ -4241,7 +4081,6 @@ class TestResumeIncompleteAnswer:
                     host="http://localhost:8000/v1",
                     instruction="What is the SOTA in TTS?",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -4273,7 +4112,6 @@ class TestResumeIncompleteAnswer:
                     host="http://localhost:8000/v1",
                     instruction="What is the SOTA in TTS?",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -4309,7 +4147,6 @@ class TestResumeIncompleteAnswer:
                     host="http://localhost:8000/v1",
                     instruction="Explain forever.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_final_continuations=2,
                     max_ack_continuations=0,
                 ),
@@ -4358,7 +4195,6 @@ class TestStalledResume:
                     host="http://localhost:8000/v1",
                     instruction="What is the SOTA in TTS?",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_ack_continuations=0,
                 ),
                 timeout=30,
@@ -4398,7 +4234,6 @@ class TestStalledResume:
                     host="http://localhost:8000/v1",
                     instruction="Summarize the run.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_ack_continuations=0,
                     verify_answers=False,
                 ),
@@ -4436,7 +4271,6 @@ class TestStalledResume:
                     host="http://localhost:8000/v1",
                     instruction="Summarize the run.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_ack_continuations=0,
                     verify_answers=False,
                 ),
@@ -4477,7 +4311,6 @@ class TestStalledResume:
                     host="http://localhost:8000/v1",
                     instruction="Summarize the run.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_ack_continuations=0,
                     verify_answers=False,
                 ),
@@ -4602,7 +4435,6 @@ class TestResumeWhenOutputWentMissing:
                     host="http://localhost:8000/v1",
                     instruction="Does FP8 help throughput?",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -4636,7 +4468,6 @@ class TestResumeWhenOutputWentMissing:
                     host="http://localhost:8000/v1",
                     instruction="Does FP8 help throughput?",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -4680,7 +4511,6 @@ class TestResumeWhenOutputWentMissing:
                     host="http://localhost:8000/v1",
                     instruction="Explain forever.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     chat_ui=_UI(),
                     max_final_continuations=1,
                     max_ack_continuations=0,
@@ -4794,7 +4624,6 @@ class TestThinkingIsNotAPartialAnswer:
                     host="http://localhost:8000/v1",
                     instruction="Score the candidates.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     chat_ui=_UI(),
                     max_ack_continuations=0,
                     verify_answers=False,  # count the loop's calls, not the checker's
@@ -4839,7 +4668,6 @@ class TestThinkingIsNotAPartialAnswer:
                     host="http://localhost:8000/v1",
                     instruction="Where does each run stand?",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     think=True,
                     max_ack_continuations=0,
                     verify_answers=False,
@@ -4882,7 +4710,6 @@ class TestThinkingIsNotAPartialAnswer:
                     host="http://localhost:8000/v1",
                     instruction="Summarize the run.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                     max_ack_continuations=0,
                     verify_answers=False,  # count the loop's calls, not the checker's
                 ),
@@ -4945,7 +4772,6 @@ class TestDefaultTokenBudgets:
             await chat(
                 host="http://localhost:8000/v1",
                 instruction="hi",
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 **chat_kwargs,
             )
@@ -5107,7 +4933,6 @@ class TestOpenAIResponsesPath:
                 instruction="hi",
                 tool_registry=kw.pop("tool_registry", None),
                 verify_answers=False,
-                safety_queue=kw.pop("safety_queue", asyncio.Queue()),
                 **kw,
             )
         return result, mock_client
@@ -5137,7 +4962,6 @@ class TestOpenAIResponsesPath:
                 host="https://api.openai.com/v1",
                 instruction="hi",
                 verify_answers=False,
-                safety_queue=asyncio.Queue(),
             )
         assert result == "ok"
         mock_client.chat.completions.create.assert_awaited_once()
@@ -5212,7 +5036,6 @@ class TestOpenAIResponsesPath:
                 instruction="What is the weather?",
                 tool_registry=registry,
                 verify_answers=False,
-                safety_queue=asyncio.Queue(),
             )
         assert result == "It's sunny!"
         handler.assert_awaited_once()
@@ -5254,7 +5077,6 @@ class TestOpenAIResponsesPath:
                 instruction="hi",
                 think=True,
                 verify_answers=False,
-                safety_queue=asyncio.Queue(),
             )
         assert result == "ok"
         _first, _second = mock_client.responses.create.call_args_list
@@ -5341,7 +5163,6 @@ class TestOpenAIResponsesPath:
                 instruction="hi",
                 tool_registry=registry,
                 verify_answers=False,
-                safety_queue=asyncio.Queue(),
                 stream=True,
                 max_repeated_tool_calls=5,
             )
@@ -5381,15 +5202,6 @@ class TestOpenAIResponsesPath:
         # The answer was cut off; the loop resumes it rather than returning
         # the partial, and the final stitched text contains what arrived.
         assert result and "partial an" in result
-
-    @pytest.mark.asyncio
-    async def test_safety_queue_stops_before_the_call(self):
-        sq = asyncio.Queue()
-        sq.put_nowait("stop")
-        resp = _mock_response(content="should not reach")
-        result, client = await self._run(responses_create=resp, safety_queue=sq)
-        assert result is None
-        client.responses.create.assert_not_called()
 
 
 # ── converters, unit-tested ────────────────────────────────────────────────
@@ -5638,7 +5450,6 @@ class TestNudgeDeclineRecovery:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 run_state=state,
                 **kwargs,
@@ -5721,7 +5532,6 @@ class TestNudgeDeclineRecovery:
                 host="http://localhost:8000/v1",
                 instruction="plain question",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
                 verify_answers=False,
             )
         assert result == "The plain answer."
@@ -5843,7 +5653,6 @@ class TestUnterminatedFenceResume:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 max_nudge_decline_recoveries=0,
                 verify_answers=False,
@@ -5877,7 +5686,6 @@ class TestUnterminatedFenceResume:
                 host="http://localhost:8000/v1",
                 instruction="hi",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 data_path=str(tmp_path),
                 verify_answers=False,
             )

@@ -83,7 +83,6 @@ async def test_streaming_repetition_loop_is_stopped():
                 host="http://localhost:8000/v1",
                 instruction="Write the file.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
                 stream=True,
                 max_ack_continuations=0,
                 verify_answers=False,

@@ -48,8 +48,7 @@ live agent and print the same report. Both run 22 fast checks against the
 live stack — config, backslash commands, load balancer, MCP server
 reachability, tool discovery, the shipped toolset, then **one round trip
 per shipped tool** (bash echo; `write_file`→`read_file`→`edit_file`; grep
-over a planted marker; `search_document` pattern mode; `index_documents` +
-`local_search` over a dedicated probe corpus; `send_file` base64; a full
+over a planted marker; `index_documents` + `local_search` over a dedicated probe corpus; `send_file` base64; a full
 `serve` start/status/stop cycle; a web search; a `fetch_content` of
 example.com; `get_weather` and `github_repo` when their credentials are
 present), plus the harness's note tools, prompt assembly, the model

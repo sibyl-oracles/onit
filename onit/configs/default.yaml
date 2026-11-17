@@ -151,9 +151,6 @@ serving:
   #     - "docs.internal.example.com"
   #     - ".example.gov"
 
-messages:
-  safety_warning:  "Press 'Enter' key to stop all tasks."
-
 # What the agent is allowed to change about itself. One ladder rather than a
 # switch per feature, raised one rung at a time (see docs/SELF_IMPROVEMENT.md):
 #   off       nothing is recorded, nothing is injected
@@ -246,13 +243,6 @@ voice:
   max_spoken_chars: 600
   # Seconds before a runaway ask_onit is cancelled and the call moves on.
   tool_timeout: 90
-  # The model documents that it cannot be interrupted while a tool call is
-  # outstanding, which is precisely the window an agent task occupies. With
-  # this on, OnIt measures the microphone itself and cancels the task through
-  # the same safety queue the stop button uses.
-  barge_in: true
-  # barge_in_rms: 900     # PCM16 level that counts as speech
-  # barge_in_frames: 5    # consecutive ~80 ms frames above it (~400 ms)
   # The model can start turns with no user input and talk to itself; end the
   # call after this many in a row.
   max_unprompted_turns: 3

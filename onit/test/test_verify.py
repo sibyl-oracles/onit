@@ -825,7 +825,6 @@ async def _run_chat(replies, background=None, **kwargs):
             chat(
                 host="http://localhost:8000/v1",
                 instruction="What was the 2019 revenue?",
-                safety_queue=asyncio.Queue(),
                 **kwargs,
             ),
             timeout=30,
@@ -1078,7 +1077,6 @@ class TestChatWiring:
                 chat(
                     host="http://localhost:8000/v1",
                     instruction="q",
-                    safety_queue=asyncio.Queue(),
                     verify_timeout_s=0.2,
                     background_verify=checks.append,
                 ),
@@ -1113,7 +1111,7 @@ class TestChatWiring:
         ):
             result = await asyncio.wait_for(
                 chat(
-                    host="http://localhost:8000/v1", instruction="q", safety_queue=asyncio.Queue()
+                    host="http://localhost:8000/v1", instruction="q"
                 ),
                 timeout=30,
             )
@@ -1224,7 +1222,7 @@ class TestChatWiring:
         ):
             result = await asyncio.wait_for(
                 chat(
-                    host="http://localhost:8000/v1", instruction="q", safety_queue=asyncio.Queue()
+                    host="http://localhost:8000/v1", instruction="q"
                 ),
                 timeout=30,
             )
@@ -1297,7 +1295,6 @@ class TestChatWiring:
                     host="https://ollama.com",
                     host_key="test-key",
                     instruction="q",
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -1351,7 +1348,6 @@ class TestChatWiring:
                 chat(
                     host="http://localhost:8000/v1",
                     instruction="What was the 2019 revenue?",
-                    safety_queue=queue,
                 ),
                 timeout=30,
             )
@@ -1369,7 +1365,7 @@ class TestHandleTrust:
 
     def test_handle_read_of_trusted_origin_counts(self):
         body = (
-            "[result:0007 · origin=search_document · 12,000 chars · "
+            "[result:0007 · origin=read_file · 12,000 chars · "
             "showing 0–4,000]\nRevenue was $4.2M in 2025."
         )
         msgs = [
@@ -1405,6 +1401,6 @@ class TestHandleTrust:
         from onit.model.serving.results import ResultStore
 
         store = ResultStore(data_path=str(tmp_path), preview_chars=500, threshold=1000)
-        store.put("search_document", "x" * 6000)
+        store.put("read_file", "x" * 6000)
         out = store.read("0001")
-        assert "origin=search_document" in out, out[:200]
+        assert "origin=read_file" in out, out[:200]

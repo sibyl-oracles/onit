@@ -62,7 +62,6 @@ async def build_assistant_instruction(
     topic: str = None,
     sandbox_available: str | bool = False,
     local_search_available: str | bool = False,
-    document_search_available: str | bool = False,
     web_search_available: str | bool = False,
     harness_tools_available: str | bool = False,
     result_store_available: str | bool = False,
@@ -105,14 +104,6 @@ async def build_assistant_instruction(
         "",
     ):
         local_search_available = False
-    if isinstance(document_search_available, str) and document_search_available.lower() in (
-        "false",
-        "null",
-        "none",
-        "0",
-        "",
-    ):
-        document_search_available = False
     if isinstance(web_search_available, str) and web_search_available.lower() in (
         "false",
         "null",
@@ -321,12 +312,7 @@ Answer directly, with no tool call, when the conversation already contains the a
 When a question needs information you do not have:
 """
         # How to open a document that `local_search` pointed at
-        open_doc = (
-            '`search_document` with `mode="context"` and the question as `query`, '
-            "or `read_file` for a short document"
-            if document_search_available
-            else "`read_file`"
-        )
+        open_doc = "`read_file`"
 
         if local_search_available and web_search_available:
             research_block += f"""1. Call `local_search` first (internal data is never on the web). It returns each ranked document's opening under `documents`. If the question also has a public side, issue the web `search` in that same reply — neither call needs the other's result, so together they cost one wait instead of two.

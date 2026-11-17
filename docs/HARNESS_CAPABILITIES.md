@@ -257,7 +257,6 @@ resolved calls with [`random.choice`](../onit/type/tools.py#L927). That is right
 | Tool | Consolidated `tasks/tools` server | `os/bash` server |
 |---|---|---|
 | [`read_file`](../onit/mcp/servers/tasks/tools/mcp_server.py#L246) | `path, mode, encoding, max_chars, table_index, output_format, output_dir, min_size, data_path` | `path, encoding, max_chars, data_path` |
-| `search_document` | *(differs)* | *(differs)* |
 
 Two consequences in any deployment running both, and the second is the serious one:
 
@@ -290,9 +289,8 @@ points back here.
 **Verified against both live servers** (worst case: both configured):
 
 ```
-⚠ 2 tool name collision(s) — same name, different parameters:
+⚠ 1 tool name collision — same name, different parameters:
   - read_file:       using http://tools:18201/sse, ignoring http://bash:18202/sse
-  - search_document: using http://tools:18201/sse, ignoring http://bash:18202/sse
 
 19 unique tools; 26 handlers registered
 schemas advertised to the model: 19  (was 26)   duplicate names: none
@@ -309,9 +307,9 @@ Collision *handling* left the duplication in place. The follow-up removed it.
 **Why there were two.** `tasks/tools` is a **facade**: it wraps the bash, web-search and
 local-search servers and re-registers their functions as one consolidated 14-tool server,
 merging related tools behind a `mode` parameter to keep the advertised tool count down.
-`read_file(mode=text|tables|images)` fanned out to *three* separate bash/web-search tools;
-`search_document(mode=pattern|context)` to two. The sub-servers still registered their own
-narrower versions, so each merged tool existed twice at different granularity.
+`read_file(mode=text|tables|images)` fanned out to *three* separate bash/web-search tools.
+The sub-servers still registered their own narrower versions, so each merged tool existed
+twice at different granularity.
 
 The blocker to unifying them was placement: `extract_pdf_images` lived in the **web-search**
 server, so only a server importing that module could offer `mode="images"`. The bash server
@@ -324,8 +322,7 @@ behavior (path validation…) is injected via callable parameters"*:
 |---|---|
 | `extract_pdf_images_impl` | the ~108-line body, out of the web-search server |
 | `read_file_impl` | the mode router, with the three readers injected |
-| `search_document_dispatch_impl` | the mode router, with both searches injected |
-| `READ_FILE_DESCRIPTION`, `SEARCH_DOCUMENT_DESCRIPTION` | one description each, shared verbatim — differing text is itself a collision |
+| `READ_FILE_DESCRIPTION` | one description, shared verbatim — differing text is itself a collision |
 
 Both servers now register the *same* consolidated definition. The registry sees identical
 parameter schemas and classifies them as **replicas**, so they join one rotation:
@@ -333,7 +330,6 @@ parameter schemas and classifies them as **replicas**, so they join one rotation
 ```
 collisions: 0        unique tools: 19        schemas advertised: 19
 read_file        replicas=2
-search_document  replicas=2
 ```
 
 Verified functionally through both servers — identical results for every mode, including
@@ -343,14 +339,6 @@ Verified functionally through both servers — identical results for every mode,
 bash  read_file(text/tables/images/nonsense) -> success / success / no images found / error
 tools read_file(text/tables/images/nonsense) -> success / success / no images found / error
 ```
-
-**Evidence that this was hurting the model.** The bash `search_document` description had
-accumulated three warnings — `Do NOT use 'query'`, `Do NOT use 'context_chars'`,
-`Do NOT use 'max_sections'` — naming exactly the parameters of the *facade's*
-`search_document`. Someone had patched at the prompt level what was really a name
-collision: a model shown both tools under one name, guessing which it would get. Both tools
-now accept all of those parameters, and the warnings are deleted along with the condition
-that produced them.
 
 The same reading applies to §3.6's `read_file(offset=…, limit=…)`. The shared description
 now documents every parameter and states plainly that there is no offset/limit paging — a
@@ -506,8 +494,8 @@ if MAX_CHAT_ITERATIONS >= 0 and iteration_count > MAX_CHAT_ITERATIONS:
 
 The turn cap is disabled. The loop is bounded only by `MAX_REPEATED_TOOL_CALLS` — which
 requires the same tool name **and byte-identical arguments** 30 times
-([chat.py:983](../onit/model/serving/chat.py#L983)) — and by the safety queue. A model
-alternating between two slightly-different calls runs until the user stops it.
+([chat.py:983](../onit/model/serving/chat.py#L983)). A model alternating between two
+slightly-different calls runs until it trips that guard.
 
 ### 5.2 Steps
 

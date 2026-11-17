@@ -57,7 +57,6 @@ from .state import (
     STOP_PLANNING_EXHAUSTED,
     STOP_REPEATED_TOOL_CALL,
     STOP_REPETITION_LOOP,
-    STOP_SAFETY_ABORT,
     STOP_TRUNCATED,
     STOP_TURN_LIMIT,
 )
@@ -3030,15 +3029,14 @@ def _reasoning_text(obj) -> str:
 
 async def _process_streaming_response(
     chat_completion,
-    safety_queue: asyncio.Queue,
     chat_ui: Optional[ChatUIProtocol],
     think: bool,
     on_first_token=None,
-) -> tuple[str, str, dict, bool, Any, str | None] | None:
+) -> tuple[str, str, dict, bool, Any, str | None]:
     """Consume a streaming chat completion and return accumulated results.
 
-    Returns (full_content, full_reasoning, full_tool_calls_dict, ui_was_streaming, usage, finish_reason)
-    or None if the safety queue fired mid-stream.  ``usage`` is the
+    Returns (full_content, full_reasoning, full_tool_calls_dict, ui_was_streaming, usage, finish_reason).
+    ``usage`` is the
     CompletionUsage object from the final chunk (requires stream_options
     include_usage=True), or None if not available.  ``finish_reason`` is the
     stop reason from the final chunk (e.g. "stop", "tool_calls", "length").
@@ -3059,10 +3057,6 @@ async def _process_streaming_response(
 
     try:
         async for chunk in chat_completion:
-            if safety_queue is not None and not safety_queue.empty():
-                if ui_streaming and chat_ui:
-                    chat_ui.stream_end()
-                return None
             # Capture usage from the final chunk (stream_options include_usage=True).
             # This must be read before stream_end() so set_context_usage can fire first.
             if chunk.usage is not None:
@@ -3173,10 +3167,9 @@ _STEP_MAX_CHARS = 120
 
 async def _process_responses_streaming_response(
     events,
-    safety_queue: asyncio.Queue,
     chat_ui: Optional[ChatUIProtocol],
     on_first_token=None,
-) -> tuple[str, str, dict, bool, Any, str | None] | None:
+) -> tuple[str, str, dict, bool, Any, str | None]:
     """Consume a Responses-API event stream and return accumulated results.
 
     Same return contract as _process_streaming_response — (full_content,
@@ -3196,9 +3189,7 @@ async def _process_responses_streaming_response(
     usage = None
     finish_reason: str | None = None
 
-    async for event in _responses_events(events, safety_queue):
-        if event is None:
-            return None
+    async for event in _responses_events(events):
         if event is _RESPONSES_STREAM_DEAD:
             # The stream died mid-flight: whatever accumulated is a partial,
             # not an answer.  "error" feeds the same resume machinery as
@@ -3290,19 +3281,15 @@ async def _process_responses_streaming_response(
 _RESPONSES_STREAM_DEAD = object()
 
 
-async def _responses_events(events, safety_queue: asyncio.Queue):
-    """Iterate a Responses-API event source, honouring the safety queue.
+async def _responses_events(events):
+    """Iterate a Responses-API event source.
 
-    Yields the events; yields None once and stops when the queue fires, so
-    the caller returns the same None _process_streaming_response does.  The
-    SDK's own stream manager is an async iterator already — this only adds
-    the stop check, which the raw event iterator has no hook for.
+    The SDK's own stream manager is an async iterator already — this only
+    adds the mid-stream disconnect handling, which the raw event iterator
+    has no hook for.
     """
     try:
         async for event in events:
-            if safety_queue is not None and not safety_queue.empty():
-                yield None
-                return
             yield event
     except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS):
         raise  # the transport handler retries this whole, with decay
@@ -3347,16 +3334,14 @@ def _step_summary(full_content: str) -> str:
 
 async def _ollama_process_streaming_response(
     chat_completion,
-    safety_queue: asyncio.Queue,
     chat_ui: Optional[ChatUIProtocol],
     think: bool,
     on_first_token=None,
-) -> tuple[str, str, list | None, bool, int, str | None] | None:
+) -> tuple[str, str, list | None, bool, int, str | None]:
     """Consume an Ollama streaming chat completion and return accumulated results.
 
     Returns (full_content, full_thinking, tool_calls_or_None, ui_was_streaming,
-    prompt_eval_count, done_reason, eval_count) or None if the safety queue
-    fired mid-stream.
+    prompt_eval_count, done_reason, eval_count).
     ``done_reason`` is Ollama's stop reason from the final chunk (e.g. "stop",
     "length"); it lets the caller detect token-budget truncation and resume.
 
@@ -3376,11 +3361,6 @@ async def _ollama_process_streaming_response(
 
     try:
         async for chunk in chat_completion:
-            if safety_queue is not None and not safety_queue.empty():
-                if ui_streaming and chat_ui:
-                    chat_ui.stream_end()
-                return None
-
             # Capture the stop reason from the final chunk (done=True).
             dr = getattr(chunk, "done_reason", None)
             if dr:
@@ -4548,8 +4528,7 @@ class _TurnResult:
     """What one model call handed back, unified across the four provider paths.
 
     ``api_error`` set means every retry was spent and the turn failed; the
-    caller ends the run.  ``None`` as a whole (never an instance) means the
-    safety queue fired and chat() must exit without an answer.  ``model`` is
+    caller ends the run.  ``model`` is
     returned because the NotFoundError handler may replace it with an
     auto-detected fallback mid-run.
     """
@@ -4819,7 +4798,6 @@ class _ModelCaller:
         max_api_retries: int,
         chat_ui,
         verbose: bool,
-        safety_queue,
         metrics,
     ):
         self.host = host
@@ -4841,7 +4819,6 @@ class _ModelCaller:
         self.max_api_retries = max_api_retries
         self.chat_ui = chat_ui
         self.verbose = verbose
-        self.safety_queue = safety_queue
         self.metrics = metrics
 
     async def call_turn(
@@ -4849,9 +4826,8 @@ class _ModelCaller:
     ) -> Optional[_TurnResult]:
         """Send one request, retrying transient failures.
 
-        Returns ``None`` when the safety queue fired (chat() exits), a
-        ``_TurnResult`` with ``api_error`` set when the retries ran out, and
-        otherwise the unified response.  ``messages`` is mutated in place by
+        Returns a ``_TurnResult`` with ``api_error`` set when the retries ran
+        out, and otherwise the unified response.  ``messages`` is mutated in place by
         the timeout handler (oldest tool results decayed); ``state`` is
         mutated as the loop always did.
         """
@@ -4867,7 +4843,6 @@ class _ModelCaller:
         _completion_tokens = 0  # set from usage where the provider reports it
         chat_ui = self.chat_ui
         verbose = self.verbose
-        safety_queue = self.safety_queue
         is_ollama = self.is_ollama
         num_ctx = self.num_ctx
         client = self.client
@@ -4924,10 +4899,6 @@ class _ModelCaller:
             # marker must not survive into any payload regardless of path.
             _strip_internal_keys(messages)
             try:
-                if safety_queue is not None and not safety_queue.empty():
-                    logger.warning("Safety queue triggered before API call, exiting chat loop.")
-                    return None
-
                 _m.start_api()
 
                 # Cap output tokens so that prompt + output never approaches the context limit.
@@ -4959,12 +4930,7 @@ class _ModelCaller:
                         turn_think=_turn_think,
                         ollama_client=ollama_client,
                     )
-                    chat_completion = await _await_with_safety(
-                        ollama_client.chat(**ollama_kwargs), safety_queue
-                    )
-                    if chat_completion is _SAFETY_ABORT:
-                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
-                        return None
+                    chat_completion = await ollama_client.chat(**ollama_kwargs)
                 elif _is_openai_host(host) and _is_openai_responses_model(model):
                     # The gpt-6 family is served by /v1/responses —
                     # /v1/chat/completions refuses every reasoning_effort a
@@ -4990,9 +4956,7 @@ class _ModelCaller:
                             # __aenter__ yields the event iterator itself —
                             # the manager is not the iterator, so enter it
                             # and hand the iterator to the processor.
-                            _responses_events_iter = await _await_with_safety(
-                                _responses_stream.__aenter__(), safety_queue
-                            )
+                            _responses_events_iter = await _responses_stream.__aenter__()
                             _stream_entered = True
                             (
                                 _full_content,
@@ -5003,17 +4967,12 @@ class _ModelCaller:
                                 _finish_reason,
                             ) = await _process_responses_streaming_response(
                                 _responses_events_iter,
-                                safety_queue,
                                 chat_ui,
                                 on_first_token=_m.first_token,
                             )
                         finally:
                             if _stream_entered:
                                 await _responses_stream.__aexit__(None, None, None)
-                        if _full_content is None and _full_tool_calls is None:
-                            # Safety queue fired mid-stream: the processor
-                            # returned None through the tuple contract.
-                            return None
                         if _stream_usage is not None:
                             state.last_prompt_tokens = _stream_usage.prompt_tokens
                             _completion_tokens = _stream_usage.completion_tokens
@@ -5059,18 +5018,8 @@ class _ModelCaller:
                             _full_tool_calls,
                         )
                         await asyncio.sleep(0)
-                        if safety_queue is not None and not safety_queue.empty():
-                            logger.warning(
-                                "Safety queue triggered after API call, exiting chat loop."
-                            )
-                            return None
                         break  # success — exit retry loop
-                    _response = await _await_with_safety(
-                        client.responses.create(**_responses_kwargs), safety_queue
-                    )
-                    if _response is _SAFETY_ABORT:
-                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
-                        return None
+                    _response = await client.responses.create(**_responses_kwargs)
                     (_content, _full_reasoning, _tool_calls, _finish_reason, _usage) = (
                         _openai_responses_result(_response)
                     )
@@ -5114,9 +5063,6 @@ class _ModelCaller:
                         )
                         state.force_compact = True
                     await asyncio.sleep(0)
-                    if safety_queue is not None and not safety_queue.empty():
-                        logger.warning("Safety queue triggered after API call, exiting chat loop.")
-                        return None
                     break  # success — exit retry loop
                 completion_kwargs, _extra_body = _build_chat_completions_request(
                     host=host,
@@ -5168,12 +5114,7 @@ class _ModelCaller:
                         completion_kwargs["reasoning_effort"] = "none"
                     if stream:
                         completion_kwargs["stream_options"] = {"include_usage": True}
-                    chat_completion = await _await_with_safety(
-                        client.chat.completions.create(**completion_kwargs), safety_queue
-                    )
-                    if chat_completion is _SAFETY_ABORT:
-                        logger.warning("Safety queue triggered during API call, exiting chat loop.")
-                        return None
+                    chat_completion = await client.chat.completions.create(**completion_kwargs)
 
                 # Streaming path: iterate chunks, populate shared variables
                 if stream:
@@ -5181,7 +5122,6 @@ class _ModelCaller:
                         try:
                             stream_result = await _ollama_process_streaming_response(
                                 chat_completion,
-                                safety_queue,
                                 chat_ui,
                                 _turn_think,
                                 on_first_token=_m.first_token,
@@ -5196,8 +5136,6 @@ class _ModelCaller:
                             # "aclose(): asynchronous generator is already
                             # running" instead.
                             await _drain_stream(chat_completion)
-                        if stream_result is None:
-                            return None
                         (
                             _full_content,
                             _full_reasoning,
@@ -5272,7 +5210,6 @@ class _ModelCaller:
                         try:
                             stream_result = await _process_streaming_response(
                                 chat_completion,
-                                safety_queue,
                                 chat_ui,
                                 _turn_think,
                                 on_first_token=_m.first_token,
@@ -5282,8 +5219,6 @@ class _ModelCaller:
                             # abandoned chain is closed here, on abort or
                             # cancellation, not left for shutdown_asyncgens.
                             await _drain_stream(chat_completion)
-                        if stream_result is None:
-                            return None
                         (
                             _full_content,
                             _full_reasoning,
@@ -5347,9 +5282,6 @@ class _ModelCaller:
                         )
 
                 await asyncio.sleep(0)
-                if safety_queue is not None and not safety_queue.empty():
-                    logger.warning("Safety queue triggered after API call, exiting chat loop.")
-                    return None
                 break  # success — exit retry loop
             except (APITimeoutError, *_TRANSPORT_TIMEOUT_ERRORS) as e:
                 api_error = f"Request to {host} timed out (read timeout during streaming)."
@@ -5976,8 +5908,6 @@ async def _handle_raw_tool_call(
 
 _STREAM_DRAIN_CHUNK_CAP = 10_000  # drain cap: a hostile stream must not pin shutdown
 
-_SAFETY_ABORT = object()  # sentinel distinct from None
-
 
 def _verify_content(message) -> str:
     """The text of a fact-check reply, wherever the server put it.
@@ -5995,21 +5925,12 @@ def _verify_content(message) -> str:
     return alt if alt.strip() else ""
 
 
-class _VerifyStopped(Exception):
-    """The user stopped the run while the fact-check was still in flight.
-
-    Raised rather than returned so that it unwinds through the verification
-    pass the same way a failed call does — the draft the user already read is
-    what they keep, and a stop request never costs them an answer.
-    """
-
-
 async def _drain_stream(stream) -> None:
     """Finish a chat-completions stream the loop abandoned without reading.
 
-    Three paths leave the chain half-read: the safety queue fired between
-    chunks, the turn was cancelled (\\bye, a new question), or the processor
-    returned early on a malformed chunk.  The processor returns without a
+    Two paths leave the chain half-read: the turn was cancelled (\\bye, a new
+    question), or the processor returned early on a malformed chunk.  The
+    processor returns without a
     ``finally``, so the generator chain -- AsyncStream.__aiter__ ->
     SSEDecoder.aiter_bytes -> httpx2 Response.aiter_bytes -- stays suspended
     with the socket open.  Nothing else holds a reference, so the loop's
@@ -6041,45 +5962,6 @@ async def _drain_stream(stream) -> None:
         logger.debug("Stream drain failed: %s", e)
 
 
-async def _await_with_safety(awaitable, safety_queue: asyncio.Queue, poll: float = 0.25):
-    """Await *awaitable* while polling the safety queue.
-
-    The chat loop only checks the safety queue between streamed chunks, so a
-    user stop request goes unnoticed while blocked on the initial API call
-    (e.g. during prompt processing or guided-decoding grammar compilation).
-    This races the awaitable against the queue: if the queue fires first, the
-    in-flight request is cancelled and _SAFETY_ABORT is returned.
-    """
-    task = asyncio.ensure_future(awaitable)
-    try:
-        while True:
-            done, _ = await asyncio.wait({task}, timeout=poll)
-            if done:
-                return task.result()
-            if safety_queue is not None and not safety_queue.empty():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                return _SAFETY_ABORT
-    except asyncio.CancelledError:
-        task.cancel()
-        # We are being torn down and cannot await the cancellation, but the
-        # task still resolves once its children unwind — a gather() resolves
-        # by *setting* CancelledError rather than entering the cancelled
-        # state, so with nobody left to await it asyncio logs the whole tool
-        # stack as "exception was never retrieved".  Claim it on completion.
-        task.add_done_callback(_retrieve_exception)
-        raise
-
-
-def _retrieve_exception(fut: asyncio.Future) -> None:
-    """Mark *fut*'s exception as seen so asyncio does not log it on collection."""
-    if not fut.cancelled():
-        fut.exception()
-
-
 # Tools that only read.  A batch of these can run at once: none of them can
 # observe another's effect, so the messages they produce are the same whatever
 # order the calls finish in.  Everything else — writing a file, running a
@@ -6088,7 +5970,6 @@ def _retrieve_exception(fut: asyncio.Future) -> None:
 _READ_ONLY_TOOLS = frozenset(
     {
         "local_search",
-        "search_document",
         "get_document_context",
         "read_file",
         "grep",
@@ -6141,7 +6022,6 @@ async def _execute_tools_in_parallel(
     messages: list,
     tool_call_history: list,
     max_repeated: int,
-    safety_queue: asyncio.Queue,
     session_id: str,
     tool_log: list | None = None,
     harness=None,
@@ -6183,18 +6063,10 @@ async def _execute_tools_in_parallel(
             harness=harness,
         )
 
-    gathered = _await_with_safety(
-        asyncio.gather(
-            *(_run(i, name, args, call_id) for i, (name, args, call_id) in enumerate(calls)),
-            return_exceptions=True,
-        ),
-        safety_queue,
+    results = await asyncio.gather(
+        *(_run(i, name, args, call_id) for i, (name, args, call_id) in enumerate(calls)),
+        return_exceptions=True,
     )
-    results = await gathered
-    if results is _SAFETY_ABORT:
-        if chat_ui:
-            chat_ui.end_tool_batch()
-        return _SAFETY_ABORT
 
     bail = None
     for (name, args, call_id), buffer, result in zip(calls, buffers, results):
@@ -6232,7 +6104,6 @@ async def _handle_structured_tool_calls(
     messages: list,
     tool_call_history: list,
     max_repeated: int,
-    safety_queue: asyncio.Queue,
     session_id: str = "",
     tool_log: list | None = None,
     harness=None,
@@ -6244,7 +6115,6 @@ async def _handle_structured_tool_calls(
 
     Returns:
       - A bail-out message string if a repeated-call limit is hit.
-      - _SAFETY_ABORT sentinel if the safety queue fired.
       - None when all tools completed normally.
     """
     messages.append(message_for_history)
@@ -6271,7 +6141,6 @@ async def _handle_structured_tool_calls(
             messages,
             tool_call_history,
             max_repeated,
-            safety_queue,
             session_id,
             tool_log=tool_log,
             harness=harness,
@@ -6280,10 +6149,6 @@ async def _handle_structured_tool_calls(
             return bail
         for function_name, function_arguments, call_id in sequential:
             await asyncio.sleep(0)
-            if safety_queue is not None and not safety_queue.empty():
-                if verbose:
-                    print("Safety queue triggered, exiting chat loop.")
-                return _SAFETY_ABORT
             bail = await _execute_tool(
                 function_name,
                 function_arguments,
@@ -6306,14 +6171,10 @@ async def _handle_structured_tool_calls(
         return None
 
     for function_name, function_arguments, call_id in calls:
-        # Yield to the event loop so the safety-queue poll and any pending
-        # I/O can run, but don't burn 100 ms of pure sleep per call — a
-        # 10-call sequential run was paying a full second for nothing.
+        # Yield to the event loop so pending I/O can run, but don't burn
+        # 100 ms of pure sleep per call — a 10-call sequential run was paying
+        # a full second for nothing.
         await asyncio.sleep(0)
-        if safety_queue is not None and not safety_queue.empty():
-            if verbose:
-                print("Safety queue triggered, exiting chat loop.")
-            return _SAFETY_ABORT
         bail = await _execute_tool(
             function_name,
             function_arguments,
@@ -6622,7 +6483,6 @@ class _FactChecker:
         session_id: str,
         chat_ui,
         verbose: bool,
-        safety_queue,
         max_tokens: int,
         max_repeated_tool_calls: int,
         task_instruction: str,
@@ -6654,7 +6514,6 @@ class _FactChecker:
         self.session_id = session_id
         self.chat_ui = chat_ui
         self.verbose = verbose
-        self.safety_queue = safety_queue
         self.max_tokens = max_tokens
         self.max_repeated_tool_calls = max_repeated_tool_calls
         self.task_instruction = task_instruction
@@ -6698,9 +6557,7 @@ class _FactChecker:
             )
             if tools:
                 _kw["tools"] = tools
-            resp = await _await_with_safety(self.ollama_client.chat(**_kw), self.safety_queue)
-            if resp is _SAFETY_ABORT:
-                raise _VerifyStopped()
+            resp = await self.ollama_client.chat(**_kw)
             _msg = resp.message
             _raw = getattr(_msg, "tool_calls", None)
             return (_verify_content(_msg), _adapt_ollama_tool_calls(_raw) if _raw else None)
@@ -6734,10 +6591,7 @@ class _FactChecker:
             if _attempt and _template_kwargs_unsupported(self.host):
                 continue
             try:
-                resp = await _await_with_safety(
-                    self.client.chat.completions.create(**_kw, extra_body=_attempt),
-                    self.safety_queue,
-                )
+                resp = await self.client.chat.completions.create(**_kw, extra_body=_attempt)
                 break
             except OpenAIError as e:
                 if not _attempt or not _is_parameter_rejection(e):
@@ -6749,8 +6603,6 @@ class _FactChecker:
                     e,
                 )
                 _NO_TEMPLATE_KWARGS[self.host] = time.monotonic() + _NO_TEMPLATE_KWARGS_TTL
-        if resp is _SAFETY_ABORT:
-            raise _VerifyStopped()
         _msg = resp.choices[0].message
         return _verify_content(_msg), (_msg.tool_calls or None)
 
@@ -6793,15 +6645,12 @@ class _FactChecker:
             msgs,
             [],
             self.max_repeated_tool_calls,
-            self.safety_queue,
             session_id=self.session_id,
             tool_log=_tool_log,
         )
         self.metrics.add_tools(
             [tc.function.name for tc in tool_calls], time.monotonic() - _t0, runs=_tool_log
         )
-        if bail is _SAFETY_ABORT:
-            raise _VerifyStopped()
 
     def verdict_budget(self) -> int:
         """Output room for one verdict.
@@ -6838,8 +6687,6 @@ class _FactChecker:
         # things up) still runs behind the answer.  This removes a serial LLM
         # call from the tail of every knowledge-answer turn.
         if not has_tool_evidence(msgs):
-            return answer
-        if self.safety_queue is not None and not self.safety_queue.empty():
             return answer
         if self.chat_ui:
             self.chat_ui.verification_start()
@@ -6960,8 +6807,6 @@ class _FactChecker:
             # same answer round again would re-report what the user is already
             # looking at.
             return
-        if self.safety_queue is not None and not self.safety_queue.empty():
-            return
         try:
             self.background_verify(self.deep_check(answer, list(msgs)))
         except Exception as e:  # a scheduler that refuses must not fail the turn
@@ -6978,7 +6823,6 @@ async def chat(
     timeout: int = None,
     stream: bool = False,
     think: bool = DEFAULT_THINK,
-    safety_queue: Optional[asyncio.Queue] = None,
     **kwargs,
 ) -> Optional[str]:
 
@@ -7424,7 +7268,6 @@ async def chat(
         session_id=session_id,
         chat_ui=chat_ui,
         verbose=verbose,
-        safety_queue=safety_queue,
         max_tokens=max_tokens,
         max_repeated_tool_calls=MAX_REPEATED_TOOL_CALLS,
         task_instruction=task_instruction,
@@ -7462,7 +7305,6 @@ async def chat(
         max_api_retries=MAX_API_RETRIES,
         chat_ui=chat_ui,
         verbose=verbose,
-        safety_queue=safety_queue,
         metrics=_m,
     )
 
@@ -8180,7 +8022,6 @@ async def chat(
             messages,
             state.tool_call_history,
             MAX_REPEATED_TOOL_CALLS,
-            safety_queue,
             session_id=session_id,
             tool_log=_tool_log,
             harness=harness,
@@ -8188,9 +8029,6 @@ async def chat(
         _m.add_tools(
             [tc.function.name for tc in tool_calls], time.monotonic() - _t_tools, runs=_tool_log
         )
-        if bail is _SAFETY_ABORT:
-            state.stop_reason = STOP_SAFETY_ABORT
-            return None
         if bail:
             # A bail is a verdict on the loop, not on the task.  The first one
             # becomes a strategy-change prompt — the same recovery the

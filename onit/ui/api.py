@@ -622,7 +622,6 @@ class ApiSession:
     data_path: str = ""
     owner: Optional[str] = None  # authenticated email; None when auth is off
     processing: bool = False
-    safety_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=10))
     created: datetime = field(default_factory=datetime.now)
     # Addresses seen in grounded sources for this session (see _emails_in).
     # Session-scoped on purpose: one chat's search results say nothing about
@@ -1344,7 +1343,6 @@ class WebApiUI:
                 task,
                 session_path=session.session_path,
                 data_path=session.data_path,
-                safety_queue=session.safety_queue,
                 stream_callback=_on_token,
                 stream_complete_callback=_on_phase_end,
                 think_callback=_on_think,
@@ -1980,16 +1978,6 @@ class WebApiUI:
                     "X-Session-Id": sid,
                 },
             )
-
-        @app.post("/api/chat/stop")
-        async def api_stop(request: Request):
-            sid, session = self._resolve_session(request)
-            if session.processing and self._loop:
-                self._loop.call_soon_threadsafe(session.safety_queue.put_nowait, True)
-            # Stop means stop, including the check still running behind the
-            # previous answer.
-            self._cancel_session_check(session)
-            return {"stopped": True, "session_id": sid}
 
         @app.post("/api/approval")
         async def api_approval(request: Request):

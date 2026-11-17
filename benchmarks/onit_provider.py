@@ -7,7 +7,7 @@ registry, and tool loop — not just the underlying LLM.
 
 Integration notes:
     * One ``OnIt`` instance is built lazily and shared across samples. Inspect
-      runs samples concurrently, so per-call state (safety queue, session and
+      runs samples concurrently, so per-call state (session and
       data directories) is created per ``generate`` call for isolation.
     * ``OnIt.__init__`` discovers tools via ``asyncio.run(...)``, which cannot
       run inside Inspect's event loop. We therefore build the agent in a worker
@@ -256,7 +256,6 @@ class OnItAPI(ModelAPI):
                     task,
                     session_path=str(sessions_dir / f"{run_id}.jsonl"),
                     data_path=str(data_dir),
-                    safety_queue=asyncio.Queue(),
                     stats=stats,
                 )
         else:
@@ -264,7 +263,6 @@ class OnItAPI(ModelAPI):
                 task,
                 session_path=str(sessions_dir / f"{run_id}.jsonl"),
                 data_path=str(data_dir),
-                safety_queue=asyncio.Queue(),
                 stats=stats,
             )
 

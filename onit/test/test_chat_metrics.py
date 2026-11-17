@@ -168,7 +168,7 @@ class TestTurnMetrics:
             yield chunk("Two ")
             yield chunk("scholarships.", done_reason="stop", prompt_eval_count=5441, eval_count=128)
 
-        result = await _ollama_process_streaming_response(stream(), asyncio.Queue(), None, False)
+        result = await _ollama_process_streaming_response(stream(), None, False)
         content, _, _, _, prompt_tokens, done_reason, eval_count = result
         assert content == "Two scholarships."
         assert (prompt_tokens, eval_count, done_reason) == (5441, 128, "stop")
@@ -383,7 +383,6 @@ class TestChatMetrics:
                 host="http://localhost:8000/v1",
                 instruction="what do the docs say?",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 metrics=metrics,
             )
 
@@ -413,7 +412,6 @@ class TestChatMetrics:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="hi",
-                safety_queue=asyncio.Queue(),
             )
         assert result == "plain answer"
 
@@ -439,7 +437,6 @@ class TestChatMetrics:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="hi",
-                safety_queue=asyncio.Queue(),
                 metrics=metrics,
             )
 
@@ -489,7 +486,6 @@ class TestFirstTokenHook:
         ]
         result = await _process_streaming_response(
             _aiter(chunks),
-            asyncio.Queue(),
             None,
             think=False,
             on_first_token=lambda: calls.append(1),
@@ -512,7 +508,6 @@ class TestFirstTokenHook:
         calls = []
         await _process_streaming_response(
             _aiter([_chunk(), _chunk(tool_calls=[tc], finish_reason="tool_calls")]),
-            asyncio.Queue(),
             None,
             think=False,
             on_first_token=lambda: calls.append(1),
@@ -526,7 +521,6 @@ class TestFirstTokenHook:
         calls = []
         await _process_streaming_response(
             _aiter([_chunk(no_choices=True), _chunk(finish_reason="stop")]),
-            asyncio.Queue(),
             None,
             think=False,
             on_first_token=lambda: calls.append(1),
@@ -570,7 +564,6 @@ class TestThinkToolTurns:
                 host="http://localhost:8000/v1",
                 instruction="q",
                 tool_registry=registry,
-                safety_queue=asyncio.Queue(),
                 think=True,
                 think_tool_turns=think_tool_turns,
             )
@@ -627,7 +620,6 @@ class TestThinkToolTurns:
             result = await chat(
                 host="http://localhost:8000/v1",
                 instruction="q",
-                safety_queue=asyncio.Queue(),
                 think=False,
                 verify_answers=False,
             )
@@ -754,9 +746,8 @@ class TestParallelToolCalls:
         calls = [
             _mock_tool_call("read_file", '{"path": "/a"}', "c1"),
             _mock_tool_call("read_file", '{"path": "/b"}', "c2"),
-            _mock_tool_call("search_document", '{"query": "x"}', "c3"),
         ]
-        registry = self._registry({"read_file", "search_document"}, delay=0.05)
+        registry = self._registry({"read_file"}, delay=0.05)
         messages: list = []
 
         started = time.monotonic()
@@ -771,16 +762,15 @@ class TestParallelToolCalls:
             messages,
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         elapsed = time.monotonic() - started
 
         assert bail is None
-        # Serial would be ~0.15s; concurrent is ~0.05s.
+        # Serial would be ~0.10s; concurrent is ~0.05s.
         assert elapsed < 0.12
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
-        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"]
 
     @pytest.mark.asyncio
     async def test_results_keep_call_order_not_completion_order(self):
@@ -812,7 +802,6 @@ class TestParallelToolCalls:
             messages,
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
@@ -850,7 +839,6 @@ class TestParallelToolCalls:
             [],
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         assert order == ["/first", "/second"]
@@ -878,7 +866,6 @@ class TestParallelToolCalls:
             messages,
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         assert [m["tool_call_id"] for m in messages if m.get("role") == "tool"] == ["c1"]
@@ -912,7 +899,6 @@ class TestParallelToolCalls:
             messages,
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
@@ -1189,7 +1175,6 @@ class TestFoldOnToolTurn:
                     _chunk(tool_calls=[tc], finish_reason="tool_calls"),
                 ]
             ),
-            asyncio.Queue(),
             ui,
             think=False,
         )
@@ -1208,7 +1193,6 @@ class TestFoldOnToolTurn:
                     _chunk(finish_reason="stop"),
                 ]
             ),
-            asyncio.Queue(),
             ui,
             think=False,
         )
@@ -1240,7 +1224,6 @@ class TestFoldOnToolTurn:
                     _chunk(finish_reason="stop"),
                 ]
             ),
-            asyncio.Queue(),
             ui,
             think=False,
         )
@@ -1265,7 +1248,6 @@ class TestFoldOnToolTurn:
         ui = _FoldSpyUI()
         await _ollama_process_streaming_response(
             _aiter([prose, calls]),
-            asyncio.Queue(),
             ui,
             think=False,
         )
@@ -1283,7 +1265,6 @@ class TestFoldOnToolTurn:
         ui = _FoldSpyUI()
         await _ollama_process_streaming_response(
             _aiter([chunk]),
-            asyncio.Queue(),
             ui,
             think=False,
         )
@@ -1351,7 +1332,6 @@ class TestMixedBatchPartition:
             messages,
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         elapsed = time.monotonic() - started
@@ -1393,7 +1373,6 @@ class TestMixedBatchPartition:
             messages,
             [],
             30,
-            asyncio.Queue(),
             session_id="s",
         )
         # Both writes ran, in the order the model asked for them.

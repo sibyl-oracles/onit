@@ -89,15 +89,9 @@ def write_config(host: str | None, model: str | None) -> dict:
 
 
 async def ask(agent, task: str, session_name: str) -> str:
-    """One task, through the real agent, with a real safety queue.
-
-    The queue is not optional: ``process_task`` drains it before the run,
-    and a caller that leaves it unset is the difference between a run that
-    answers and a run that raises.
-    """
-    queue = asyncio.Queue(maxsize=10)
+    """One task, through the real agent."""
     path = os.path.join(SESSIONS, session_name + ".jsonl")
-    return await agent.process_task(task, session_path=path, data_path=DATA, safety_queue=queue)
+    return await agent.process_task(task, session_path=path, data_path=DATA)
 
 
 def show_records(cfg: dict) -> list:

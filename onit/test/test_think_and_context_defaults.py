@@ -72,7 +72,6 @@ async def _vllm_request(**chat_kwargs):
         await chat(
             host="http://localhost:8000/v1",
             instruction="hi",
-            safety_queue=asyncio.Queue(),
             **chat_kwargs,
         )
     return client.chat.completions.create.call_args.kwargs
@@ -108,7 +107,6 @@ async def _ollama_request(**chat_kwargs):
             host_key="k",
             instruction="hi",
             model="glm-5.3:cloud",
-            safety_queue=asyncio.Queue(),
             **chat_kwargs,
         )
     return client.chat.call_args.kwargs
@@ -216,7 +214,7 @@ class TestTheContextWindowDefault:
             from onit.model.serving.chat import chat
 
             await chat(
-                host="http://localhost:8000/v1", instruction="hi", safety_queue=asyncio.Queue()
+                host="http://localhost:8000/v1", instruction="hi"
             )
         body = client.chat.completions.create.call_args.kwargs
         # A 128k window cannot take a 1M output budget; the clamp proves the
@@ -346,7 +344,6 @@ class TestTheChainFromTheFlagToChat:
                     agent,
                     instruction="hi",
                     kwargs=kwargs,
-                    safety_queue=_asyncio.Queue(),
                     session_key="s",
                 )
             )
@@ -515,7 +512,6 @@ async def _run_ollama(client, reset: bool = True, **chat_kwargs):
             host_key="k",
             model="m:1b",
             instruction="hi",
-            safety_queue=asyncio.Queue(),
             **chat_kwargs,
         )
 

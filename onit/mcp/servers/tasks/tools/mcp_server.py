@@ -29,11 +29,10 @@ document search, and GitHub repository management into a single MCP server.
  8. serve           - Run anything slower than 300s in the background: builds,
                       installs, test suites, plus web servers and daemons
  9. grep            - Recursive pattern search across files in a directory
-10. search_document - Search within a single document; mode="context" for semantic search
-11. send_file       - Send files via callback URL or base64
-12. github_repo     - Create, get, list, fork, or delete GitHub repositories
-13. index_documents - Ingest in-house documents (pdf/md/txt/csv/docx/xlsx) into the local search index
-14. local_search    - BM25/dense/hybrid retrieval over indexed in-house documents
+10. send_file       - Send files via callback URL or base64
+11. github_repo     - Create, get, list, fork, or delete GitHub repositories
+12. index_documents - Ingest in-house documents (pdf/md/txt/csv/docx/xlsx) into the local search index
+13. local_search    - BM25/dense/hybrid retrieval over indexed in-house documents
 """
 
 import os
@@ -62,7 +61,6 @@ from onit.mcp.servers.tasks.shared import (
     secure_makedirs as _secure_makedirs,
     validate_required as _validate_required,
     READ_FILE_DESCRIPTION,
-    SEARCH_DOCUMENT_DESCRIPTION,
     GITHUB_REPO_DESCRIPTION,
     SERVE_DESCRIPTION,
 )
@@ -189,7 +187,6 @@ from onit.mcp.servers.tasks.os.bash.mcp_server import (
     edit_file as _edit_file,
     serve as _serve,
     send_file as _send_file,
-    search_document as _search_document,
     search_directory as _search_directory,
 )
 
@@ -453,41 +450,6 @@ def github_repo(
         license_template=license_template,
         org=org,
         per_page=per_page,
-    )
-
-
-@mcp.tool(
-    title="Search Document",
-    description=SEARCH_DOCUMENT_DESCRIPTION,
-)
-def search_document(
-    path: Optional[str] = None,
-    mode: str = "pattern",
-    pattern: Optional[str] = None,
-    query: Optional[str] = None,
-    keywords: Optional[str] = None,
-    case_sensitive: bool = False,
-    context_lines: int = 3,
-    max_matches: int = 50,
-    context_chars: int = 500,
-    max_sections: int = 5,
-    data_path: str = "",
-) -> str:
-    """Pass-through to the bash server's search_document, which now routes both
-    modes itself.  Signature and description are shared verbatim so the two
-    registrations are replicas of one tool rather than a name collision."""
-    return _search_document(
-        path=path,
-        mode=mode,
-        pattern=pattern,
-        query=query,
-        keywords=keywords,
-        case_sensitive=case_sensitive,
-        context_lines=context_lines,
-        max_matches=max_matches,
-        context_chars=context_chars,
-        max_sections=max_sections,
-        data_path=data_path,
     )
 
 

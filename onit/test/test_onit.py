@@ -202,7 +202,7 @@ class TestFriendlyToolStatus:
         """Callers that have only names (older call sites) still get words."""
         statuses = []
         adapter = StreamingAdapter(on_tool_status=statuses.append)
-        adapter.start_tool_batch(["read_file", "search_document"])
+        adapter.start_tool_batch(["read_file", "get_document_context"])
         assert statuses == ["Reading files and documents — 2 at once…"]
 
     def test_batch_of_one_kind_names_what_it_is_looking_for(self):
@@ -796,9 +796,7 @@ class TestChatWithFailover:
     """The one failover layer every whole-run chat() caller goes through."""
 
     def _onit(self, tmp_path):
-        onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = asyncio.Queue()
-        return onit
+        return _make_onit_for_async(tmp_path)
 
     @pytest.mark.asyncio
     async def test_first_usable_response_wins(self, tmp_path):
@@ -822,7 +820,6 @@ class TestChatWithFailover:
                     session_id="s",
                     session_history=[],
                 ),
-                safety_queue=onit.safety_queue,
                 session_key="s",
             )
         assert result == "The answer"
@@ -850,42 +847,12 @@ class TestChatWithFailover:
                     session_id="s",
                     session_history=[],
                 ),
-                safety_queue=onit.safety_queue,
                 session_key="s",
             )
         # One initial attempt + one failover, then give up with the last
         # response — the caller decides what "nothing" means.
         assert len(calls) == MAX_FAILOVER_ATTEMPTS
         assert result == "   "
-
-    @pytest.mark.asyncio
-    async def test_safety_stop_beats_the_retry(self, tmp_path):
-        onit = self._onit(tmp_path)
-        await onit.safety_queue.put("stop")
-        calls = []
-
-        async def _chat(**kw):
-            calls.append(kw["host"])
-            return "The answer"
-
-        with patch("onit.onit.chat", new=_chat):
-            result = await _chat_with_failover(
-                onit,
-                instruction="hi",
-                kwargs=onit._chat_kwargs(
-                    metrics={},
-                    run_state=RunState(),
-                    chat_ui=None,
-                    verbose=False,
-                    data_path=".",
-                    session_id="s",
-                    session_history=[],
-                ),
-                safety_queue=onit.safety_queue,
-                session_key="s",
-            )
-        assert calls == []
-        assert result is None
 
     @pytest.mark.asyncio
     async def test_failed_endpoint_is_released_into_cooldown(self, tmp_path):
@@ -907,7 +874,6 @@ class TestChatWithFailover:
                     session_id="s",
                     session_history=[],
                 ),
-                safety_queue=onit.safety_queue,
                 session_key="s",
             )
         preferred = onit.load_balancer.preferred
@@ -942,7 +908,6 @@ class TestProcessTask:
     @pytest.mark.asyncio
     async def test_returns_response(self, tmp_path):
         onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = asyncio.Queue()
 
         # Mock prompt client
         mock_prompt_msg = MagicMock()
@@ -966,7 +931,6 @@ class TestProcessTask:
     @pytest.mark.asyncio
     async def test_returns_error_on_none(self, tmp_path):
         onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = asyncio.Queue()
 
         mock_prompt_msg = MagicMock()
         mock_prompt_msg.content.text = "Instruction"
@@ -989,7 +953,6 @@ class TestProcessTask:
     @pytest.mark.asyncio
     async def test_prompt_intro_passed_to_chat(self, tmp_path):
         onit = _make_onit_for_async(tmp_path, {"prompt_intro": "I am a custom bot."})
-        onit.safety_queue = asyncio.Queue()
 
         mock_prompt_msg = MagicMock()
         mock_prompt_msg.content.text = "Instruction text"
@@ -1014,7 +977,6 @@ class TestProcessTask:
     async def _chat_kwargs_for(self, tmp_path, overrides):
         """Run one task and return the kwargs process_task handed to chat()."""
         onit = _make_onit_for_async(tmp_path, overrides)
-        onit.safety_queue = asyncio.Queue()
 
         mock_prompt_msg = MagicMock()
         mock_prompt_msg.content.text = "Instruction text"
@@ -1109,7 +1071,6 @@ class TestBackgroundChecks:
 
     async def _run(self, tmp_path, correction_callback=None, answer="The answer"):
         onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = asyncio.Queue()
         mock_prompt_msg = MagicMock()
         mock_prompt_msg.content.text = "Instruction"
         mock_prompt_result = MagicMock()
@@ -1141,7 +1102,6 @@ class TestBackgroundChecks:
         """A correction to an answer the user has moved past is not worth the
         tokens, and would land under the wrong answer."""
         onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = asyncio.Queue()
         started = asyncio.Event()
 
         async def _never_finishes():
@@ -1232,70 +1192,6 @@ class TestBackgroundChecks:
 
 
 # ── OnItA2AExecutor ─────────────────────────────────────────────────────────
-
-
-class TestEnterKeyListener:
-    """The Enter-key stop listener shares stdin with the raw text-UI input
-    reader (``os.read(fd, 1)``). It must therefore be non-blocking and read
-    *unbuffered* — otherwise it either freezes the event loop or strands the
-    start of the user's next message in Python's stdin buffer, which surfaces
-    as dropped input characters in the text UI.
-    """
-
-    def _make_stub(self, safety_queue):
-        stub = MagicMock()
-        stub.web = False
-        stub.messages = {}
-        stub.safety_queue = safety_queue
-        return stub
-
-    @pytest.mark.asyncio
-    async def test_newline_signals_stop_without_buffered_readline(self, monkeypatch):
-        r, w = os.pipe()
-        try:
-            fake_stdin = MagicMock()
-            fake_stdin.fileno.return_value = r
-            # If the implementation ever falls back to buffered readline() this
-            # raises, failing the test loudly instead of silently stranding bytes.
-            fake_stdin.readline.side_effect = AssertionError("must not use buffered readline()")
-            monkeypatch.setattr(sys, "stdin", fake_stdin)
-
-            loop = asyncio.get_running_loop()
-            q = asyncio.Queue()
-            cb = OnIt._setup_enter_key_listener(self._make_stub(q), loop)
-            assert cb is not None
-            try:
-                os.write(w, b"\n")
-                await asyncio.wait_for(q.get(), timeout=1.0)  # STOP_TAG enqueued
-            finally:
-                loop.remove_reader(r)
-            assert q.empty()
-        finally:
-            os.close(r)
-            os.close(w)
-
-    @pytest.mark.asyncio
-    async def test_partial_line_does_not_stop(self, monkeypatch):
-        """Bytes without a newline (type-ahead) must not trigger a stop, and the
-        callback must return promptly rather than block waiting for a newline."""
-        r, w = os.pipe()
-        try:
-            fake_stdin = MagicMock()
-            fake_stdin.fileno.return_value = r
-            monkeypatch.setattr(sys, "stdin", fake_stdin)
-
-            loop = asyncio.get_running_loop()
-            q = asyncio.Queue()
-            cb = OnIt._setup_enter_key_listener(self._make_stub(q), loop)
-            try:
-                os.write(w, b"hello")  # no newline
-                await asyncio.sleep(0.1)  # give the reader a chance to fire
-                assert q.empty()  # no false stop, and it did not block the loop
-            finally:
-                loop.remove_reader(r)
-        finally:
-            os.close(r)
-            os.close(w)
 
 
 # ── trajectory recording ────────────────────────────────────────────────────
@@ -1512,7 +1408,6 @@ class TestRunState:
         from onit.model.serving.state import STOP_ANSWERED, state_path_for
 
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
-        onit.safety_queue = asyncio.Queue()
 
         async def _fake_chat(**kwargs):
             # Stand in for the loop: fill the caller's state the way chat does.
@@ -1543,7 +1438,6 @@ class TestRunState:
         from onit.model.serving.state import STOP_TURN_LIMIT, state_path_for
 
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
-        onit.safety_queue = asyncio.Queue()
 
         async def _fake_chat(**kwargs):
             state = kwargs["run_state"]
@@ -1565,7 +1459,6 @@ class TestRunState:
     @pytest.mark.asyncio
     async def test_history_accumulates_across_tasks(self, tmp_path):
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
-        onit.safety_queue = asyncio.Queue()
 
         async def _fake_chat(**kwargs):
             kwargs["run_state"].tool_call_history.append(("bash", "{}"))
@@ -1591,7 +1484,6 @@ class TestRunState:
         seen = []
 
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
-        onit.safety_queue = asyncio.Queue()
 
         async def _fake_chat(**kwargs):
             seen.append(list(kwargs["run_state"].tool_call_history))
@@ -1696,7 +1588,6 @@ class TestRunState:
         from onit.model.serving.state import state_path_for
 
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
-        onit.safety_queue = asyncio.Queue()
 
         other = tmp_path / "sessions" / "other.jsonl"
         other.parent.mkdir(parents=True, exist_ok=True)
@@ -1719,7 +1610,6 @@ class TestRunState:
     @pytest.mark.asyncio
     async def test_a_state_file_that_cannot_be_written_does_not_fail_the_task(self, tmp_path):
         onit = _make_onit_for_async(tmp_path, {"data_path": str(tmp_path / "data")})
-        onit.safety_queue = asyncio.Queue()
 
         with (
             patch("onit.onit.Client", return_value=self._prompt_client()),
@@ -1929,80 +1819,6 @@ class TestFinalAnswerBlock:
         assert stored.endswith("text the user needs")
 
 
-# ── a caller that brings no queue ────────────────────────────────────────────
-
-
-class TestProcessTaskWithoutAnInstanceQueue:
-    """An agent built outside ``run()`` has no queue, and must still run.
-
-    ``run()`` is what creates ``self.safety_queue``.  Every caller that
-    builds an ``OnIt`` directly -- the eval runner, ``scripts/measure.py``,
-    a test -- never goes through it, so ``self.safety_queue`` is ``None``.
-    ``process_task`` did ``safety_queue or self.safety_queue`` and then
-    called ``.empty()`` on the result, so those callers got
-
-        AttributeError: 'NoneType' object has no attribute 'empty'
-
-    before the first turn.  ``learn --eval-run --ab`` passes
-    ``safety_queue=None`` explicitly, so *every item in both arms* raised,
-    and the comparison was between two error streams that both scored
-    0.000.
-
-    Every existing test in this file sets ``onit.safety_queue`` by hand
-    before calling ``process_task``, which is exactly why none of them
-    saw it.
-    """
-
-    @pytest.mark.asyncio
-    async def test_a_none_queue_does_not_raise(self, tmp_path):
-        onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = None
-
-        mock_prompt_msg = MagicMock()
-        mock_prompt_msg.content.text = "Instruction text"
-        mock_prompt_result = MagicMock()
-        mock_prompt_result.messages = [mock_prompt_msg]
-
-        mock_client = AsyncMock()
-        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("onit.onit.Client", return_value=mock_client),
-            patch("onit.onit.chat", new_callable=AsyncMock, return_value="The answer"),
-        ):
-            result = await onit.process_task("What is 2+2?", safety_queue=None)
-
-        assert result == "The answer"
-
-    @pytest.mark.asyncio
-    async def test_an_explicit_none_queue_does_not_raise(self, tmp_path):
-        """``run_arm`` passes ``safety_queue=None`` while the instance has
-        no queue either: both fallbacks are None, and both used to raise."""
-        onit = _make_onit_for_async(tmp_path)
-        assert onit.safety_queue is None, (
-            "an agent built outside run() must have no instance queue, "
-            "or this test is not testing the fallback"
-        )
-
-        mock_prompt_msg = MagicMock()
-        mock_prompt_msg.content.text = "Instruction text"
-        mock_prompt_result = MagicMock()
-        mock_prompt_result.messages = [mock_prompt_msg]
-
-        mock_client = AsyncMock()
-        mock_client.get_prompt = AsyncMock(return_value=mock_prompt_result)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("onit.onit.Client", return_value=mock_client),
-            patch("onit.onit.chat", new_callable=AsyncMock, return_value="ok"),
-        ):
-            assert await onit.process_task("q", safety_queue=None) == "ok"
-
-
 # ── the session named in the UI ──────────────────────────────────────────────
 
 
@@ -2117,7 +1933,6 @@ class TestTheFooterIsRenamedByTheFirstAnswer:
     @pytest.mark.asyncio
     async def test_the_footer_is_renamed_by_the_first_answer(self, tmp_path):
         onit = _make_onit_for_async(tmp_path)
-        onit.safety_queue = asyncio.Queue()
         assert onit.chat_ui.session_name.startswith("(unnamed) ")
 
         prompt_msg = MagicMock()

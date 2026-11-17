@@ -184,7 +184,6 @@ def has_tool_evidence(messages: list) -> bool:
 TRUSTED_TOOLS = frozenset(
     {
         "read_file",
-        "search_document",
         "get_document_context",
         "local_search",
         "extract_tables",

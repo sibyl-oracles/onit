@@ -44,7 +44,6 @@ class FakeOnit:
         task,
         session_path=None,
         data_path=None,
-        safety_queue=None,
         stream_callback=None,
         stream_complete_callback=None,
         stats=None,
@@ -902,14 +901,6 @@ class TestChatEndpoint:
         assert session.open_stream is None
         assert held.get_nowait() is _END
 
-    def test_stop_lets_go_of_the_held_stream(self, client, ui):
-        sid, session = ui._get_or_create_session()
-        held = queue.Queue()
-        session.open_stream = held
-        client.post("/api/chat/stop", headers={"X-Session-Id": sid})
-        assert session.open_stream is None
-        assert held.get_nowait() is _END
-
     def test_chat_empty_message_rejected(self, client):
         assert client.post("/api/chat", json={"message": " "}).status_code == 400
 
@@ -931,16 +922,6 @@ class TestChatEndpoint:
         assert res.status_code == 200
         assert "Relevant files:" in ui._onit.calls[-1]
         assert os.path.join(session.data_path, "notes.txt") in ui._onit.calls[-1]
-
-    def test_stop_signals_safety_queue(self, client, ui, bg_loop):
-        sid, session = ui._get_or_create_session()
-        session.processing = True
-        res = client.post("/api/chat/stop", headers={"X-Session-Id": sid})
-        assert res.json()["stopped"] is True
-        deadline = time.time() + 2
-        while session.safety_queue.qsize() == 0 and time.time() < deadline:
-            time.sleep(0.01)
-        assert session.safety_queue.qsize() == 1
 
 
 class TestUploadEndpoints:

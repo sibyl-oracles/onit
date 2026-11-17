@@ -482,11 +482,6 @@ voice:
                             # transcript, links and generated files included
   tool_timeout: 90          # seconds before a runaway ask_onit is cancelled
                             # and the call moves on
-  barge_in: true            # OnIt measures the microphone itself and cancels
-                            # the task through the same safety queue the stop
-                            # button uses
-  # barge_in_rms: 900       # PCM16 level that counts as speech
-  # barge_in_frames: 5      # consecutive ~80 ms frames above it (~400 ms)
   max_unprompted_turns: 3   # end the call after this many model-only turns
 ```
 
@@ -544,9 +539,6 @@ template_path: ~                  # custom prompt template YAML; the file
                                   # holds one key, instruction_template
                                   # (examples shipped in
                                   # onit/mcp/prompts/prompt_templates)
-
-messages:
-  safety_warning: "Press 'Enter' key to stop all tasks."
 
 # Inputs a text-UI session ends on. Replaces the default list:
 # \goodbye, \bye, \quit, \exit

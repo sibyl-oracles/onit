@@ -67,7 +67,7 @@ class TestOllamaStreamInterrupt:
             yield _ollama_chunk("The answer is ")
             raise ConnectionResetError("peer closed connection")
 
-        result = await _ollama_process_streaming_response(stream(), asyncio.Queue(), None, False)
+        result = await _ollama_process_streaming_response(stream(), None, False)
         content, _, _, _, _, done_reason, _ = result
         assert content == "The answer is "
         assert done_reason == "error"
@@ -81,7 +81,7 @@ class TestOllamaStreamInterrupt:
             yield _ollama_chunk("Two scholarships.")
             yield _ollama_chunk("", done_reason="stop", prompt_eval_count=5441, eval_count=128)
 
-        result = await _ollama_process_streaming_response(stream(), asyncio.Queue(), None, False)
+        result = await _ollama_process_streaming_response(stream(), None, False)
         content, _, _, _, _, done_reason, _ = result
         assert content == "Two scholarships."
         assert done_reason == "stop"
@@ -99,7 +99,7 @@ class TestResponsesStreamInterrupt:
             yield _responses_event("response.output_text.delta", delta="The answer is ")
             raise ConnectionResetError("peer closed connection")
 
-        result = await _process_responses_streaming_response(events(), asyncio.Queue(), None, False)
+        result = await _process_responses_streaming_response(events(), None, False)
         content, _, _, _, _, finish_reason = result
         assert content == "The answer is "
         assert finish_reason == "error"
@@ -133,7 +133,6 @@ class TestChatLoopResumesDeadStream:
                 host="http://localhost:8000/v1",
                 instruction="Explain at length.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result == part1 + part2
@@ -166,7 +165,6 @@ class TestChatLoopResumesDeadStream:
                 host="http://localhost:8000/v1",
                 instruction="Explain at length.",
                 tool_registry=None,
-                safety_queue=asyncio.Queue(),
             )
 
         assert result is not None
@@ -225,7 +223,6 @@ class TestQuotedThinkOpener:
                     host="http://localhost:8000/v1",
                     instruction="Explain the template.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -268,7 +265,6 @@ class TestQuotedThinkOpener:
                     host="http://localhost:8000/v1",
                     instruction="Explain the template.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )
@@ -303,7 +299,6 @@ class TestQuotedThinkOpener:
                     host="http://localhost:8000/v1",
                     instruction="Explain the template.",
                     tool_registry=None,
-                    safety_queue=asyncio.Queue(),
                 ),
                 timeout=30,
             )

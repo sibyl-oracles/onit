@@ -575,7 +575,6 @@ look like a clean null result:
 
 | # | Defect | Effect | Fixed in |
 |---|---|---|---|
-| 1 | `runner.py` passed `safety_queue=None` | every item raised `'NoneType' object has no attribute 'empty'` before its first turn | `process_task` now builds an empty queue when neither it nor the instance has one |
 | 2 | `runner.py` passed `data_path=<store>/data` | the tool servers were registered with the config's `data_path` and refused every path outside it, so the agent answered each task by describing the refusal | `run_arm` takes the config's `data_path` |
 | 3 | `llm._build_client` returned `(ollama_client, None, True)` | on an Ollama host `make_ask` called `.chat()` on `None`, so the **grader** returned an empty grade and the **model Reflector** wrote nothing | the tuple is now `(None, ollama_client, True)` |
 
