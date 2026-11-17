@@ -26,7 +26,9 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
+import uuid
 from pathlib import Path
 
 import yaml
@@ -252,6 +254,12 @@ def _learn_eval_run(args, config_data: dict) -> None:
     print("Run directory: %s" % os.path.abspath(os.path.expanduser(root)))
     base = base_config_for_run(config_data)
 
+    # A run whose scratch directory is a temporary directory dies at
+    # reboot, and the operator asked a question about a past run by its
+    # printed path.  So a run the CLI owns is copied into the checkout
+    # once it finishes: results, comparison and per-item rows, minus the
+    # trajectories, which are the bulk and stay in the temp root.  A
+    # caller who named --eval-out owns the root and needs no copy.
     try:
         if getattr(args, "wiki_ab", False):
             from .learn.runner import (
@@ -319,12 +327,38 @@ def _learn_eval_run(args, config_data: dict) -> None:
             out = os.path.join(root, "arms", "off", "results.json")
             print("Results: %s" % out)
     finally:
+        # Copy first, sweep second: the comparison and per-item rows
+        # must be in the checkout before the arm stores are deleted.
+        _keep_eval_run_copy(args, root, owned)
         if owned and not getattr(args, "eval_out", None):
             # The arm stores are throwaway working state.  Keeping them
             # would put benchmark traffic next to the operator's own
             # corpus, which is the confusion this command exists to
             # prevent.
             shutil.rmtree(root, ignore_errors=True)
+
+
+def _keep_eval_run_copy(args, root: str, owned: bool, checkout: str | None = None) -> None:
+    """Copy a finished, CLI-owned run into the checkout before cleanup.
+
+    The run directory a replay prints is a temporary directory, and the
+    ``finally`` below deletes it once the command ends -- correct for
+    the arm stores, but it takes the comparison and per-item rows with
+    it, and the operator asks about a past run by the path that was
+    printed.  A caller who named ``--eval-out`` owns the root and needs
+    no copy.  A name collision gets a short suffix, because two runs of
+    the same command on one day must not overwrite each other.
+    """
+    if not owned or not os.path.isdir(root):
+        return
+    keep = os.path.join(
+        checkout or os.getcwd(), "tmp", "eval-runs", os.path.basename(os.path.normpath(root))
+    )
+    if os.path.exists(keep):
+        keep = "%s.%s" % (keep, uuid.uuid4().hex[:8])
+    os.makedirs(keep, exist_ok=True)
+    shutil.copytree(root, keep, dirs_exist_ok=True)
+    print("Kept a copy: %s" % os.path.abspath(keep))
 
 
 def _learn_draw_holdout(args, config_data: dict) -> None:

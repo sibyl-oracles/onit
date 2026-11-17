@@ -180,7 +180,9 @@ autonomy (`adapt`) and differ only in the wiki's master switch:
 
 Run it: `onit learn --eval-run --wiki-ab [--eval-split holdout]
 [--eval-limit N] [--eval-out DIR]`.  Spend the holdout only on the run
-whose number will be acted on.
+whose number will be acted on.  Without `--eval-out`, a finished run is
+also copied to `tmp/eval-runs/<run-name>` in the checkout, so a report
+someone asks about later survives the temp directory's cleanup.
 
 #### The first real run, and what it fixed
 
