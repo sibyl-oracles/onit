@@ -147,6 +147,21 @@ mcp:
       enabled: true
 ```
 
+`mcp_host` retargets every socket-served server at one host without editing
+each URL. A stdio server is a subprocess of this process, so there is no host
+to move — only `url:` entries are rewritten, and a URL's explicit port is kept:
+
+```yaml
+mcp:
+  mcp_host: gpu-box   # http://gpu-box:8080/sse keeps its port; a portless
+                      # URL is rewritten to the bare host
+```
+
+With the web UI also on, `mcp_host` doubles as the address OnIt measures the
+route home from: the file-server URL handed to a browser client becomes
+`http://<this machine's IP toward mcp_host>:<web_port>`, so generated files
+stay fetchable from another machine.
+
 
 ## The agent loop's guard rails
 
@@ -475,6 +490,21 @@ web_google_client_secret:
 #   - "user1@allusers.com"
 ```
 
+The rest of the web keys:
+
+```yaml
+web_require_auth: true   # false (or `onit --no-login`) runs an open UI with
+                         # no sign-in — a trusted-network choice only
+web_html_preview: true   # a generated page renders in a sandboxed frame in
+                         # the reply; false keeps it as source plus a
+                         # download link instead
+web_tts: true            # the /api/tts endpoint behind the speaker toggle;
+                         # false removes the endpoint and the toggle
+web_tts_summarize: true  # a long answer is summarized before being spoken, so
+                         # the audio stays short and the rest is read on
+                         # screen; false reads the full text aloud
+```
+
 
 ## The remaining top-level keys
 
@@ -509,6 +539,30 @@ prompt_in_process: true
 # -1, connection setup and streaming stalls (no chunk received for 300s) are
 # bounded, so a wedged server cannot hang the chat loop forever.
 timeout: -1
+
+# The agent's identity, injected into the context block the model reads.
+# Rename the agent or sign your own work:
+agent_name: "OnIt"
+developer: "Rowel Atienza"
+
+# The line that opens the system prompt. The shipped default is
+# "I am a helpful AI assistant. My name is OnIt."
+# prompt_intro: "You are a meticulous research assistant."
+
+# Print each tool call with its arguments as it starts, the (truncated)
+# result as it returns, and tool log lines. The config form of the
+# `--show-logs` flag; off by default.
+# show_logs: false
+
+# Start inside an existing session instead of a new one — the config-file
+# form of `onit --resume-session <name>`:
+# resume_session_id: "thesis ch3"
+
+# Loop mode: re-run one task on a schedule, headless. `task` is the
+# instruction; `period` is the seconds between runs (Ctrl+C stops the loop).
+# loop: false
+# task: ~
+# period: 20.0
 ```
 
 
