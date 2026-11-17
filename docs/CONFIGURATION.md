@@ -28,7 +28,9 @@ The rest of this page is the full set of keys.
 `onit setup` is the recommended way to configure OnIt. It stores:
 
 - **Settings** in `~/.onit/config.yaml` (LLM endpoint, theme, ports, timeout)
-- **Secrets** in your OS keychain (API keys, bot tokens)
+- **Secrets** in your OS keychain (API keys, bot tokens). A machine with no
+  keychain — a headless Linux box, a container — gets `~/.onit/secrets.yaml`
+  instead, owner-only permissions, which the container mounts read-only.
 
 You can also use environment variables or a project-level YAML config:
 
@@ -529,6 +531,10 @@ web_tts_summarize: true  # a long answer is summarized before being spoken, so
                          # screen; false reads the full text aloud
 ```
 
+The operator's `~/.onit/settings.json` permission rules apply to web UI runs —
+that is the one mode where the default file is enforced (see the section
+above).
+
 
 ## The remaining top-level keys
 
@@ -605,6 +611,65 @@ custom template also states its own working directory: the standard context
 block is not added to it.
 
 
+## Permission rules (`~/.onit/settings.json`)
+
+A third file sits next to `config.yaml` and `secrets.yaml`:
+`~/.onit/settings.json`, the operator's own fence around the bash tool. It
+holds Claude Code-style permission rules the built-in policy knows nothing
+about — what you wrote down, in a file, that a session may and may not run:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(git *)", "Bash(ls*)", "Bash(pytest*)"],
+    "deny": ["Bash(sudo *)", "Bash(pip install*)", "Bash(rm -rf *)"],
+    "allowedCommands": ["mytool"]
+  }
+}
+```
+
+Each rule is `Bash(<glob>)`, the glob matched case-sensitively against the
+command. Rules in any other tool's name — `WebFetch(...)` and the like — are
+ignored. Three things hold, in this order:
+
+- **Deny always wins, and is never a question.** A denied command is refused
+  outright, as a critical refusal: an agent that hit one walked into
+  something someone explicitly fenced off, not something nobody got round to
+  listing.
+- **A non-empty `allow` list is a boundary.** Every command must match one of
+  its rules; a miss is askable, but only in the UIs allowed to widen the
+  operator's boundary. A web UI run is multi-tenant by construction — one
+  process serves several people under one OS account — so there the question
+  is withheld, and the miss is a flat block.
+- **`allowedCommands` widens the curated command allowlist**, the same way
+  `ONIT_ALLOWED_COMMANDS` does, for a command the shipped list does not know.
+
+Compound commands are split on the sequencing operators (`&&`, `||`, `;`, `|`,
+newline) and each segment checked on its own, so a denied command inside a
+chain is still caught. Leading `FOO=bar` assignments and transparent wrappers
+(`command`, `exec`, `nohup`, `time`, `builtin`) are stripped from the front of
+a segment first, so `nohup pip install x` matches a `Bash(pip install*)` deny
+rule. The split is naive about quoting — a quoted `&&` splits too — which can
+only over-block, never under-block a deny rule.
+
+When the rules apply depends on how OnIt was started:
+
+- **Web UI** (`onit serve web`, or `web: true`): the default
+  `~/.onit/settings.json` is enforced. The web UI serves people who cannot
+  edit the host's files, so the operator's file is the boundary that applies
+  to them.
+- **Terminal** (`onit`): the default file is ignored — the terminal user is
+  the operator, and runs privileged.
+- **An explicit `ONIT_SETTINGS`** (or the server's `settings_path` option):
+  enforced in every mode, `--unrestricted` and container mode included. It is
+  the one way to fence off the terminal too.
+
+The file is cached by path and modification time, so an edit takes effect on
+the next command without restarting anything. A missing file means no rules;
+an unreadable or malformed one is logged and its rules dropped — the built-in
+policy still applies, and a broken file never blocks every command.
+
+
 ## Environment variable reference
 
 Everything above can also be set from the environment. A variable supplies
@@ -651,8 +716,8 @@ it would otherwise fill.
 | `ONIT_DOMAIN` | Domain shown in the web UI's branding; falls back to `ONIT_PUBLIC_URL`, then the Host header. |
 | `ONIT_SECURITY_CONTACT` | Disclosure contact published at `/.well-known/security.txt`; unset, the endpoint stays 404. |
 | `ONIT_GA_MEASUREMENT_ID` | Google Analytics 4 ID for the web UI (`web_ga_measurement_id` in the config wins). |
-| `ONIT_SETTINGS` | Path to the bash tool's settings file. |
-| `ONIT_ALLOWED_COMMANDS` | Comma-separated extension of the bash tool's curated default command allowlist (see `onit/mcp/servers/tasks/os/bash/command_policy.py`). |
+| `ONIT_SETTINGS` | Path to the bash tool's settings file — the permission rules above. Naming one enforces it in every mode, terminal included. |
+| `ONIT_ALLOWED_COMMANDS` | Comma-separated extension of the bash tool's curated default command allowlist (see `onit/mcp/servers/tasks/os/bash/command_policy.py`); `permissions.allowedCommands` in the settings file above widens it the same way. |
 
 ## Benchmark environment variables
 
