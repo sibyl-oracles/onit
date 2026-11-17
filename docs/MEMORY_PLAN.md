@@ -227,6 +227,44 @@ the same commit:
   "NOTHING WAS GRADED -- this is not a measurement" and the verdict
   "NOT MEASURED" instead of a tie.  A tie requires grades.
 
+#### The first graded run, and what it fixed (2026-11-17)
+
+The second run graded real items -- and produced a plausible-looking
+wrong answer: control 0.20 vs treatment 0.05, delta -0.150, "no
+measurable effect."  Kept copy: `tmp/eval-runs/onit-evalrun-_exp1_5k`.
+Three defects came out of it, and all three are fixed in the same
+commit:
+
+- **The treatment wiki was empty -- the treatment was a placebo.**  The
+  dream state said so plainly: `sessions=1 candidates=0 rejected=6
+  pages_created=0`, a 0-byte `INDEX.md`, no pages directory.  Two
+  causes stacked.  (1) A replay's whole day lands in one session file
+  (20 items = one session id, 20 turns), and the dream pass truncated
+  the transcript to its production budget of 6,000 characters -- the
+  first two items.  The seeding pass now takes `max_session_chars`
+  through `run_dream`/`dream_once`/`extract` and the gate passes
+  200,000, so it reads the control's entire recorded experience.
+  (2) The extraction call shared the grader's 400-token output cap,
+  and a reasoning model spends that budget thinking before writing --
+  the reply came back empty and `_extract_json` got nothing.  The cap
+  is now one constant, `JUDGE_MAX_TOKENS = 4000`, for every branch.
+- **Empty grader replies fell out of the comparison silently.**  A
+  call that *succeeds* but returns no text is a second failure mode
+  the unreachable-grader fix did not cover: 12 of 40 items ungraded
+  while `grade-err=0` printed.  `grade()` now retries once and, if the
+  reply is still empty, records it as a grading error so the summary
+  counts it.
+- **The headline delta manufactured a difference from that asymmetry.**
+  Accuracy divides by every item, so an item graded in one arm and
+  empty in the other counts as a miss in one and nothing in the other.
+  The control's two correct answers had no graded treatment
+  counterpart.  The paired view -- only items both arms graded -- told
+  the real story: 12 pairs, control 2 correct vs treatment 1, one
+  discordant pair, i.e. noise.  `run_wiki_ab` now reports `wiki_pages`
+  and `paired` stats, and the verdict prints a PLACEBO line when the
+  treatment wiki has no pages, the paired line always, and an
+  incomplete-ruler note when >20% of items are ungraded.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

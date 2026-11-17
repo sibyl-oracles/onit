@@ -218,3 +218,24 @@ class TestTheClientTupleOrder:
         assert is_ollama is False
         assert client is not None
         assert ollama_client is None
+
+
+class TestTheOutputBudget:
+    """The budget must cover a reasoning model's thinking, not just its answer.
+
+    At 400 tokens a reasoning model spent the whole budget thinking and
+    returned empty text: 12 of 40 items in the 2026-11-17 gate run came
+    back ungraded with ``grading_errors`` reporting 0, and the seeding
+    pass extracted nothing from a 20-item session.
+    """
+
+    def test_the_budget_is_not_a_verdict_sized_number(self):
+        assert llm.JUDGE_MAX_TOKENS >= 4000
+
+    def test_the_budget_is_the_same_everywhere(self):
+        import inspect
+
+        source = inspect.getsource(llm.make_ask)
+        assert "JUDGE_MAX_TOKENS if len(messages)" not in source
+        assert source.count("JUDGE_MAX_TOKENS") >= 2
+        assert "400" not in source.replace("JUDGE_MAX_TOKENS", "")

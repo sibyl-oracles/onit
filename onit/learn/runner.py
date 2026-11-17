@@ -57,6 +57,14 @@ logger = logging.getLogger(__name__)
 # The result file's name inside an arm's directory.
 RESULTS_NAME = "results.json"
 
+# The transcript budget for the gate's seeding pass.  A replay's whole
+# day lands in one session file -- 20 items is one session id with 20
+# turns -- and the production dream budget (6,000 characters) would
+# show the pass only the first two items.  The treatment's wiki is
+# distilled from the control's *entire* recorded experience or the gate
+# measures a placebo.
+SEED_MAX_SESSION_CHARS = 200_000
+
 # The grader's rubric.  Three grades, and the third is the one that
 # matters: a run that hedges without committing is not wrong, it is
 # unmeasured, and counting it as wrong would make "say less" look like
@@ -163,7 +171,34 @@ async def grade(ask, task: str, reference: str, answer: str) -> dict:
         raw = raw[0]
     raw = str(raw or "")
     if not raw.strip():
-        logger.warning("grading call returned no text; item left ungraded")
+        # A call that succeeded but returned nothing is the failure mode
+        # the 2026-11-17 gate run exposed: a reasoning model spends its
+        # output budget thinking and never writes the verdict, and the
+        # item silently fell out of the comparison -- 12 of 40 items,
+        # with ``grading_errors`` reporting 0.  One retry, then the
+        # item is recorded as a grading failure: an empty grade is not
+        # data, and it must be visible in the summary, not only here.
+        logger.warning("grading call returned no text; retrying once")
+        try:
+            raw = await ask(messages)
+        except Exception as e:
+            logger.warning("grading retry failed: %s", e)
+            return {
+                "grade": "",
+                "raw": "",
+                "grading_error": "retry after empty reply: %s: %s"
+                % (type(e).__name__, str(e)[:200]),
+            }
+        if isinstance(raw, tuple):
+            raw = raw[0]
+        raw = str(raw or "")
+        if not raw.strip():
+            logger.warning("grading call returned no text twice; item left ungraded")
+            return {
+                "grade": "",
+                "raw": "",
+                "grading_error": "grading call returned no text (retried once)",
+            }
     return {"grade": parse_grade(raw), "raw": raw[:500]}
 
 
@@ -588,7 +623,7 @@ def _config_for_wiki_arm(base_config: dict, enabled: bool, store: str | None = N
     return config
 
 
-async def seed_wiki(ask, config_data: dict | None = None) -> dict:
+async def seed_wiki(ask, config_data: dict | None = None, **kwargs) -> dict:
     """Distil an arm's recorded runs into its wiki, once, before it runs.
 
     The wiki answers from what the agent has *already done*; a fresh
@@ -600,10 +635,15 @@ async def seed_wiki(ask, config_data: dict | None = None) -> dict:
     The pass reads and writes the arm's own store (``dream_once``
     resolves both through the config), so seeding cannot touch the
     operator's wiki or the other arm's.
+
+    Keyword arguments pass through to :func:`dream.run_dream`; the gate
+    uses ``max_session_chars`` to lift the transcript cap, because a
+    replay's whole day lands in one session file and the production
+    budget would show the pass only the first two items.
     """
     from . import dream
 
-    return await dream.run_dream(config_data, ask=ask, force=True)
+    return await dream.run_dream(config_data, ask=ask, force=True, **kwargs)
 
 
 def _inherit_trajectories(src_store: str, dst_store: str) -> int:
@@ -685,8 +725,23 @@ async def run_wiki_arm(
             "  seeding: distilling the control's episodes into the wiki (one dream pass)...",
             flush=True,
         )
-        await seed_wiki(seed_ask, config)
+        await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
         print("  seeding: done", flush=True)
+        from .memory import list_pages
+
+        pages = list_pages(config)
+        if not pages:
+            # The 2026-11-17 gate run shipped exactly this: a treatment
+            # whose wiki was empty because the seeding pass extracted
+            # nothing, and a delta that looked like a finding.  A
+            # placebo must never be silent again.
+            message = (
+                "seeding produced NO wiki pages -- the treatment will run with an empty wiki"
+            )
+            logger.warning(message)
+            print("  *** %s ***" % message, flush=True)
+        else:
+            print("  seeding: %d page(s) in the treatment wiki" % len(pages), flush=True)
     elif enabled:
         # A treatment seeded with nothing is the control under another
         # name.  That must never happen silently: say why the wiki is
@@ -788,7 +843,52 @@ async def run_wiki_ab(
     result = compare(control, treatment)
     result["results"] = per_arm
     result["summaries"] = {arm: summarise(r) for arm, r in per_arm.items()}
+    result["wiki_pages"] = _wiki_page_count(root)
+    result["paired"] = _paired_stats(control, treatment)
     return result
+
+
+def _wiki_page_count(root: str) -> int:
+    """Pages in the treatment arm's wiki, or 0 when there is none.
+
+    A gate run whose treatment wiki is empty measured a placebo -- the
+    2026-11-17 run's delta was exactly that.  The verdict needs the
+    count to be able to say so instead of dressing the placebo up as a
+    finding.
+    """
+    from .memory import list_pages
+
+    config = _config_for_wiki_arm({}, True, store=_arm_store(root, WIKI_TREATMENT))
+    return len(list_pages(config))
+
+
+def _paired_stats(control: list, treatment: list) -> dict:
+    """The comparison that survives ungraded items: paired, by item id.
+
+    The headline delta divides by every item, so an item the grader
+    could not grade in one arm counts as a miss there and not in the
+    other.  The 2026-11-17 run's -0.15 was manufactured exactly that
+    way: the control's two correct answers had no graded treatment
+    counterpart.  Over the pairs where *both* arms were graded, each
+    item is compared with itself, and the only asymmetry left is the
+    treatment's wiki.
+    """
+    t_by_id = {r.get("id"): r for r in treatment}
+    pairs = []
+    for c in control:
+        t = t_by_id.get(c.get("id"))
+        if t is None:
+            continue
+        cg, tg = c.get("grade") or "", t.get("grade") or ""
+        if not cg or not tg:
+            continue
+        pairs.append((cg, tg))
+    return {
+        "pairs": len(pairs),
+        "control_correct": sum(1 for cg, _ in pairs if cg == GRADE_CORRECT),
+        "treatment_correct": sum(1 for _, tg in pairs if tg == GRADE_CORRECT),
+        "discordant": sum(1 for cg, tg in pairs if cg != tg),
+    }
 
 
 def format_wiki_verdict(result: dict) -> str:
@@ -816,6 +916,34 @@ def format_wiki_verdict(result: dict) -> str:
             " Fix the grader and re-run; this run says nothing about the wiki."
         )
         return "\n".join(lines)
+    pages = result.get("wiki_pages")
+    if pages == 0:
+        # The treatment ran with an empty wiki, which is the control
+        # under another name; the delta then measures noise and the
+        # overhead of carrying a useless tool.  Said, not implied: the
+        # 2026-11-17 run printed a tidy -0.150 over exactly this.
+        lines.append(
+            "  *** PLACEBO: the treatment wiki has 0 pages -- the delta is not about the wiki. ***"
+        )
+    paired = result.get("paired") or {}
+    if paired.get("pairs"):
+        lines.append(
+            "  paired (both graded): %d item(s), control %d correct vs treatment %d,"
+            " %d discordant"
+            % (
+                paired["pairs"],
+                paired["control_correct"],
+                paired["treatment_correct"],
+                paired["discordant"],
+            )
+        )
+    graded_total = c.get("graded", 0) + t.get("graded", 0)
+    items_total = (c.get("n", 0) + t.get("n", 0)) or 1
+    if graded_total < items_total * 0.8:
+        lines.append(
+            "  note: %d of %d items ungraded -- the delta leans on an incomplete ruler."
+            % (items_total - graded_total, items_total)
+        )
     if result["significant"] and result["delta"] > 0:
         lines.append("  verdict: the wiki earns its default. Raise learn.memory.enabled.")
     elif result["significant"]:

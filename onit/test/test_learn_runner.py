@@ -600,3 +600,49 @@ class TestRunArmAnnouncesItself:
             with_grader=True,
         )
         assert "no grader available" in capsys.readouterr().out
+
+
+class TestGradeEmptyReply:
+    """A grader call that succeeds but returns nothing.
+
+    The 2026-11-17 gate run lost 12 of 40 items to this: a reasoning
+    model spends its output budget thinking and never writes the
+    verdict, the call "succeeded", and the item silently fell out of
+    the comparison with ``grading_errors`` reporting 0.
+    """
+
+    async def test_an_empty_reply_is_retried(self):
+        calls = []
+
+        async def ask(messages):
+            calls.append(messages)
+            return "" if len(calls) == 1 else "GRADE: C"
+
+        verdict = await runner.grade(ask, "q", "a", "an answer")
+        assert len(calls) == 2
+        assert verdict["grade"] == "C"
+
+    async def test_an_empty_reply_twice_is_a_grading_error(self):
+        async def ask(messages):
+            return ""
+
+        verdict = await runner.grade(ask, "q", "a", "an answer")
+        assert verdict["grade"] == ""
+        assert "no text" in verdict["grading_error"]
+        # It must count: summarise reads grading_error, and a run whose
+        # grader starved on every item must not print grade-err=0.
+        assert runner.summarise([verdict])["grading_errors"] == 1
+
+    async def test_a_failed_retry_is_a_grading_error_too(self):
+        calls = []
+
+        async def ask(messages):
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError("down")
+            return ""
+
+        verdict = await runner.grade(ask, "q", "a", "an answer")
+        assert len(calls) == 2
+        assert verdict["grade"] == ""
+        assert "retry" in verdict["grading_error"]

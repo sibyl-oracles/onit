@@ -511,3 +511,189 @@ class TestSeedingAnnouncesItself:
         assert "empty wiki" in out
         # The run itself still completes and reports.
         assert result["summaries"]["wiki-on"]["n"] == 1
+
+
+class TestPairedStats:
+    """The comparison that survives ungraded items.
+
+    The headline delta divides by every item, so an item the grader
+    could not grade in one arm counts as a miss there and not in the
+    other.  The 2026-11-17 run's -0.15 was manufactured exactly that
+    way: the control's two correct answers had no graded treatment
+    counterpart.
+    """
+
+    def _rows(self, grades):
+        return [dict(id="s#%d" % i, grade=g, error="") for i, g in enumerate(grades)]
+
+    def test_pairs_need_both_arms_graded(self):
+        control = self._rows(["C", "", "I", "C"])
+        treatment = self._rows(["I", "C", "", "I"])
+        stats = runner._paired_stats(control, treatment)
+        assert stats["pairs"] == 2
+        assert stats["control_correct"] == 2
+        assert stats["treatment_correct"] == 0
+        assert stats["discordant"] == 2
+
+    def test_the_headline_lies_when_one_arm_is_empty(self):
+        # The 2026-11-17 shape: control graded C where treatment was
+        # empty.  The headline divides by everything; the paired view
+        # keeps only what both arms measured.
+        control = self._rows(["C", "C", "I", "I"])
+        treatment = self._rows(["", "", "I", "I"])
+        headline = runner.compare(control, treatment)
+        paired = runner._paired_stats(control, treatment)
+        assert headline["delta"] == -0.5
+        assert paired["pairs"] == 2
+        assert paired["control_correct"] == 0
+        assert paired["treatment_correct"] == 0
+        assert paired["discordant"] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_result_carries_the_paired_stats(self, tmp_path):
+        result = await runner.run_wiki_ab(
+            [_item()] * 2,
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=lambda config: StubAgent(config=config),
+            ask=_ask_ok,
+            seed_ask=_ask([]),
+        )
+        assert result["paired"]["pairs"] == 2
+        assert result["paired"]["control_correct"] == 2
+        assert result["paired"]["treatment_correct"] == 2
+        assert result["paired"]["discordant"] == 0
+
+
+class TestVerdictHonesty:
+    """The verdict must not dress a placebo up as a finding."""
+
+    def _result(self, c_correct, t_correct, n=40, **extra):
+        control = [dict(grade="C" if i < c_correct else "I", error="") for i in range(n)]
+        treatment = [dict(grade="C" if i < t_correct else "I", error="") for i in range(n)]
+        result = runner.compare(control, treatment)
+        result.update(extra)
+        return result
+
+    def test_an_empty_treatment_wiki_is_called_out(self):
+        result = self._result(10, 25, wiki_pages=0)
+        text = runner.format_wiki_verdict(result)
+        assert "PLACEBO" in text
+
+    def test_a_seeded_wiki_is_not_called_out(self):
+        result = self._result(10, 25, wiki_pages=4)
+        text = runner.format_wiki_verdict(result)
+        assert "PLACEBO" not in text
+
+    def test_the_paired_line_appears(self):
+        result = self._result(10, 25, wiki_pages=4)
+        result["paired"] = {"pairs": 40, "control_correct": 10, "treatment_correct": 25,
+                            "discordant": 25}
+        text = runner.format_wiki_verdict(result)
+        assert "paired (both graded): 40 item(s)" in text
+
+    def test_a_high_ungraded_fraction_is_flagged(self):
+        result = self._result(2, 1, n=40, wiki_pages=4)
+        text = runner.format_wiki_verdict(result)
+        assert "ungraded" in text
+
+    def test_a_clean_run_carries_no_caveats(self):
+        result = self._result(10, 25, wiki_pages=4)
+        result["paired"] = {"pairs": 40, "control_correct": 10, "treatment_correct": 25,
+                            "discordant": 25}
+        text = runner.format_wiki_verdict(result)
+        assert "PLACEBO" not in text
+        # The per-arm summary lines always carry "ungraded=N"; the caveat
+        # is the phrase, not the word.
+        assert "incomplete ruler" not in text
+
+
+class TestSeedingReportsItsYield:
+    """A treatment seeded to zero pages must never be silent again."""
+
+    @pytest.mark.asyncio
+    async def test_a_zero_page_seed_is_announced(self, tmp_path, capsys):
+        await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=lambda config: StubAgent(config=config),
+            ask=_ask_ok,
+            seed_ask=_ask([]),
+        )
+        out = capsys.readouterr().out
+        assert "NO wiki pages" in out
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_a_seeded_wiki_reports_its_pages(self, tmp_path, capsys):
+        import json as json_module
+        import os as os_module
+
+        # A StubAgent records no trajectories, so the control's
+        # experience has to be on disk the way the recorder leaves it:
+        # three task records whose responses carry the facts, the same
+        # shape the seeding test in TestSeeding uses.  Three verified
+        # facts in one topic earn a page (MIN_FACTS_FOR_PAGE); fewer
+        # stay staged and the wiki stays empty, which the other test
+        # catches.
+        traj_dir = tmp_path / "store" / "wiki-off" / "trajectories"
+        os_module.makedirs(traj_dir, exist_ok=True)
+        tasks = [
+            ("deploy the service", "deployed; host is stg-7.internal"),
+            ("check the queue", "queue is clear; broker is mq-2.internal"),
+            ("rotate the key", "rotated; new fingerprint starts ab12"),
+        ]
+        with open(traj_dir / "s1.jsonl", "w", encoding="utf-8") as f:
+            for index, (task, response) in enumerate(tasks):
+                f.write(
+                    json_module.dumps(
+                        {
+                            "kind": "task",
+                            "session_id": "s1",
+                            "turn": index,
+                            "task": task,
+                            "response": response,
+                            "model": "m1",
+                            "owner": None,
+                            "ts": "2026-11-17T10:00:00",
+                            "trajectory": [],
+                            "signals": {},
+                        }
+                    )
+                    + "\n"
+                )
+        seed_ask = _ask(
+            [
+                {
+                    "text": "the staging host is stg-7.internal",
+                    "kind": "fact",
+                    "topic": "staging",
+                    "cites": [2],
+                },
+                {
+                    "text": "the broker is mq-2.internal",
+                    "kind": "fact",
+                    "topic": "staging",
+                    "cites": [4],
+                },
+                {
+                    "text": "the new fingerprint starts ab12",
+                    "kind": "fact",
+                    "topic": "staging",
+                    "cites": [6],
+                },
+            ]
+        )
+
+        await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=lambda config: StubAgent(config=config),
+            ask=_ask_ok,
+            seed_ask=seed_ask,
+        )
+        out = capsys.readouterr().out
+        assert "seeding: done" in out
+        assert "NO wiki pages" not in out

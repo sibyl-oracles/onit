@@ -324,16 +324,22 @@ def _clean_candidate(item: dict, transcript: str) -> dict | None:
     }
 
 
-async def extract(ask, records: list) -> list:
+async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> list:
     """What one session established, verified.  Empty when nothing did.
 
     Returns candidates of the shape ``{"text", "kind", "topic", "cites"}``
     with ``cites`` resolved to transcript lines -- the provenance every
     written fact carries.
+
+    ``max_chars`` bounds the transcript the model reads.  The default is
+    the production trigger's budget; the A/B gate's seeding pass raises
+    it, because a replay's whole day lands in one session file and a
+    6,000-character window over 20 items is the first two items -- the
+    pass then "extracts" from an experience the treatment never saw.
     """
     if not records:
         return []
-    transcript = _transcript_text(records)
+    transcript = _transcript_text(records, limit=max_chars)
     if not transcript.strip():
         return []
     messages = [
@@ -401,6 +407,7 @@ async def dream_once(
     *,
     root: str | None = None,
     now: float | None = None,
+    max_session_chars: int | None = None,
 ) -> dict:
     """One consolidation pass.  Returns what it did, for tests and logs.
 
@@ -452,7 +459,7 @@ async def dream_once(
     # 2. Extract per session, verified against its own transcript.
     candidates: list = []
     for session_id, fresh in todo:
-        found = await extract(ask, fresh)
+        found = await extract(ask, fresh, max_chars=max_session_chars or MAX_SESSION_CHARS)
         changes["candidates"] += len(found)
         changes["rejected"] += max(0, min(len(fresh), MAX_CANDIDATES_PER_SESSION) - len(found))
         candidates.extend(found)
@@ -624,6 +631,7 @@ async def run_dream(
     ask=None,
     root: str | None = None,
     force: bool = False,
+    max_session_chars: int | None = None,
 ) -> dict:
     """Trigger check, lock, pass.  The entry point an idle watcher calls.
 
@@ -652,7 +660,7 @@ async def run_dream(
                 from .llm import make_ask
 
                 ask = await make_ask(config_data)
-            return await dream_once(ask, config_data, root=root)
+            return await dream_once(ask, config_data, root=root, max_session_chars=max_session_chars)
     except DreamBusy:
         return {"ran": False, "reason": "another pass holds the lock"}
 

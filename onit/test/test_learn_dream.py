@@ -559,3 +559,40 @@ class TestTriggerAndLock:
         with pytest.raises(dream.DreamBusy):
             with dream._Lock(world):
                 pass
+
+
+class TestSeedingTranscriptBudget:
+    """The seeding pass must see the whole session, not its first 6k chars.
+
+    A replay's whole day lands in one session file -- the 2026-11-17
+    gate run's 20 items were one session id with 20 turns -- and the
+    production budget truncated the transcript to the first two items.
+    The pass then extracted from an experience the treatment never saw
+    and the wiki stayed empty.
+    """
+
+    def test_a_long_session_is_truncated_by_default(self, world):
+        filler = "x" * 400
+        _session(world, "s1", [("task %d" % i, "%s tail %d" % (filler, i)) for i in range(20)])
+        records = _read(world, "s1")
+        transcript = dream._transcript_text(records)
+        assert "tail 19" not in transcript
+
+    def test_a_lifted_budget_reaches_the_end_of_the_session(self, world):
+        filler = "x" * 400
+        _session(world, "s1", [("task %d" % i, "%s tail %d" % (filler, i)) for i in range(20)])
+        records = _read(world, "s1")
+        transcript = dream._transcript_text(records, limit=200_000)
+        assert "tail 19" in transcript
+
+    def test_the_lifted_budget_flows_through_run_dream(self, world):
+        filler = "x" * 400
+        _session(world, "s1", [("task %d" % i, "%s tail %d" % (filler, i)) for i in range(20)])
+        seen = {}
+
+        async def spy_ask(messages):
+            seen["prompt"] = messages[1]["content"]
+            return json.dumps({"items": []})
+
+        asyncio.run(dream.run_dream(world, ask=spy_ask, force=True, max_session_chars=200_000))
+        assert "tail 19" in seen["prompt"]

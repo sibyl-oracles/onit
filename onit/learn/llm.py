@@ -38,8 +38,13 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# The output budget for a grading call.  A verdict is one letter.
-JUDGE_MAX_TOKENS = 64
+# The output budget for a background-loop call.  A verdict is one
+# letter, but the same client also distils wiki pages from transcripts,
+# and a reasoning model spends its budget thinking before it writes.
+# 400 tokens starved that: the call returned empty text and the item
+# was silently ungraded (12 of 40 in the 2026-11-17 gate run).  The
+# budget has to cover the thinking, not just the answer.
+JUDGE_MAX_TOKENS = 4000
 
 
 def resolve_endpoint(config_data: dict | None = None, endpoint: dict | None = None) -> dict:
@@ -192,7 +197,7 @@ async def make_ask(
                 think=False,
                 options={
                     "temperature": 0.0,
-                    "num_predict": JUDGE_MAX_TOKENS if len(messages) < 3 else 400,
+                    "num_predict": JUDGE_MAX_TOKENS,
                     "stop": [],
                 },
             )
@@ -201,9 +206,9 @@ async def make_ask(
 
         _kw = {"model": model_id, "messages": messages, "temperature": 0.0, "stream": False}
         if _is_openai_host(host):
-            _kw["max_completion_tokens"] = 400
+            _kw["max_completion_tokens"] = JUDGE_MAX_TOKENS
         else:
-            _kw["max_tokens"] = 400
+            _kw["max_tokens"] = JUDGE_MAX_TOKENS
         resp = await client.chat.completions.create(**_kw)
         try:
             return resp.choices[0].message.content or ""
