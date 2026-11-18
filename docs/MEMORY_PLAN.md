@@ -334,6 +334,32 @@ floor against the hang; a shorter operator timeout is kept, a longer
 or unbounded one is capped.  The same ceiling now also bounds the
 grader and extractor calls.
 
+#### The fifth placebo: the extractor's reply kept nothing, and nothing said why
+(2026-11-17 21:46 run, `slmxd2lv`)
+
+The sixth run finally measured the arms honestly -- real grades, the
+paired line, the tripwire -- and was still a placebo: the treatment
+wiki had 0 pages again.  The seed pass read the whole control day
+(200k-char budget held), got one hollow reply, retried, and the retry
+came back with a reply that parsed to **zero candidates**.  The
+verdict's diagnosis said "the control's day established no reusable
+facts" -- which is false: the control answered 20 items.  The stats
+could not distinguish the two causes that want different fixes: the
+reply held no items (format drift -- the model answered in prose), or
+it held items whose citations failed the transcript check (the
+cite-cleaning dropped them all).  The reply itself was never logged,
+so the diagnosis was blind by construction.  Fixed: ``extract()``
+returns ``parsed_items`` (what the reply held before cleaning) as a
+third stat, logs the reply head when a real reply keeps nothing, and
+the verdict gains a fourth diagnosis branch -- "the extractor held N
+item(s) but the cite-cleaning dropped all of them" -- checked before
+the empty-reply branch, because a run with one hollow reply and
+dropped items is a cleaning failure, not an endpoint one.  (The run's
+wall clock also spanned the Mac's overnight sleep: the treatment arm
+took 10.7h for what the control did in 1h47m, with two multi-hour
+gaps that match the sleep log.  A gate run should go under
+``caffeinate``.)
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

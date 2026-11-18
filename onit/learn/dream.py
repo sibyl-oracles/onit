@@ -345,13 +345,16 @@ def _clean_candidate(item: dict, transcript: str) -> dict | None:
 async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tuple:
     """What one session established, verified.  Empty when nothing did.
 
-    Returns ``(candidates, empty_replies)``.  Candidates are of the shape
-    ``{"text", "kind", "topic", "cites"}`` with ``cites`` resolved to
-    transcript lines -- the provenance every written fact carries.
-    ``empty_replies`` counts the hollow responses the retries burned: a
-    pass over a day that established nothing and a pass whose extractor
-    the endpoint failed must not look the same in the stats, because
-    they want different fixes.
+    Returns ``(candidates, empty_replies, parsed_items)``.  Candidates are
+    of the shape ``{"text", "kind", "topic", "cites"}`` with ``cites``
+    resolved to transcript lines -- the provenance every written fact
+    carries.  ``empty_replies`` counts the hollow responses the retries
+    burned: a pass over a day that established nothing and a pass whose
+    extractor the endpoint failed must not look the same in the stats,
+    because they want different fixes.  ``parsed_items`` counts what the
+    reply held before the cite-cleaning: a reply that parsed to items
+    which were all dropped is a third cause -- the citations failed the
+    transcript check -- and the verdict needs to name it too.
 
     ``max_chars`` bounds the transcript the model reads.  The default is
     the production trigger's budget; the A/B gate's seeding pass raises
@@ -360,10 +363,10 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
     pass then "extracts" from an experience the treatment never saw.
     """
     if not records:
-        return [], 0
+        return [], 0, 0
     transcript = _transcript_text(records, limit=max_chars)
     if not transcript.strip():
-        return [], 0
+        return [], 0, 0
     messages = [
         {"role": "system", "content": _EXTRACT_SYSTEM},
         {"role": "user", "content": "Transcript:\n%s" % transcript},
@@ -381,7 +384,7 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
             response = await ask(messages)
         except Exception as e:  # pragma: no cover - network failure
             logger.debug("dream extraction failed: %s", e)
-            return [], 0
+            return [], 0, 0
         if (response or "").strip():
             break
         logger.warning(
@@ -396,16 +399,30 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
         logger.warning(
             "dream extraction: %d empty replies; session left unextracted", EXTRACT_ATTEMPTS
         )
-        return [], EXTRACT_ATTEMPTS
+        return [], EXTRACT_ATTEMPTS, 0
+    items = _extract_json(response)[:MAX_CANDIDATES_PER_SESSION]
     candidates = []
-    for item in _extract_json(response)[:MAX_CANDIDATES_PER_SESSION]:
+    for item in items:
         cleaned = _clean_candidate(item, transcript)
         if cleaned:
             cleaned["provenance"] = [
                 "%s#%s" % (records[0].get("session_id", "?"), c) for c in cleaned["cites"]
             ]
             candidates.append(cleaned)
-    return candidates, attempt - 1
+    if not candidates:
+        # A real reply that kept nothing.  Two causes want different
+        # fixes and the stats could not tell them apart: the reply held
+        # no items (format drift -- the model answered in prose), or it
+        # held items whose citations failed the transcript check (the
+        # cite-cleaning dropped them all).  Log the reply head so the
+        # next diagnosis is not blind, and report the parsed count so
+        # the verdict can name the cause.
+        logger.warning(
+            "dream extraction kept 0 of %d parsed item(s); reply head: %.400r",
+            len(items),
+            response[:400],
+        )
+    return candidates, attempt - 1, len(items)
 
 
 # ── clustering and promotion ──────────────────────────────────────────────────
@@ -506,11 +523,13 @@ async def dream_once(
     # 2. Extract per session, verified against its own transcript.
     candidates: list = []
     empty_replies = 0
+    parsed_items = 0
     for session_id, fresh in todo:
-        found, empties = await extract(
+        found, empties, parsed = await extract(
             ask, fresh, max_chars=max_session_chars or MAX_SESSION_CHARS
         )
         empty_replies += empties
+        parsed_items += parsed
         changes["candidates"] += len(found)
         changes["rejected"] += max(0, min(len(fresh), MAX_CANDIDATES_PER_SESSION) - len(found))
         candidates.extend(found)
@@ -519,8 +538,12 @@ async def dream_once(
     # established nothing -- the distinction the gate's zero-candidate
     # diagnosis needs (two causes, two fixes).  A day that established
     # nothing is a real reply holding no items; a failed extractor is
-    # hollow replies all the way down.
+    # hollow replies all the way down.  ``parsed_items`` adds the third
+    # distinction: a reply that held items whose citations failed the
+    # transcript check -- the extractor answered, the cleaning dropped
+    # everything, and that wants a different fix than either.
     changes["empty_replies"] = empty_replies
+    changes["parsed_items"] = parsed_items
 
     # 3. Reconcile into the wiki.
     pages = memory.list_pages(config_data, root=root)

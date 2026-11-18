@@ -960,6 +960,21 @@ def format_wiki_verdict(result: dict) -> str:
                 "  seed diagnosis: the seeding pass did not run (%s)."
                 % seed.get("reason", "unknown")
             )
+        elif seed.get("candidates", 0) == 0 and seed.get("parsed_items", 0) > 0:
+            # The extractor answered and its reply held items -- but the
+            # cite-cleaning dropped every one: the citations failed the
+            # transcript check.  The 2026-11-18 seed looked exactly like
+            # "the day established nothing" until the reply head was
+            # logged; the fix is the extractor's cite discipline, not
+            # the day's content.  Checked before the empty-reply branch:
+            # a run with one hollow reply and dropped items is a
+            # cite-cleaning failure, not an endpoint failure.
+            lines.append(
+                "  seed diagnosis: the extractor held %d item(s) but the cite-cleaning"
+                " dropped all of them -- the citations failed the transcript check,"
+                " so the treatment still ran with an empty wiki."
+                % seed.get("parsed_items", 0)
+            )
         elif seed.get("candidates", 0) == 0 and seed.get("empty_replies", 0) > 0:
             # The extractor never got a usable reply: the endpoint
             # returned hollow responses through every retry -- the

@@ -840,6 +840,20 @@ class TestSeedYieldDiagnosis:
         assert "established no reusable facts" in out
         assert "endpoint failed" not in out
 
+    def test_verdict_names_a_reply_whose_items_the_cite_cleaning_dropped(self):
+        # The 2026-11-18 seed: the extractor answered, its reply held
+        # items, and the cite-cleaning dropped every one.  The verdict
+        # must name the cleaning, not the day -- and it must win over
+        # the empty-reply branch, because a run with one hollow reply
+        # and dropped items is a cleaning failure, not an endpoint one.
+        out = runner.format_wiki_verdict(
+            self._result(candidates=0, parsed_items=6, empty_replies=1)
+        )
+        assert "PLACEBO" in out
+        assert "cite-cleaning" in out
+        assert "extractor held 6 item(s)" in out
+        assert "endpoint failed the extractor" not in out
+
     def test_verdict_names_a_pass_that_never_ran(self):
         out = runner.format_wiki_verdict(
             self._result(ran=False, reason="autonomy below adapt", candidates=0)
