@@ -549,6 +549,49 @@ class TestPairedStats:
         assert paired["treatment_correct"] == 0
         assert paired["discordant"] == 0
 
+    def test_discordance_is_correctness_not_letter_churn(self):
+        # The 2026-11-18 run: 6 letter changes, only 4 correctness
+        # flips -- the other 2 were I-to-N moves on items neither arm
+        # answered correctly.  The gate acts on flips; churn is kept
+        # separately so rubric drift stays visible.
+        control = self._rows(["C", "I", "I", "N", "C", "C"])
+        treatment = self._rows(["I", "C", "N", "C", "C", "I"])
+        stats = runner._paired_stats(control, treatment)
+        # Flips: item0 C->I, item1 I->C, item3 N->C, item5 C->I = 4
+        # (item2 I->N is churn: neither letter is correct).
+        assert stats["discordant"] == 4
+        # Letter changes: every pair except item4 differs.
+        assert stats["grade_changes"] == 5
+        assert stats["control_correct"] == 3
+        assert stats["treatment_correct"] == 3
+
+    def test_the_verdict_notes_letter_churn_without_flips(self):
+        result = runner.compare(self._rows(["C", "C"]), self._rows(["I", "I"]))
+        result["wiki_pages"] = 4
+        result["paired"] = {
+            "pairs": 2,
+            "control_correct": 2,
+            "treatment_correct": 0,
+            "discordant": 2,
+            "grade_changes": 2,
+        }
+        text = runner.format_wiki_verdict(result)
+        assert "paired (both graded): 2 item(s)" in text
+        assert "without a correctness flip" not in text  # 2 == 2: no churn
+        result["paired"]["grade_changes"] = 2
+        result["paired"]["discordant"] = 1
+        text = runner.format_wiki_verdict(result)
+        assert "1 grade letter(s) changed without a correctness flip" in text
+
+    def test_a_paired_dict_without_grade_changes_still_prints(self):
+        # A verdict fed the old paired shape must not crash.
+        result = runner.compare(self._rows(["C"]), self._rows(["C"]))
+        result["wiki_pages"] = 4
+        result["paired"] = {"pairs": 1, "control_correct": 1, "treatment_correct": 1,
+                            "discordant": 0}
+        text = runner.format_wiki_verdict(result)
+        assert "paired (both graded): 1 item(s)" in text
+
     @pytest.mark.asyncio
     async def test_the_result_carries_the_paired_stats(self, tmp_path):
         result = await runner.run_wiki_ab(
@@ -563,6 +606,58 @@ class TestPairedStats:
         assert result["paired"]["control_correct"] == 2
         assert result["paired"]["treatment_correct"] == 2
         assert result["paired"]["discordant"] == 0
+
+    @pytest.mark.asyncio
+    async def test_each_arm_gets_its_own_workspace(self, tmp_path):
+        # The 2026-11-18 run: both arms shared <root>/data, so the
+        # treatment met the control's clone, its pushed commits and its
+        # notes -- and its own answers confessed the leak ("already
+        # created and pushed in an earlier session").  The arms must
+        # differ in the wiki and nothing else, which means neither
+        # reaches the other's filesystem.
+        seen = []
+
+        def factory(config):
+            seen.append(config["data_path"])
+            return StubAgent(config=config)
+
+        await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=factory,
+            ask=_ask_ok,
+            seed_ask=_ask([]),
+        )
+        assert len(seen) == 2
+        assert seen[0] != seen[1], "the arms must not share a workspace"
+        for path in seen:
+            assert path.startswith(str(tmp_path / "data"))
+        # The parent still exists for anything that inspects the run.
+        assert (tmp_path / "data").is_dir()
+
+    @pytest.mark.asyncio
+    async def test_a_caller_data_path_is_kept_as_the_parent(self, tmp_path):
+        seen = []
+
+        def factory(config):
+            seen.append(config["data_path"])
+            return StubAgent(config=config)
+
+        parent = tmp_path / "workspace"
+        await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=factory,
+            ask=_ask_ok,
+            seed_ask=_ask([]),
+            data_path=str(parent),
+        )
+        assert seen == [
+            str(parent / "wiki-off"),
+            str(parent / "wiki-on"),
+        ]
 
 
 class TestVerdictHonesty:

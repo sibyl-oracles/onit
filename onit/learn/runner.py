@@ -850,7 +850,19 @@ async def run_wiki_ab(
 
     per_arm = {}
     seed_stats = {}
+    # One workspace per arm, under the run root.  A shared workspace
+    # hands the treatment the control's file artifacts: the 2026-11-18
+    # run's treatment answered the Agents.pptx and sync items from the
+    # control's clone and pushed commits -- the leak its own answers
+    # confessed ("already created and pushed in an earlier session") --
+    # so the arms differed in the filesystem as well as the wiki.  The
+    # control builds its artifacts first; the treatment must meet the
+    # same task from the same starting point, not the control's
+    # leftovers.  A caller's data_path stays the parent; the isolation
+    # is per arm either way.
+    parent = data_path or os.path.join(root, "data")
     for enabled in (False, True):
+        arm = WIKI_TREATMENT if enabled else WIKI_CONTROL
         results, seed_stats = await run_wiki_arm(
             items,
             enabled=enabled,
@@ -860,10 +872,10 @@ async def run_wiki_ab(
             ask=ask,
             limit=limit,
             seed_ask=seed_ask,
-            data_path=data_path,
+            data_path=os.path.join(parent, arm),
             seed_from=_arm_store(root, WIKI_CONTROL) if enabled else None,
         )
-        per_arm[WIKI_TREATMENT if enabled else WIKI_CONTROL] = results
+        per_arm[arm] = results
 
     control = per_arm.get(WIKI_CONTROL, [])
     treatment = per_arm.get(WIKI_TREATMENT, [])
@@ -900,6 +912,13 @@ def _paired_stats(control: list, treatment: list) -> dict:
     counterpart.  Over the pairs where *both* arms were graded, each
     item is compared with itself, and the only asymmetry left is the
     treatment's wiki.
+
+    ``discordant`` counts *correctness* flips -- one arm correct where
+    the other is not -- because that is the number a gate acts on.  A
+    C-to-I and an I-to-N are not the same event, and neither is the
+    I-to-N pair the 2026-11-18 run counted as discordance on items
+    neither arm answered correctly: ``grade_changes`` keeps the raw
+    letter movement so a rubric drifting between arms stays visible.
     """
     t_by_id = {r.get("id"): r for r in treatment}
     pairs = []
@@ -915,7 +934,10 @@ def _paired_stats(control: list, treatment: list) -> dict:
         "pairs": len(pairs),
         "control_correct": sum(1 for cg, _ in pairs if cg == GRADE_CORRECT),
         "treatment_correct": sum(1 for _, tg in pairs if tg == GRADE_CORRECT),
-        "discordant": sum(1 for cg, tg in pairs if cg != tg),
+        "discordant": sum(
+            1 for cg, tg in pairs if (cg == GRADE_CORRECT) != (tg == GRADE_CORRECT)
+        ),
+        "grade_changes": sum(1 for cg, tg in pairs if cg != tg),
     }
 
 
@@ -1018,6 +1040,15 @@ def format_wiki_verdict(result: dict) -> str:
                 paired["discordant"],
             )
         )
+        if paired.get("grade_changes") is not None and paired.get("grade_changes") != paired.get(
+            "discordant"
+        ):
+            # Letter churn beyond the correctness flips: rubric drift
+            # between the arms, worth seeing before it eats a gate.
+            lines.append(
+                "  paired note: %d grade letter(s) changed without a correctness flip"
+                % (paired.get("grade_changes", 0) - paired.get("discordant", 0))
+            )
     graded_total = c.get("graded", 0) + t.get("graded", 0)
     items_total = (c.get("n", 0) + t.get("n", 0)) or 1
     if graded_total < items_total * 0.8:

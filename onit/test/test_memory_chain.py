@@ -172,6 +172,44 @@ class TestTheChain:
         assert "stg-7.internal" in out
         assert "untrusted" in out
 
+    def test_the_tool_gate_reads_the_runs_own_store(self, world):
+        # The 2026-11-18 gate run: the treatment arm pinned its store
+        # under learn.memory.path, the store held three seeded pages,
+        # and the tool was still never offered -- the offer check read
+        # the operator's default store, which was empty.  The gate must
+        # resolve the store through the run's config, or the treatment
+        # runs on the injected digest alone and the A/B measures a
+        # delivery failure as the wiki's effect.
+        from onit.model.serving.chat import _wiki_tool_available
+
+        _session(
+            world,
+            "s1",
+            [
+                ("deploy one", "deployed one; the staging host is stg-7.internal"),
+                ("deploy two", "deployed two; the staging host is stg-7.internal"),
+                ("deploy three", "deployed three; the staging host is stg-7.internal"),
+            ],
+        )
+        asyncio.run(dream.run_dream(world, ask=_ask(_ITEMS)))
+        assert mem.list_pages(world), "the world's store must hold pages"
+        # The world config carries the pinned store and adapt autonomy:
+        # the tool is offered.
+        assert _wiki_tool_available(world) is True
+        # An empty config reads the operator's default store -- no
+        # pages there, no tool.
+        assert _wiki_tool_available({}) is False
+        # The switch off, or autonomy below adapt: no tool either way.
+        switched_off = dict(world)
+        switched_off["learn"] = dict(world["learn"])
+        switched_off["learn"]["memory"] = dict(world["learn"]["memory"])
+        switched_off["learn"]["memory"]["enabled"] = False
+        assert _wiki_tool_available(switched_off) is False
+        low = dict(world)
+        low["learn"] = dict(world["learn"])
+        low["learn"]["autonomy"] = 1
+        assert _wiki_tool_available(low) is False
+
     def test_a_contradiction_closes_then_reopens_the_fast_path(self, world):
         _session(
             world,

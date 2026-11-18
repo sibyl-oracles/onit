@@ -360,6 +360,43 @@ took 10.7h for what the control did in 1h47m, with two multi-hour
 gaps that match the sleep log.  A gate run should go under
 ``caffeinate``.)
 
+#### The first real treatment, and what it still could not reach (2026-11-18 run, `o__cy_oz`)
+
+The seventh run cleared every earlier failure at once: 3 pages, 5
+facts, 6/6 candidates verified, no empty replies, 24.6 s of seeding --
+the first treatment arm that carried wiki content.  The delta was
++0.000 (7 vs 7, 20 pairs), and the audit of the kept copy found the
+measurement still not about the wiki, for two reasons the run's own
+files confess:
+
+**The treatment was never offered its own tool.**  The offer gate in
+``chat.py`` called ``list_pages()`` with no argument -- the operator's
+default store, empty by definition inside a gate run -- instead of the
+arm's pinned store, which held the three seeded pages.  The treatment
+trajectory's ``tools_available`` lists 15 tools; ``wiki_search`` is not
+one of them.  The injected index digest *was* attached (that path
+passes ``config_data`` correctly), so the treatment ran on the digest
+alone.  Fixed: the gate is now ``_wiki_tool_available(config_data)``,
+which resolves the store through the run's config, with tests pinning
+the pinned-store, switched-off and low-autonomy branches.
+
+**The arms shared one filesystem.**  Neither arm passed a
+``data_path``, so both defaulted to ``<root>/data`` -- a 399 MB
+workspace the control built first: its ``agents/`` clone, its pushed
+commits, its ``.onit/notes``.  The treatment's answers on the three
+wiki-matched items speak of the control's work as already done
+("``CONFIGURATION.md`` was already created and pushed in an earlier
+session"); all three scored I in *both* arms, and all six discordant
+items were wiki-irrelevant.  Fixed: ``run_wiki_ab`` gives each arm
+``<root>/data/<arm>`` (a caller's ``data_path`` becomes the parent),
+and ``run_ab`` gets the same isolation.
+
+**The paired line counted letter churn.**  ``discordant`` was any
+grade-letter change: this run's 6 were 4 correctness flips (2 each
+way) plus 2 I-to-N moves on items neither arm answered correctly.  The
+gate acts on flips; ``grade_changes`` now keeps the raw movement and
+the verdict prints a note when the two diverge.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

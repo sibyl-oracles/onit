@@ -6858,6 +6858,28 @@ class _FactChecker:
             logger.warning("Could not schedule the background fact-check: %s", e)
 
 
+def _wiki_tool_available(config_data: dict | None) -> bool:
+    """Whether this run's tool list should include ``wiki_search``.
+
+    Three conditions: the autonomy level admits the wiki, the memory
+    switch is on, and the run's *own* store has pages.  Every check
+    resolves through ``config_data`` -- the 2026-11-18 gate run's
+    treatment arm pinned its store under ``learn.memory.path`` and
+    still went without the tool because this check read the operator's
+    default store instead: an empty default hid three seeded pages, the
+    tool was never offered, and the treatment ran on the injected index
+    digest alone.  A store check that ignores the config is not a
+    store check.
+    """
+    from ...learn import memory as _memory
+    from ...learn.config import ADAPT, autonomy as _autonomy
+
+    cfg = config_data or {}
+    return bool(
+        _autonomy(cfg) >= ADAPT and _memory.enabled(cfg) and _memory.list_pages(cfg)
+    )
+
+
 async def chat(
     host: str = "http://127.0.0.1:8001/v1",
     host_key: str = "EMPTY",
@@ -6936,15 +6958,7 @@ async def chat(
     # in chat()'s kwargs -- so it is read off the run state's wiki flag,
     # which _attach_learned_context set only when a page actually hit.
     try:
-        from ...learn import memory as _memory
-        from ...learn.config import ADAPT, autonomy as _autonomy
-
-        _cfg = kwargs.get("config_data") or None
-        if (
-            _autonomy(_cfg or {}) >= ADAPT
-            and _memory.enabled(_cfg or {})
-            and _memory.list_pages()
-        ):
+        if _wiki_tool_available(kwargs.get("config_data")):
             harness.wiki_available = True
     except Exception as e:  # a store that cannot be read offers no tool
         logger.debug("wiki_search not offered: %s", e)

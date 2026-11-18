@@ -38,6 +38,7 @@ win rather than an artefact of ordering.
 
 import asyncio
 import logging
+import os
 import tempfile
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,12 @@ async def run_ab(
             make_agent=factory,
             ask=ask,
             limit=limit,
+            # One workspace per arm, under the run root.  The control
+            # runs first and its file artifacts would otherwise be the
+            # treatment's starting point -- the same leak the wiki gate
+            # closed on 2026-11-18, where the treatment answered from
+            # the control's clone and pushed commits.
+            data_path=os.path.join(root, "data", arm),
         )
         per_arm[arm] = results
 
