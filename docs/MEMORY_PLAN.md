@@ -397,6 +397,35 @@ way) plus 2 I-to-N moves on items neither arm answered correctly.  The
 gate acts on flips; ``grade_changes`` now keeps the raw movement and
 the verdict prints a note when the two diverge.
 
+#### The sixth placebo: the watermark burned the failed day (2026-11-18 run, `wzz_cnsi`)
+
+The eighth run's seed pass got 3 hollow replies in one 76-second
+window (04:07:41-04:08:57) and 0 candidates; the grader's one failure
+(item `#89`, two hollow replies back-to-back) sat in the same
+degradation ~5 minutes earlier.  The diagnosis named the endpoint
+correctly, and the tool-offer fix proved itself: 0 of 41 treatment
+records were offered `wiki_search` -- correctly, because the store
+really was empty.  But the audit found a second bug under the first:
+**the watermark advanced over the day the pass never processed.**  The
+comment promised "the watermark only advances over what was actually
+applied", yet step 7 advanced over everything in ``todo`` -- so
+``state.json`` read ``watermark_ts: 04:07:39``, the day's last record,
+and any later pass would see zero new records and skip the day
+forever.  A failed seed did not just waste a pass; it burned the day.
+
+Fixed in two layers:
+
+- **`extract()` returns `failed`** -- a fourth return value marking a
+  session whose extraction never got a usable reply (hollow replies
+  through every attempt, or a call that raised).  ``dream_once`` only
+  advances the watermark over sessions that were processed; a failed
+  session is logged ("left for the next pass") and stays unread.
+- **The gate retries a failed seed once.**  ``run_wiki_arm`` re-runs
+  ``seed_wiki`` when the first pass reports 0 candidates with empty
+  replies -- safe now that the watermark did not advance, and the
+  2026-11-18 04:07 placebo is exactly what a second pass would have
+  prevented.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

@@ -963,3 +963,66 @@ class TestSeedYieldDiagnosis:
         # verdict must point at the paired line instead.
         out = runner.format_wiki_verdict(self._result(wiki_pages=4))
         assert "read the paired line" in out
+
+
+class TestSeedRetriesAFailedExtractor:
+    """The 2026-11-18 04:07 seed: three hollow replies in one 76-second
+    window, and the run measured a placebo that a second pass would have
+    prevented.  The watermark no longer advances over a failed session,
+    so a retry re-reads the same day -- the gate retries once.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_hollow_seed_pass_is_retried(self, tmp_path, capsys):
+        import json as json_module
+        import os as os_module
+
+        traj_dir = tmp_path / "store" / "wiki-off" / "trajectories"
+        os_module.makedirs(traj_dir, exist_ok=True)
+        with open(traj_dir / "s1.jsonl", "w", encoding="utf-8") as f:
+            f.write(
+                json_module.dumps(
+                    {
+                        "kind": "task",
+                        "session_id": "s1",
+                        "turn": 0,
+                        "task": "deploy the service",
+                        "response": "deployed; host is stg-7.internal",
+                        "ts": "2026-11-16T10:00:00",
+                        "trajectory": [],
+                        "signals": {"verifier": "clean"},
+                    }
+                )
+                + "\n"
+            )
+        calls = {"n": 0}
+
+        async def flaky_seed(messages):
+            calls["n"] += 1
+            if calls["n"] <= dream.EXTRACT_ATTEMPTS:
+                return ""  # the first pass: every attempt hollow
+            return json_module.dumps(
+                {
+                    "items": [
+                        {
+                            "text": "the staging host is stg-7.internal",
+                            "kind": "fact",
+                            "topic": "staging",
+                            "cites": [2],
+                        }
+                    ]
+                }
+            )
+
+        await runner.run_wiki_ab(
+            [_item()],
+            root=str(tmp_path),
+            base_config={"learn": {"memory": {"path": str(tmp_path / "mem")}}},
+            make_agent=lambda config: StubAgent(config=config),
+            ask=_ask_ok,
+            seed_ask=flaky_seed,
+        )
+        out = capsys.readouterr().out
+        assert "retrying once" in out
+        assert calls["n"] == dream.EXTRACT_ATTEMPTS + 1  # one usable reply on the retry
+        assert "NO wiki pages" not in out

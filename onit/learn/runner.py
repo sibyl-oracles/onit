@@ -745,6 +745,26 @@ async def run_wiki_arm(
             flush=True,
         )
         seed_stats = await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
+        if (
+            seed_stats.get("ran")
+            and seed_stats.get("candidates", 0) == 0
+            and seed_stats.get("empty_replies", 0) > 0
+        ):
+            # The extractor got nothing but hollow replies.  The watermark
+            # did not advance over a failed session (dream.py), so a retry
+            # re-reads the same day -- the 2026-11-18 04:07 seed burned its
+            # three attempts in one 76-second window and the run measured
+            # a placebo that a second pass would have prevented.
+            logger.warning(
+                "seed extraction failed (%d empty replies); retrying once",
+                seed_stats.get("empty_replies"),
+            )
+            print(
+                "  seeding: extraction failed (%d empty repl(ies)); retrying once..."
+                % seed_stats.get("empty_replies", 0),
+                flush=True,
+            )
+            seed_stats = await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
         print("  seeding: done", flush=True)
         if seed_stats.get("ran") is False:
             # The pass never ran at all -- autonomy below adapt, or the

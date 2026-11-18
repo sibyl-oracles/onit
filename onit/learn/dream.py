@@ -345,16 +345,21 @@ def _clean_candidate(item: dict, transcript: str) -> dict | None:
 async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tuple:
     """What one session established, verified.  Empty when nothing did.
 
-    Returns ``(candidates, empty_replies, parsed_items)``.  Candidates are
-    of the shape ``{"text", "kind", "topic", "cites"}`` with ``cites``
-    resolved to transcript lines -- the provenance every written fact
-    carries.  ``empty_replies`` counts the hollow responses the retries
-    burned: a pass over a day that established nothing and a pass whose
-    extractor the endpoint failed must not look the same in the stats,
-    because they want different fixes.  ``parsed_items`` counts what the
-    reply held before the cite-cleaning: a reply that parsed to items
-    which were all dropped is a third cause -- the citations failed the
-    transcript check -- and the verdict needs to name it too.
+    Returns ``(candidates, empty_replies, parsed_items, failed)``.
+    Candidates are of the shape ``{"text", "kind", "topic", "cites"}``
+    with ``cites`` resolved to transcript lines -- the provenance every
+    written fact carries.  ``empty_replies`` counts the hollow responses
+    the retries burned: a pass over a day that established nothing and a
+    pass whose extractor the endpoint failed must not look the same in
+    the stats, because they want different fixes.  ``parsed_items``
+    counts what the reply held before the cite-cleaning: a reply that
+    parsed to items which were all dropped is a third cause -- the
+    citations failed the transcript check -- and the verdict needs to
+    name it too.  ``failed`` is the fourth distinction the watermark
+    needs: a session whose extraction never got a usable reply (hollow
+    replies, or a call that raised) was not processed, and the pass must
+    not advance over it -- a day burned by a failed extractor is a day
+    no later pass can re-read.
 
     ``max_chars`` bounds the transcript the model reads.  The default is
     the production trigger's budget; the A/B gate's seeding pass raises
@@ -363,10 +368,10 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
     pass then "extracts" from an experience the treatment never saw.
     """
     if not records:
-        return [], 0, 0
+        return [], 0, 0, False
     transcript = _transcript_text(records, limit=max_chars)
     if not transcript.strip():
-        return [], 0, 0
+        return [], 0, 0, False
     messages = [
         {"role": "system", "content": _EXTRACT_SYSTEM},
         {"role": "user", "content": "Transcript:\n%s" % transcript},
@@ -379,12 +384,13 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
     # Retry the empties; an exception still aborts -- a network that is
     # down is a different failure than a reply that came back hollow.
     response = ""
+    failed = False
     for attempt in range(1, EXTRACT_ATTEMPTS + 1):
         try:
             response = await ask(messages)
         except Exception as e:  # pragma: no cover - network failure
             logger.debug("dream extraction failed: %s", e)
-            return [], 0, 0
+            return [], 0, 0, True
         if (response or "").strip():
             break
         logger.warning(
@@ -399,7 +405,7 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
         logger.warning(
             "dream extraction: %d empty replies; session left unextracted", EXTRACT_ATTEMPTS
         )
-        return [], EXTRACT_ATTEMPTS, 0
+        return [], EXTRACT_ATTEMPTS, 0, True
     items = _extract_json(response)[:MAX_CANDIDATES_PER_SESSION]
     candidates = []
     for item in items:
@@ -422,7 +428,7 @@ async def extract(ask, records: list, max_chars: int = MAX_SESSION_CHARS) -> tup
             len(items),
             response[:400],
         )
-    return candidates, attempt - 1, len(items)
+    return candidates, attempt - 1, len(items), False
 
 
 # ── clustering and promotion ──────────────────────────────────────────────────
@@ -524,8 +530,9 @@ async def dream_once(
     candidates: list = []
     empty_replies = 0
     parsed_items = 0
+    processed: list = []
     for session_id, fresh in todo:
-        found, empties, parsed = await extract(
+        found, empties, parsed, failed = await extract(
             ask, fresh, max_chars=max_session_chars or MAX_SESSION_CHARS
         )
         empty_replies += empties
@@ -533,6 +540,13 @@ async def dream_once(
         changes["candidates"] += len(found)
         changes["rejected"] += max(0, min(len(fresh), MAX_CANDIDATES_PER_SESSION) - len(found))
         candidates.extend(found)
+        if not failed:
+            processed.append((session_id, fresh))
+        else:
+            log_lines.append(
+                "  %s: extraction failed (%d empty repl(ies)); left for the next pass"
+                % (session_id, empties)
+            )
     changes["verified"] = changes["candidates"]
     # An empty reply is the extractor failing, not the day having
     # established nothing -- the distinction the gate's zero-candidate
@@ -626,7 +640,7 @@ async def dream_once(
 
     # 7. Advance the watermark over what was actually processed.
     processed_ts = watermark_ts
-    for session_id, fresh in todo:
+    for session_id, fresh in processed:
         for record in fresh:
             ts = str(record.get("ts") or "")
             if ts > processed_ts:

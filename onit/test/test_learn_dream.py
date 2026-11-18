@@ -85,7 +85,7 @@ class TestExtraction:
     def test_a_cited_candidate_survives(self, world):
         _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
         records = _read(world, "s1")
-        found, empties, parsed = asyncio.run(
+        found, empties, parsed, failed = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -106,7 +106,7 @@ class TestExtraction:
     def test_an_uncited_candidate_is_rejected(self, world):
         _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
         records = _read(world, "s1")
-        found, empties, parsed = asyncio.run(
+        found, empties, parsed, failed = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -126,7 +126,7 @@ class TestExtraction:
     def test_a_candidate_that_shares_no_token_with_its_cite_is_rejected(self, world):
         _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
         records = _read(world, "s1")
-        found, empties, parsed = asyncio.run(
+        found, empties, parsed, failed = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -146,7 +146,7 @@ class TestExtraction:
     def test_a_meta_comment_is_rejected(self, world):
         _session(world, "s1", [("deploy the service", "deployed")])
         records = _read(world, "s1")
-        found, empties, parsed = asyncio.run(
+        found, empties, parsed, failed = asyncio.run(
             dream.extract(
                 _ask(
                     [
@@ -170,8 +170,9 @@ class TestExtraction:
         async def broken(messages):
             raise RuntimeError("down")
 
-        found, empties, parsed = asyncio.run(dream.extract(broken, records))
+        found, empties, parsed, failed = asyncio.run(dream.extract(broken, records))
         assert found == [] and empties == 0
+        assert failed is True  # the session was not processed
 
     def test_an_empty_reply_is_retried_and_a_later_one_wins(self, world):
         # The 2026-11-17 14:55 seed lost its only extraction call to an
@@ -194,9 +195,10 @@ class TestExtraction:
                 return ""
             return json.dumps({"items": [item]})
 
-        found, empties, parsed = asyncio.run(dream.extract(flaky, records))
+        found, empties, parsed, failed = asyncio.run(dream.extract(flaky, records))
         assert calls["n"] == dream.EXTRACT_ATTEMPTS
         assert empties == dream.EXTRACT_ATTEMPTS - 1
+        assert failed is False  # a usable reply arrived: the session was processed
         assert len(found) == 1
         assert found[0]["provenance"] == ["s1#2"]
 
@@ -212,10 +214,11 @@ class TestExtraction:
             calls["n"] += 1
             return ""
 
-        found, empties, parsed = asyncio.run(dream.extract(hollow, records))
+        found, empties, parsed, failed = asyncio.run(dream.extract(hollow, records))
         assert calls["n"] == dream.EXTRACT_ATTEMPTS
         assert found == []
         assert empties == dream.EXTRACT_ATTEMPTS
+        assert failed is True  # the day stays unread: the next pass re-reads it
 
     def test_a_real_reply_holding_no_items_is_not_an_empty(self, world):
         # A day that established nothing is a real reply with no items:
@@ -223,9 +226,10 @@ class TestExtraction:
         # extractor at the same candidate count.
         _session(world, "s1", [("deploy the service", "deployed")])
         records = _read(world, "s1")
-        found, empties, parsed = asyncio.run(dream.extract(_ask([]), records))
+        found, empties, parsed, failed = asyncio.run(dream.extract(_ask([]), records))
         assert found == []
         assert empties == 0
+        assert failed is False  # a real reply: the day was processed
 
     def test_an_unparseable_reply_yields_nothing(self, world):
         _session(world, "s1", [("deploy the service", "deployed")])
@@ -234,8 +238,9 @@ class TestExtraction:
         async def prose(messages):
             return "I found three facts worth keeping."
 
-        found, empties, parsed = asyncio.run(dream.extract(prose, records))
+        found, empties, parsed, failed = asyncio.run(dream.extract(prose, records))
         assert found == [] and empties == 0
+        assert failed is False
 
     def test_a_reply_whose_items_are_all_dropped_reports_the_parsed_count(self, world):
         # The 2026-11-18 seed: the extractor answered, its reply held
@@ -248,7 +253,7 @@ class TestExtraction:
         async def uncited(messages):
             return '{"items": [{"text": "a fact with no valid citation", "kind": "rule", "topic": "ops", "cites": [999]}]}'
 
-        found, empties, parsed = asyncio.run(dream.extract(uncited, records))
+        found, empties, parsed, failed = asyncio.run(dream.extract(uncited, records))
         assert found == [] and empties == 0
         assert parsed == 1
 
@@ -684,3 +689,62 @@ class TestSeedingTranscriptBudget:
 
         asyncio.run(dream.run_dream(world, ask=spy_ask, force=True, max_session_chars=200_000))
         assert "tail 19" in seen["prompt"]
+
+
+class TestTheWatermarkSurvivesAFailedExtractor:
+    """The 2026-11-18 04:07 seed: three hollow replies, and the watermark
+    still advanced to the day's last record -- the comment above step 7
+    promised "the watermark only advances over what was actually
+    applied", but the code advanced over everything in ``todo``.  A
+    failed seed burned the day: no later pass could re-read it, and the
+    gate measured a placebo that a retry pass would have prevented.
+    """
+
+    def test_a_failed_session_does_not_advance_the_watermark(self, world):
+        _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
+
+        async def hollow(messages):
+            return ""
+
+        stats = asyncio.run(dream.run_dream(world, ask=hollow, force=True))
+        assert stats["ran"] is True
+        assert stats["candidates"] == 0
+        assert stats["empty_replies"] == dream.EXTRACT_ATTEMPTS
+        state = mem.load_state(world)
+        assert state.get("watermark_ts", "") == "", (
+            "the watermark advanced over a session the extractor never read"
+        )
+
+    def test_a_processed_session_still_advances_the_watermark(self, world):
+        _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
+        stats = asyncio.run(dream.run_dream(world, ask=_ask([]), force=True))
+        assert stats["ran"] is True
+        state = mem.load_state(world)
+        assert state.get("watermark_ts", "") == "2026-11-16T10:00:00"
+
+    def test_a_failed_session_is_re_read_by_the_next_pass(self, world):
+        _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
+        calls = {"n": 0}
+
+        async def flaky(messages):
+            calls["n"] += 1
+            if calls["n"] <= dream.EXTRACT_ATTEMPTS:
+                return ""  # the first pass: every attempt hollow
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "text": "the staging host is stg-7.internal",
+                            "kind": "fact",
+                            "topic": "staging",
+                            "cites": [2],
+                        }
+                    ]
+                }
+            )
+
+        first = asyncio.run(dream.run_dream(world, ask=flaky, force=True))
+        assert first["candidates"] == 0
+        second = asyncio.run(dream.run_dream(world, ask=flaky, force=True))
+        assert second["ran"] is True
+        assert second["candidates"] == 1
