@@ -65,9 +65,11 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
 
         config = {}
         _ensure_mcp_servers(config)
-        assert "stdio://ToolsLocalMCPServer" in _STDIO_SPECS
-        assert "stdio://ToolsNetMCPServer" in _STDIO_SPECS
-        assert "stdio://PromptsMCPServer" in _STDIO_SPECS
+        # The URL carries the data_path's hash: one jail, one identity.
+        for name in ("ToolsLocalMCPServer", "ToolsNetMCPServer", "PromptsMCPServer"):
+            assert any(
+                k.startswith(f"stdio://{name}@") for k in _STDIO_SPECS
+            ), f"{name} not registered"
 
     def test_the_data_path_is_pinned_in_every_launch_spec(self):
         from onit.type.tools import _STDIO_SPECS
@@ -75,7 +77,17 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
         config = {}
         _ensure_mcp_servers(config)
         for name in ("ToolsLocalMCPServer", "ToolsNetMCPServer", "PromptsMCPServer"):
-            spec = _STDIO_SPECS[f"stdio://{name}"]
+            # The registry holds specs from earlier tests with other
+            # jails; the one this test registered is the one whose env
+            # matches this test's ONIT_DATA_PATH.
+            urls = [
+                k
+                for k, v in _STDIO_SPECS.items()
+                if k.startswith(f"stdio://{name}@")
+                and v["env"]["ONIT_DATA_PATH"] == os.environ["ONIT_DATA_PATH"]
+            ]
+            assert urls, f"{name} not registered for this jail"
+            spec = _STDIO_SPECS[urls[0]]
             assert spec["env"]["ONIT_DATA_PATH"] == os.environ["ONIT_DATA_PATH"]
 
     def test_the_net_profile_is_in_the_net_server_spec(self):
@@ -83,7 +95,8 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
 
         config = {}
         _ensure_mcp_servers(config)
-        spec = _STDIO_SPECS["stdio://ToolsNetMCPServer"]
+        url = next(k for k in _STDIO_SPECS if k.startswith("stdio://ToolsNetMCPServer@"))
+        spec = _STDIO_SPECS[url]
         assert "--profile" in spec["args"] and "net" in spec["args"]
 
 
@@ -103,6 +116,42 @@ def _spawn_spec(name, data_path, profile="local"):
     ]
     register_stdio_servers(servers, str(data_path))
     return servers[0]["url"]
+
+
+class TestOneServerNameTwoJailsIsTwoServers:
+    """The 2026-11-19 gate run: two arms in one process, each jailed to
+    its own workspace, shared one stdio URL -- and the treatment's every
+    local tool call was refused by the control arm's jail. The URL must
+    carry the jail, so each instance pools, spawns and discovers
+    independently; the same jail keeps the same URL and shares the
+    subprocess exactly as before.
+    """
+
+    def test_two_jails_get_two_urls(self, tmp_path):
+        a = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-off")
+        b = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-on")
+        assert a != b
+        assert a.startswith("stdio://ToolsLocalMCPServer@")
+        assert b.startswith("stdio://ToolsLocalMCPServer@")
+
+    def test_the_same_jail_keeps_the_same_url(self, tmp_path):
+        a = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-off")
+        b = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-off")
+        assert a == b
+
+    def test_the_same_jail_resolved_differently_is_one_identity(self, tmp_path):
+        # /private/var vs /var on macOS realpath: one jail, not two.
+        a = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-off")
+        b = _spawn_spec("ToolsLocalMCPServer", str(tmp_path / "wiki-off") + "/")
+        assert a == b
+
+    def test_each_jail_gets_its_own_launch_spec(self, tmp_path):
+        from onit.type.tools import _STDIO_SPECS
+
+        a = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-off")
+        b = _spawn_spec("ToolsLocalMCPServer", tmp_path / "wiki-on")
+        assert _STDIO_SPECS[a]["env"]["ONIT_DATA_PATH"] == str(tmp_path / "wiki-off")
+        assert _STDIO_SPECS[b]["env"]["ONIT_DATA_PATH"] == str(tmp_path / "wiki-on")
 
 
 @pytest.mark.asyncio

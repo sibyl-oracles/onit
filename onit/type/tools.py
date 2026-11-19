@@ -261,12 +261,39 @@ def _http_client_factory(
 # identified by URL — the pooled client, the tool registry's per-tool URL
 # lists, collision reporting. Keeping the identity a string means none of that
 # machinery has to learn what a transport is.
+#
+# The name alone is not always the whole identity. A stdio server is a
+# subprocess with an environment, and the environment carries its jail:
+# ``ONIT_DATA_PATH`` decides which directories its tools will touch. Two
+# registrations of the same server name with different jails are two
+# *different* servers — the 2026-11-19 gate run put a control arm and a
+# treatment arm in one process, each jailed to its own workspace, and the
+# treatment's every local tool call was refused by the control's jail
+# because one URL carried one launch spec. A registration that differs in
+# the data_path therefore gets its own URL: the resolved data_path's hash
+# is folded into the pseudo-URL, so each instance pools, spawns and
+# discovers independently. Callers that pass the same data_path keep the
+# same URL and share the subprocess exactly as before.
 STDIO_SCHEME = "stdio://"
 _STDIO_SPECS: dict[str, dict] = {}
 
 
-def stdio_url(name: str) -> str:
-    """The pseudo-URL identifying the stdio server called ``name``."""
+def stdio_url(name: str, data_path: str | None = None) -> str:
+    """The pseudo-URL identifying the stdio server called ``name``.
+
+    ``data_path`` is the jail the server will be spawned with. When two
+    instances of one server name are jailed differently — the eval
+    runner's two arms, for example — the URL must differ too, or the
+    second arm reuses the first arm's subprocess and every tool call is
+    refused by a jail that has never heard of its paths. The path is
+    resolved and hashed so /private/var vs /var (macOS realpath) and
+    trailing-slash differences do not split one identity in two.
+    """
+    if data_path:
+        from hashlib import sha1
+
+        root = os.path.realpath(os.path.abspath(os.path.expanduser(str(data_path))))
+        return f"{STDIO_SCHEME}{name}@{sha1(root.encode()).hexdigest()[:10]}"
     return f"{STDIO_SCHEME}{name}"
 
 

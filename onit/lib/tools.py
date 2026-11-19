@@ -132,6 +132,13 @@ def register_stdio_servers(
 
     Safe to call more than once — every entry point that builds an OnIt runs
     it, because a stdio server that was never registered has no way to start.
+
+    The URL carries the data_path's hash: two registrations of one server
+    name with different jails are two different servers, and each gets its
+    own subprocess. The 2026-11-19 gate run's treatment arm answered every
+    task by describing refusals from the control arm's jail because one
+    URL carried one launch spec — the skip below saw the same name already
+    registered and kept the first arm's ONIT_DATA_PATH.
     """
     from pathlib import Path
     from ..type.tools import _STDIO_SPECS, register_stdio_server, stdio_url
@@ -143,9 +150,10 @@ def register_stdio_servers(
     for server in servers:
         if not is_stdio_server(server) or not server.get("enabled", True):
             continue
-        if server.get("url") in _STDIO_SPECS:
-            continue  # already registered, by the CLI or an earlier call
         name = server.get("name") or "StdioMCPServer"
+        url = stdio_url(name, data_path)
+        if server.get("url") == url and url in _STDIO_SPECS:
+            continue  # already registered, by the CLI or an earlier call
         module = server.get("module")
         if not module:
             logger.error("[register_stdio_servers] %s has no module; disabling", name)
@@ -170,7 +178,6 @@ def register_stdio_servers(
         if server.get("profile"):
             args += ["--profile", str(server["profile"])]
 
-        url = stdio_url(name)
         server["url"] = url
         register_stdio_server(
             url,
@@ -178,7 +185,7 @@ def register_stdio_servers(
             args=args,
             env={"ONIT_DATA_PATH": data_path, **extra_env},
             cwd=_package_root(),
-            log_file=str(log_dir / f"mcp_{name}.log"),
+            log_file=str(log_dir / f"mcp_{name}_{url.split('@')[-1] if '@' in url else 'default'}.log"),
         )
 
 

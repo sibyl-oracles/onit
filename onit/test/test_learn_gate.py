@@ -913,6 +913,26 @@ class TestSeedYieldDiagnosis:
             "paired": {"pairs": 19, "control_correct": 6, "treatment_correct": 7, "discordant": 4},
         }
 
+    def test_verdict_names_a_jail_mismatch(self):
+        # The 2026-11-19 run: the treatment's every local tool call was
+        # refused by the control arm's jail -- the two arms shared one
+        # stdio URL, so the treatment's pooled client reused the
+        # control's subprocess. The scores were real grades of refusal
+        # descriptions, and the verdict read as a clean null. The
+        # verdict must name the mismatch before any number is read.
+        result = self._result(wiki_pages=3)
+        result["jail_refusals"] = {"wiki-off": 0, "wiki-on": 10}
+        out = runner.format_wiki_verdict(result)
+        assert "JAIL MISMATCH" in out
+        assert "10" in out
+        assert "not a measurement of the wiki" in out
+
+    def test_verdict_stays_silent_when_no_arm_describes_a_jail_refusal(self):
+        result = self._result(wiki_pages=3)
+        result["jail_refusals"] = {"wiki-off": 0, "wiki-on": 0}
+        out = runner.format_wiki_verdict(result)
+        assert "JAIL MISMATCH" not in out
+
     def test_verdict_names_policy_starvation(self):
         out = runner.format_wiki_verdict(self._result())
         assert "PLACEBO" in out

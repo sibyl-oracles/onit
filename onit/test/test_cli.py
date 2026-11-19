@@ -124,7 +124,8 @@ class TestEnsureMcpServers:
         _ensure_mcp_servers(config)
 
         server = self._by_name(config, "ToolsLocalMCPServer")
-        assert server["url"] == "stdio://ToolsLocalMCPServer"
+        # The URL carries the data_path's hash: one jail, one identity.
+        assert server["url"].startswith("stdio://ToolsLocalMCPServer@")
         spec = _STDIO_SPECS[server["url"]]
         assert "--profile" in spec["args"] and "local" in spec["args"]
         assert "tasks.tools" in spec["args"]

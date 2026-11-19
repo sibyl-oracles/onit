@@ -905,6 +905,15 @@ async def run_wiki_ab(
     result["wiki_pages"] = _wiki_page_count(root)
     result["wiki_seed"] = seed_stats
     result["paired"] = _paired_stats(control, treatment)
+    # The 2026-11-19 run's treatment arm answered every task by describing
+    # refusals from the control arm's jail. The scores were real grades of
+    # refusal descriptions. Counting the answers that describe a jail
+    # refusal, and printing the count, turns the next such run from a
+    # plausible null result into a named infrastructure failure.
+    result["jail_refusals"] = {
+        WIKI_CONTROL: _jail_refusal_count(control),
+        WIKI_TREATMENT: _jail_refusal_count(treatment),
+    }
     return result
 
 
@@ -959,6 +968,35 @@ def _paired_stats(control: list, treatment: list) -> dict:
         ),
         "grade_changes": sum(1 for cg, tg in pairs if cg != tg),
     }
+
+
+def _jail_refusal_count(results: list) -> int:
+    """How many of an arm's answers describe a jail refusal.
+
+    The 2026-11-19 gate run's treatment arm answered every task by
+    describing refusals from the control arm's jail -- the two arms
+    shared one stdio URL, so the treatment's pooled client reused the
+    control's subprocess and its jail. The scores were real grades of
+    refusal descriptions, and nothing about the wiki was measured. The
+    arm's own words are the detector: a session that cannot touch its
+    workspace says so. Counting the answers that say it, and printing
+    the count, turns the next such run from a plausible null result
+    into a named infrastructure failure.
+    """
+    markers = (
+        "data-path mismatch",
+        "data path mismatch",
+        "data_path mismatch",
+        "must be within the server data directory",
+        "must be within the designated data directory",
+        "tool server's data directory",
+    )
+    count = 0
+    for r in results:
+        answer = str(r.get("answer") or "")
+        if any(m in answer for m in markers):
+            count += 1
+    return count
 
 
 def format_wiki_verdict(result: dict) -> str:
@@ -1048,6 +1086,19 @@ def format_wiki_verdict(result: dict) -> str:
                 " the page policy starved them."
                 % seed.get("candidates", 0)
             )
+    refusals = result.get("jail_refusals") or {}
+    if any(refusals.get(a, 0) for a in (WIKI_CONTROL, WIKI_TREATMENT)):
+        # An arm that cannot touch its workspace is not answering the
+        # task -- it is describing why it cannot. The 2026-11-19 run
+        # scored exactly such answers, and the verdict read as a clean
+        # null. Named here, before any number is read.
+        lines.append(
+            "  *** JAIL MISMATCH: %d control / %d treatment answer(s) describe"
+            " tool refusals from the wrong workspace -- the arms shared one"
+            " server subprocess. Fix the registration; this run is not a"
+            " measurement of the wiki. ***"
+            % (refusals.get(WIKI_CONTROL, 0), refusals.get(WIKI_TREATMENT, 0))
+        )
     paired = result.get("paired") or {}
     if paired.get("pairs"):
         lines.append(

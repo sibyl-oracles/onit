@@ -426,6 +426,45 @@ Fixed in two layers:
   2026-11-18 04:07 placebo is exactly what a second pass would have
   prevented.
 
+#### The seventh placebo: the arms shared one server subprocess (2026-11-19 run, `3mbij8fr`)
+
+The ninth run was the first with a real treatment (3 pages, 6 verified
+facts) and the first with per-arm workspaces (`4aba047`) -- and the
+treatment's every local tool call was refused.  Its own words: *"every
+local tool call is being rejected with a data-path mismatch -- the
+session points at `…/data/wiki-on` while the tool server's data
+directory is `…/data/wiki-off`."*  4 of 20 treatment answers described
+the refusal outright (10 more mention the other arm's workspace); 3
+correctness losses came of it, and 1 wiki-driven gain
+(the muse-sync item verified instead of redoing).  The control: 0
+refusals.
+
+The mechanism is invisible by construction.  A stdio server's identity
+is its pseudo-URL, `stdio://<name>` -- and the URL carried only the
+name.  The control arm registered the launch specs and spawned the
+pooled subprocess, jailed to `<root>/data/wiki-off`; the treatment arm
+overwrote the spec's env to its own jail, but the pooled-client cache
+is keyed by `(url, loop)` -- same URL, same loop -- so it returned the
+control's subprocess.  Every treatment tool call hit the control's
+jail.  Pre-isolation runs shared `<root>/data`, so the shared jail
+accepted both arms; the isolation fix exposed the sharing.
+
+Fixed in two layers:
+
+- **The URL carries the jail.**  `stdio_url(name, data_path)` folds the
+  resolved data_path's hash into the pseudo-URL (`stdio://Name@<hash>`),
+  so two registrations of one server name with different jails are two
+  different servers -- each pools, spawns and discovers independently.
+  The same jail keeps the same URL and shares the subprocess exactly as
+  before.  `register_stdio_servers` computes the URL first and sets it
+  on the server dict before the skip check, so a re-registration with a
+  new jail is not silently dropped.
+- **The verdict names a jail mismatch.**  `run_wiki_ab` counts each
+  arm's answers that describe a jail refusal (`_jail_refusal_count`),
+  and the verdict prints a JAIL MISMATCH line before any number is
+  read -- the next such run is a named infrastructure failure, not a
+  plausible null.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a
