@@ -67,9 +67,9 @@ class TestDefaultsExistBeforeTheClientNeedsThem:
         _ensure_mcp_servers(config)
         # The URL carries the data_path's hash: one jail, one identity.
         for name in ("ToolsLocalMCPServer", "ToolsNetMCPServer", "PromptsMCPServer"):
-            assert any(
-                k.startswith(f"stdio://{name}@") for k in _STDIO_SPECS
-            ), f"{name} not registered"
+            assert any(k.startswith(f"stdio://{name}@") for k in _STDIO_SPECS), (
+                f"{name} not registered"
+            )
 
     def test_the_data_path_is_pinned_in_every_launch_spec(self):
         from onit.type.tools import _STDIO_SPECS

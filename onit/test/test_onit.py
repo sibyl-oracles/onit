@@ -397,9 +397,9 @@ class TestOnItInitialize:
                 # A registered stdio server carries the data_path's hash:
                 # one jail, one identity. A config that names its own URL
                 # (the conftest's fake, no transport) keeps that URL.
-                assert server["url"] == f"stdio://{server['name']}" or server[
-                    "url"
-                ].startswith(f"stdio://{server['name']}@")
+                assert server["url"] == f"stdio://{server['name']}" or server["url"].startswith(
+                    f"stdio://{server['name']}@"
+                )
 
     def test_env_host_fallback(self, tmp_path, monkeypatch):
         cfg = _make_config(tmp_path)

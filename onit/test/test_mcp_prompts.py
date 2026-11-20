@@ -302,9 +302,7 @@ class TestInstructionSplit:
 
     @pytest.mark.asyncio
     async def test_static_half_is_identical_across_sessions_and_tasks(self, tmp_path):
-        kwargs = dict(
-            local_search_available=True, web_search_available=True
-        )
+        kwargs = dict(local_search_available=True, web_search_available=True)
         a = await _assistant_fn(
             task="what scholarships exist", data_path=str(tmp_path / "session-a"), **kwargs
         )

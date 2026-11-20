@@ -502,9 +502,7 @@ class TestOpenAIRequestShaping:
                     return_value="gpt-4o",
                 ),
             ):
-                await chat(
-                    host="https://api.openai.com/v1", instruction="hi"
-                )
+                await chat(host="https://api.openai.com/v1", instruction="hi")
         probe.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -3017,6 +3015,7 @@ class TestHangPrevention:
         assert isinstance(cfg, httpx.Timeout)
         assert cfg.connect == CONNECT_TIMEOUT
         assert cfg.read is None
+
 
 # ── answer text written alongside tool calls ────────────────────────────────
 

@@ -185,7 +185,9 @@ def register_stdio_servers(
             args=args,
             env={"ONIT_DATA_PATH": data_path, **extra_env},
             cwd=_package_root(),
-            log_file=str(log_dir / f"mcp_{name}_{url.split('@')[-1] if '@' in url else 'default'}.log"),
+            log_file=str(
+                log_dir / f"mcp_{name}_{url.split('@')[-1] if '@' in url else 'default'}.log"
+            ),
         )
 
 

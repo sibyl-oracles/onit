@@ -1110,9 +1110,7 @@ class TestChatWiring:
             ),
         ):
             result = await asyncio.wait_for(
-                chat(
-                    host="http://localhost:8000/v1", instruction="q"
-                ),
+                chat(host="http://localhost:8000/v1", instruction="q"),
                 timeout=30,
             )
         assert result == ANSWER  # the check failed open
@@ -1221,9 +1219,7 @@ class TestChatWiring:
             ),
         ):
             result = await asyncio.wait_for(
-                chat(
-                    host="http://localhost:8000/v1", instruction="q"
-                ),
+                chat(host="http://localhost:8000/v1", instruction="q"),
                 timeout=30,
             )
         assert result == ANSWER

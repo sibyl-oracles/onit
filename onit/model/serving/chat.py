@@ -6875,9 +6875,7 @@ def _wiki_tool_available(config_data: dict | None) -> bool:
     from ...learn.config import ADAPT, autonomy as _autonomy
 
     cfg = config_data or {}
-    return bool(
-        _autonomy(cfg) >= ADAPT and _memory.enabled(cfg) and _memory.list_pages(cfg)
-    )
+    return bool(_autonomy(cfg) >= ADAPT and _memory.enabled(cfg) and _memory.list_pages(cfg))
 
 
 async def chat(

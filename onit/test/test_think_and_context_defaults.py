@@ -212,9 +212,7 @@ class TestTheContextWindowDefault:
         ):
             from onit.model.serving.chat import chat
 
-            await chat(
-                host="http://localhost:8000/v1", instruction="hi"
-            )
+            await chat(host="http://localhost:8000/v1", instruction="hi")
         body = client.chat.completions.create.call_args.kwargs
         # A 128k window cannot take a 1M output budget; the clamp proves the
         # reported window is what the run was measured against.

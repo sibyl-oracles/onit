@@ -214,7 +214,15 @@ class TestTheOperationalFilterHoldsTheWholeFamily:
         records = _read(world, "s1")
         candidates, _, _, _ = asyncio.run(
             dream.extract(
-                _ask([{"text": "pushed to origin/main as commit 6da0713", "kind": "fact", "cites": [2]}]),
+                _ask(
+                    [
+                        {
+                            "text": "pushed to origin/main as commit 6da0713",
+                            "kind": "fact",
+                            "cites": [2],
+                        }
+                    ]
+                ),
                 records,
             )
         )
@@ -321,7 +329,11 @@ class TestReconciliationEdges:
         assert surviving["contradictions"] == []
 
     def test_a_page_title_is_the_most_common_topic(self):
-        cands = [{"text": "a", "topic": "staging"}, {"text": "b", "topic": "staging"}, {"text": "c", "topic": "queue"}]
+        cands = [
+            {"text": "a", "topic": "staging"},
+            {"text": "b", "topic": "staging"},
+            {"text": "c", "topic": "queue"},
+        ]
         assert "staging" in dream._title_from(cands).lower()
 
     def test_a_title_falls_back_to_the_first_text(self):
@@ -707,7 +719,9 @@ class TestTheInjectionBudget:
         assert out == {"text": "", "slug": "", "page": None}
 
     def test_evidence_is_capped(self, world):
-        page = _page("staging", "Staging", ["the staging host is stg-%d.internal" % i for i in range(40)])
+        page = _page(
+            "staging", "Staging", ["the staging host is stg-%d.internal" % i for i in range(40)]
+        )
         mem.save_page(page, world)
         out = mem.evidence_for("the staging host", world)
         assert out["page"] is not None
@@ -719,7 +733,12 @@ class TestTheInjectionBudget:
                 "no-such-page",
                 claim="c",
                 correction="x",
-                config_data={"learn": {"path": str(tmp_path / "l"), "memory": {"path": str(tmp_path / "l" / "m")}}},
+                config_data={
+                    "learn": {
+                        "path": str(tmp_path / "l"),
+                        "memory": {"path": str(tmp_path / "l" / "m")},
+                    }
+                },
             )
             is False
         )
