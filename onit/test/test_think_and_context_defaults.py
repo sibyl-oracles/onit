@@ -15,7 +15,6 @@ rather than about any one of those places.  A test that asserts
 sending ``enable_thinking: False``.
 """
 
-import asyncio
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch

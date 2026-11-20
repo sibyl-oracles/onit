@@ -2021,15 +2021,14 @@ class OnIt(BaseModel):
             _adapter,
             run_state=_run_state,
         )
-        # The agent just finished a task.  If the queue is empty, this is
-        # the idle window the dreaming pass runs in: the trigger is
+        # The agent just finished a task.  This is the idle window the
+        # dreaming pass runs in: the trigger is
         # "idle > N episodes", the lock keeps two instances out of one
         # pass, and a task that arrives mid-dream preempts it (the
         # watermark makes the next pass pick up where this one stopped).
         # Fire-and-forget: a dream pass is background maintenance, and a
         # task that answered must not wait on bookkeeping.
-        if effective_safety_queue.empty():
-            self._schedule_dream()
+        self._schedule_dream()
         # The answer is saved, so the check behind it now has something to
         # correct.  Anything the run collected earlier belonged to an attempt
         # that was retried over, and is closed rather than run.

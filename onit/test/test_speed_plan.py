@@ -15,7 +15,6 @@ Covers the acceptance checks that are testable without a live endpoint:
 - 5.1: per-tool response budgets.
 """
 
-import asyncio
 import json
 import os
 import sys

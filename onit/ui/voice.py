@@ -45,7 +45,6 @@ Two documented constraints of the model shape the rest of the design:
 
 import array
 import asyncio
-import base64
 import json
 import logging
 import math

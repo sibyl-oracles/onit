@@ -44,7 +44,6 @@ the agent that grades.  A self-graded answer is not a measurement, and
 one that scored itself would report a number the agent controls.
 """
 
-import asyncio
 import inspect
 import json
 import logging

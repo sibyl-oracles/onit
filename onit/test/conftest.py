@@ -1,6 +1,5 @@
 """Shared fixtures for OnIt test suite."""
 
-import asyncio
 import json
 import os
 import sys
