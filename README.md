@@ -191,6 +191,46 @@ Redis is reachable from all interfaces without a password — bind it to
 
 Run it on a schedule with `onit serve loop "re-audit and diff against audit.md" --period 86400`.
 
+## Memory: the agent remembers between sessions
+
+OnIt can keep what it learns across sessions in a **memory wiki** — linked
+pages written and maintained by a background *dreaming* pass. The loop is:
+
+1. **Record** — sessions write findings to a per-session note store.
+2. **Dream** — when the agent is idle, a consolidation pass reads recent
+   session transcripts, extracts what they *established*, verifies each fact
+   against the transcript, reconciles it with the pages (correct wrong notes,
+   prune stale ones, resolve contradictions), and writes the wiki. One writer
+   per store, running exactly when nothing else is; a task arriving mid-dream
+   preempts the pass.
+3. **Recall** — later sessions get a `wiki_search` tool that queries the wiki
+   before re-deriving answers from scratch.
+
+Two guards keep memory honest:
+
+- **Operational facts are never recorded.** A pass drops candidates that
+  narrate actions on the environment ("pushed to origin/main", "restarted the
+  server") — those are session state, not knowledge.
+- **The feature is gated behind measurement.** Memory is **off by default**
+  (`learn.memory.enabled`, or `ONIT_MEMORY_ENABLED`); it flips on only after
+  a clean A/B gate shows a positive effect. `onit eval --wiki-ab` runs the
+  gate itself: two arms at the same autonomy level, differing only in the
+  wiki's master switch, seeded identically, with coverage tripwires and a
+  verdict that names what it measured.
+
+Enable it with:
+
+```yaml
+learn:
+  memory:
+    enabled: true
+```
+
+The store lives under `learn.memory.path` (default: beside the learned
+store). Inspect it by hand: `onit learn --memory` shows the pages and what
+the last pass changed; `onit learn --dream` runs one consolidation pass now.
+Design and measurement history: [docs/MEMORY_PLAN.md](docs/MEMORY_PLAN.md).
+
 ## API keys
 
 | Key | Needed for | Priority |
@@ -261,21 +301,21 @@ them, and their tests lived apart from the suite.
 [Model Serving](docs/MODEL_SERVING.md) · [Web deployment](docs/DEPLOYMENT_WEB.md) ·
 [HTTPS](docs/HTTPS_DEPLOYMENT.md) · [Isolation](docs/ISOLATION.md) ·
 [Web authentication](docs/WEB_AUTHENTICATION.md) · [Docker](docs/DOCKER.md) ·
-[Architecture](docs/ARCHITECTURE.md) · [Testing](docs/TESTING.md) · [Benchmarks](benchmarks/README.md)
+[Architecture](docs/ARCHITECTURE.md) · [Testing](docs/TESTING.md) · [Memory plan](docs/MEMORY_PLAN.md) · [Benchmarks](benchmarks/README.md)
 
 ## Size
 
 | Category | Files | Lines |
 |---|---|---|
-| **Production code** (`onit/`, excl. tests) | 79 `.py` | **44,970** (33,076 code, 6,160 comments, 5,734 blank) |
-| Frontend (`onit/ui/static/`, excl. vendor) | 8 | 3,348 |
-| Prompt templates + configs (YAML) | 6 | 503 |
-| **Test suites** (`onit/test/`, `benchmarks/test_*`) | 63 `.py` | 37,031 |
-| Benchmarks (non-test) | 14 `.py` | 1,786 |
-| Docs (`docs/`, README, RELEASE) | 27 `.md` | 9,130 |
-| **Total Python** (all `.py`, excl. `__pycache__`) | 162 | **85,384** |
+| **Production code** (`onit/`, excl. tests) | 85 `.py` | **55,031** |
+| Frontend (`onit/ui/static/`, excl. vendor) | 8 | 3,421 |
+| Prompt templates + configs (YAML) | 6 | 519 |
+| **Test suites** (`onit/test/`, `benchmarks/test_*`) | 81 `.py` | 50,861 |
+| Benchmarks (non-test) | 14 `.py` | 1,853 |
+| Docs (`docs/`, README, RELEASE) | 29 `.md` | 9,915 |
+| **Total Python** (all `.py`, excl. `__pycache__`) | 163 | **105,363** |
 
-Production code by module: `mcp` 10,437 · `model` 9,899 · `learn` 7,937 · `ui` 7,641 · `onit.py` 2,556 · `cli.py` 2,026 · `setup.py` 1,211 · `type` 969 · `lib` 921 · `sessions.py` 768 · `container_launcher.py` 575 · `__init__.py` 30.
+Production code by module: `model` 11,998 · `mcp` 11,990 · `learn` 11,383 · `ui` 9,014 · `onit.py` 2,963 · `cli.py` 2,660 · `setup.py` 1,211 · `type` 969 · `lib` 921 · `sessions.py` 768 · `container_launcher.py` 575 · `__init__.py` 30.
 
 *Recompute:* `find onit -name '*.py' -not -path '*/__pycache__/*' -not -path 'onit/test/*' -exec cat {} + | wc -l`
 
