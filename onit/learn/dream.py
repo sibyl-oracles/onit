@@ -292,6 +292,39 @@ def _extract_json(text: str) -> list:
     return [i for i in items if isinstance(i, dict)]
 
 
+def _operational(lowered: str) -> bool:
+    """A candidate that records an action taken on the environment.
+
+    Pushes, commits, merges, deploys-to-live, service restarts and file
+    mutations are things the *session did*, not things that stay true.
+    Served to a later session they read as precedent -- the failure the
+    2026-11-20 gate caught.  The list is deliberately narrow: a wiki
+    that drops real knowledge is worth nothing either.
+    """
+    markers = (
+        "pushed to",
+        "push to",
+        "committed to",
+        "committed the",
+        "merged into",
+        "merged the",
+        "opened a pull request",
+        "deployed to",
+        "restarted the",
+        "restarted service",
+        "origin/main",
+        "deleted the branch",
+        "force-pushed",
+        "wrote the file",
+        "created the file",
+        "overwrote the",
+        "removed the file",
+        "ran the migration",
+        "applied the migration",
+    )
+    return any(m in lowered for m in markers)
+
+
 def _clean_candidate(item: dict, transcript: str) -> dict | None:
     """One candidate, verified against the transcript it cites.
 
@@ -313,6 +346,15 @@ def _clean_candidate(item: dict, transcript: str) -> dict | None:
             return None
     kind = item.get("kind") if item.get("kind") in ("fact", "rule") else "fact"
     topic = memory._one_line(item.get("topic", ""))[:60]
+    if _operational(lowered):
+        # Operational, not generalizable: the 2026-11-20 gate run's one
+        # discordant pair traced to a seeded page that recorded a push
+        # to origin/main as a fact -- the treatment agent read it,
+        # imitated it, pushed a real branch, and was graded wrong for
+        # it.  A fact about what *this* agent did to *its* environment
+        # is session state, and a future session that reads it as
+        # precedent repeats the action.  Keep it out of pages; log it.
+        return None
     cites = item.get("cites") if isinstance(item.get("cites"), list) else []
     transcript_lines = transcript.splitlines()
     matched = []
@@ -478,6 +520,7 @@ async def dream_once(
     now: float | None = None,
     max_session_chars: int | None = None,
     min_facts_for_page: int | None = None,
+    max_sessions_per_pass: int | None = None,
 ) -> dict:
     """One consolidation pass.  Returns what it did, for tests and logs.
 
@@ -522,7 +565,7 @@ async def dream_once(
         fresh = _new_records_since(records, watermark_ts)
         if fresh:
             todo.append((session_id, fresh))
-        if len(todo) >= MAX_SESSIONS_PER_PASS:
+        if len(todo) >= max(1, int(max_sessions_per_pass or MAX_SESSIONS_PER_PASS)):
             break
     changes["sessions"] = len(todo)
 
@@ -736,6 +779,7 @@ async def run_dream(
     force: bool = False,
     max_session_chars: int | None = None,
     min_facts_for_page: int | None = None,
+    max_sessions_per_pass: int | None = None,
 ) -> dict:
     """Trigger check, lock, pass.  The entry point an idle watcher calls.
 
@@ -777,6 +821,7 @@ async def run_dream(
                 root=root,
                 max_session_chars=max_session_chars,
                 min_facts_for_page=min_facts_for_page,
+                max_sessions_per_pass=max_sessions_per_pass,
             )
     except DreamBusy:
         return {"ran": False, "reason": "another pass holds the lock"}

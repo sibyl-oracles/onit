@@ -65,6 +65,13 @@ RESULTS_NAME = "results.json"
 # measures a placebo.
 SEED_MAX_SESSION_CHARS = 200_000
 
+# The session cap for the gate's seed pass.  The production cap is
+# dream.MAX_SESSIONS_PER_PASS (8); a gate seeding from a replay store
+# wants more days distilled, or the wiki covers one day's topics and
+# no eval item's -- the 2026-11-20 run's 3 pages matched none of its
+# 20 items and capped the measurable delta near zero.
+SEED_MAX_SESSIONS = 24
+
 # The grader's rubric.  Three grades, and the third is the one that
 # matters: a run that hedges without committing is not wrong, it is
 # unmeasured, and counting it as wrong would make "say less" look like
@@ -744,7 +751,20 @@ async def run_wiki_arm(
             "  seeding: distilling the control's episodes into the wiki (one dream pass)...",
             flush=True,
         )
-        seed_stats = await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
+        # SEED_MAX_SESSION_CHARS lifts the transcript cap so a whole
+        # replay day reaches the extractor; SEED_MAX_SESSIONS lifts the
+        # session cap so more than the first day does.  The 2026-11-20
+        # run seeded 3 pages from one day whose topics matched none of
+        # the 20 eval items -- coverage, not plumbing, capped the
+        # measurable delta at roughly zero.  A gate that seeds 24
+        # sessions gives the wiki one session per eval item, which is
+        # the least a coverage claim needs.
+        seed_stats = await seed_wiki(
+            seed_ask,
+            config,
+            max_session_chars=SEED_MAX_SESSION_CHARS,
+            max_sessions_per_pass=SEED_MAX_SESSIONS,
+        )
         if (
             seed_stats.get("ran")
             and seed_stats.get("candidates", 0) == 0
@@ -764,7 +784,12 @@ async def run_wiki_arm(
                 % seed_stats.get("empty_replies", 0),
                 flush=True,
             )
-            seed_stats = await seed_wiki(seed_ask, config, max_session_chars=SEED_MAX_SESSION_CHARS)
+            seed_stats = await seed_wiki(
+                seed_ask,
+                config,
+                max_session_chars=SEED_MAX_SESSION_CHARS,
+                max_sessions_per_pass=SEED_MAX_SESSIONS,
+            )
         print("  seeding: done", flush=True)
         if seed_stats.get("ran") is False:
             # The pass never ran at all -- autonomy below adapt, or the
@@ -781,9 +806,7 @@ async def run_wiki_arm(
             # whose wiki was empty because the seeding pass extracted
             # nothing, and a delta that looked like a finding.  A
             # placebo must never be silent again.
-            message = (
-                "seeding produced NO wiki pages -- the treatment will run with an empty wiki"
-            )
+            message = "seeding produced NO wiki pages -- the treatment will run with an empty wiki"
             logger.warning(message)
             print("  *** %s ***" % message, flush=True)
         else:
@@ -914,6 +937,7 @@ async def run_wiki_ab(
         WIKI_CONTROL: _jail_refusal_count(control),
         WIKI_TREATMENT: _jail_refusal_count(treatment),
     }
+    result["coverage_gaps"] = [item_id for item_id, _ in _coverage_gaps(items, root)]
     return result
 
 
@@ -963,9 +987,7 @@ def _paired_stats(control: list, treatment: list) -> dict:
         "pairs": len(pairs),
         "control_correct": sum(1 for cg, _ in pairs if cg == GRADE_CORRECT),
         "treatment_correct": sum(1 for _, tg in pairs if tg == GRADE_CORRECT),
-        "discordant": sum(
-            1 for cg, tg in pairs if (cg == GRADE_CORRECT) != (tg == GRADE_CORRECT)
-        ),
+        "discordant": sum(1 for cg, tg in pairs if (cg == GRADE_CORRECT) != (tg == GRADE_CORRECT)),
         "grade_changes": sum(1 for cg, tg in pairs if cg != tg),
     }
 
@@ -997,6 +1019,36 @@ def _jail_refusal_count(results: list) -> int:
         if any(m in answer for m in markers):
             count += 1
     return count
+
+
+def _coverage_gaps(items: list, root: str) -> list:
+    """Eval items no wiki page plausibly covers, as (id, task) pairs.
+
+    The 2026-11-20 run's delta was ±0.05 under a stderr of 0.26 -- and
+    the reason was visible before the run: 3 pages from one dreaming
+    day, none overlapping any of the 20 items.  A wiki that knows
+    nothing about an item cannot change that item's answer, so a run
+    whose coverage gap is wide measures the *ceiling* of the wiki's
+    effect, not the wiki.  The match is lexical on task words against
+    page slugs and titles, the same looseness `_find_home` uses; it
+    overestimates coverage, which is the safe direction for a tripwire.
+    """
+    from .memory import list_pages
+    from ._search import tokenize
+
+    config = _config_for_wiki_arm({}, True, store=_arm_store(root, WIKI_TREATMENT))
+    pages = list_pages(config)
+    page_tokens: set = set()
+    for p in pages:
+        page_tokens.update(tokenize(p.get("slug", "") + " " + p.get("title", "")))
+    gaps = []
+    for item in items:
+        task = item.get("task") or ""
+        words = [w for w in tokenize(task) if len(w) > 3]
+        if words and page_tokens and any(w in page_tokens for w in words):
+            continue
+        gaps.append((item.get("id"), task[:60]))
+    return gaps
 
 
 def format_wiki_verdict(result: dict) -> str:
@@ -1052,8 +1104,7 @@ def format_wiki_verdict(result: dict) -> str:
             lines.append(
                 "  seed diagnosis: the extractor held %d item(s) but the cite-cleaning"
                 " dropped all of them -- the citations failed the transcript check,"
-                " so the treatment still ran with an empty wiki."
-                % seed.get("parsed_items", 0)
+                " so the treatment still ran with an empty wiki." % seed.get("parsed_items", 0)
             )
         elif seed.get("candidates", 0) == 0 and seed.get("empty_replies", 0) > 0:
             # The extractor never got a usable reply: the endpoint
@@ -1083,8 +1134,7 @@ def format_wiki_verdict(result: dict) -> str:
             # if it does, the threshold override did not reach the pass.
             lines.append(
                 "  seed diagnosis: %d candidate(s) extracted but 0 pages created --"
-                " the page policy starved them."
-                % seed.get("candidates", 0)
+                " the page policy starved them." % seed.get("candidates", 0)
             )
     refusals = result.get("jail_refusals") or {}
     if any(refusals.get(a, 0) for a in (WIKI_CONTROL, WIKI_TREATMENT)):
@@ -1140,8 +1190,7 @@ def format_wiki_verdict(result: dict) -> str:
         lines.append(
             "  note: %d more item(s) graded in one arm than the other --"
             " enough to account for the whole delta;"
-            " read the paired line, not the headline."
-            % graded_gap
+            " read the paired line, not the headline." % graded_gap
         )
     if result["significant"] and result["delta"] > 0:
         lines.append("  verdict: the wiki earns its default. Raise learn.memory.enabled.")
@@ -1151,6 +1200,21 @@ def format_wiki_verdict(result: dict) -> str:
             " start with the pages the treatment arm served."
         )
     else:
+        # Coverage, not power, is the 2026-11-20 finding: a wiki whose
+        # pages match none of the scored items cannot change their
+        # answers, so a near-zero delta there is the *ceiling* of what
+        # this run could show, not a feature null.  Said before the
+        # power advice, so more items are not bought for a wiki whose
+        # content is still the constraint.
+        gaps = result.get("coverage_gaps") or []
+        n_items = c.get("n", 0) or t.get("n", 0) or 0
+        if n_items and len(gaps) >= n_items * 0.8:
+            lines.append(
+                "  coverage: %d of %d eval item(s) share no term with any wiki page --"
+                " the wiki plausibly touches none of them."
+                " Breadth before power: seed more days before buying more items."
+                % (len(gaps), n_items)
+            )
         lines.append(
             "  verdict: no measurable effect. The default stays off until"
             " a run with more items says otherwise."

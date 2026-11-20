@@ -465,6 +465,40 @@ Fixed in two layers:
   read -- the next such run is a named infrastructure failure, not a
   plausible null.
 
+#### The first clean run: machinery held, coverage capped the delta (2026-11-20 run, `h8nl5ilk`)
+
+Every instrumentation fix above held in one run for the first time:
+seed pass 1 (6/6 verified), 3 pages, `wiki_search` offered to 13 of 20
+treatment sessions and called 13 times, zero jail refusals, zero grade
+errors.  The verdict was a hair-negative null (−0.050, stderr 0.258,
+one discordant pair) — and for once it measured the wiki, not the
+plumbing.  Two findings closed on top of it:
+
+1. **The discordant pair was the wiki's own doing.**  The seeded
+   `docs-update.md` page recorded a push to `origin/main` as a fact;
+   the treatment agent read it as precedent, pushed a real branch, and
+   was graded wrong.  **Fix (landed):** `dream._operational` rejects
+   candidates that record actions on the environment (pushes, commits,
+   merges, deploys, restarts, file mutations) — session state, not
+   generalizable knowledge.
+2. **Coverage, not power, was the binding constraint.**  3 pages from
+   one dreaming day matched none of the 20 eval items, so ±0.05 was
+   the ceiling of what the run could show.  **Fixes (landed):** the
+   gate's seed pass lifts the session cap (`SEED_MAX_SESSIONS = 24`,
+   via `run_dream`/`dream_once` `max_sessions_per_pass`), and the
+   verdict prints a `coverage:` line when ≥80% of eval items share no
+   term with any page (`_coverage_gaps`).
+
+#### The decision rule for raising the wiki's default
+
+The default stays off until **2–3 consecutive clean gate runs** show:
+(a) a positive paired point estimate, (b) zero wiki-caused discordant
+pairs, (c) silent placebo / jail / coverage tripwires, and (d) a seed
+pass at pass 1 with at least one page per ~5 eval topics.  A single
+hair-negative null under an error bar twice its size — especially one
+with a demonstrated harm channel — is precisely the evidence the gate
+exists to block a flip on.
+
 ## 7. Building the wiki automatically
 
 The wiki is never written by the agent during a task and never written by a

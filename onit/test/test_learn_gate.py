@@ -587,8 +587,12 @@ class TestPairedStats:
         # A verdict fed the old paired shape must not crash.
         result = runner.compare(self._rows(["C"]), self._rows(["C"]))
         result["wiki_pages"] = 4
-        result["paired"] = {"pairs": 1, "control_correct": 1, "treatment_correct": 1,
-                            "discordant": 0}
+        result["paired"] = {
+            "pairs": 1,
+            "control_correct": 1,
+            "treatment_correct": 1,
+            "discordant": 0,
+        }
         text = runner.format_wiki_verdict(result)
         assert "paired (both graded): 1 item(s)" in text
 
@@ -682,8 +686,12 @@ class TestVerdictHonesty:
 
     def test_the_paired_line_appears(self):
         result = self._result(10, 25, wiki_pages=4)
-        result["paired"] = {"pairs": 40, "control_correct": 10, "treatment_correct": 25,
-                            "discordant": 25}
+        result["paired"] = {
+            "pairs": 40,
+            "control_correct": 10,
+            "treatment_correct": 25,
+            "discordant": 25,
+        }
         text = runner.format_wiki_verdict(result)
         assert "paired (both graded): 40 item(s)" in text
 
@@ -694,10 +702,29 @@ class TestVerdictHonesty:
 
     def test_a_clean_run_carries_no_caveats(self):
         result = self._result(10, 25, wiki_pages=4)
-        result["paired"] = {"pairs": 40, "control_correct": 10, "treatment_correct": 25,
-                            "discordant": 25}
+        result["paired"] = {
+            "pairs": 40,
+            "control_correct": 10,
+            "treatment_correct": 25,
+            "discordant": 25,
+        }
         text = runner.format_wiki_verdict(result)
         assert "PLACEBO" not in text
+
+    def test_a_wide_coverage_gap_is_named(self):
+        # The 2026-11-20 finding: 3 pages from one day, none matching
+        # any of the 20 items -- the delta was the ceiling, not a null.
+        result = self._result(5, 6, n=20, wiki_pages=3)
+        result["coverage_gaps"] = list(range(18))
+        text = runner.format_wiki_verdict(result)
+        assert "coverage: 18 of 20" in text
+        assert "Breadth before power" in text
+
+    def test_a_covered_run_carries_no_coverage_line(self):
+        result = self._result(5, 6, n=20, wiki_pages=3)
+        result["coverage_gaps"] = list(range(3))
+        text = runner.format_wiki_verdict(result)
+        assert "coverage:" not in text
         # The per-arm summary lines always carry "ungraded=N"; the caveat
         # is the phrase, not the word.
         assert "incomplete ruler" not in text
@@ -793,6 +820,7 @@ class TestSeedingReportsItsYield:
         assert "seeding: done" in out
         assert "NO wiki pages" not in out
 
+
 class TestSeedYieldDiagnosis:
     """The third placebo: facts extracted, pages still zero.
 
@@ -804,9 +832,7 @@ class TestSeedYieldDiagnosis:
     """
 
     @pytest.mark.asyncio
-    async def test_seed_threshold_override_creates_pages_from_single_facts(
-        self, tmp_path, capsys
-    ):
+    async def test_seed_threshold_override_creates_pages_from_single_facts(self, tmp_path, capsys):
         import json as json_module
         import os as os_module
 

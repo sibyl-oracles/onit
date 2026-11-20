@@ -143,7 +143,74 @@ class TestExtraction:
         )
         assert found == []
 
-    def test_a_meta_comment_is_rejected(self, world):
+    def test_an_operational_fact_is_rejected(self, world):
+        # The 2026-11-20 gate's one discordant pair: a seeded page that
+        # recorded a push to origin/main read to the next agent as
+        # precedent, which imitated it and was graded wrong.  An
+        # operational fact is session state, not knowledge.
+        _session(
+            world,
+            "s1",
+            [("update the docs", "updated docs and pushed to origin/main as commit 6da0713")],
+        )
+        records = _read(world, "s1")
+        found, _, _, _ = asyncio.run(
+            dream.extract(
+                _ask(
+                    [
+                        {
+                            "text": "the docs update was pushed to origin/main as commit 6da0713",
+                            "kind": "fact",
+                            "topic": "docs",
+                            "cites": [2],
+                        },
+                    ]
+                ),
+                records,
+            )
+        )
+        assert found == []
+
+    def test_a_knowledge_fact_survives_the_operational_filter(self, world):
+        _session(world, "s1", [("pick a slab base", "compacted gravel under sand works")])
+        records = _read(world, "s1")
+        found, _, _, _ = asyncio.run(
+            dream.extract(
+                _ask(
+                    [
+                        {
+                            "text": "compacted gravel under sand makes a stable slab base",
+                            "kind": "fact",
+                            "topic": "slab",
+                            "cites": [2],
+                        },
+                    ]
+                ),
+                records,
+            )
+        )
+        assert len(found) == 1
+
+    def test_the_operational_filter_is_narrow(self, world):
+        _session(world, "s1", [("deploy the service", "deployed; host is stg-7.internal")])
+        records = _read(world, "s1")
+        found, _, _, _ = asyncio.run(
+            dream.extract(
+                _ask(
+                    [
+                        {
+                            "text": "the staging host is stg-7.internal",
+                            "kind": "fact",
+                            "topic": "staging",
+                            "cites": [2],
+                        },
+                    ]
+                ),
+                records,
+            )
+        )
+        assert len(found) == 1
+
         _session(world, "s1", [("deploy the service", "deployed")])
         records = _read(world, "s1")
         found, empties, parsed, failed = asyncio.run(
@@ -271,8 +338,9 @@ class TestExtraction:
 
         with caplog.at_level(logging.WARNING, logger="onit.learn.dream"):
             asyncio.run(dream.extract(prose, records))
-        assert any("reply head" in r.message and "I found three facts" in r.message
-                   for r in caplog.records)
+        assert any(
+            "reply head" in r.message and "I found three facts" in r.message for r in caplog.records
+        )
 
 
 def _read(world, session_id):
@@ -689,6 +757,30 @@ class TestSeedingTranscriptBudget:
 
         asyncio.run(dream.run_dream(world, ask=spy_ask, force=True, max_session_chars=200_000))
         assert "tail 19" in seen["prompt"]
+
+    def test_a_lifted_session_cap_reaches_more_days(self, world):
+        for d in range(12):
+            _session(world, "day-%d" % d, [("task %d" % d, "day %d established fact %d" % (d, d))])
+        seen = []
+
+        async def spy_ask(messages):
+            seen.append(1)
+            return json.dumps({"items": []})
+
+        asyncio.run(dream.run_dream(world, ask=spy_ask, force=True, max_sessions_per_pass=24))
+        assert len(seen) == 12  # all days processed, above the production cap of 8
+
+    def test_the_production_cap_still_applies_when_not_lifted(self, world):
+        for d in range(12):
+            _session(world, "day-%d" % d, [("task %d" % d, "day %d established fact %d" % (d, d))])
+        seen = []
+
+        async def spy_ask(messages):
+            seen.append(1)
+            return json.dumps({"items": []})
+
+        asyncio.run(dream.run_dream(world, ask=spy_ask, force=True))
+        assert len(seen) == dream.MAX_SESSIONS_PER_PASS
 
 
 class TestTheWatermarkSurvivesAFailedExtractor:
