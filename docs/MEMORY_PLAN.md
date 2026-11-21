@@ -489,6 +489,35 @@ plumbing.  Two findings closed on top of it:
    verdict prints a `coverage:` line when ≥80% of eval items share no
    term with any page (`_coverage_gaps`).
 
+#### The second clean run: the discordant-pair fix held, the seed corpus shrank (2026-11-21 run, `i_adf1so`)
+
+The machinery held a second time: zero errors, zero grade errors, zero
+jail refusals, 0 wiki-caused grade flips (the 5 paired grade changes
+were letter churn alone, exactly what the corrected metric excludes).
+Verdict: a hair-negative null again (--0.050, stderr 0.235, 3
+discordant pairs, n=20/arm).
+
+One finding closed on top of it:
+
+3. **The seed corpus shrank to one session, and the `SEED_MAX_SESSIONS`
+   lift never bit.**  The seed stats reported `sessions: 1` -- and the
+   cause is a corpus mismatch, not a cap.  The replay arms record
+   tasks into `<store>/sessions/*.jsonl`, whose one-record-per-task
+   files carry `task`/`response`/`timestamp` (a float) and no `ts`.
+   The dream pass reads `<store>/trajectories/*.jsonl`, whose records
+   carry `ts` (an ISO string) and whose session ids are the eval's
+   replay ids.  Only the 2--3 trajectory files the replay itself
+   happened to write were in `read_sessions`' view, one of them had a
+   `ts` inside the pass window, and the seed distilled a single
+   session into 3 pages.  The 2026-11-20 diagnosis (coverage, not
+   power, caps the delta) therefore still stands and was not fixed by
+   the session cap: the cap is upstream of a reader that never saw the
+   sessions.  **Fix (open):** the seed pass must read the replay's
+   session records -- either `dream_once` falls back to the
+   `sessions/` directory when `trajectories/` holds fewer than the
+   cap, or the replay writes trajectories in the schema the dream
+   pass already reads (`ts`, session id, one record per task).
+
 #### The decision rule for raising the wiki's default
 
 The default stays off until **2–3 consecutive clean gate runs** show:
