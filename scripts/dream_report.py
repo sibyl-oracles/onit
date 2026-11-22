@@ -40,7 +40,7 @@ import json
 import os
 import re
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 
 try:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
