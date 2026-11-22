@@ -512,11 +512,16 @@ One finding closed on top of it:
    session into 3 pages.  The 2026-11-20 diagnosis (coverage, not
    power, caps the delta) therefore still stands and was not fixed by
    the session cap: the cap is upstream of a reader that never saw the
-   sessions.  **Fix (open):** the seed pass must read the replay's
-   session records -- either `dream_once` falls back to the
-   `sessions/` directory when `trajectories/` holds fewer than the
-   cap, or the replay writes trajectories in the schema the dream
-   pass already reads (`ts`, session id, one record per task).
+   sessions.  **Fix (landed, `2a658ca`):** the seed pass now reads the
+   replay's session records -- `read_sessions` falls back to
+   `<learn-root>/sessions/`: additive (a trajectory session wins),
+   line-shape screened (only a response-bearing task record, so the
+   event log and label rows stay out), and `timestamp` floats
+   normalised to the ISO `ts` the watermark compares.  Against the
+   burned run's real store the reader now sees 21 sessions / 59
+   records instead of 1 / 20.  Six regression tests pin it in
+   `test_learn_hardening.py::TestReplaySessionsFallback`.  The gate
+   wants a re-run before any coverage claim.
 
 #### The decision rule for raising the wiki's default
 
