@@ -521,6 +521,7 @@ async def dream_once(
     max_session_chars: int | None = None,
     min_facts_for_page: int | None = None,
     max_sessions_per_pass: int | None = None,
+    max_pages_per_pass: int | None = None,
 ) -> dict:
     """One consolidation pass.  Returns what it did, for tests and logs.
 
@@ -607,8 +608,9 @@ async def dream_once(
     by_slug = {p["slug"]: p for p in pages}
     groups = _cluster(candidates)
     created = 0
+    page_cap = MAX_PAGES_PER_PASS if max_pages_per_pass is None else max(0, int(max_pages_per_pass))
     for slug, cands in sorted(groups.items()):
-        if created >= MAX_PAGES_PER_PASS and slug not in by_slug:
+        if created >= page_cap and slug not in by_slug:
             continue
         page = by_slug.get(slug)
         deltas = []
@@ -780,6 +782,7 @@ async def run_dream(
     max_session_chars: int | None = None,
     min_facts_for_page: int | None = None,
     max_sessions_per_pass: int | None = None,
+    max_pages_per_pass: int | None = None,
 ) -> dict:
     """Trigger check, lock, pass.  The entry point an idle watcher calls.
 
@@ -822,6 +825,7 @@ async def run_dream(
                 max_session_chars=max_session_chars,
                 min_facts_for_page=min_facts_for_page,
                 max_sessions_per_pass=max_sessions_per_pass,
+                max_pages_per_pass=max_pages_per_pass,
             )
     except DreamBusy:
         return {"ran": False, "reason": "another pass holds the lock"}

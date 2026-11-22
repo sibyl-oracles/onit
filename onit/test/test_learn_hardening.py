@@ -860,3 +860,123 @@ class TestReplaySessionsFallback:
             )
         sessions = corpus.read_sessions(config)
         assert len(sessions) >= 19
+
+
+class TestSeedPageCap:
+    """The seed pass must not be capped at the production page limit.
+
+    The 2026-11-22 gate run seeded 5 verified facts into 3 pages --
+    ``dream.MAX_PAGES_PER_PASS`` -- and the wiki matched 4 of 20 eval
+    items.  The cap exists so a burst of sessions cannot spray a store
+    with pages; a seeding pass is the opposite case, and the gate lifts
+    it the same way it lifts the session and transcript caps.
+    """
+
+    def test_the_seed_pass_lifts_the_page_cap(self, tmp_path):
+        import asyncio
+
+        from onit.learn import dream
+
+        base = tmp_path / "store" / "wiki-on"
+        (base / "sessions").mkdir(parents=True)
+        config = {
+            "learn": {
+                "path": str(base),
+                "autonomy": "adapt",
+                "memory": {"path": str(base / "memory"), "enabled": True},
+            }
+        }
+        for i in range(6):
+            with open(base / "sessions" / ("item-%d.jsonl" % i), "w", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "task": "task %d" % i,
+                            "response": "answer %d" % i,
+                            "timestamp": 500000.0 + i,
+                        }
+                    )
+                    + "\n"
+                )
+
+        async def ask(messages):
+            # One item per session, each citing line 1 of that session's
+            # transcript (the task line), which is what the verifier checks.
+            transcript = messages[-1]["content"]
+            index = int(transcript.split("task ")[1].splitlines()[0].strip())
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "topic": "topic-%d" % index,
+                            "text": "answer %d is the recorded answer for task %d" % (index, index),
+                            "kind": "fact",
+                            "cites": [1],
+                        }
+                    ]
+                }
+            )
+
+        result = asyncio.run(
+            dream.run_dream(
+                config,
+                ask=ask,
+                force=True,
+                max_sessions_per_pass=24,
+                max_pages_per_pass=24,
+                min_facts_for_page=1,
+            )
+        )
+        assert result["ran"] is True
+        assert result["pages_created"] > 3
+
+    def test_the_default_page_cap_is_unchanged(self, tmp_path):
+        import asyncio
+
+        from onit.learn import dream
+
+        base = tmp_path / "store" / "wiki-on"
+        (base / "sessions").mkdir(parents=True)
+        config = {
+            "learn": {
+                "path": str(base),
+                "autonomy": "adapt",
+                "memory": {"path": str(base / "memory"), "enabled": True},
+            }
+        }
+        for i in range(6):
+            with open(base / "sessions" / ("item-%d.jsonl" % i), "w", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "task": "task %d" % i,
+                            "response": "answer %d" % i,
+                            "timestamp": 500000.0 + i,
+                        }
+                    )
+                    + "\n"
+                )
+
+        async def ask(messages):
+            transcript = messages[-1]["content"]
+            index = int(transcript.split("task ")[1].splitlines()[0].strip())
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "topic": "topic-%d" % index,
+                            "text": "answer %d is the recorded answer for task %d" % (index, index),
+                            "kind": "fact",
+                            "cites": [1],
+                        }
+                    ]
+                }
+            )
+
+        result = asyncio.run(
+            dream.run_dream(
+                config, ask=ask, force=True, max_sessions_per_pass=24, min_facts_for_page=1
+            )
+        )
+        assert result["ran"] is True
+        assert result["pages_created"] <= dream.MAX_PAGES_PER_PASS

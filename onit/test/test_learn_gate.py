@@ -289,6 +289,34 @@ class TestInheritance:
         dst.mkdir()
         assert runner._inherit_trajectories(str(src), str(dst)) == 0
 
+    def test_the_replay_sessions_reach_the_treatment_store(self, tmp_path):
+        # The replay writes <store>/sessions/<item-id>.jsonl, not
+        # trajectories/.  The 2026-11-22 run inherited 2 trajectory files
+        # and left 19 replay sessions behind, so the seed pass saw one
+        # session and the wiki matched 4 of 20 eval items.
+        src = tmp_path / "control"
+        dst = tmp_path / "treatment"
+        (src / "sessions").mkdir(parents=True)
+        (src / "sessions" / "item-1.jsonl").write_text(
+            '{"task": "t", "response": "r", "timestamp": 1700000000.0}\n'
+        )
+        (src / "sessions" / "item-1.state.json").write_text("{}")
+        copied = runner._inherit_trajectories(str(src), str(dst))
+        assert copied == 1
+        assert (dst / "sessions" / "item-1.jsonl").exists()
+        assert not (dst / "sessions" / "item-1.state.json").exists()
+
+    def test_both_layouts_are_copied_together(self, tmp_path):
+        src = tmp_path / "control"
+        dst = tmp_path / "treatment"
+        (src / "trajectories").mkdir(parents=True)
+        (src / "sessions").mkdir(parents=True)
+        (src / "trajectories" / "s1.jsonl").write_text('{"kind": "task"}\n')
+        (src / "sessions" / "item-1.jsonl").write_text(
+            '{"task": "t", "response": "r", "timestamp": 1700000000.0}\n'
+        )
+        assert runner._inherit_trajectories(str(src), str(dst)) == 2
+
 
 # ── the arms ─────────────────────────────────────────────────────────────
 

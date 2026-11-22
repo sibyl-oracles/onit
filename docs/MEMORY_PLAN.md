@@ -523,6 +523,38 @@ One finding closed on top of it:
    `test_learn_hardening.py::TestReplaySessionsFallback`.  The gate
    wants a re-run before any coverage claim.
 
+#### The third clean run: the inheritance fix did not reach the seed (2026-11-22 run, `z6_kig5w`)
+
+The machinery held a third time: zero errors, zero grade errors, zero
+jail refusals, 0 wiki-caused grade flips (the 5 paired grade changes
+were letter churn alone, exactly what the corrected metric excludes).
+Verdict: a hair-negative null again (--0.150, stderr 0.287, 5
+discordant pairs, n=20/arm).  The `coverage:` line fired: 16 of 20
+eval items share no term with any page.
+
+One finding closed on top of it:
+
+4. **The seed pass still saw one session, and the cause was upstream of
+   the reader.**  The 2026-11-21 fix taught `read_sessions` to fall
+   back to `<store>/sessions/`, but the seed never got there: the
+   treatment arm inherits the control's recorded runs through
+   `_inherit_trajectories`, which copied only `trajectories/` -- 2
+   files -- and left the 19 replay sessions in `<store>/sessions/`
+   behind.  The seed pass therefore distilled one session into 3
+   pages (5 verified facts), the wiki matched 4 of 20 eval items, and
+   the `coverage:` line fired at 16/20.  The page cap was the second,
+   quieter limit: `MAX_PAGES_PER_PASS = 3` held the seed to 3 pages
+   even if the extraction had produced more.  **Fixes (landed):**
+   `_inherit_trajectories` now copies both layouts (`trajectories/`
+   and `sessions/`, `.jsonl` only, existing files untouched), and the
+   gate's seed pass lifts the page cap the same way it lifts the
+   session and transcript caps -- `SEED_MAX_PAGES = 24`, threaded
+   through `run_dream`/`dream_once` as `max_pages_per_pass` (the
+   production default of 3 is unchanged).  Regression tests pin both
+   in `test_learn_gate.py::TestInheritance` and
+   `test_learn_hardening.py::TestSeedPageCap`.  The gate wants a
+   re-run before any coverage claim.
+
 #### The decision rule for raising the wiki's default
 
 The default stays off until **2–3 consecutive clean gate runs** show:

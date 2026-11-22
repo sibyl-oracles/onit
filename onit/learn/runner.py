@@ -71,6 +71,15 @@ SEED_MAX_SESSION_CHARS = 200_000
 # 20 items and capped the measurable delta near zero.
 SEED_MAX_SESSIONS = 24
 
+# The page-creation cap for the gate's seeding pass.  The production cap
+# (dream.MAX_PAGES_PER_PASS, 3) exists so a burst of twenty sessions
+# cannot spray a store with pages; a seeding pass is the opposite case --
+# one pass over the whole replay corpus, and the pages it creates are the
+# entire treatment.  The 2026-11-22 run seeded 5 verified facts into 3
+# pages and the wiki matched 4 of 20 eval items; the cap, not the
+# extraction, is what kept the wiki small.
+SEED_MAX_PAGES = 24
+
 # The grader's rubric.  Three grades, and the third is the one that
 # matters: a run that hedges without committing is not wrong, it is
 # unmeasured, and counting it as wrong would make "say less" look like
@@ -675,31 +684,41 @@ def _inherit_trajectories(src_store: str, dst_store: str) -> int:
     their own store), the copy adds no information the control did not
     have -- it renders the same experience in a second form.
 
-    Best-effort: a store with no trajectories inherits nothing, and the
+    Both layouts are copied.  The replay writes its per-item records to
+    ``<store>/sessions/<item-id>.jsonl`` (``{task, response, timestamp}``),
+    and the dream pass reads that layout through the fallback in
+    ``corpus._replay_sessions``; the ``trajectories/`` directory holds the
+    agent's own recorded runs.  Copying only the latter seeded the 2026-11-22
+    run from one session while 19 replay sessions sat one directory over.
+
+    Best-effort: a store with no recorded runs inherits nothing, and the
     treatment then runs with an empty wiki, which is the honest result
     of having nothing to remember.
     """
     import shutil
 
-    src = os.path.join(src_store, "trajectories")
-    dst = os.path.join(dst_store, "trajectories")
-    if not os.path.isdir(src):
-        return 0
-    os.makedirs(dst, exist_ok=True)
     from .trajectory import _is_session_name
 
     copied = 0
-    for name in sorted(os.listdir(src)):
-        if not name.endswith(".jsonl") or not _is_session_name(name[: -len(".jsonl")]):
+    for sub in ("trajectories", "sessions"):
+        src = os.path.join(src_store, sub)
+        dst = os.path.join(dst_store, sub)
+        if not os.path.isdir(src):
             continue
-        target = os.path.join(dst, name)
-        if os.path.exists(target):
-            continue
-        try:
-            shutil.copy2(os.path.join(src, name), target)
-            copied += 1
-        except OSError as e:
-            logger.debug("trajectory inherit failed for %s: %s", name, e)
+        os.makedirs(dst, exist_ok=True)
+        for name in sorted(os.listdir(src)):
+            if not name.endswith(".jsonl"):
+                continue
+            if sub == "trajectories" and not _is_session_name(name[: -len(".jsonl")]):
+                continue
+            target = os.path.join(dst, name)
+            if os.path.exists(target):
+                continue
+            try:
+                shutil.copy2(os.path.join(src, name), target)
+                copied += 1
+            except OSError as e:
+                logger.debug("%s inherit failed for %s: %s", sub, name, e)
     return copied
 
 
@@ -741,7 +760,7 @@ async def run_wiki_arm(
             if inherited:
                 logger.info("wiki arm inherited %d session file(s) from %s", inherited, seed_from)
                 print(
-                    "  seeding: inherited %d episode file(s) from the control arm" % inherited,
+                    "  seeding: inherited %d recorded-run file(s) from the control arm" % inherited,
                     flush=True,
                 )
         # A dream pass is minutes of model calls, and this used to be
@@ -763,6 +782,7 @@ async def run_wiki_arm(
             config,
             max_session_chars=SEED_MAX_SESSION_CHARS,
             max_sessions_per_pass=SEED_MAX_SESSIONS,
+            max_pages_per_pass=SEED_MAX_PAGES,
         )
         if (
             seed_stats.get("ran")
@@ -788,6 +808,7 @@ async def run_wiki_arm(
                 config,
                 max_session_chars=SEED_MAX_SESSION_CHARS,
                 max_sessions_per_pass=SEED_MAX_SESSIONS,
+                max_pages_per_pass=SEED_MAX_PAGES,
             )
         print("  seeding: done", flush=True)
         if seed_stats.get("ran") is False:
