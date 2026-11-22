@@ -555,6 +555,24 @@ One finding closed on top of it:
    `test_learn_hardening.py::TestSeedPageCap`.  The gate wants a
    re-run before any coverage claim.
 
+#### The fourth clean run: the seed fix reached the wiki, and the effect is still null (2026-11-22 run, `k1geih1y`)
+
+The machinery held a fourth time: zero errors, zero grade errors, zero
+jail refusals, and 1 discordant pair with 2 grade letters changed
+without a correctness flip.  The seed fix landed as designed: the
+pass read **20 sessions** (was 1), produced 48 candidates / 48
+verified / 4 rejected, and created **24 pages** (was 3).  The
+`coverage:` line did not fire -- 10 of 20 eval items still share no
+term with any page (was 16/20), i.e. the wiki now plausibly touches
+half the eval set.  Verdict: a hair-negative null again (-0.050,
+stderr 0.276, n=20/arm).  The default stays off.
+
+Reading: the plumbing is no longer the bottleneck -- the wiki is
+present, broad, and still does not move the needle on this workload.
+What remains untested is power, not coverage of the seed.  Per the
+decision rule below, this run does not count toward the 2-3
+consecutive clean positive runs; it is a fourth consecutive null.
+
 #### The decision rule for raising the wiki's default
 
 The default stays off until **2–3 consecutive clean gate runs** show:
