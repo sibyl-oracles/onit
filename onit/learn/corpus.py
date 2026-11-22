@@ -31,11 +31,13 @@ That is the same rule the retrieval index follows: derived things live
 outside the record and can be thrown away and rebuilt.
 """
 
+import json
 import os
+from datetime import datetime, timezone
 
 from .config import learn_root, trajectory_dir
 from .signals import label_records, summarize as summarize_labels
-from .trajectory import _is_session_name, read_session
+from .trajectory import _is_session_name, _label_in_place, read_session
 
 # Where the derived labels live.  Beside the trajectories, because it is
 # derived from the trajectories - but it is a *file*, not a trajectory, and
@@ -92,7 +94,81 @@ def read_sessions(config_data: dict | None = None) -> dict:
         records = read_session(session_id, config_data)
         if records:
             sessions[session_id] = records
+    sessions.update(_replay_sessions(config_data, known=set(sessions)))
     return sessions
+
+
+# The replay writer's shape: one task per line, a float timestamp, and
+# none of the fields a trajectory record carries.
+_REPLAY_KEYS = frozenset({"task", "response", "timestamp"})
+
+
+def _replay_sessions(config_data: dict | None = None, known: set | None = None) -> dict:
+    """The replay writer's sessions, under the same keys.
+
+    The A/B gate's replay arms write each eval item to
+    ``<store>/sessions/<item-id>.jsonl`` -- the conversation-log layout,
+    ``{task, response, timestamp}`` with ``timestamp`` a float and no
+    ``ts`` key -- while the dream pass reads only ``<store>/trajectories/``.
+    The 2026-11-21 run's seed stats said ``sessions: 1`` because that
+    reader never saw the 19 sessions sitting one directory over: a
+    wiki seeded from one session covered under a fifth of the eval
+    items, which is a coverage failure dressed as a null result.
+
+    The fallback is read-only and additive: sessions already seen in the
+    trajectory directory win, and a ``sessions/`` file that is not a
+    recorded run is skipped -- the same line-shape test the trajectory
+    reader applies, which is what keeps the event log and the label rows
+    out.  ``timestamp`` is a float of wall-clock seconds, so it is
+    normalised to the ISO string ``ts`` the watermark compares; a record
+    without a parsable one gets the epoch, which sorts first and is
+    re-read rather than skipped by a later pass.
+    """
+    base = learn_root(config_data)
+    directory = os.path.join(base, "sessions")
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return {}
+    sessions: dict = {}
+    for name in names:
+        if not name.endswith(".jsonl"):
+            continue
+        session_id = name[: -len(".jsonl")]
+        if session_id in (known or set()):
+            continue
+        records: list = []
+        try:
+            with open(os.path.join(directory, name), "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # a torn line loses one record, not the file
+                    if not isinstance(record, dict):
+                        continue
+                    if not (_REPLAY_KEYS <= set(record) and record.get("response") is not None):
+                        continue  # not a replay task record
+                    ts = record.pop("timestamp", None)
+                    if not record.get("ts"):
+                        record["ts"] = _replay_ts(ts)
+                    records.append(record)
+        except OSError:
+            continue
+        if records:
+            sessions[session_id] = _label_in_place(records)
+    return sessions
+
+
+def _replay_ts(value) -> str:
+    """A replay timestamp as the ISO string the watermark compares."""
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
 
 
 def label_corpus(config_data: dict | None = None) -> dict:

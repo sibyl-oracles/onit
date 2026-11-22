@@ -32,7 +32,7 @@ import os
 
 import pytest
 
-from onit.learn import ab, dream, memory as mem, runner, trajectory as traj
+from onit.learn import ab, corpus, dream, memory as mem, runner, trajectory as traj
 
 
 @pytest.fixture
@@ -742,3 +742,121 @@ class TestTheInjectionBudget:
             )
             is False
         )
+
+
+# ══ the seed-corpus mismatch ══════════════════════════════════════════════
+
+
+class TestReplaySessionsFallback:
+    """The dream pass must see the replay writer's sessions.
+
+    The 2026-11-21 gate run's seed stats said ``sessions: 1`` while the
+    replay arms had written 19 per-item session files one directory over:
+    ``read_sessions`` walked only ``<store>/trajectories/`` and the
+    writer records to ``<store>/sessions/``.  The wiki was therefore
+    seeded from one session whose topics matched 5 of 20 eval items,
+    and the run's null verdict was a coverage failure, not a measured
+    effect.  A reader that misses 19 of a store's 20 sessions is the
+    bug this class pins.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        """A store shaped like a replay arm's: sessions/, no trajectories."""
+        base = tmp_path / "store" / "wiki-on"
+        (base / "sessions").mkdir(parents=True)
+        config = {"learn": {"path": str(base)}}
+        return str(base), config
+
+    @staticmethod
+    def _write_replay(base, session_id, tasks):
+        import json as _json
+
+        path = os.path.join(base, "sessions", "%s.jsonl" % session_id)
+        with open(path, "w", encoding="utf-8") as f:
+            for i, (task, response) in enumerate(tasks):
+                f.write(
+                    _json.dumps({"task": task, "response": response, "timestamp": 500000.0 + i})
+                    + "\n"
+                )
+
+    def test_a_replay_store_yields_every_session(self, store):
+        base, config = store
+        self._write_replay(base, "item-a", [("task a", "answer a")])
+        self._write_replay(base, "item-b", [("task b", "answer b")])
+        sessions = corpus.read_sessions(config)
+        assert set(sessions) == {"item-a", "item-b"}
+        assert all(len(v) == 1 for v in sessions.values())
+
+    def test_replay_records_gain_the_watermark_ts(self, store):
+        """``_new_records_since`` compares ``ts`` strings; a record
+        without one is invisible to every pass after the first."""
+        base, config = store
+        self._write_replay(base, "item-a", [("task a", "answer a")])
+        record = corpus.read_sessions(config)["item-a"][0]
+        assert record["ts"].startswith("1970-01-06T")  # 500000 s past the epoch
+        assert "timestamp" not in record
+
+    def test_trajectory_sessions_win_over_replay_ones(self, store):
+        """The fallback is additive: a session already read from the
+        trajectory directory is never replaced by a replay-shaped one."""
+        base, config = store
+        self._write_replay(base, "s1", [("replay task", "replay answer")])
+        traj_dir = os.path.join(base, "trajectories")
+        os.makedirs(traj_dir, exist_ok=True)
+        with open(os.path.join(traj_dir, "s1.jsonl"), "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "kind": "task",
+                        "session_id": "s1",
+                        "turn": 0,
+                        "ts": "2026-11-21T01:00:00+00:00",
+                        "task": "trajectory task",
+                        "response": "trajectory answer",
+                    }
+                )
+                + "\n"
+            )
+        sessions = corpus.read_sessions(config)
+        assert sessions["s1"][0]["task"] == "trajectory task"
+        assert len(sessions["s1"]) == 1
+
+    def test_event_log_and_partial_lines_are_not_sessions(self, store):
+        """The trajectory walk's lesson, applied to the fallback: a
+        ``loop.jsonl`` or a torn line is not a recorded run."""
+        base, config = store
+        os.makedirs(os.path.join(base, "sessions"), exist_ok=True)
+        with open(os.path.join(base, "sessions", "loop.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"event": "arm-start"}) + "\n")
+        self._write_replay(base, "item-a", [("task a", "answer a")])
+        path = os.path.join(base, "sessions", "item-a.jsonl")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("{torn line\n")
+        sessions = corpus.read_sessions(config)
+        assert set(sessions) == {"item-a"}
+        assert len(sessions["item-a"]) == 1
+
+    def test_lines_without_a_response_are_skipped(self, store):
+        """A label row carries a task but no response; the trajectory
+        reader rejects it on shape and so must the fallback."""
+        base, config = store
+        path = os.path.join(base, "sessions", "labels.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"task": "t", "signals": {}}) + "\n")
+        assert corpus.read_sessions(config) == {}
+
+    def test_the_burned_run_reads_its_nineteen_sessions(self, store, tmp_path):
+        """A regression test against the exact store that burned the
+        2026-11-21 run: 19 replay sessions, 1 trajectory session, and a
+        seed pass that saw only the one."""
+        base, config = store
+        for i in range(19):
+            self._write_replay(
+                base,
+                "1493e8fa-0e4a-42c1-bc11-21c7e0d351e0#%d" % (197 + i * 10),
+                [("eval item %d task" % i, "eval item %d answer" % i)],
+            )
+        sessions = corpus.read_sessions(config)
+        assert len(sessions) >= 19
