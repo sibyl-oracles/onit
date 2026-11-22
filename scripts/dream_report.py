@@ -292,7 +292,9 @@ def build_report(memory_dir):
             "unresolved_session": unresolved_session,
             "bad_line": bad_line,
             "unparseable": unparseable,
-            "resolved_pct": round(100.0 * resolved / len(prov_entries), 1) if prov_entries else None,
+            "resolved_pct": round(100.0 * resolved / len(prov_entries), 1)
+            if prov_entries
+            else None,
         },
         "fact_reverification": fact_checks,
         "sessions_seen": len(sessions),
@@ -311,23 +313,50 @@ def render(report):
     p.append("  passes in dream.log  : %d" % report["log_passes"])
     ls = report["last_stats"]
     if ls:
-        p.append("  last pass            : sessions=%s candidates=%s verified=%s rejected=%s"
-                 % (ls.get("sessions"), ls.get("candidates"), ls.get("verified"), ls.get("rejected")))
-        p.append("                         parsed_items=%s empty_replies=%s pages_created=%s pages_updated=%s"
-                 % (ls.get("parsed_items"), ls.get("empty_replies"), ls.get("pages_created"), ls.get("pages_updated")))
-        p.append("                         pruned=%s contradictions_cleared=%s seconds=%s"
-                 % (ls.get("pruned"), ls.get("contradictions_cleared"), ls.get("seconds")))
+        p.append(
+            "  last pass            : sessions=%s candidates=%s verified=%s rejected=%s"
+            % (ls.get("sessions"), ls.get("candidates"), ls.get("verified"), ls.get("rejected"))
+        )
+        p.append(
+            "                         parsed_items=%s empty_replies=%s pages_created=%s pages_updated=%s"
+            % (
+                ls.get("parsed_items"),
+                ls.get("empty_replies"),
+                ls.get("pages_created"),
+                ls.get("pages_updated"),
+            )
+        )
+        p.append(
+            "                         pruned=%s contradictions_cleared=%s seconds=%s"
+            % (ls.get("pruned"), ls.get("contradictions_cleared"), ls.get("seconds"))
+        )
     p.append("")
     p.append("wiki")
-    p.append("  pages                : %d (%d empty, %d over the %d-fact cap)"
-             % (report["pages"], report["empty_pages"], report["pages_over_fact_cap"], MAX_FACTS_PER_PAGE))
-    p.append("  facts                : %d (%.2f/page, %d chars) kinds=%s"
-             % (report["facts"], report["facts_per_page"], report["fact_chars"], report["fact_kinds"]))
+    p.append(
+        "  pages                : %d (%d empty, %d over the %d-fact cap)"
+        % (
+            report["pages"],
+            report["empty_pages"],
+            report["pages_over_fact_cap"],
+            MAX_FACTS_PER_PAGE,
+        )
+    )
+    p.append(
+        "  facts                : %d (%.2f/page, %d chars) kinds=%s"
+        % (report["facts"], report["facts_per_page"], report["fact_chars"], report["fact_kinds"])
+    )
     p.append("  open contradictions  : %d" % report["open_contradictions"])
     p.append("  stale (>%dd)         : %d" % (DEFAULT_TTL_DAYS, report["stale_pages_ttl"]))
     p.append("  prunable (>%dd)      : %d" % (DEFAULT_PRUNE_AFTER_DAYS, report["prunable_pages"]))
-    p.append("  INDEX.md             : %d lines, %d bytes (~%d tokens, cap %d lines)"
-             % (report["index_lines"], report["index_bytes"], report["index_tokens_est"], report["index_line_cap"]))
+    p.append(
+        "  INDEX.md             : %d lines, %d bytes (~%d tokens, cap %d lines)"
+        % (
+            report["index_lines"],
+            report["index_bytes"],
+            report["index_tokens_est"],
+            report["index_line_cap"],
+        )
+    )
     p.append("")
     prov = report["provenance"]
     p.append("provenance")
@@ -337,21 +366,27 @@ def render(report):
     p.append("  line out of range    : %d" % prov["bad_line"])
     p.append("  unparseable          : %d" % prov["unparseable"])
     fv = report["fact_reverification"]
-    p.append("  re-verified          : %d/%d supported by their cited lines (%d unsupported)"
-             % (fv["supported"], fv["checked"], fv["unsupported"]))
+    p.append(
+        "  re-verified          : %d/%d supported by their cited lines (%d unsupported)"
+        % (fv["supported"], fv["checked"], fv["unsupported"])
+    )
     p.append("  sessions on disk     : %d" % report["sessions_seen"])
     p.append("")
     p.append("reading")
     if prov["entries"] and prov["resolved"] == 0:
         p.append("  PROVENANCE IS BROKEN: no citation resolves. The wiki cannot be audited.")
     elif prov["entries"] and prov["resolved"] < prov["entries"]:
-        p.append("  provenance is partial: %d of %d citations do not resolve."
-                 % (prov["entries"] - prov["resolved"], prov["entries"]))
+        p.append(
+            "  provenance is partial: %d of %d citations do not resolve."
+            % (prov["entries"] - prov["resolved"], prov["entries"])
+        )
     else:
         p.append("  provenance resolves.")
     if report["open_contradictions"]:
-        p.append("  %d open contradiction(s): those pages are out of the fast path until a pass clears them."
-                 % report["open_contradictions"])
+        p.append(
+            "  %d open contradiction(s): those pages are out of the fast path until a pass clears them."
+            % report["open_contradictions"]
+        )
     if report["index_lines"] > report["index_line_cap"]:
         p.append("  INDEX.md exceeds the line cap; the injected top layer is being truncated.")
     if not report["pages"]:
@@ -360,7 +395,9 @@ def render(report):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("memory_dir", help="the memory directory (holds wiki/, state.json, dream.log)")
     ap.add_argument("--json", action="store_true", help="emit the raw report as JSON")
     args = ap.parse_args()
