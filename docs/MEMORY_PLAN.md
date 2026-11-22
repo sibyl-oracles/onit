@@ -573,6 +573,53 @@ What remains untested is power, not coverage of the seed.  Per the
 decision rule below, this run does not count toward the 2-3
 consecutive clean positive runs; it is a fourth consecutive null.
 
+#### Measuring dreaming on its own terms (2026-11-22)
+
+The gate measures the wiki's effect on task outcomes.  It does not
+measure the pass that builds the wiki, and the pass had never been
+measured at all.  `scripts/dream_report.py` reads the artifacts a pass
+leaves behind -- `state.json`, `dream.log`, `wiki/*.json`, `INDEX.md`,
+and the session files the citations point at -- and reports four axes:
+
+1. **Extraction yield** -- sessions, candidates, verified, rejected,
+   parsed items, empty replies, pages created/updated, pruned, seconds.
+2. **Provenance integrity** -- every fact's `session#line` citation is
+   resolved against the session files on disk, and the cited line is
+   re-checked for a shared content token with the fact (the same check
+   the extractor applies).  A wiki whose provenance does not resolve
+   cannot be audited, and the whole design leans on provenance.
+3. **Hygiene** -- pages, facts/page, kinds, empty pages, pages over the
+   fact cap, open contradictions, pages past the TTL and the prune age,
+   INDEX.md lines/bytes vs the 200-line cap.
+4. **Cost** -- seconds per pass and the counters the pass already keeps.
+
+Run it against any memory directory:
+
+    python3 scripts/dream_report.py <store>/memory
+
+Against the `k1geih1y` seed it reports: 24 pages / 26 facts, 0 open
+contradictions, INDEX.md at 26 lines (~489 tokens), and **26 of 35
+provenance entries unresolvable** -- every one of them `?#<line>`,
+because the replay reader never stamped `session_id` on the records it
+returned, so `dream.extract` wrote a question mark for every fact
+distilled from a replay session.  9 of 35 resolved (the trajectory
+sessions), and all 4 facts whose citations resolved re-verified against
+their cited lines.
+
+Two fixes landed with the report:
+
+- `corpus._replay_sessions` and `trajectory.read_session` now stamp
+  `session_id` on the records they return, so a citation written from
+  either layout resolves.  Regression tests in
+  `test_learn_hardening.py::TestReplaySessionsFallback`.
+- `dream_once` now records `seconds` in `state.json`'s `last_stats`
+  (it was computed, returned, and then dropped before the state write).
+
+The contradiction path is still untested end to end: every pass on disk
+shows `contradictions_cleared: 0`, and the only coverage is the unit
+test with a stubbed model.  The report surfaces open contradictions and
+stale pages so the next real pass has somewhere to show up.
+
 #### The decision rule for raising the wiki's default
 
 The default stays off until **2–3 consecutive clean gate runs** show:
@@ -686,6 +733,7 @@ which claim survives.
 | CLI | `onit/cli.py` | `onit learn --dream` (run a pass now), `onit learn --memory` (show the wiki), `onit learn --eval-run --wiki-ab` (the gate) |
 | Config | `onit/configs/default.yaml` | `learn.memory.{path,enabled,ttl_days,prune_after_days,min_idle_episodes}` |
 | Wiki gate (phase 6) | `onit/learn/runner.py` | `run_wiki_ab`, `run_wiki_arm`, `seed_wiki`, `format_wiki_verdict`; switch in `memory.enabled` |
+| Dreaming report | `scripts/dream_report.py` | read-only audit of a memory directory: extraction yield, provenance resolution + re-verification, hygiene, cost |
 
 Tests: `onit/test/test_learn_memory.py` (31), `onit/test/test_learn_dream.py` (19),
 `onit/test/test_memory_chain.py` (8), `onit/test/test_learn_gate.py` (24) —

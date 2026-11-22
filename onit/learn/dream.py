@@ -690,6 +690,7 @@ async def dream_once(
             ts = str(record.get("ts") or "")
             if ts > processed_ts:
                 processed_ts = ts
+    changes["seconds"] = round(time.monotonic() - started, 3)
     state.update(
         {
             "watermark_ts": processed_ts,
@@ -701,7 +702,6 @@ async def dream_once(
     memory.save_state(state, config_data, root=root)
     log_lines.append("  watermark -> %s" % (processed_ts or "(start)"))
     memory.append_log(log_lines, config_data, root=root)
-    changes["seconds"] = round(time.monotonic() - started, 3)
     return changes
 
 

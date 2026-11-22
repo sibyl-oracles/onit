@@ -861,6 +861,42 @@ class TestReplaySessionsFallback:
         sessions = corpus.read_sessions(config)
         assert len(sessions) >= 19
 
+    def test_replay_records_carry_their_session_id(self, store):
+        """A replay record must name the session it came from.
+
+        The 2026-11-22 gate run's wiki carried 35 provenance entries,
+        26 of them ``?#<line>`` -- the replay reader never stamped
+        ``session_id``, so ``dream.extract`` wrote a question mark for
+        every fact distilled from a replay session.  Provenance that
+        cannot be resolved is not provenance.
+        """
+        base, config = store
+        self._write_replay(base, "item-a", [("task a", "answer a"), ("task b", "answer b")])
+        sessions = corpus.read_sessions(config)
+        assert [r["session_id"] for r in sessions["item-a"]] == ["item-a", "item-a"]
+
+    def test_trajectory_records_carry_their_session_id(self, store):
+        """The trajectory reader stamps the id too, so a record read
+        from either layout can be cited back to its session."""
+        base, config = store
+        traj_dir = os.path.join(base, "trajectories")
+        os.makedirs(traj_dir, exist_ok=True)
+        with open(os.path.join(traj_dir, "s1.jsonl"), "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "kind": "task",
+                        "turn": 0,
+                        "ts": "2026-11-22T01:00:00+00:00",
+                        "task": "a task",
+                        "response": "an answer",
+                    }
+                )
+                + "\n"
+            )
+        sessions = corpus.read_sessions(config)
+        assert sessions["s1"][0]["session_id"] == "s1"
+
 
 class TestSeedPageCap:
     """The seed pass must not be capped at the production page limit.

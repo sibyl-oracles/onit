@@ -155,6 +155,7 @@ def _replay_sessions(config_data: dict | None = None, known: set | None = None) 
                     ts = record.pop("timestamp", None)
                     if not record.get("ts"):
                         record["ts"] = _replay_ts(ts)
+                    record["session_id"] = session_id
                     records.append(record)
         except OSError:
             continue

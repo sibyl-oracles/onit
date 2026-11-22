@@ -386,6 +386,7 @@ def read_session(session_id: str, config_data: dict | None = None) -> list[dict]
         return []
 
     for record in tasks:
+        record.setdefault("session_id", session_id)
         rating = ratings.get(record.get("turn"))
         if rating:
             signals = record.setdefault("signals", {})
