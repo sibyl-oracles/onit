@@ -1833,6 +1833,12 @@ class OnIt(BaseModel):
             pass
         finally:
             self.status = "stopped"
+            try:
+                from onit.type.tools import close_pooled_clients
+
+                await close_pooled_clients()
+            except Exception:
+                pass
 
     async def process_task(
         self,

@@ -638,6 +638,33 @@ def _pooled_client(url: str) -> _PooledClient:
     return entry
 
 
+async def close_pooled_clients() -> None:
+    """Tear down every pooled MCP client and stdio transport on the live loop.
+
+    The pool is deliberately process-long-lived, so without an explicit close
+    its stdio subprocesses are left to be collected during loop teardown —
+    exactly when the child watcher is gone and ``returncode`` can no longer
+    update.  The MCP SDK then runs its full kill escalation against a process
+    it cannot observe and logs "MCP server process N is still alive after the
+    kill escalation; abandoning it" on every run.  Closing while the loop can
+    still reap makes ``returncode`` land and the warning disappear.  Safe to
+    call more than once, and on a loop that opened nothing.
+    """
+    for key, client in list(_CLIENT_POOL.items()):
+        try:
+            await client._discard()
+        except Exception:
+            logger.debug("closing pooled client %s failed", key[0], exc_info=True)
+        _CLIENT_POOL.pop(key, None)
+    for key, (transport, loop) in list(_STDIO_TRANSPORTS.items()):
+        if loop is asyncio.get_running_loop():
+            try:
+                await transport.close()
+            except Exception:
+                logger.debug("closing stdio transport for %s failed", key[0], exc_info=True)
+            _STDIO_TRANSPORTS.pop(key, None)
+
+
 class ToolHandler(RequestHandler):
     def __init__(self, url: str | None = None, tool_item: ToolItem | None = None, **kwargs: object):
         super().__init__(url=url, tool_item=tool_item, **kwargs)

@@ -1707,6 +1707,16 @@ class WebApiUI:
         # parameter — isn't published to anonymous callers in production.
         app = FastAPI(title=self.title, docs_url=None, redoc_url=None, openapi_url=None)
 
+        @app.on_event("shutdown")
+        async def _close_pooled_mcp_clients() -> None:
+            # Close the pooled MCP clients and stdio transports while the loop
+            # can still reap children — see close_pooled_clients.  Without
+            # this the web server's subprocesses are collected during loop
+            # teardown and the MCP SDK logs its kill-escalation warning.
+            from onit.type.tools import close_pooled_clients
+
+            await close_pooled_clients()
+
         @app.middleware("http")
         async def security_headers_middleware(request: Request, call_next):
             response = await call_next(request)
