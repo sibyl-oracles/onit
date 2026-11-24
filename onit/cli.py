@@ -6,6 +6,7 @@ Usage:
     onit --new-session                            # fresh session, OnIt names it
     onit --new-session "thesis ch3"                # ... named, so it is easy to find again
     onit --resume-session "thesis ch3"             # continue a named session
+    onit --session "thesis ch3"                    # resume it if it exists, else create it
     onit setup                                    # interactive setup wizard
     onit setup --show                             # show current configuration
     onit setup --delete tavily                    # remove a stored key
@@ -1399,6 +1400,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "from the first message. To rename a session "
         "that already exists, use 'onit sessions --rename'.",
     )
+    # --session is the one flag that covers both directions: a name the index
+    # holds is resumed, a name it does not is created.  It shares --new-session's
+    # three-valued dest, so every rule -- resume on a match, naming from the
+    # first message on a bare flag, the subcommand recovery below, and the
+    # refusal to combine with --resume-session -- applies to it without a
+    # second copy of the logic to keep in step.
+    session_opts.add_argument(
+        "--session",
+        nargs="?",
+        const="",
+        default=argparse.SUPPRESS,
+        dest="new_session",
+        metavar="NAME",
+        help="Open session NAME: resume it if a session with that "
+        "name already exists, create it if not. The same as "
+        "--new-session, whichever way the name goes. With no "
+        "name, OnIt names it from the first message.",
+    )
     # The name flags are now spellings of --new-session.  A name always meant a
     # session being created, so there is nothing left for a separate flag to
     # say -- and keeping them apart is what let '--name' be dropped silently
@@ -1638,7 +1657,13 @@ def _recover_subcommand(argv: list, parser: argparse.ArgumentParser) -> list:
     if not subs:
         return argv
 
-    name_flags = ("--new-session", "--restart-session", "--name-session", "--name")
+    name_flags = (
+        "--new-session",
+        "--restart-session",
+        "--name-session",
+        "--name",
+        "--session",
+    )
     out, i = [], 0
     while i < len(argv):
         tok = argv[i]
