@@ -97,7 +97,8 @@ so a dead key or an unreachable server is reported once, here, instead of mid-ta
 onit
 ```
 
-Tools start automatically, the agent works out of `~/sandbox`, and `\bye` leaves.
+Tools start automatically, the agent works out of the data path (`~/sandbox`
+unless you set another with `onit setup --data-path <dir>`), and `\bye` leaves.
 Run `onit` again and the conversation picks up where it left off.
 
 **Web UI** — the same agent, same sessions, in the browser:
@@ -264,12 +265,15 @@ the task is done — each tool call is shown as it runs.
 
 Sessions are named, and easy to come back to. A session takes its name from its
 first message, or from the name you give `--new-session`; `\rename` or
-`onit sessions --rename` sets one afterwards. The session flags are one family,
-so they are easy to find in `--help`:
+`onit sessions --rename` sets one afterwards. Naming an existing session with
+`--new-session` resumes it rather than making a duplicate. The session flags
+are one family, so they are easy to find in `--help`:
 
 ```bash
 onit --new-session "chapter 3"                  # start one, called that
 onit --new-session                              # ...or let OnIt name it
+onit --session "chapter 3"                      # resume it if it exists,
+                                                # start it if it does not
 onit sessions                                   # list them; # is the handle
 onit sessions --rename 2 "chapter 3 draft"      # rename row 2
 onit --resume-session 2                         # come back by row number...

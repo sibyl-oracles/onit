@@ -25,7 +25,8 @@ Starts an interactive terminal chat with tool access. MCP servers start automati
 | `--show-logs` | Show tool execution logs | `false` |
 | `--new-session [NAME]` | Start a fresh session instead of continuing the last one. With a name, the session is called that; without one, OnIt names it from the first message | continue last session |
 | `--resume-session NAME_OR_ID` | Continue a particular session: its name, a UUID, a `#` from the listing, or `last` (alias: `--resume`) | last session |
-| `--data-path PATH` | Working directory for agent files. Overrides `data_path` in the config YAML | `~/sandbox` |
+| `--session [NAME]` | One flag for both directions: continue the named session if it exists, start it fresh if it does not. Bare `--session` behaves like `--new-session` | continue last session |
+| `--data-path PATH` | Working directory for agent files. Also settable once and for all with `onit setup --data-path PATH`, which persists `data_path` in the config YAML | `~/sandbox` |
 | `--auto` | Answer every command approval prompt with yes, so the run never stops to ask. On for your own runs; pass it to get the same on a `serve web` deployment. Only questions the policy chose to ask are answered — see [Command Approvals](ISOLATION.md#command-approvals) | on, except for deployments |
 | `--no-auto` | Be asked about a command policy will not run on its own, instead of approving it automatically (alias: `--ask`) | `false` |
 | `--unrestricted` | Unrestricted host filesystem access (trusted environments only) | `false` |
@@ -48,7 +49,11 @@ See [Multiple model endpoints](MODEL_SERVING.md#multiple-model-endpoints) for th
 ```bash
 onit setup           # run the wizard
 onit setup --show    # print current configuration
+onit setup --data-path ~/work   # persist the agent working directory
 ```
+
+`--data-path` on the wizard sets `data_path` in the config, so you do not
+have to pass `--data-path` on every run afterwards.
 
 ## The session flags
 
@@ -62,11 +67,16 @@ onit --new-session "chapter 3"                 # fresh session called "chapter 3
 onit --resume-session "chapter 3"              # continue that one
 onit --resume-session 3                        # ... by row number from the listing
 onit --resume-session last                     # ... or the most recent
+onit --session "chapter 3"                     # one flag for both: resume if it
+                                               # exists, start it if it does not
 ```
 
 `--new-session` carries the name itself, so there is no separate flag to
 disagree with it. A name is taken as typed; leaving it off asks OnIt to pick
 one from the first message, which is the same auto-naming any session gets.
+If you name a session that already exists, `--new-session` does not fail or
+spawn a duplicate: it resumes that session, the same as `--resume-session`
+would.
 
 The older spellings — `--restart-session`, `--resume`, `--name`,
 `--name-session` — still parse. They are hidden from `--help`, because a flag
