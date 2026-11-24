@@ -1066,7 +1066,19 @@ class OnIt(BaseModel):
             return
         ui.session_name = getattr(self, "session_name", "") or ""
         if not ui.model_name:
-            ui.model_name = self.model_serving.get("model") or ""
+            # ``serving.model`` is only set when the config pins one; without
+            # it chat() resolves the model from the endpoint's own list at the
+            # first turn.  The endpoint entry may still name its model, and
+            # that is what chat() would pick, so show it here -- a startup
+            # footer with session and provider but no model reads as broken.
+            lb = getattr(self, "load_balancer", None)
+            endpoint_model = ""
+            if lb is not None:
+                try:
+                    endpoint_model = lb.assigned(getattr(self, "session_id", None)).model or ""
+                except Exception:
+                    endpoint_model = ""
+            ui.model_name = self.model_serving.get("model") or endpoint_model
         if not ui.provider_name:
             lb = getattr(self, "load_balancer", None)
             if lb is not None:
