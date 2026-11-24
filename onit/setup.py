@@ -101,6 +101,7 @@ SERVING_SETTINGS = [
 ]
 
 GENERAL_SETTINGS = [
+    ("data_path", "Working directory for agent files (default: ~/sandbox)", ""),
     ("theme", "UI theme (dark / white)", "dark"),
     ("web_port", "Web UI port", "9000"),
     ("timeout", "Request timeout in seconds (-1 = none)", "-1"),

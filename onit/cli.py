@@ -921,6 +921,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "or an endpoint URL.",
     )
     setup_parser.add_argument("--show", action="store_true", help="Display current configuration.")
+    setup_parser.add_argument(
+        "--data-path",
+        type=str,
+        default=None,
+        dest="data_path",
+        metavar="PATH",
+        help="Set the working directory for agent files (default: ~/sandbox) "
+        "and save it to the config, so --data-path is not needed on every "
+        "run. Given without the wizard: 'onit setup --data-path ~/work'.",
+    )
 
     # sessions
     sessions_parser = subparsers.add_parser("sessions", help="List and manage previous sessions.")
@@ -1383,10 +1393,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Start a fresh session instead of continuing the "
         "last one. Give it a name and the session is "
-        "called that: --new-session 'chapter 3'. With no "
-        "name, OnIt names it from the first message. To "
-        "rename a session that already exists, use "
-        "'onit sessions --rename'.",
+        "called that: --new-session 'chapter 3'. If a "
+        "session with that name already exists, it is "
+        "resumed instead. With no name, OnIt names it "
+        "from the first message. To rename a session "
+        "that already exists, use 'onit sessions --rename'.",
     )
     # The name flags are now spellings of --new-session.  A name always meant a
     # session being created, so there is nothing left for a separate flag to
@@ -2263,6 +2274,19 @@ def main():
 
     # Setup wizard
     if args.command == "setup":
+        if args.data_path:
+            # Persist the data path so future runs need no --data-path flag.
+            from .setup import _load_config, _save_config
+
+            config = _load_config()
+            config["data_path"] = str(Path(args.data_path).expanduser().resolve())
+            _save_config(config)
+            print(f"  data_path saved to config: {config['data_path']}")
+            if not args.show:
+                # `onit setup --data-path X` sets it and exits; the full
+                # wizard is `onit setup`. With --show, fall through so the
+                # saved value is printed as part of the config.
+                return
         if args.delete:
             from .setup import delete_named_secret
 
@@ -2557,19 +2581,41 @@ def main():
     # OnIt to name the session from its first message.  Writing '' into the
     # config would look like a name that normalizes to nothing.
     if new_session:
-        # A name already held by another session is resolved with a suffix
-        # rather than refused, so ask the index what this session will be
-        # called before promising it: the printed "return to it" line is the
-        # one the user copies, and it has to resolve to this session.
-        from .sessions import name_for_new_session
+        # A name the index already holds belongs to an existing session, and
+        # re-using it is how people reach for that session: they asked for a
+        # session called X and one called X exists, so resuming it is closer
+        # to what they meant than creating a "X-2".  A name nobody has used
+        # yet still creates the session it names.
+        from .sessions import exact_session_name
 
         sessions_dir = os.path.expanduser(config_data.get("session_path", "~/.onit/sessions"))
-        stored = name_for_new_session(new_session, sessions_dir) or new_session
-        config_data["session_name"] = stored
-        print(f"Naming this session '{stored}'.")
-        if stored != new_session:
-            print(f"('{new_session}' is already in use, so this one is '{stored}'.)")
-        print(f"Return to it with: onit --resume-session '{stored}'")
+        existing = exact_session_name(new_session, sessions_dir) if new_session else None
+        if existing and os.path.exists(os.path.join(sessions_dir, f"{existing}.jsonl")):
+            config_data["resume_session_id"] = existing
+            config_data.pop("session_name", None)
+            starting_fresh = False
+            from .sessions import session_label
+
+            label = session_label(existing, sessions_dir)
+            where = f"{label} ({existing[:8]})" if label else existing[:8]
+            print(
+                f"Session '{new_session}' already exists -- resuming it "
+                f"({where}) instead of starting a new one."
+            )
+        else:
+            # A name not held by any session is resolved with a suffix only
+            # against names added in the meantime, so ask the index what this
+            # session will be called before promising it: the printed
+            # "return to it" line is the one the user copies, and it has to
+            # resolve to this session.
+            from .sessions import name_for_new_session
+
+            stored = name_for_new_session(new_session, sessions_dir) or new_session
+            config_data["session_name"] = stored
+            print(f"Naming this session '{stored}'.")
+            if stored != new_session:
+                print(f"('{new_session}' is already in use, so this one is '{stored}'.)")
+            print(f"Return to it with: onit --resume-session '{stored}'")
 
     # Must be set before MCP servers are spawned so child processes inherit it.
     if args.unrestricted:
