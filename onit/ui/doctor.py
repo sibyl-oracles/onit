@@ -881,7 +881,7 @@ async def check_endpoint(agent) -> CheckResult:
     from ..model.serving.chat import list_models
 
     try:
-        names = await list_models(ep.host, ep.host_key)
+        names = await list_models(ep.host, ep.host_key, ep.name)
     except Exception as e:
         return _result("endpoint", False, f"{ep.host}: {type(e).__name__}: {e}", start)
     if not names:

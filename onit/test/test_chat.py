@@ -51,7 +51,6 @@ from onit.model.serving.chat import (
     _ollama_keys,
     _set_ollama_primary_key,
     _rotate_ollama_key,
-    _OLLAMA_KEY_INDEX,
     reset_ollama_keys as _reset_ollama_keys,
 )
 import onit.model.serving.chat as chat_mod

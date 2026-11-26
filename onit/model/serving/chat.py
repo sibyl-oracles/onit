@@ -1186,7 +1186,9 @@ async def _resolve_model_id(client: AsyncOpenAI, host: str) -> str:
     return model_id
 
 
-async def list_models(host: str, host_key: str = "EMPTY", timeout: float = 15.0) -> list[str]:
+async def list_models(
+    host: str, host_key: str = "EMPTY", endpoint_name: str | None = None, timeout: float = 15.0
+) -> list[str]:
     """Every model id the endpoint at ``host`` will answer for, sorted.
 
     The auto-detection path above only ever wants the first entry, so it never

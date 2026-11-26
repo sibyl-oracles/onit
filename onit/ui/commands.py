@@ -280,7 +280,7 @@ async def _list_models(endpoint) -> tuple[list[str], str]:
     from ..model.serving.chat import list_models
 
     try:
-        return await list_models(endpoint.host, endpoint.host_key), ""
+        return await list_models(endpoint.host, endpoint.host_key, endpoint.name), ""
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
 
