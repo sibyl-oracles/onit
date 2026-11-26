@@ -930,12 +930,14 @@ def _openai_responses_result(response) -> tuple:
     return content, reasoning, (tool_calls or None), finish_reason, usage
 
 
-def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
+def _resolve_api_key(host: str, host_key: str = "EMPTY", endpoint_name: str | None = None) -> str:
     """The API key an endpoint is authenticated with.
 
     In order: the key the caller was given (an endpoint's ``api_key`` from the
     config, or a --host-key on the command line), then the key stored for this
-    endpoint's URL, then the provider-named secret its URL selects.
+    endpoint's URL -- under its account label first, when one is set -- then
+    the key stored for the URL unlabeled, then the provider-named secret its
+    URL selects.
 
     That last step is the pre-endpoint-key arrangement, kept so an install that
     predates it keeps working; ``onit.setup.LEGACY_ENDPOINT_KEYS`` holds the
@@ -953,7 +955,7 @@ def _resolve_api_key(host: str, host_key: str = "EMPTY") -> str:
     except Exception:
         return host_key
 
-    key = get_endpoint_key(host)
+    key = get_endpoint_key(host, endpoint_name)
     if key:
         return key
 
@@ -1194,7 +1196,7 @@ async def list_models(host: str, host_key: str = "EMPTY", timeout: float = 15.0)
 
     Raises whatever the client raises — the caller reports it to the user.
     """
-    api_key = _resolve_api_key(host, host_key)
+    api_key = _resolve_api_key(host, host_key, endpoint_name)
     host = _normalize_openai_base_url(host)
     if _is_ollama_host(host):
         client = _create_ollama_client(host, api_key, timeout, stream=False)
@@ -1406,6 +1408,115 @@ def _ollama_error_types() -> tuple:
     if OllamaResponseError is None:
         return (ValueError,)
     return (OllamaResponseError,)
+
+
+# Alternate Ollama keys, resolved once per process. Two or more accounts are
+# legitimate — separate quotas on the same cloud endpoint — and a key that
+# hits its rate limit or is refused should not cost the whole turn when
+# another account's key would answer. Order is stable: primary first.
+_OLLAMA_ALT_KEYS: list[str] | None = None
+# Index of the key the current Ollama client is authenticated with, so the
+# rotation advances rather than re-trying the same refused key.
+_OLLAMA_KEY_INDEX: int = 0
+
+
+def _ollama_keys() -> list[str]:
+    """The Ollama keys available, primary first.
+
+    Sources merge in order: the key the config/env resolved at startup (the
+    web-search key, which model serving also reads via the legacy fallback),
+    then any extra numbered keys (OLLAMA_API_KEY_2, ...). Duplicates removed;
+    an empty list means only the fallback "EMPTY" key exists. The numbered
+    extras are re-read on every call so a reseed cannot leave a stale seed
+    in the list — only the seed itself is cached.
+    """
+    global _OLLAMA_ALT_KEYS
+    if _OLLAMA_ALT_KEYS is None:
+        primary = os.environ.get("OLLAMA_API_KEY", "").strip()
+        keys = [primary] if primary else []
+        n = 2
+        while True:
+            value = os.environ.get(f"OLLAMA_API_KEY_{n}", "").strip()
+            if not value:
+                break
+            if value not in keys:
+                keys.append(value)
+            n += 1
+        _OLLAMA_ALT_KEYS = keys
+        return list(keys)
+    # Cached: the caller seeded the primary. The env keys (shared and
+    # numbered) follow as alternates, re-read so a changed environment is
+    # honored; the seeded head stays verbatim at the front.
+    head = [k for k in _OLLAMA_ALT_KEYS[:1] if k]
+    env_keys = []
+    primary = os.environ.get("OLLAMA_API_KEY", "").strip()
+    if primary:
+        env_keys.append(primary)
+    n = 2
+    while True:
+        value = os.environ.get(f"OLLAMA_API_KEY_{n}", "").strip()
+        if not value:
+            break
+        env_keys.append(value)
+        n += 1
+    merged = list(head)
+    for k in env_keys:
+        if k and k not in merged:
+            merged.append(k)
+    return merged
+
+
+def reset_ollama_keys() -> None:
+    """Forget the resolved key list (tests, and reconfiguration in-process)."""
+    global _OLLAMA_ALT_KEYS, _OLLAMA_KEY_INDEX
+    _OLLAMA_ALT_KEYS = None
+    _OLLAMA_KEY_INDEX = 0
+
+
+def _set_ollama_primary_key(api_key: str) -> None:
+    """Seed the key list with the key the caller resolved for this run.
+
+    The config/env path (an endpoint's own key, a --host-key) wins over the
+    shared OLLAMA_API_KEY when they differ — it is the more specific choice —
+    and the numbered extras follow it in rotation order. Reseeding replaces
+    the previous seed rather than accumulating one: a run that resolves a
+    different endpoint's key must not keep the last run's key first in line.
+    """
+    global _OLLAMA_ALT_KEYS, _OLLAMA_KEY_INDEX
+    keys = [k for k in _ollama_keys() if k]  # forces resolution of the extras
+    if api_key and api_key != "EMPTY":
+        keys = [k for k in keys if k != api_key]
+        keys.insert(0, api_key)
+    _OLLAMA_ALT_KEYS = keys
+    _OLLAMA_KEY_INDEX = 0
+    return
+
+
+def _rotate_ollama_key() -> bool:
+    """Move to the next Ollama key, when one exists.
+
+    Returns True when a different key is now current and the caller should
+    rebuild its client; False means no alternative was available and the
+    failure stands — the ordinary retry arithmetic takes it from there.
+    The client itself is rebuilt by the caller via
+    ``_ollama_client_for_current_key``, which keeps construction in one place.
+    """
+    global _OLLAMA_KEY_INDEX
+    if _OLLAMA_KEY_INDEX + 1 >= len(_ollama_keys()):
+        return False
+    _OLLAMA_KEY_INDEX += 1
+    return True
+
+
+def _ollama_client_for_current_key(host: str, timeout, stream: bool, prompt_tokens: int = 0):
+    """The Ollama client authenticated with the key at the rotation index.
+
+    One place builds the client so rotation and the ordinary construction
+    path can never disagree about which key is live.
+    """
+    keys = _ollama_keys()
+    api_key = keys[_OLLAMA_KEY_INDEX] if _OLLAMA_KEY_INDEX < len(keys) else "EMPTY"
+    return _create_ollama_client(host, api_key, timeout, stream, prompt_tokens=prompt_tokens)
 
 
 def _ollama_think_unsupported(model: str) -> bool:
@@ -4800,6 +4911,7 @@ class _ModelCaller:
         chat_ui,
         verbose: bool,
         metrics,
+        timeout=None,
     ):
         self.host = host
         self.model = model
@@ -4821,6 +4933,9 @@ class _ModelCaller:
         self.chat_ui = chat_ui
         self.verbose = verbose
         self.metrics = metrics
+        # Rotation needs the run's timeout/stream and a first-read estimate;
+        # the estimate is recomputed per turn from the live message payload.
+        self.timeout = timeout
 
     async def call_turn(
         self, messages: list, state: RunState, turn_think: bool
@@ -5436,6 +5551,33 @@ class _ModelCaller:
                 # it still logs and retries exactly as before.
                 if is_ollama and _remember_ollama_think_unsupported(model, e):
                     api_error = None
+                    continue
+                # A refused or rate-limited key is worth one move to the next
+                # account's key, when a second one is configured: the request
+                # is identical, only the credential changes, and staying on
+                # the exhausted key burns the retry budget on the same 401/429.
+                if (
+                    is_ollama
+                    and isinstance(e, OllamaResponseError)
+                    and getattr(e, "status_code", None) in (401, 403, 429)
+                    and _rotate_ollama_key()
+                ):
+                    ollama_client = _ollama_client_for_current_key(
+                        host,
+                        self.timeout,
+                        stream,
+                        prompt_tokens=(
+                            state.last_prompt_tokens if state.last_prompt_tokens > 0 else 0
+                        ),
+                    )
+                    api_error = None
+                    _log_to_ui_or_verbose(
+                        f"Ollama key refused ({getattr(e, 'status_code', '?')}); "
+                        "retrying with the next configured key.",
+                        chat_ui,
+                        verbose,
+                        level="warning",
+                    )
                     continue
                 api_error = f"Error communicating with {host}: {e}."
                 logger.error(api_error)
@@ -6888,6 +7030,7 @@ async def chat(
     timeout: int = None,
     stream: bool = False,
     think: bool = DEFAULT_THINK,
+    endpoint_name: str | None = None,
     **kwargs,
 ) -> Optional[str]:
 
@@ -7052,6 +7195,7 @@ async def chat(
         ollama_client = _create_ollama_client(
             host, api_key, timeout, stream, prompt_tokens=_first_read_est
         )
+        _set_ollama_primary_key(api_key)
         client = None
     else:
         client = AsyncOpenAI(
@@ -7388,6 +7532,7 @@ async def chat(
         chat_ui=chat_ui,
         verbose=verbose,
         metrics=_m,
+        timeout=timeout,
     )
 
     while True:

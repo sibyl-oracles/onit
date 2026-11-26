@@ -638,7 +638,7 @@ class TestKnownEndpoints:
         monkeypatch.setattr(
             setup_mod,
             "get_endpoint_key",
-            lambda host: "sk-x" if host == "https://api.openai.com/v1" else None,
+            lambda host, name=None: "sk-x" if host == "https://api.openai.com/v1" else None,
         )
         monkeypatch.setattr(setup_mod, "get_secret", lambda key: None)
         monkeypatch.setattr("os.environ.get", lambda k, d=None: None)
@@ -671,12 +671,16 @@ class TestKnownEndpoints:
         assert capsys.readouterr().out == ""
 
 
-# ── Shared Ollama key and secret deletion ──────────────────────────────────
+# ── Ollama cloud keys: per endpoint, shared key as fallback ─────────────────
 
 
 class TestOllamaSharedKey:
-    """One Ollama key serves model access and web search: asked for once,
-    stored once, under ``ollama_api_key`` — never under the endpoint's URL."""
+    """An Ollama cloud endpoint's key is per endpoint, like every other
+    provider's — two cloud endpoints are often two accounts, and routing
+    both to the one shared secret is what made adding a second endpoint
+    overwrite the first account's key. An endpoint without its own key
+    falls back to the shared ``ollama_api_key`` (web search reads it too),
+    so a single-account install still enters the key once."""
 
     @pytest.fixture(autouse=True)
     def _no_keychain(self, monkeypatch):
@@ -688,26 +692,161 @@ class TestOllamaSharedKey:
     def _answer(self, monkeypatch, answer):
         monkeypatch.setattr(setup_mod.getpass, "getpass", lambda prompt="": answer)
 
-    def test_the_key_is_stored_under_the_shared_name(self, monkeypatch):
+    def test_the_key_is_stored_per_endpoint(self, monkeypatch):
         self._answer(monkeypatch, "sk-ollama")
         setup_mod._prompt_endpoint_key("https://api.ollama.com", None)
-        assert setup_mod.get_secret("ollama_api_key") == "sk-ollama"
-        assert setup_mod.get_endpoint_key("https://api.ollama.com") is None
+        assert setup_mod.get_endpoint_key("https://api.ollama.com") == "sk-ollama"
 
-    def test_enter_keeps_and_dash_deletes(self, monkeypatch):
-        setup_mod.store_secret("ollama_api_key", "sk-ollama")
+    def test_two_cloud_endpoints_keep_their_own_keys(self, monkeypatch):
+        """The regression this fixes: the second endpoint's key must not
+        overwrite the first's."""
+        self._answer(monkeypatch, "sk-acct-a")
+        setup_mod._prompt_endpoint_key("https://ollama.com", None)
+        self._answer(monkeypatch, "sk-acct-b")
+        setup_mod._prompt_endpoint_key("https://api.ollama.com", None)
+        assert setup_mod.get_endpoint_key("https://ollama.com") == "sk-acct-a"
+        assert setup_mod.get_endpoint_key("https://api.ollama.com") == "sk-acct-b"
+
+    def test_blank_keeps_the_stored_endpoint_key(self, monkeypatch):
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-a")
         self._answer(monkeypatch, "")
         setup_mod._prompt_endpoint_key("https://ollama.com", None)
-        assert setup_mod.get_secret("ollama_api_key") == "sk-ollama"
+        assert setup_mod.get_endpoint_key("https://ollama.com") == "sk-a"
+
+    def test_a_dash_clears_the_endpoint_key(self, monkeypatch):
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-a")
         self._answer(monkeypatch, "-")
         setup_mod._prompt_endpoint_key("https://ollama.com", None)
-        assert setup_mod.get_secret("ollama_api_key") is None
+        assert setup_mod.get_endpoint_key("https://ollama.com") is None
+
+    def test_the_fallback_names_the_shared_key(self, monkeypatch):
+        """No endpoint key stored: the fallback is the shared secret web
+        search also reads, so a single-account install enters the key once."""
+        setup_mod.store_secret("ollama_api_key", "sk-ollama")
+        assert setup_mod.endpoint_key_source("https://api.ollama.com") == "ollama_api_key"
+        assert setup_mod.endpoint_key_label("https://api.ollama.com") == "ollama_api_key"
 
     def test_an_older_endpoint_stored_key_is_promoted(self):
         setup_mod.store_endpoint_key("https://ollama.com", "sk-old")
         setup_mod.migrate_ollama_key()
         assert setup_mod.get_secret("ollama_api_key") == "sk-old"
         assert setup_mod.get_endpoint_key("https://ollama.com") is None
+
+    def test_two_accounts_on_one_model_keep_their_own_keys(self, monkeypatch):
+        """The regression this fixes: the second account — same URL, same
+        model, distinct label — gets its own key slot, and the first
+        account's key survives."""
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-acct-a")
+        self._answer(monkeypatch, "sk-acct-b")
+        setup_mod._prompt_endpoint_key("https://ollama.com", None, "work")
+        assert setup_mod.get_endpoint_key("https://ollama.com") == "sk-acct-a"
+        assert setup_mod.get_endpoint_key("https://ollama.com", "work") == "sk-acct-b"
+        # An unlabeled lookup does not read the labeled slot.
+        assert setup_mod.get_endpoint_key("https://ollama.com") != "sk-acct-b"
+
+    def test_a_labeled_slot_falls_back_to_the_url_slot(self):
+        """A key stored before the entry was named keeps working when the
+        entry later carries a label and no key of its own."""
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-plain")
+        assert setup_mod.get_endpoint_key("https://ollama.com", "work") == "sk-plain"
+
+    def test_editing_a_label_follows_the_key(self):
+        """Renaming an account must not strand its key under the old label."""
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-a", "work")
+        setup_mod.rename_endpoint_account("https://ollama.com", "work", "home")
+        assert setup_mod.get_endpoint_key("https://ollama.com", "home") == "sk-a"
+        assert setup_mod.get_endpoint_key("https://ollama.com", "work") is None
+
+    def test_a_rename_does_not_overwrite_another_account(self):
+        """Renaming onto a label that already holds a key leaves that key
+        where it is — the entry's old key is dropped, not the other's."""
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-a", "work")
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-b", "home")
+        setup_mod.rename_endpoint_account("https://ollama.com", "work", "home")
+        assert setup_mod.get_endpoint_key("https://ollama.com", "home") == "sk-b"
+        assert setup_mod.get_endpoint_key("https://ollama.com", "work") is None
+
+    def test_move_endpoint_key_moves_labeled_slots_too(self):
+        setup_mod.store_endpoint_key("https://old:8000/v1", "sk-a", "work")
+        setup_mod.store_endpoint_key("https://old:8000/v1", "sk-b")
+        setup_mod.move_endpoint_key(
+            "https://old:8000/v1", "https://new:8000/v1", names=("work",)
+        )
+        assert setup_mod.get_endpoint_key("https://new:8000/v1", "work") == "sk-a"
+        assert setup_mod.get_endpoint_key("https://new:8000/v1") == "sk-b"
+        assert setup_mod.get_endpoint_key("https://old:8000/v1", "work") is None
+
+    def test_duplicate_add_offers_a_label_and_then_succeeds(self, monkeypatch):
+        """The wizard's duplicate refusal turns into a label prompt; the
+        labeled entry is then added as a second account."""
+        entries = [
+            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
+        ]
+        self._answer(monkeypatch, "sk-b")
+        answers = iter(["https://ollama.com", "glm-5.3-flash", ""])
+
+        def fake_input(prompt=""):
+            return next(answers)
+
+        # Simulate the add loop's duplicate branch by hand: identity match
+        # with no label must not be silently dropped, and a labeled entry
+        # must be accepted by identity comparison.
+        new = {
+            "host": "https://ollama.com",
+            "model": "glm-5.3-flash",
+            "name": "second",
+            "priority": 0,
+        }
+        assert setup_mod.entry_identity(entries[0]) != setup_mod.entry_identity(new)
+        setup_mod._prompt_endpoint_key(new["host"], None, new["name"])
+        assert setup_mod.get_endpoint_key("https://ollama.com", "second") == "sk-b"
+        assert setup_mod.get_endpoint_key("https://ollama.com") is None
+
+    def test_wizard_duplicate_add_offers_a_label_when_first_is_unlabeled(
+        self, monkeypatch, capsys
+    ):
+        """The regression this fixes: the label offer was guarded by 'no
+        existing entry on the host is unlabeled' -- but the first account is
+        itself unlabeled, so the offer never fired and the second add was
+        refused outright. Driving the real editor: unlabeled first account,
+        duplicate add, label accepted, second key stored under the label."""
+        setup_mod.store_endpoint_key("https://ollama.com", "sk-a")
+        cfg = {"serving": {"endpoints": [
+            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
+        ]}}
+        _drive_editor(
+            cfg,
+            # a, host, model, label(blank), priority, then the duplicate
+            # branch's label prompt. Keys: the first getpass keeps sk-a,
+            # the labeled account's getpass is sk-b.
+            ["a", "https://ollama.com", "glm-5.3-flash", "", "0", "acct2"],
+            keys=["", "sk-b"],
+        )
+        out = capsys.readouterr().out
+        assert "is already configured" in out
+        assert cfg["serving"]["endpoints"] == [
+            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0},
+            {
+                "name": "acct2",
+                "host": "https://ollama.com",
+                "model": "glm-5.3-flash",
+                "priority": 0,
+            },
+        ]
+        assert setup_mod.get_endpoint_key("https://ollama.com") == "sk-a"
+        assert setup_mod.get_endpoint_key("https://ollama.com", "acct2") == "sk-b"
+
+    def test_wizard_duplicate_add_blank_label_still_refuses(self, capsys):
+        cfg = {"serving": {"endpoints": [
+            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
+        ]}}
+        _drive_editor(
+            cfg, ["a", "https://ollama.com", "glm-5.3-flash", "", "0", ""]
+        )
+        assert "is already configured" in capsys.readouterr().out
+        # Written back in the short single-host shape: still one entry.
+        assert cfg["serving"]["host"] == "https://ollama.com"
+        assert cfg["serving"]["model"] == "glm-5.3-flash"
 
     def test_migration_stops_when_the_shared_key_is_set(self):
         setup_mod.store_secret("ollama_api_key", "sk-new")
@@ -818,3 +957,75 @@ class TestDeleteNamedSecret:
         ok, message = setup_mod.delete_named_secret("http://a:8000/v1/")
         assert ok and "http://a:8000/v1" in message
         assert setup_mod.get_endpoint_key("http://a:8000/v1") is None
+
+
+class TestEffectiveDataPath:
+    """``--show`` names the data path the runtime will actually use."""
+
+    def test_unset_falls_back_to_sandbox_default(self):
+        assert setup_mod._effective_data_path({}).endswith("/sandbox")
+
+    def test_configured_value_is_expanded(self):
+        path = setup_mod._effective_data_path({"data_path": "~/work"})
+        assert "~" not in path and path.endswith("/work")
+
+    def test_show_prints_the_effective_default_when_unset(self, monkeypatch, capsys):
+        _patch_secrets(monkeypatch, set())
+        monkeypatch.setattr(setup_mod, "_load_config", lambda: {})
+        setup_mod.show_config()
+        out = capsys.readouterr().out
+        assert "Data path (default in effect)" in out
+        assert "/sandbox" in out
+
+    def test_show_does_not_print_a_second_line_when_set(self, monkeypatch, capsys):
+        _patch_secrets(monkeypatch, set())
+        monkeypatch.setattr(setup_mod, "_load_config", lambda: {"data_path": "/tmp/work"})
+        setup_mod.show_config()
+        out = capsys.readouterr().out
+        assert "/tmp/work" in out
+        assert "default in effect" not in out
+
+
+class TestMultipleOllamaKeys:
+    """Two or more Ollama accounts: numbered slots, dense, primary untouched."""
+
+    def test_numbered_slots_exist(self, monkeypatch):
+        _patch_secrets(monkeypatch, {"ollama_api_key", "ollama_api_key_2"})
+        assert setup_mod.ollama_secret_keys() == ["ollama_api_key", "ollama_api_key_2"]
+
+    def test_slots_stop_at_first_unset(self, monkeypatch):
+        _patch_secrets(monkeypatch, {"ollama_api_key", "ollama_api_key_3"})
+        assert setup_mod.ollama_secret_keys() == ["ollama_api_key"]
+
+    def test_empty_when_no_key(self, monkeypatch):
+        _patch_secrets(monkeypatch, set())
+        assert setup_mod.ollama_keys() == []
+
+    def test_unnumbered_key_is_the_primary(self, monkeypatch):
+        _patch_secrets(monkeypatch, {"ollama_api_key_2"})
+        # The primary slot is listed first for position stability, but a slot
+        # with no value behind it yields no key. A deleted primary with an
+        # extra still standing is usable: the extra becomes the only key.
+        assert setup_mod.ollama_keys() == ["dummy"]
+        assert setup_mod.ollama_secret_keys() == ["ollama_api_key", "ollama_api_key_2"]
+
+    def test_delete_alias_covers_numbered_slots(self, monkeypatch):
+        present = {"ollama_api_key", "ollama_api_key_2", "ollama_api_key_3"}
+        _patch_secrets(monkeypatch, present)
+        ok, message = setup_mod.delete_named_secret("ollama")
+        assert ok
+        for key in present:
+            assert f"deleted {key}" in message
+
+    def test_show_lists_extra_keys(self, monkeypatch, capsys):
+        _patch_secrets(monkeypatch, {"ollama_api_key_2"})
+        monkeypatch.setattr(setup_mod, "_load_config", lambda: {})
+        setup_mod.show_config()
+        out = capsys.readouterr().out
+        assert "Additional Ollama API key 1" in out
+
+    def test_show_omits_absent_extra_keys(self, monkeypatch, capsys):
+        _patch_secrets(monkeypatch, {"ollama_api_key"})
+        monkeypatch.setattr(setup_mod, "_load_config", lambda: {})
+        setup_mod.show_config()
+        assert "Additional Ollama API key" not in capsys.readouterr().out

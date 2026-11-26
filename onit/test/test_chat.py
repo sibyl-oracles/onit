@@ -48,8 +48,16 @@ from onit.model.serving.chat import (
     _normalize_openai_base_url,
     _normalize_ollama_base_url,
     _create_ollama_client,
+    _ollama_keys,
+    _set_ollama_primary_key,
+    _rotate_ollama_key,
+    _OLLAMA_KEY_INDEX,
+    reset_ollama_keys as _reset_ollama_keys,
 )
 import onit.model.serving.chat as chat_mod
+
+# Alias used by the rotation tests; the module object for patch.object.
+_chat_module = chat_mod
 
 
 # ── _resolve_api_key ────────────────────────────────────────────────────────
@@ -89,6 +97,51 @@ class TestResolveApiKey:
 
     def test_openrouter_with_host_key(self):
         assert _resolve_api_key("https://openrouter.ai/api/v1", "sk-or-abc") == "sk-or-abc"
+
+    def test_two_accounts_on_one_host_resolve_their_own_keys(self, monkeypatch):
+        """The regression this fixes: two labeled endpoints — same URL, same
+        model, different accounts — must each authenticate with their own
+        key, not the second one overwriting the first."""
+        import onit.setup
+
+        store = {}
+        monkeypatch.setattr(
+            onit.setup, "get_secret", lambda key: store.get(key)
+        )
+        monkeypatch.setattr(
+            onit.setup,
+            "store_secret",
+            lambda key, value: store.__setitem__(key, value),
+        )
+
+        def _orig(key, value):
+            store[key] = value
+
+        _orig(
+            onit.setup.endpoint_secret_name("https://ollama.com"),
+            "sk-acct-a",
+        )
+        _orig(
+            onit.setup.endpoint_secret_name("https://ollama.com", "work"),
+            "sk-acct-b",
+        )
+        monkeypatch.setattr(onit.setup, "get_secret", lambda key: store.get(key))
+        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTPS_OLLAMA_COM", raising=False)
+        assert _resolve_api_key("https://ollama.com") == "sk-acct-a"
+        assert _resolve_api_key("https://ollama.com", "EMPTY", "work") == "sk-acct-b"
+
+    def test_an_unlabeled_endpoint_ignores_a_labeled_slot(self, monkeypatch):
+        """A generated name like server1 is bookkeeping, not an account: it
+        must not select a labeled key slot."""
+        import onit.setup
+
+        store = {
+            onit.setup.endpoint_secret_name("https://ollama.com"): "sk-plain",
+            onit.setup.endpoint_secret_name("https://ollama.com", "work"): "sk-work",
+        }
+        monkeypatch.setattr(onit.setup, "get_secret", lambda key: store.get(key))
+        monkeypatch.delenv("ONIT_ENDPOINT_KEY_HTTPS_OLLAMA_COM", raising=False)
+        assert _resolve_api_key("https://ollama.com", "EMPTY", "server1") == "sk-plain"
 
     def test_openrouter_from_env(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env-key")
@@ -5690,3 +5743,77 @@ class TestUnterminatedFenceResume:
             )
         assert result == body
         assert client.chat.completions.create.call_count == 2
+
+
+# ── Ollama key rotation ────────────────────────────────────────────────────────
+
+
+class TestOllamaKeyRotation:
+    """Multiple Ollama keys: resolve, seed, rotate on a refused key."""
+
+    def setup_method(self):
+        _reset_ollama_keys()
+        self._env = {
+            k: os.environ.pop(k)
+            for k in list(os.environ)
+            if k.startswith("OLLAMA_API_KEY")
+        }
+
+    def teardown_method(self):
+        _reset_ollama_keys()
+        os.environ.update(self._env)
+
+    def test_keys_from_env(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        monkeypatch.setenv("OLLAMA_API_KEY_2", "k2")
+        monkeypatch.setenv("OLLAMA_API_KEY_3", "k3")
+        assert _ollama_keys() == ["k1", "k2", "k3"]
+
+    def test_dense_env_gap_stops_the_list(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        monkeypatch.setenv("OLLAMA_API_KEY_3", "k3")
+        assert _ollama_keys() == ["k1"]
+
+    def test_no_env_key_means_empty(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        assert _ollama_keys() == []
+
+    def test_primary_from_endpoint_wins_and_is_first(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "shared")
+        monkeypatch.setenv("OLLAMA_API_KEY_2", "extra")
+        _set_ollama_primary_key("endpoint-key")
+        assert _ollama_keys() == ["endpoint-key", "shared", "extra"]
+        # Reseeding back to the shared key does not duplicate it.
+        _set_ollama_primary_key("shared")
+        assert _ollama_keys() == ["shared", "extra"]
+
+    def test_rotation_advances_then_stops(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        monkeypatch.setenv("OLLAMA_API_KEY_2", "k2")
+        _reset_ollama_keys()
+        assert _rotate_ollama_key() is True
+        assert _rotate_ollama_key() is False  # k2 was the last
+        # The index stays at the last key rather than wrapping or erroring.
+        assert chat_mod._OLLAMA_KEY_INDEX == 1
+
+    def test_rotation_with_one_key_is_a_no_op(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        _reset_ollama_keys()
+        assert _rotate_ollama_key() is False
+
+    def test_client_for_current_key_carries_that_key(self, monkeypatch):
+        fake_client = MagicMock()
+        fake_cls = MagicMock(return_value=fake_client)
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        monkeypatch.setenv("OLLAMA_API_KEY_2", "k2")
+        _reset_ollama_keys()
+        with patch.object(_chat_module, "OllamaAsyncClient", fake_cls), patch.object(
+            _chat_module, "OLLAMA_SDK_AVAILABLE", True
+        ):
+            chat_mod._ollama_client_for_current_key(
+                "https://ollama.com", 30.0, stream=False
+            )
+            assert fake_cls.call_args.kwargs["headers"] == {"Authorization": "Bearer k1"}
+            _rotate_ollama_key()
+            chat_mod._ollama_client_for_current_key("https://ollama.com", 30.0, stream=False)
+            assert fake_cls.call_args.kwargs["headers"] == {"Authorization": "Bearer k2"}

@@ -1930,7 +1930,11 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
 
     # Merge ~/.onit/config.yaml (from 'onit setup') as a base layer.
     # Setup values fill in gaps but never override the project/user config.
-    from .setup import CONFIG_PATH as _setup_config_path, resolve_credential
+    from .setup import (  # noqa: F401
+        CONFIG_PATH as _setup_config_path,
+        ollama_keys,
+        resolve_credential,
+    )
 
     _resolved_config = os.path.realpath(config_path) if os.path.isfile(config_path) else None
     _setup_resolved = os.path.realpath(_setup_config_path)
@@ -2065,6 +2069,11 @@ def _parse_and_resolve_config(args: argparse.Namespace) -> dict:
         os.environ["OLLAMA_API_KEY"] = ollama_api_key
     else:
         os.environ["ONIT_DISABLE_WEB_SEARCH"] = "1"
+
+    # Additional Ollama keys (two or more accounts), exported for key
+    # rotation: on a 401/429 the serving layer moves to the next one.
+    for n, value in enumerate(ollama_keys()[1:], start=2):
+        os.environ[f"OLLAMA_API_KEY_{n}"] = value
 
     # Optional first tier for web search. Without it the search tool still
     # works via Ollama / DuckDuckGo, so a missing key is not an error.

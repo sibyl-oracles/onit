@@ -155,33 +155,68 @@ class WebSearch:
             return None
 
     def _search_ollama(self, query: str) -> Optional[list]:
-        """Search using Ollama web search API."""
+        """Search using Ollama web search API.
+
+        All configured keys are tried in order: an account whose key is
+        rate-limited or refused does not end the search when another
+        account's key would answer (OLLAMA_API_KEY, then OLLAMA_API_KEY_2, ...).
+        """
         if not OLLAMA_AVAILABLE:
             return None
 
-        try:
-            response = ollama.web_search(query, max_results=self.max_results)
+        # Keys in rotation order; the module-level ollama.web_search helper is
+        # bound to a client built from OLLAMA_API_KEY, so the primary runs
+        # through it unchanged and only the extras need a dedicated client.
+        keys = [os.environ.get("OLLAMA_API_KEY", "").strip()]
+        n = 2
+        while True:
+            value = os.environ.get(f"OLLAMA_API_KEY_{n}", "").strip()
+            if not value:
+                break
+            keys.append(value)
+            n += 1
+        # No configured key still means one attempt through the shared
+        # client — the SDK reads OLLAMA_API_KEY itself, and a key set
+        # outside this environment is how some installs run.
+        keys = [k for k in keys if k] or [None]
 
-            if not response or "results" not in response:
-                logger.warning("Ollama returned empty response")
-                return None
+        last_error = None
+        for i, key in enumerate(keys):
+            try:
+                if i == 0:
+                    response = ollama.web_search(query, max_results=self.max_results)
+                else:
+                    client = ollama.Client(headers={"Authorization": f"Bearer {key}"})
+                    response = client.web_search(query, max_results=self.max_results)
 
-            results = []
-            for result in response["results"][: self.max_results]:
-                results.append(
-                    {
-                        "title": result.get("title", "No title"),
-                        "url": result.get("url", ""),
-                        "content": self._clean_content(result.get("content", "")),
-                        "source": "ollama",
-                    }
+                if not response or "results" not in response:
+                    logger.warning("Ollama returned empty response")
+                    return None
+
+                results = []
+                for result in response["results"][: self.max_results]:
+                    results.append(
+                        {
+                            "title": result.get("title", "No title"),
+                            "url": result.get("url", ""),
+                            "content": self._clean_content(result.get("content", "")),
+                            "source": "ollama",
+                        }
+                    )
+
+                return results if results else None
+
+            except Exception as e:
+                last_error = e
+                status = getattr(e, "status_code", None)
+                logger.warning(
+                    f"Ollama search failed with key {i + 1}/{len(keys)} "
+                    f"(status {status}): {str(e)}"
                 )
+                continue
 
-            return results if results else None
-
-        except Exception as e:
-            logger.warning(f"Ollama search failed: {str(e)}")
-            return None
+        logger.warning(f"Ollama search failed on all {len(keys)} keys: {last_error}")
+        return None
 
     def _search_ddgs(self, query: str) -> Optional[list]:
         """Search using DuckDuckGo as fallback.

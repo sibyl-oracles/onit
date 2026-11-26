@@ -19,6 +19,7 @@ OnIt: An agent harness for task automation and assistance.
 
 import asyncio
 import os
+import re
 import time
 import yaml
 import json
@@ -67,6 +68,21 @@ USER_CURSOR = "You"
 # provides, and a third round against the same struggling servers only
 # multiplies the wait (chat() has already retried each turn 3x by then).
 MAX_FAILOVER_ATTEMPTS = 2
+
+# Names the balancer itself generates ("server1", "manual"): not account
+# labels, so they must not select a labeled key slot.
+_GENERATED_ENDPOINT_NAME = re.compile(r"^(server\d+|manual\d*)$")
+
+
+def _account_label(endpoint) -> str | None:
+    """The account label an endpoint's key is looked up under, or None.
+
+    A label is only ever a name a user gave an endpoint entry -- a generated
+    one is bookkeeping, not an account, and looking a key up under it would
+    hide the per-URL key a plain install stores.
+    """
+    name = str(getattr(endpoint, "name", "") or "").strip()
+    return None if not name or _GENERATED_ENDPOINT_NAME.match(name) else name
 
 # ``serving:`` keys forwarded to chat() only when the config sets them, so
 # chat()'s own default stays the single place each one is defined.
@@ -183,6 +199,7 @@ async def _chat_with_failover(
                 host=endpoint.host,
                 host_key=endpoint.host_key,
                 model=endpoint.model,
+                endpoint_name=_account_label(endpoint),
                 instruction=instruction,
                 images=images,
                 tool_registry=onit.tool_registry,
@@ -1321,10 +1338,16 @@ class OnIt(BaseModel):
             if not host:
                 logger.warning("Ignoring serving.endpoints[%d]: no host", i)
                 continue
-            # Identity is the URL *and* the model on it. Ollama cloud is one
-            # host serving many models, so keying on the URL alone dropped
-            # every model after the first.
-            identity = (host, str(entry.get("model") or "").strip())
+            # Identity is the URL, the model on it, and the account label.
+            # Ollama cloud is one host serving many models, so keying on the
+            # URL alone dropped every model after the first; keying on
+            # (host, model) dropped a second *account* -- two keys on the
+            # same host and model differ only by their label.
+            identity = (
+                host,
+                str(entry.get("model") or "").strip(),
+                str(entry.get("name") or "").strip(),
+            )
             if identity in seen:
                 logger.warning(
                     "Ignoring serving.endpoints[%d]: duplicate endpoint %s (%s)",
@@ -2423,6 +2446,7 @@ class OnIt(BaseModel):
                         host=endpoint.host,
                         host_key=endpoint.host_key,
                         model=endpoint.model,
+                        endpoint_name=_account_label(endpoint),
                         instruction=instruction,
                         tool_registry=self.tool_registry,
                         think=self.model_serving.get("think", DEFAULT_THINK),

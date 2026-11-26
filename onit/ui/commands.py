@@ -724,10 +724,11 @@ async def cmd_key(agent, arg: str) -> str:
 _GENERATED_NAME = re.compile(r"^(server\d+|manual\d*)$")
 
 
-def _identity_label(identity: tuple[str, str]) -> str:
-    """A (URL, model) identity as one readable string for a save report."""
-    host, model = identity
-    return f"{host} ({model})" if model else host
+def _identity_label(identity: tuple[str, str, str]) -> str:
+    """A (URL, model, label) identity as one readable string for a report."""
+    host, model, label = identity
+    base = f"{host} ({model})" if model else host
+    return f"{base} [{label}]" if label else base
 
 
 def _saved_entries(config: dict) -> list[dict]:
@@ -789,7 +790,11 @@ def _entry_to_save(endpoint, saved: dict, by_host: dict) -> dict:
     """
     from .. import setup as onit_setup
 
-    identity = onit_setup.endpoint_identity(endpoint.host, endpoint.model)
+    identity = onit_setup.endpoint_identity(
+        endpoint.host,
+        endpoint.model,
+        None if _GENERATED_NAME.match(endpoint.name or "") else endpoint.name,
+    )
     previous = saved.get(identity)
     if previous is None:
         # A model changed in this session still belongs to the same saved
@@ -835,9 +840,15 @@ def cmd_save(agent) -> str:
         serving["ollama_fallback_only"] = lb.ollama_fallback_only
     onit_setup._save_config(config)
 
-    # Identity is the (URL, model) pair, so a second model added on a host
-    # already saved reports as added rather than as "the same endpoints".
-    after = {onit_setup.endpoint_identity(ep.host, ep.model) for ep in lb.endpoints}
+    # Identity is the (URL, model, label) triple, so a second model — or a
+    # second account on the same model, told apart by its label — reports as
+    # added rather than as "the same endpoints".
+    after = {
+        onit_setup.endpoint_identity(
+            ep.host, ep.model, None if _GENERATED_NAME.match(ep.name or "") else ep.name
+        )
+        for ep in lb.endpoints
+    }
     added = sorted(_identity_label(i) for i in after - before)
     removed = sorted(_identity_label(i) for i in before - after)
 

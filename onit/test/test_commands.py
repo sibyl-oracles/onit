@@ -837,8 +837,8 @@ class TestSave:
             {
                 "serving": {
                     "endpoints": [
-                        {"host": "http://localhost:8000/v1", "model": "Qwen3-30B"},
-                        {"host": "http://localhost:8001/v1"},
+                        {"host": "http://localhost:8000/v1", "model": "Qwen3-30B", "name": "vllm-a"},
+                        {"host": "http://localhost:8001/v1", "name": "vllm-b"},
                     ]
                 }
             }

@@ -40,6 +40,12 @@ from pathlib import Path
 _SECRET_ENV_KEYS = [
     ("host_key", "OPENROUTER_API_KEY"),
     ("ollama_api_key", "OLLAMA_API_KEY"),
+    # Additional Ollama keys (two or more accounts), same rotation order the
+    # serving layer and web search read on the host.
+    ("ollama_api_key_2", "OLLAMA_API_KEY_2"),
+    ("ollama_api_key_3", "OLLAMA_API_KEY_3"),
+    ("ollama_api_key_4", "OLLAMA_API_KEY_4"),
+    ("ollama_api_key_5", "OLLAMA_API_KEY_5"),
     ("tavily_api_key", "TAVILY_API_KEY"),
     ("vllm_api_key", "VLLM_API_KEY"),
     ("openweathermap_api_key", "OPENWEATHERMAP_API_KEY"),
@@ -196,15 +202,17 @@ def _configured_hosts() -> list[str]:
         return []
     hosts = []
     for entry in serving.get("endpoints") or []:
-        host = (
-            entry
-            if isinstance(entry, str)
-            else (entry.get("host") if isinstance(entry, dict) else None)
-        )
+        if isinstance(entry, str):
+            host, name = entry, None
+        elif isinstance(entry, dict):
+            host = entry.get("host")
+            name = entry.get("name")
+        else:
+            host, name = None, None
         if host:
-            hosts.append(str(host))
+            hosts.append((str(host), str(name) if name else None))
     if serving.get("host"):
-        hosts.append(str(serving["host"]))
+        hosts.append((str(serving["host"]), None))
     return hosts
 
 
@@ -227,14 +235,20 @@ def _collect_endpoint_key_env() -> list[str]:
         return []
     env_args: list[str] = []
     seen: set[str] = set()
-    for host in _configured_hosts():
-        env_name = endpoint_env_var(host)
-        if env_name in seen:
-            continue
-        seen.add(env_name)
-        value = get_endpoint_key(host)
-        if value:
-            env_args.extend(["-e", f"{env_name}={value}"])
+    for host, name in _configured_hosts():
+        # Labeled accounts first: their key lives under host@label, and the
+        # bare-URL slot is the fallback both it and an unlabeled entry read.
+        for label in ([name] if name else []) + [None]:
+            env_name = endpoint_env_var(host) if label is None else (
+                "ONIT_ENDPOINT_KEY_"
+                + re.sub(r"[^A-Za-z0-9]+", "_", f"{host}@{label}").strip("_").upper()
+            )
+            if env_name in seen:
+                continue
+            seen.add(env_name)
+            value = get_endpoint_key(host, label)
+            if value:
+                env_args.extend(["-e", f"{env_name}={value}"])
     return env_args
 
 

@@ -334,3 +334,62 @@ class TestSearchWithMetadata:
         assert out["success"] is False
         assert out["count"] == 0
         assert out["source"] is None
+
+
+class TestOllamaKeyRotation:
+    """Multiple Ollama keys for web search: second key tried on failure."""
+
+    def setup_method(self):
+        self._env = {
+            k: os.environ.pop(k)
+            for k in list(os.environ)
+            if k.startswith("OLLAMA_API_KEY")
+        }
+
+    def teardown_method(self):
+        os.environ.update(self._env)
+
+    def _patch(self, monkeypatch, **attrs):
+        monkeypatch.setattr(
+            "onit.mcp.servers.tasks.web.search.web_search.OLLAMA_AVAILABLE", True
+        )
+        fake = MagicMock()
+        for name, value in attrs.items():
+            setattr(fake, name, value)
+        monkeypatch.setattr("onit.mcp.servers.tasks.web.search.web_search.ollama", fake)
+        return fake
+
+    def test_primary_failure_falls_through_to_second_key(self, monkeypatch):
+        err = Exception("rate limited")
+        err.status_code = 429
+        fake = self._patch(
+            monkeypatch,
+            web_search=MagicMock(side_effect=[err, {"results": [{"title": "T", "url": "u", "content": "c"}]}]),
+            Client=MagicMock(return_value=MagicMock(
+                web_search=MagicMock(return_value={"results": [{"title": "T", "url": "u", "content": "c"}]})
+            )),
+        )
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        monkeypatch.setenv("OLLAMA_API_KEY_2", "k2")
+        out = WebSearch()._search_ollama("q")
+        assert out[0]["source"] == "ollama"
+        # The retry went through a dedicated client carrying the second key.
+        fake.Client.assert_called_with(headers={"Authorization": "Bearer k2"})
+
+    def test_all_keys_failing_is_none(self, monkeypatch):
+        err = Exception("refused")
+        err.status_code = 401
+        fake = self._patch(monkeypatch, web_search=MagicMock(side_effect=err))
+        fake.Client = MagicMock(
+            return_value=MagicMock(web_search=MagicMock(side_effect=err))
+        )
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        monkeypatch.setenv("OLLAMA_API_KEY_2", "k2")
+        assert WebSearch()._search_ollama("q") is None
+
+    def test_single_key_failing_is_none(self, monkeypatch):
+        err = Exception("refused")
+        err.status_code = 401
+        self._patch(monkeypatch, web_search=MagicMock(side_effect=err))
+        monkeypatch.setenv("OLLAMA_API_KEY", "k1")
+        assert WebSearch()._search_ollama("q") is None

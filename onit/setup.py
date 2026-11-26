@@ -15,6 +15,7 @@ import getpass
 import os
 import re
 import sys
+from pathlib import Path
 
 import yaml
 
@@ -51,6 +52,38 @@ LEGACY_SERVING_SECRETS = [
 ]
 
 OLLAMA_SECRET_KEY = "ollama_api_key"
+# Additional Ollama keys, for two or more accounts. Numbered from 2: the
+# unnumbered key stays the primary so an existing install keeps working and
+# the web search reader (which sees only OLLAMA_API_KEY) is unaffected.
+OLLAMA_EXTRA_SECRET_PREFIX = "ollama_api_key_"
+OLLAMA_MAX_KEYS = 5
+
+
+def ollama_secret_keys() -> list[str]:
+    """Every Ollama key slot, in rotation order: primary first.
+
+    Slots are dense — the list stops at the first unset one — so deleting a
+    middle key shifts the rest up rather than leaving a hole the rotation
+    would skip.
+    """
+    keys = [OLLAMA_SECRET_KEY]
+    for n in range(2, OLLAMA_MAX_KEYS + 1):
+        key = f"{OLLAMA_EXTRA_SECRET_PREFIX}{n}"
+        if get_secret(key):
+            keys.append(key)
+        else:
+            break
+    return keys
+
+
+def ollama_keys() -> list[str]:
+    """The stored Ollama key values, in rotation order (empty when none)."""
+    values = []
+    for key in ollama_secret_keys():
+        value = get_secret(key)
+        if value:
+            values.append(value)
+    return values
 
 INTEGRATION_SECRETS = [
     # Still prompted, and not only a serving credential: without it the web
@@ -83,6 +116,7 @@ _SECRET_ENV_MAP: dict[str, str] = {key: env for key, _, env in SECRETS if env}
 # (dot_path, prompt_label, default_value)
 # An empty default marks an optional setting; entering "-" at the prompt
 # clears a previously saved value.
+DEFAULT_DATA_PATH = "~/sandbox"
 
 # Host/model settings are no longer prompted one by one — the endpoint editor
 # collects them as a ranked list and writes back whichever shape fits. They
@@ -101,7 +135,7 @@ SERVING_SETTINGS = [
 ]
 
 GENERAL_SETTINGS = [
-    ("data_path", "Working directory for agent files (default: ~/sandbox)", ""),
+    ("data_path", f"Working directory for agent files (default: {DEFAULT_DATA_PATH})", ""),
     ("theme", "UI theme (dark / white)", "dark"),
     ("web_port", "Web UI port", "9000"),
     ("timeout", "Request timeout in seconds (-1 = none)", "-1"),
@@ -286,8 +320,10 @@ def normalize_host(host: str) -> str:
     return (host or "").strip().rstrip("/")
 
 
-def endpoint_identity(host: str, model: str | None = None) -> tuple[str, str]:
-    """What tells two endpoints apart: its URL and the model served on it.
+def endpoint_identity(
+    host: str, model: str | None = None, name: str | None = None
+) -> tuple[str, str, str]:
+    """What tells two endpoints apart: URL, model, and account label.
 
     A URL alone is not an identity. Ollama cloud is a single host serving
     many models, so ``https://ollama.com`` with ``glm-5.3:cloud`` and the
@@ -296,13 +332,19 @@ def endpoint_identity(host: str, model: str | None = None) -> tuple[str, str]:
     first. The model is compared as written (model ids are case-sensitive),
     with only surrounding space ignored, so a blank model -- auto-detect --
     is its own identity, distinct from any named one.
+
+    The label (a config entry's ``name``) is the third part: two *accounts*
+    on the same host and model differ only by which API key authenticates
+    them, and the label is the only thing a user can give one entry that
+    the other does not have. Unlabeled duplicates stay one identity -- a
+    label exists to name an account, not to multiply endpoints by accident.
     """
-    return (normalize_host(host), str(model or "").strip())
+    return (normalize_host(host), str(model or "").strip(), str(name or "").strip())
 
 
-def entry_identity(entry: dict) -> tuple[str, str]:
+def entry_identity(entry: dict) -> tuple[str, str, str]:
     """``endpoint_identity`` for a config entry."""
-    return endpoint_identity(entry.get("host", ""), entry.get("model"))
+    return endpoint_identity(entry.get("host", ""), entry.get("model"), entry.get("name"))
 
 
 def entry_label(entry: dict) -> str:
@@ -342,9 +384,22 @@ def is_ollama_cloud_host(host: str) -> bool:
     return "ollama.com" in host or "ollama.ai" in host
 
 
-def endpoint_secret_name(host: str) -> str:
+def endpoint_key_ref(host: str, name: str | None = None) -> str:
+    """The address a key is stored under for one endpoint (host, label).
+
+    Unlabeled endpoints address by URL alone, exactly as before. A labeled
+    one -- a second account on the same host and model -- appends ``@label``,
+    so each account keeps its own key instead of the second overwriting the
+    first.
+    """
+    host = normalize_host(host)
+    label = str(name or "").strip()
+    return f"{host}@{label}" if label else host
+
+
+def endpoint_secret_name(host: str, name: str | None = None) -> str:
     """Keychain entry name holding the API key for ``host``."""
-    return f"{_ENDPOINT_SECRET_PREFIX}{normalize_host(host)}"
+    return f"{_ENDPOINT_SECRET_PREFIX}{endpoint_key_ref(host, name)}"
 
 
 def endpoint_env_var(host: str) -> str:
@@ -360,36 +415,57 @@ def endpoint_env_var(host: str) -> str:
     return f"ONIT_ENDPOINT_KEY_{slug}"
 
 
-def get_endpoint_key(host: str) -> str | None:
-    """The API key stored for one endpoint: env var > keychain > file."""
+def get_endpoint_key(host: str, name: str | None = None) -> str | None:
+    """The API key stored for one endpoint: env var > keychain > file.
+
+    A labeled endpoint -- a distinct account on a shared host -- first
+    checks its own ``host@label`` slot, then falls back to the plain
+    per-URL slot.  That fallback keeps a key stored before the label
+    existed working when the entry is later given a name.
+    """
     if not host:
         return None
+    if name:
+        value = get_secret(endpoint_secret_name(host, name))
+        if value:
+            return value
     value = os.environ.get(endpoint_env_var(host))
     if value:
         return value
     return get_secret(endpoint_secret_name(host))
 
 
-def store_endpoint_key(host: str, value: str) -> None:
-    store_secret(endpoint_secret_name(host), value)
+def store_endpoint_key(host: str, value: str, name: str | None = None) -> None:
+    store_secret(endpoint_secret_name(host, name), value)
 
 
-def delete_endpoint_key(host: str) -> None:
-    delete_secret(endpoint_secret_name(host))
+def delete_endpoint_key(host: str, name: str | None = None) -> None:
+    delete_secret(endpoint_secret_name(host, name))
 
 
-def move_endpoint_key(old_host: str, new_host: str) -> None:
-    """Follow a key to an endpoint's new URL.
+def move_endpoint_key(
+    old_host: str, new_host: str, names: tuple = ()
+) -> None:
+    """Follow keys to an endpoint's new URL.
 
     Editing a host would otherwise strand its key under the old address and
-    silently leave the endpoint unauthenticated.
+    silently leave the endpoint unauthenticated.  The bare per-URL slot and
+    every account label named in ``names`` move; the labels have to be
+    named because the OS keychain cannot be enumerated portably.
     """
     if not old_host or normalize_host(old_host) == normalize_host(new_host):
         return
-    value = get_secret(endpoint_secret_name(old_host))
-    if value:
-        store_endpoint_key(new_host, value)
-    delete_endpoint_key(old_host)
+    refs = [normalize_host(old_host)] + [
+        f"{normalize_host(old_host)}@{n}" for n in names if n
+    ]
+    for ref in refs:
+        name = None
+        if ref.startswith(f"{normalize_host(old_host)}@"):
+            name = ref.split("@", 1)[1]
+        value = get_secret(endpoint_secret_name(old_host, name))
+        if value:
+            store_endpoint_key(new_host, value, name)
+        delete_endpoint_key(old_host, name)
 
 
 def legacy_key_for(host: str) -> tuple[str, str, str, bool]:
@@ -420,14 +496,17 @@ def endpoint_key_label(host: str, in_config: bool = False, extra_keys: tuple = (
     return "set" if source == "endpoint" else source
 
 
-def endpoint_key_source(host: str, extra_keys: tuple = ()) -> str | None:
+def endpoint_key_source(
+    host: str, extra_keys: tuple = (), name: str | None = None
+) -> str | None:
     """Where ``host`` gets its key from: 'endpoint', a legacy secret's name,
     or None when nothing authenticates it.
 
     ``extra_keys`` names secrets that apply to this endpoint by position
-    rather than by URL.
+    rather than by URL. A labeled endpoint checks its own ``host@label``
+    slot first; a hit there is still the 'endpoint' source.
     """
-    if get_endpoint_key(host):
+    if get_endpoint_key(host, name):
         return "endpoint"
     keyring_key, env_var, _, _ = legacy_key_for(host)
     for key in (keyring_key,) + tuple(extra_keys):
@@ -731,6 +810,9 @@ def _print_endpoint_table(entries: list[dict], indent: str = "  ") -> None:
 
 def entry_key_label(entry: dict) -> str:
     """How a config entry's endpoint is authenticated, for the table."""
+    name = entry.get("name")
+    if name and get_endpoint_key(entry.get("host", ""), name):
+        return "set (account)"
     return endpoint_key_label(
         entry.get("host", ""), in_config=bool(entry.get("api_key") or entry.get("host_key"))
     )
@@ -755,33 +837,57 @@ def _print_known_endpoints(config: dict, indent: str = "    ") -> None:
         print(f"{indent}  {ep['host']:<38} {key:<24} {label}")
 
 
-def _prompt_endpoint_key(host: str, previous_host: str | None) -> None:
+def rename_endpoint_account(
+    host: str, old_name: str | None, new_name: str | None
+) -> None:
+    """Follow an endpoint's labeled key when its account label changes.
+
+    Renaming an entry would otherwise strand its key under the old label,
+    leaving the endpoint to fall back to the shared key and authenticate as
+    the wrong account. A rename onto an occupied slot does not overwrite
+    that slot's key: the old label's key is kept where it was instead.
+    """
+    old_name, new_name = (str(n or "").strip() for n in (old_name, new_name))
+    if old_name == new_name or not old_name:
+        return
+    value = get_endpoint_key(host, old_name)
+    if value and not get_endpoint_key(host, new_name) == value and not get_endpoint_key(host, new_name):
+        store_endpoint_key(host, value, new_name)
+    delete_endpoint_key(host, old_name)
+
+
+def _prompt_endpoint_key(host: str, previous_host: str | None, name: str | None = None) -> None:
     """Ask for one endpoint's API key and store it in the keychain.
 
     The key never goes into config.yaml — that file is world-readable on a
     shared host, and is the one thing here that gets copied around and pasted
     into issues.
 
-    Ollama cloud is the exception: its key is shared with the web search API,
-    so it is asked for and stored under its own name (see
-    ``_prompt_ollama_key``) instead of per endpoint — one credential, one
-    place, read by both model access and search.
+    Ollama cloud takes a per-endpoint key like any other provider: two cloud
+    endpoints are often two accounts, and routing both to the one shared
+    secret is what made adding a second endpoint overwrite the first
+    account's key. An endpoint left without its own key falls back to the
+    shared ``ollama_api_key`` (which web search also reads), so a single-
+    account install keeps working with the key entered once.
+
+    A labeled endpoint (one carrying a ``name``, i.e. a distinct account on
+    a host+model another entry already holds) stores its key under
+    ``host@label``, so the second account never overwrites the first.
     """
-    if is_ollama_cloud_host(host):
-        _prompt_ollama_key()
-        return
     move_endpoint_key(previous_host or "", host)
-    existing = get_endpoint_key(host)
+    existing = get_endpoint_key(host, name)
     if existing:
         hint = "••••" + existing[-4:]
     else:
         source = endpoint_key_source(host)
         hint = f"unset, falling back to {source}" if source else "not set"
+    if name:
+        hint += f"  (account '{name}')"
     value = getpass.getpass(f"    API key [{hint}]: ").strip()
     if value == "-":
-        delete_endpoint_key(host)
+        delete_endpoint_key(host, name)
     elif value:
-        store_endpoint_key(host, value)
+        store_endpoint_key(host, value, name)
 
 
 _OLLAMA_CLOUD_HOSTS = ("https://api.ollama.com", "https://ollama.com", "https://ollama.ai")
@@ -813,26 +919,37 @@ def migrate_ollama_key() -> None:
             return
 
 
-def _prompt_ollama_key() -> None:
-    """Ask once for the Ollama key shared by model access and web search.
+def _prompt_extra_ollama_keys() -> None:
+    """Ask for additional Ollama keys, when two or more accounts are in use.
 
-    The Integrations section does not ask again while an Ollama cloud
-    endpoint is configured and the key is set — two prompts for one
-    credential is how its two readers end up holding different values.
+    Each key is one slot (``ollama_api_key_2``, ``_3``, ...) tried in order
+    when the previous one is rate-limited or refused. An empty answer ends
+    the list; '-' clears that slot and the ones after it.
     """
-    migrate_ollama_key()
-    existing = get_secret(OLLAMA_SECRET_KEY)
-    if existing:
-        hint = "••••" + existing[-4:] + " — Enter keep, '-' delete"
-    else:
-        hint = "not set"
-    value = getpass.getpass(
-        f"    Ollama API key (shared by model access and web search) [{hint}]: "
-    ).strip()
-    if value == "-":
-        delete_secret(OLLAMA_SECRET_KEY)
-    elif value:
-        store_secret(OLLAMA_SECRET_KEY, value)
+    slot = 2
+    while get_secret(f"{OLLAMA_EXTRA_SECRET_PREFIX}{slot - 1}") and slot <= OLLAMA_MAX_KEYS:
+        key = f"{OLLAMA_EXTRA_SECRET_PREFIX}{slot}"
+        existing = get_secret(key)
+        if existing:
+            hint = "••••" + existing[-4:] + " — Enter keep, '-' delete"
+        else:
+            hint = "Enter to finish"
+        value = getpass.getpass(
+            f"    Additional Ollama API key {slot - 1} (optional, another account) [{hint}]: "
+        ).strip()
+        if not value:
+            break
+        if value == "-":
+            delete_secret(key)
+            # Slots are dense: one removed, everything after it moves up.
+            for n in range(slot + 1, OLLAMA_MAX_KEYS + 1):
+                nxt = get_secret(f"{OLLAMA_EXTRA_SECRET_PREFIX}{n}")
+                if nxt:
+                    store_secret(f"{OLLAMA_EXTRA_SECRET_PREFIX}{n - 1}", nxt)
+                delete_secret(f"{OLLAMA_EXTRA_SECRET_PREFIX}{n}")
+            break
+        store_secret(key, value)
+        slot += 1
 
 
 def _resolve_host_input(text: str, default: str) -> str | None:
@@ -872,7 +989,7 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
         print("    No URL given — nothing added.")
         return None
     entry["host"] = host
-    _prompt_endpoint_key(host, previous_host)
+    _prompt_endpoint_key(host, previous_host, entry.get("name"))
 
     model = input(f"    Model name [{entry.get('model') or 'auto-detect'}]: ").strip()
     if model == "-":
@@ -880,10 +997,15 @@ def _prompt_entry(entry: dict | None, is_first: bool) -> dict | None:
     elif model:
         entry["model"] = model
 
-    name = input(f"    Label for logs [{entry.get('name') or 'optional'}]: ").strip()
+    name = input(f"    Label for logs [optional]: ").strip()
     if name == "-":
         entry.pop("name", None)
     elif name:
+        if entry.get("name") and entry["name"] != name:
+            # The account label changed: follow its stored key to the new
+            # label, so editing a name does not strand the key under the
+            # old one.
+            rename_endpoint_account(host, entry["name"], name)
         entry["name"] = name
 
     entry["priority"] = _prompt_priority(entry)
@@ -944,12 +1066,37 @@ def _edit_endpoints(config: dict) -> None:
             new = _prompt_entry(None, is_first=not entries)
             if not new:
                 continue
-            # Same URL *and* same model is a repeat; the same URL with a
-            # different model is a second endpoint, which is how one Ollama
-            # cloud host serves several models.
+            # Same URL *and* same model is a repeat — unless the new entry
+            # carries a label: two labeled accounts on one host and model
+            # are two endpoints, each with its own API key. That is how a
+            # second Ollama account is added, and without it the second
+            # key overwrites the first.
             if any(entry_identity(e) == entry_identity(new) for e in entries):
-                print(f"  {entry_label(new)} is already configured.")
-                continue
+                if not new.get("name"):
+                    # Unlabeled duplicate: offer a label so this can become
+                    # a second account instead of a refused command. The
+                    # first account on a host is itself unlabeled, so the
+                    # offer must not depend on what is already configured.
+                    print(f"  {entry_label(new)} is already configured.")
+                    label = input(
+                        "  To add a second account on it, give this entry a"
+                        " label (name), or press Enter to skip: "
+                    ).strip()
+                    if not label:
+                        continue
+                    new["name"] = label
+                    if any(entry_identity(e) == entry_identity(new) for e in entries):
+                        print(f"  A label must be unique on one host and model — '{label}' is taken.")
+                        continue
+                    # The key entered a moment ago was stored before the
+                    # label existed, so it sits in the plain host slot —
+                    # the first account's. Ask for this account's own key
+                    # under its label; a blank answer leaves the fallback
+                    # (the plain slot) in place.
+                    _prompt_endpoint_key(new["host"], None, label)
+                else:
+                    print(f"  {entry_label(new)} is already configured.")
+                    continue
             entries.append(new)
         elif cmd in ("e", "edit"):
             idx = _resolve_index(arg, entries)
@@ -1023,6 +1170,18 @@ def secret_status(key: str, env_var: str | None) -> str:
     return f"••••{value[-4:]} ({source})"
 
 
+def _effective_data_path(config: dict | None = None) -> str:
+    """The data path the agent will actually use, resolved like cli.py does.
+
+    A configured value wins, expanded of its leading ``~``; unset falls back
+    to the same default the CLI applies (``~/sandbox``). The resolved absolute
+    form is what is shown, so what --display prints is what the runtime opens.
+    """
+    configured = (_get_nested(config or {}, "data_path") or "").strip()
+    raw = configured or DEFAULT_DATA_PATH
+    return str(Path(os.path.expanduser(raw)).resolve())
+
+
 def _print_secrets(secrets: list[tuple]) -> None:
     """Print each secret masked, annotated with where it was found."""
     for key, label, env_var in secrets:
@@ -1051,9 +1210,22 @@ def show_config():
 
     print("\n  Preferences")
     _print_settings(config, GENERAL_SETTINGS)
+    # The data path is where the runtime lands when it is unset (cli.py falls
+    # back to ~/sandbox), and that effective value is what --show should name
+    # rather than a bare "not set" — it is the answer to "where do my files go".
+    effective = _effective_data_path(config)
+    configured = _get_nested(config, "data_path")
+    if not configured:
+        print(f"  {'Data path (default in effect)':.<40s} {effective}")
 
     print("\n  Integrations")
     _print_secrets(INTEGRATION_SECRETS)
+    # Additional Ollama keys, one line each, same masking as the primary.
+    for n in range(2, OLLAMA_MAX_KEYS + 1):
+        key = f"{OLLAMA_EXTRA_SECRET_PREFIX}{n}"
+        value = get_secret(key)
+        if value:
+            print(f"  {'Additional Ollama API key ' + str(n - 1):.<40s} ••••{value[-4:]} (keychain)")
     if any(
         is_ollama_cloud_host(e.get("host", ""))
         for e in _endpoint_list(config) or _entries_from_host(config)
@@ -1137,7 +1309,13 @@ def _ollama_skip_set(config: dict) -> set:
 # Short names for deleting a secret from the command line, alongside the
 # keyring keys themselves, which are accepted as written.
 _SECRET_ALIASES = {
-    "ollama": ("ollama_api_key",),
+    "ollama": (
+        "ollama_api_key",
+        "ollama_api_key_2",
+        "ollama_api_key_3",
+        "ollama_api_key_4",
+        "ollama_api_key_5",
+    ),
     "tavily": ("tavily_api_key",),
     "weather": ("openweathermap_api_key",),
     "openweathermap": ("openweathermap_api_key",),
