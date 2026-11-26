@@ -769,9 +769,7 @@ class TestOllamaSharedKey:
     def test_move_endpoint_key_moves_labeled_slots_too(self):
         setup_mod.store_endpoint_key("https://old:8000/v1", "sk-a", "work")
         setup_mod.store_endpoint_key("https://old:8000/v1", "sk-b")
-        setup_mod.move_endpoint_key(
-            "https://old:8000/v1", "https://new:8000/v1", names=("work",)
-        )
+        setup_mod.move_endpoint_key("https://old:8000/v1", "https://new:8000/v1", names=("work",))
         assert setup_mod.get_endpoint_key("https://new:8000/v1", "work") == "sk-a"
         assert setup_mod.get_endpoint_key("https://new:8000/v1") == "sk-b"
         assert setup_mod.get_endpoint_key("https://old:8000/v1", "work") is None
@@ -779,9 +777,7 @@ class TestOllamaSharedKey:
     def test_duplicate_add_offers_a_label_and_then_succeeds(self, monkeypatch):
         """The wizard's duplicate refusal turns into a label prompt; the
         labeled entry is then added as a second account."""
-        entries = [
-            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
-        ]
+        entries = [{"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}]
         self._answer(monkeypatch, "sk-b")
         answers = iter(["https://ollama.com", "glm-5.3-flash", ""])
 
@@ -802,18 +798,20 @@ class TestOllamaSharedKey:
         assert setup_mod.get_endpoint_key("https://ollama.com", "second") == "sk-b"
         assert setup_mod.get_endpoint_key("https://ollama.com") is None
 
-    def test_wizard_duplicate_add_offers_a_label_when_first_is_unlabeled(
-        self, monkeypatch, capsys
-    ):
+    def test_wizard_duplicate_add_offers_a_label_when_first_is_unlabeled(self, monkeypatch, capsys):
         """The regression this fixes: the label offer was guarded by 'no
         existing entry on the host is unlabeled' -- but the first account is
         itself unlabeled, so the offer never fired and the second add was
         refused outright. Driving the real editor: unlabeled first account,
         duplicate add, label accepted, second key stored under the label."""
         setup_mod.store_endpoint_key("https://ollama.com", "sk-a")
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
-        ]}}
+        cfg = {
+            "serving": {
+                "endpoints": [
+                    {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
+                ]
+            }
+        }
         _drive_editor(
             cfg,
             # a, host, model, label(blank), priority, then the duplicate
@@ -837,12 +835,14 @@ class TestOllamaSharedKey:
         assert setup_mod.get_endpoint_key("https://ollama.com", "acct2") == "sk-b"
 
     def test_wizard_duplicate_add_blank_label_still_refuses(self, capsys):
-        cfg = {"serving": {"endpoints": [
-            {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
-        ]}}
-        _drive_editor(
-            cfg, ["a", "https://ollama.com", "glm-5.3-flash", "", "0", ""]
-        )
+        cfg = {
+            "serving": {
+                "endpoints": [
+                    {"host": "https://ollama.com", "model": "glm-5.3-flash", "priority": 0}
+                ]
+            }
+        }
+        _drive_editor(cfg, ["a", "https://ollama.com", "glm-5.3-flash", "", "0", ""])
         assert "is already configured" in capsys.readouterr().out
         # Written back in the short single-host shape: still one entry.
         assert cfg["serving"]["host"] == "https://ollama.com"

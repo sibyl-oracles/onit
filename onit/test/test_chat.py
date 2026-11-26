@@ -104,9 +104,7 @@ class TestResolveApiKey:
         import onit.setup
 
         store = {}
-        monkeypatch.setattr(
-            onit.setup, "get_secret", lambda key: store.get(key)
-        )
+        monkeypatch.setattr(onit.setup, "get_secret", lambda key: store.get(key))
         monkeypatch.setattr(
             onit.setup,
             "store_secret",
@@ -5753,9 +5751,7 @@ class TestOllamaKeyRotation:
     def setup_method(self):
         _reset_ollama_keys()
         self._env = {
-            k: os.environ.pop(k)
-            for k in list(os.environ)
-            if k.startswith("OLLAMA_API_KEY")
+            k: os.environ.pop(k) for k in list(os.environ) if k.startswith("OLLAMA_API_KEY")
         }
 
     def teardown_method(self):
@@ -5806,12 +5802,11 @@ class TestOllamaKeyRotation:
         monkeypatch.setenv("OLLAMA_API_KEY", "k1")
         monkeypatch.setenv("OLLAMA_API_KEY_2", "k2")
         _reset_ollama_keys()
-        with patch.object(_chat_module, "OllamaAsyncClient", fake_cls), patch.object(
-            _chat_module, "OLLAMA_SDK_AVAILABLE", True
+        with (
+            patch.object(_chat_module, "OllamaAsyncClient", fake_cls),
+            patch.object(_chat_module, "OLLAMA_SDK_AVAILABLE", True),
         ):
-            chat_mod._ollama_client_for_current_key(
-                "https://ollama.com", 30.0, stream=False
-            )
+            chat_mod._ollama_client_for_current_key("https://ollama.com", 30.0, stream=False)
             assert fake_cls.call_args.kwargs["headers"] == {"Authorization": "Bearer k1"}
             _rotate_ollama_key()
             chat_mod._ollama_client_for_current_key("https://ollama.com", 30.0, stream=False)

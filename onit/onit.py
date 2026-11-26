@@ -84,6 +84,7 @@ def _account_label(endpoint) -> str | None:
     name = str(getattr(endpoint, "name", "") or "").strip()
     return None if not name or _GENERATED_ENDPOINT_NAME.match(name) else name
 
+
 # ``serving:`` keys forwarded to chat() only when the config sets them, so
 # chat()'s own default stays the single place each one is defined.
 SERVING_PASSTHROUGH = (

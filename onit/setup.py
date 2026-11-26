@@ -85,6 +85,7 @@ def ollama_keys() -> list[str]:
             values.append(value)
     return values
 
+
 INTEGRATION_SECRETS = [
     # Still prompted, and not only a serving credential: without it the web
     # search tool is switched off (see cli.py), which is why it did not move
@@ -443,9 +444,7 @@ def delete_endpoint_key(host: str, name: str | None = None) -> None:
     delete_secret(endpoint_secret_name(host, name))
 
 
-def move_endpoint_key(
-    old_host: str, new_host: str, names: tuple = ()
-) -> None:
+def move_endpoint_key(old_host: str, new_host: str, names: tuple = ()) -> None:
     """Follow keys to an endpoint's new URL.
 
     Editing a host would otherwise strand its key under the old address and
@@ -455,9 +454,7 @@ def move_endpoint_key(
     """
     if not old_host or normalize_host(old_host) == normalize_host(new_host):
         return
-    refs = [normalize_host(old_host)] + [
-        f"{normalize_host(old_host)}@{n}" for n in names if n
-    ]
+    refs = [normalize_host(old_host)] + [f"{normalize_host(old_host)}@{n}" for n in names if n]
     for ref in refs:
         name = None
         if ref.startswith(f"{normalize_host(old_host)}@"):
@@ -496,9 +493,7 @@ def endpoint_key_label(host: str, in_config: bool = False, extra_keys: tuple = (
     return "set" if source == "endpoint" else source
 
 
-def endpoint_key_source(
-    host: str, extra_keys: tuple = (), name: str | None = None
-) -> str | None:
+def endpoint_key_source(host: str, extra_keys: tuple = (), name: str | None = None) -> str | None:
     """Where ``host`` gets its key from: 'endpoint', a legacy secret's name,
     or None when nothing authenticates it.
 
@@ -837,9 +832,7 @@ def _print_known_endpoints(config: dict, indent: str = "    ") -> None:
         print(f"{indent}  {ep['host']:<38} {key:<24} {label}")
 
 
-def rename_endpoint_account(
-    host: str, old_name: str | None, new_name: str | None
-) -> None:
+def rename_endpoint_account(host: str, old_name: str | None, new_name: str | None) -> None:
     """Follow an endpoint's labeled key when its account label changes.
 
     Renaming an entry would otherwise strand its key under the old label,
@@ -851,7 +844,11 @@ def rename_endpoint_account(
     if old_name == new_name or not old_name:
         return
     value = get_endpoint_key(host, old_name)
-    if value and not get_endpoint_key(host, new_name) == value and not get_endpoint_key(host, new_name):
+    if (
+        value
+        and not get_endpoint_key(host, new_name) == value
+        and not get_endpoint_key(host, new_name)
+    ):
         store_endpoint_key(host, value, new_name)
     delete_endpoint_key(host, old_name)
 
@@ -1086,7 +1083,9 @@ def _edit_endpoints(config: dict) -> None:
                         continue
                     new["name"] = label
                     if any(entry_identity(e) == entry_identity(new) for e in entries):
-                        print(f"  A label must be unique on one host and model — '{label}' is taken.")
+                        print(
+                            f"  A label must be unique on one host and model — '{label}' is taken."
+                        )
                         continue
                     # The key entered a moment ago was stored before the
                     # label existed, so it sits in the plain host slot —
@@ -1225,7 +1224,9 @@ def show_config():
         key = f"{OLLAMA_EXTRA_SECRET_PREFIX}{n}"
         value = get_secret(key)
         if value:
-            print(f"  {'Additional Ollama API key ' + str(n - 1):.<40s} ••••{value[-4:]} (keychain)")
+            print(
+                f"  {'Additional Ollama API key ' + str(n - 1):.<40s} ••••{value[-4:]} (keychain)"
+            )
     if any(
         is_ollama_cloud_host(e.get("host", ""))
         for e in _endpoint_list(config) or _entries_from_host(config)

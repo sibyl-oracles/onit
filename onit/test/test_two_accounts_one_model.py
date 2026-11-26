@@ -17,13 +17,9 @@ from onit import setup as setup_mod
 class TestLabeledEndpointIdentity:
     def test_two_accounts_on_one_model_are_distinct(self):
         plain = setup_mod.endpoint_identity("https://ollama.com", "glm-5.3:cloud")
-        labeled = setup_mod.endpoint_identity(
-            "https://ollama.com", "glm-5.3:cloud", "work"
-        )
+        labeled = setup_mod.endpoint_identity("https://ollama.com", "glm-5.3:cloud", "work")
         assert plain != labeled
-        other = setup_mod.endpoint_identity(
-            "https://ollama.com", "glm-5.3:cloud", "home"
-        )
+        other = setup_mod.endpoint_identity("https://ollama.com", "glm-5.3:cloud", "home")
         assert labeled != other
 
     def test_two_unlabeled_copies_stay_one_identity(self):
@@ -47,9 +43,7 @@ class TestLabeledKeyStorage:
         monkeypatch.setattr(
             setup_mod, "store_secret", lambda key, value: self.store.__setitem__(key, value)
         )
-        monkeypatch.setattr(
-            setup_mod, "delete_secret", lambda key: self.store.pop(key, None)
-        )
+        monkeypatch.setattr(setup_mod, "delete_secret", lambda key: self.store.pop(key, None))
         for var in list(os_environ_like()):
             if var.startswith("ONIT_ENDPOINT_KEY_"):
                 del os_environ_like()[var]

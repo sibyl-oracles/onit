@@ -210,8 +210,7 @@ class WebSearch:
                 last_error = e
                 status = getattr(e, "status_code", None)
                 logger.warning(
-                    f"Ollama search failed with key {i + 1}/{len(keys)} "
-                    f"(status {status}): {str(e)}"
+                    f"Ollama search failed with key {i + 1}/{len(keys)} (status {status}): {str(e)}"
                 )
                 continue
 

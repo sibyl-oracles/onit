@@ -239,9 +239,13 @@ def _collect_endpoint_key_env() -> list[str]:
         # Labeled accounts first: their key lives under host@label, and the
         # bare-URL slot is the fallback both it and an unlabeled entry read.
         for label in ([name] if name else []) + [None]:
-            env_name = endpoint_env_var(host) if label is None else (
-                "ONIT_ENDPOINT_KEY_"
-                + re.sub(r"[^A-Za-z0-9]+", "_", f"{host}@{label}").strip("_").upper()
+            env_name = (
+                endpoint_env_var(host)
+                if label is None
+                else (
+                    "ONIT_ENDPOINT_KEY_"
+                    + re.sub(r"[^A-Za-z0-9]+", "_", f"{host}@{label}").strip("_").upper()
+                )
             )
             if env_name in seen:
                 continue
